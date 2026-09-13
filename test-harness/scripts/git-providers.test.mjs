@@ -468,6 +468,66 @@ const BASIC = "Basic " + Buffer.from(BB_EMAIL + ":" + BB_TOKEN, "utf8").toString
   eq(en, { enabled: true }, "pipelines enabled");
 }
 
+/* F-533 — SETTING A PIPELINE VARIABLE IS AN UPSERT ON BOTH HOSTS.
+ * Live, 2026-09-13: the second setupGitPipeline for one repository died at the FIRST step
+ * with HTTP 409 variable-service.variable.duplicate, leaving the row partial for a repo
+ * whose deploy credential the first run had already installed. GitHub's half was already
+ * idempotent (POST then PATCH-by-name), so one contract had two behaviours.
+ * Bitbucket has no update-by-key: the update is PUT .../variables/{uuid}, and the uuid is
+ * only discoverable by listing. POST first (one call in the common case), list-then-PUT
+ * only on the 409 — listing first would cost a call every time AND walk into F-534, the
+ * collection's eventual consistency. */
+{
+  // the happy path is still ONE call.
+  const f = mockFetch([res(201, { uuid: "{v}" })]);
+  const r = await bb(f).setVariable({ repo: "ws/app", name: "FORGE_SITE", value: "acme.atlassian.net" });
+  eq(f.calls.length, 1, "a variable that does not exist is one POST and nothing else");
+  eq(r.created, true, "…reported as created");
+}
+{
+  const f = mockFetch([
+    res(409, { error: { message: "A variable with the key provided already exists", detail: "variable-service.variable.duplicate" } }),
+    res(200, { values: [{ uuid: "{other}", key: "FORGE_PRODUCT" }, { uuid: "{mine}", key: "FORGE_SITE" }] }),
+    res(200, { uuid: "{mine}" }),
+  ]);
+  const r = await bb(f).setVariable({ repo: "ws/app", name: "FORGE_SITE", value: "acme.atlassian.net" });
+  eq(f.calls.length, 3, "a 409 becomes POST -> list -> PUT");
+  eq(f.calls[0].method, "POST", "…the POST is first");
+  eq(f.calls[1].method, "GET", "…then the list");
+  ok(f.calls[1].url.includes("/pipelines_config/variables/?pagelen="), "…of the variables collection, paged");
+  eq(f.calls[2].method, "PUT", "…then the update");
+  ok(f.calls[2].url.endsWith("/pipelines_config/variables/%7Bmine%7D"), "…BY UUID, the matching key's, not the first row's");
+  eq(JSON.parse(f.calls[2].body), { key: "FORGE_SITE", value: "acme.atlassian.net", secured: false }, "…carrying the new value");
+  eq(r.created, false, "…reported as an update, not a create");
+  eq(r.id, "{mine}", "…and returns the uuid it wrote");
+}
+{
+  // a secret takes the same path and stays secured.
+  const f = mockFetch([res(409, { error: { message: "already exists" } }), res(200, { values: [{ uuid: "{s}", key: "FORGE_API_TOKEN" }] }), res(200, { uuid: "{s}" })]);
+  const r = await bb(f).setSecret({ repo: "ws/app", name: "FORGE_API_TOKEN", value: "PLANTED_TOKEN_VALUE_XYZ" });
+  eq(r.secured, true, "an existing SECRET is updated and stays secured");
+  eq(JSON.parse(f.calls[2].body).secured, true, "…secured:true on the PUT too");
+  ok(!JSON.stringify(f.calls.map((c) => c.url)).includes("PLANTED_TOKEN_VALUE_XYZ"), "…and the value never rides in a URL");
+}
+{
+  // F-534 — the collection is eventually consistent, so "409 but not in the list" is real.
+  // It is a NAMED refusal, never a write to a uuid nobody read.
+  const f = mockFetch([res(409, { error: { message: "already exists" } }), res(200, { values: [{ uuid: "{other}", key: "SOMETHING_ELSE" }] })]);
+  let err = null;
+  try { await bb(f).setVariable({ repo: "ws/app", name: "FORGE_SITE", value: "x" }); } catch (e) { err = e; }
+  ok(err && err.code === "conflict", "a 409 whose key is not in the list refuses as a conflict");
+  ok(/eventually consistent/.test(String(err && err.message)), "…and says why, so the admin re-runs: " + String(err && err.message));
+  eq(f.calls.length, 2, "…without a third call — nothing is written to a guessed uuid");
+}
+{
+  // a 409 is the ONLY thing that triggers the second path.
+  const f = mockFetch([res(403, { error: { message: "nope" } })]);
+  let err = null;
+  try { await bb(f).setVariable({ repo: "ws/app", name: "V", value: "1" }); } catch (e) { err = e; }
+  ok(err && err.code !== "conflict", "a non-409 failure is rethrown, not turned into an update");
+  eq(f.calls.length, 1, "…and makes no list call");
+}
+
 {
   const f = mockFetch([res(201, { uuid: "{p}", build_number: 4 })]);
   await bb(f).triggerDeploy({ repo: "ws/app", ref: "develop", pattern: "deploy" });

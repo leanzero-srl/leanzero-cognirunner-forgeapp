@@ -16,23 +16,87 @@
 //
 // Dependency-free: bundles into the backend and into the admin panel (which only
 // needs the catalogue metadata, see SCAFFOLD_INDEX).
+//
+// F-530 — THE INSTALL COMMAND MUST MATCH THE TREE WE ACTUALLY COMMIT. Both pipelines ran
+// `npm ci`, and `npm ci` refuses to run without a lockfile ("The `npm ci` command can only
+// install with an existing package-lock.json or npm-shrinkwrap.json", npm error EUSAGE) —
+// which this scaffold has never shipped. Live on Bitbucket, run #1 of the offshoot died on
+// that line before forge register was ever reached, and the README the same scaffold ships
+// said `npm install`, so the tree and the pipeline disagreed with each other in writing.
+//
+// The fix is `npm install`, not a generated lockfile: a package-lock.json is a resolved
+// dependency graph with integrity hashes for the whole transitive tree, and this module is
+// a dependency-free list of string arrays. It cannot produce one that is true, and a
+// lockfile that is not true is worse than none. If a scaffold ever does ship one, the
+// command goes back to `npm ci` in the same commit — the invariant is held by
+// git-scaffolds.test.mjs: no rendered file may say `npm ci` unless that scaffold's file
+// list contains a lockfile.
 
 export const SCAFFOLD_VERSION = 1;
 
 const PLACEHOLDER_APP_ID = "ari:cloud:ecosystem::app/PLACEHOLDER";
 
+/**
+ * F-540 — A LINE ARRAY MAY CARRY A CONDITIONAL BLOCK.
+ *
+ * The Code tab offers "none" as the Custom UI folder for a backend-only app, and both
+ * pipelines emitted the build step unconditionally, so that choice rendered
+ * "working-directory: none" (and "cd none") and the job failed there. The UI could only
+ * warn about it; the scaffold is where the step lives, so the scaffold is where the choice
+ * has to be honoured.
+ *
+ * A line array entry is therefore either a STRING (emitted verbatim, placeholders
+ * substituted) or "{ when, lines }" -- the lines are emitted only when when(vars) is true.
+ * Kept deliberately small: a predicate over the rendered variables, no expression language,
+ * and renderScaffold throws on any other entry shape so a typo cannot silently drop a
+ * step.
+ */
+const UI_DIR_NONE = "none";
+
+/** True when this render has a Custom UI to build at all. */
+export const scaffoldHasCustomUi = (vars) => {
+  const dir = String((vars && vars.UI_DIR) || "").trim().toLowerCase();
+  // An EMPTY UI_DIR is "no UI", not "a folder called empty string". Both scaffolds declare
+  // a default so this is unreachable through renderScaffold, but the predicate is exported
+  // and the safe reading of "I do not know where the UI is" is "do not emit a build step
+  // pointed at nowhere".
+  return dir !== "" && dir !== UI_DIR_NONE;
+};
+
+/** A block of lines emitted only when the render has a Custom UI. */
+const whenCustomUi = (lines) => ({ when: scaffoldHasCustomUi, lines });
+
 // ---------------------------------------------------------------------------
 // Pipeline: GitHub Actions
 // ---------------------------------------------------------------------------
-// bootstrap registers the app ONCE (only while FORGE_APP_ID is empty) and stores
-// the id as a repository variable; every run injects the id into the working-copy
-// manifest, checks the permission lock, deploys, and installs on development only.
+// Every run injects the app id into the working-copy manifest, checks the permission
+// lock, deploys, and installs on development only. The bootstrap step registers the app
+// when there is no id yet -- see F-528 below for what "once" really means here.
+//
+// F-528 -- THE RUNNER CANNOT STORE THE APP ID, AND THE COPY NOW SAYS SO. The scaffold
+// used to claim the bootstrap registers AT MOST ONE TIME and then stores the id as a
+// repository variable by itself. It cannot: repository variables are an `administration` resource and
+// GITHUB_TOKEN can never hold it, with or without `actions: write` (probed live
+// 2026-09-13 -- HTTP 403 "Resource not accessible by integration" on
+// POST /repos/:o/:r/actions/variables, while a PAT accepted the identical call on the
+// identical repository seconds later). So the step no longer pretends: it registers,
+// exports the id for THIS run, and prints a ::notice:: naming the variable a human (or
+// CogniRunner, which holds a PAT) must set. Until that variable exists, every run
+// registers again -- which is why the product asks the admin to paste the id back.
+//
+// F-527 — THE BOOTSTRAP MUST NEVER NEED A TTY. `forge register` asks for a Developer
+// Space and `-y` does not answer that question, so the space id is passed explicitly
+// with `-s "$FORGE_DEVELOPER_SPACE"`. `--personal` is NOT used: a developer space that
+// disallows personal apps refuses it outright ("Personal apps are not allowed in this
+// developer space"), and the non-personal register is what succeeded headless on the
+// offshoot. When the variable is absent the step FAILS LOUD naming it — a prompt in a
+// non-TTY runner is an unexplained 41-second timeout, which is the worst of both.
 const FORGE_DEPLOY_YML = [
   "name: forge-deploy",
   "",
   "on:",
   "  push:",
-  "    branches: [main]",
+  "    branches: [main, master]",
   "  workflow_dispatch:",
   "    inputs:",
   "      environment:",
@@ -43,7 +107,6 @@ const FORGE_DEPLOY_YML = [
   "",
   "permissions:",
   "  contents: read",
-  "  actions: write",
   "",
   "concurrency:",
   "  group: forge-deploy",
@@ -55,6 +118,7 @@ const FORGE_DEPLOY_YML = [
   "  FORGE_SITE: ${{ vars.FORGE_SITE }}",
   "  FORGE_PRODUCT: ${{ vars.FORGE_PRODUCT || 'Jira' }}",
   "  FORGE_APP_ID: ${{ vars.FORGE_APP_ID }}",
+  "  FORGE_DEVELOPER_SPACE: ${{ vars.FORGE_DEVELOPER_SPACE }}",
   "  FORGE_ENV: ${{ inputs.environment || 'development' }}",
   "  FORGE_APP_NAME: {{APP_NAME}}",
   "",
@@ -67,27 +131,25 @@ const FORGE_DEPLOY_YML = [
   "        with:",
   "          node-version: 22",
   "      - name: Install (backend)",
-  "        run: npm ci",
-  "      - name: Install and build (Custom UI)",
-  "        run: npm ci && npm run build",
-  "        working-directory: {{UI_DIR}}",
+  "        run: npm install --no-audit --no-fund",
+  whenCustomUi([
+    "      - name: Install and build (Custom UI)",
+    "        run: npm install --no-audit --no-fund && npm run build",
+    "        working-directory: {{UI_DIR}}",
+  ]),
   "      - name: Forge CLI",
   "        run: npm install --global @forge/cli@13 && forge settings set usage-analytics false",
-  "      - name: Bootstrap (register once)",
+  "      - name: Bootstrap (register when there is no app id yet)",
   "        if: env.FORGE_APP_ID == ''",
-  "        env:",
-  "          GH_TOKEN: ${{ github.token }}",
   "        run: |",
   "          set -euo pipefail",
-  "          forge register -y --personal \"$FORGE_APP_NAME\"",
-  "          APP_ID=$(node -e \"const m=require('fs').readFileSync('manifest.yml','utf8');const r=m.match(/^\\s*id:\\s*(ari:cloud:ecosystem::app\\/[0-9a-f-]+)/m);if(!r){process.exit(2)};console.log(r[1])\")",
-  "          echo \"Registered app id: $APP_ID\"",
-  "          if gh variable set FORGE_APP_ID --body \"$APP_ID\"; then",
-  "            echo \"FORGE_APP_ID stored as a repository variable\"",
-  "          else",
-  "            echo \"::error::Could not store FORGE_APP_ID automatically. Set repository variable FORGE_APP_ID to $APP_ID and re-run.\"",
+  "          if [ -z \"${FORGE_DEVELOPER_SPACE:-}\" ]; then",
+  "            echo \"::error::FORGE_APP_ID is empty and FORGE_DEVELOPER_SPACE is not set. Set the repository variable FORGE_DEVELOPER_SPACE to your Forge developer space id and re-run — forge register cannot ask for it in CI.\"",
   "            exit 1",
   "          fi",
+  "          forge register -y -s \"$FORGE_DEVELOPER_SPACE\" \"$FORGE_APP_NAME\"",
+  "          APP_ID=$(node -e \"const m=require('fs').readFileSync('manifest.yml','utf8');const r=m.match(/^\\s*id:\\s*(ari:cloud:ecosystem::app\\/[0-9a-f-]+)/m);if(!r){process.exit(2)};console.log(r[1])\")",
+  "          echo \"::notice::Registered app id $APP_ID. This runner's token cannot store it (repository variables are an administration resource), so set the repository variable FORGE_APP_ID to $APP_ID -- paste it into CogniRunner's Code tab and it will store it for you. Until then every run registers again.\"",
   "          echo \"FORGE_APP_ID=$APP_ID\" >> \"$GITHUB_ENV\"",
   "      - name: Inject app id",
   "        run: node .cognirunner/inject-app-id.js \"$FORGE_APP_ID\"",
@@ -107,12 +169,25 @@ const FORGE_DEPLOY_YML = [
   "          fi",
   "      - name: Install skipped (permission drift)",
   "        if: env.FORGE_ENV == 'development' && steps.lock.outputs.locked != 'true'",
-  "        run: echo \"::warning::manifest permissions differ from .cognirunner/forge-permissions.lock — deployed, NOT installed. Re-run pipeline setup in CogniRunner to approve the change.\"",
+  "        run: echo \"::warning::manifest permissions differ from .cognirunner/forge-permissions.lock (drift: ${{ steps.lock.outputs.drift }}) — deployed, NOT installed. A SCOPE change never gets this far: the Permission lock step fails the job before the deploy. Re-run pipeline setup in CogniRunner to approve the change.\"",
 ];
 
 // ---------------------------------------------------------------------------
 // Pipeline: Bitbucket Pipelines (custom pipeline `forge-deploy`, no manifest push-back)
 // ---------------------------------------------------------------------------
+// F-531 — THE TRIGGER BRANCH IS NOT THE SAME WORD ON BOTH HOSTS. A repository CogniRunner
+// creates on Bitbucket comes back with `mainbranch.name = "master"` (live, the offshoot's
+// `-bb` repo), while a new GitHub repository defaults to `main` — which is why this was
+// invisible until Bitbucket was exercised. The branch pipeline of a CogniRunner-provisioned
+// Bitbucket repo therefore never fired: only the `custom:` entry could be started, and only
+// by an explicit trigger.
+//
+// Both scaffolds now trigger on BOTH names on BOTH hosts. The alternative — rendering the
+// repository's own `mainbranch.name` into the YAML — makes the committed pipeline depend on
+// a value read at setup time, so a repo whose default branch is renamed afterwards silently
+// stops deploying, and the scaffold stops being a deterministic render. Naming both costs
+// one extra key and is true whatever the repo does. A repo cannot have both branches as its
+// default, so this never double-fires on one push.
 const BITBUCKET_PIPELINES_YML = [
   "image: node:22",
   "",
@@ -122,21 +197,30 @@ const BITBUCKET_PIPELINES_YML = [
   "        name: Forge deploy",
   "        caches: [node]",
   "        script:",
-  "          - npm ci",
-  "          - cd {{UI_DIR}} && npm ci && npm run build && cd -",
+  "          - npm install --no-audit --no-fund",
+  whenCustomUi([
+    "          - cd {{UI_DIR}} && npm install --no-audit --no-fund && npm run build && cd -",
+  ]),
   "          - npm install --global @forge/cli@13",
   "          - forge settings set usage-analytics false",
   "          - export FORGE_ENV=\"${ENVIRONMENT:-development}\"",
   "          - |",
   "            if [ -z \"${FORGE_APP_ID:-}\" ]; then",
-  "              forge register -y --personal \"{{APP_NAME}}\"",
+  "              if [ -z \"${FORGE_DEVELOPER_SPACE:-}\" ]; then",
+  "                echo \"ERROR: FORGE_APP_ID is empty and FORGE_DEVELOPER_SPACE is not set. Add the repository variable FORGE_DEVELOPER_SPACE (your Forge developer space id) and re-run — forge register cannot ask for it in CI.\"",
+  "                exit 1",
+  "              fi",
+  "              forge register -y -s \"$FORGE_DEVELOPER_SPACE\" \"{{APP_NAME}}\"",
   "              APP_ID=$(node -e \"const m=require('fs').readFileSync('manifest.yml','utf8');const r=m.match(/^\\s*id:\\s*(ari:cloud:ecosystem::app\\/[0-9a-f-]+)/m);if(!r){process.exit(2)};console.log(r[1])\")",
   "              echo \"Registered app id: $APP_ID\"",
-  "              curl -sf -u \"x-bitbucket-api-token-auth:${BB_API_TOKEN}\" -X POST \"https://api.bitbucket.org/2.0/repositories/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}/pipelines_config/variables/\" -H 'Content-Type: application/json' -d \"{\\\"key\\\":\\\"FORGE_APP_ID\\\",\\\"value\\\":\\\"$APP_ID\\\",\\\"secured\\\":false}\" > /dev/null",
+  "              if ! curl -sf -u \"x-bitbucket-api-token-auth:${BB_API_TOKEN:-}\" -X POST \"https://api.bitbucket.org/2.0/repositories/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}/pipelines_config/variables/\" -H 'Content-Type: application/json' -d \"{\\\"key\\\":\\\"FORGE_APP_ID\\\",\\\"value\\\":\\\"$APP_ID\\\",\\\"secured\\\":false}\" > /dev/null; then",
+  "                echo \"Registered app id $APP_ID but could not store it: set the repository variable FORGE_APP_ID to $APP_ID (or paste it into CogniRunner's Code tab). Until then every run registers again.\"",
+  "              fi",
   "              export FORGE_APP_ID=\"$APP_ID\"",
   "            fi",
   "          - node .cognirunner/inject-app-id.js \"$FORGE_APP_ID\"",
-  "          - node .cognirunner/check-permissions-lock.js > .lock-result; cat .lock-result",
+  "          - node .cognirunner/check-permissions-lock.js > .lock-result || { cat .lock-result; exit 1; }",
+  "          - cat .lock-result",
   "          - forge deploy -e \"$FORGE_ENV\" --non-interactive",
   "          - |",
   "            if [ \"$FORGE_ENV\" = \"development\" ] && grep -q 'locked=true' .lock-result; then",
@@ -146,6 +230,8 @@ const BITBUCKET_PIPELINES_YML = [
   "pipelines:",
   "  branches:",
   "    main:",
+  "      - step: *forge-deploy",
+  "    master:",
   "      - step: *forge-deploy",
   "  custom:",
   "    forge-deploy:",
@@ -175,9 +261,23 @@ const INJECT_APP_ID_JS = [
 ];
 
 const CHECK_PERMISSIONS_LOCK_JS = [
-  "// Refuses the INSTALL step when manifest permissions differ from the approved lock.",
-  "// Deploy still happens; install is the human consent gate, so a scope change must be",
-  "// re-approved in CogniRunner (which rewrites the lock) before the pipeline installs.",
+  "// Compares the manifest's permissions block against the lock CogniRunner approved.",
+  "//",
+  "// F-529 - TWO DRIFT CLASSES, TWO OUTCOMES, AND THE LOCK GETS TO SPEAK FIRST.",
+  "//",
+  "//   scopes   This script EXITS 1 and the job stops HERE, before forge deploy. It has to:",
+  "//            forge deploy --non-interactive refuses a scope widening on its own with",
+  "//            MAJOR_VERSION_RULE, so the job used to die with Forge's message about",
+  "//            approvals while this step's correct verdict, computed one step earlier, was",
+  "//            thrown away with the job. The admin got a red run and the wrong reason.",
+  "//   other    A permissions change that names no scope (content:/styles:) does not trip",
+  "//            MAJOR_VERSION_RULE, so the deploy really does happen and only the INSTALL is",
+  "//            withheld. That is the 'deployed, NOT installed' warning, and this is now the",
+  "//            only class that reaches it.",
+  "//   missing  No lock committed. Treated as 'other': deploy, do not install.",
+  "//",
+  "// The install is still the human consent gate. A SCOPE change must be re-approved in",
+  "// CogniRunner (which rewrites the lock) before this pipeline deploys at all.",
   "const fs = require('fs');",
   "const lockPath = '.cognirunner/forge-permissions.lock';",
   "const extract = (yaml) => {",
@@ -192,24 +292,49 @@ const CHECK_PERMISSIONS_LOCK_JS = [
   "  }",
   "  return out.sort();",
   "};",
+  "// The SAME rule as scopeOfLockLine in src/git-pipeline.js: a permissions line either",
+  "// names a scope or it is structure. It is restated here because this file is standalone",
+  "// in a customer's repository and can import nothing; git-scaffolds.test.mjs holds the two",
+  "// regex literals byte-equal so the two homes cannot drift apart.",
+  "const scopeOfLine = (line) => {",
+  "  const m = /^-\\s*\"?([A-Za-z][A-Za-z0-9_.-]*(?::[A-Za-z0-9_.:-]+)+)\"?\\s*$/.exec(String(line || '').trim());",
+  "  return m ? m[1] : null;",
+  "};",
+  "const scopesOf = (lines) => [...new Set(lines.map(scopeOfLine).filter(Boolean))].sort();",
   "const current = extract(fs.readFileSync('manifest.yml', 'utf8'));",
   "let locked = false;",
+  "let drift = 'none';",
+  "let added = [];",
+  "let removed = [];",
   "if (fs.existsSync(lockPath)) {",
   "  const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));",
   "  const approved = (lock.permissions || []).slice().sort();",
   "  locked = JSON.stringify(approved) === JSON.stringify(current);",
   "  if (!locked) {",
-  "    console.log('permission lock: DRIFT');",
+  "    const a = scopesOf(approved);",
+  "    const b = scopesOf(current);",
+  "    added = b.filter((s) => a.indexOf(s) === -1);",
+  "    removed = a.filter((s) => b.indexOf(s) === -1);",
+  "    drift = (added.length || removed.length) ? 'scopes' : 'other';",
+  "    console.log('permission lock: DRIFT (' + drift + ')');",
   "    console.log('approved: ' + JSON.stringify(approved));",
   "    console.log('current:  ' + JSON.stringify(current));",
   "  } else {",
   "    console.log('permission lock: OK (' + current.length + ' lines)');",
   "  }",
   "} else {",
-  "  console.log('permission lock: MISSING — install refused until CogniRunner writes ' + lockPath);",
+  "  drift = 'missing';",
+  "  console.log('permission lock: MISSING - install refused until CogniRunner writes ' + lockPath);",
   "}",
   "console.log('locked=' + (locked ? 'true' : 'false'));",
-  "if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, 'locked=' + (locked ? 'true' : 'false') + '\\n');",
+  "console.log('drift=' + drift);",
+  "if (process.env.GITHUB_OUTPUT) {",
+  "  fs.appendFileSync(process.env.GITHUB_OUTPUT, 'locked=' + (locked ? 'true' : 'false') + '\\n' + 'drift=' + drift + '\\n');",
+  "}",
+  "if (drift === 'scopes') {",
+  "  console.log('::error::permission lock: DRIFT (scopes) - added ' + (added.join(', ') || 'none') + ', removed ' + (removed.join(', ') || 'none') + '. Nothing was deployed. Re-approve these permissions in CogniRunner, which rewrites ' + lockPath + ', then re-run.');",
+  "  process.exit(1);",
+  "}",
 ];
 
 // ---------------------------------------------------------------------------
@@ -622,14 +747,17 @@ const README_MD = [
   "",
   "## How it deploys",
   "",
-  "The committed `manifest.yml` keeps a placeholder app id. The pipeline registers the app once",
-  "(when the repository variable `FORGE_APP_ID` is empty), stores the id as a repository variable, and on",
-  "every run injects it into the working copy, checks `.cognirunner/forge-permissions.lock`, deploys, and",
-  "installs on the development environment only. A change to the manifest's permissions deploys but is",
+  "The committed `manifest.yml` keeps a placeholder app id. The pipeline registers the app when",
+  "`FORGE_APP_ID` is empty and `FORGE_DEVELOPER_SPACE` is set, and prints the id it got: the runner's own",
+  "token cannot create a repository variable, so set `FORGE_APP_ID` yourself (or paste it into",
+  "CogniRunner) and registration stops happening. On",
+  "every run injects the id into the working copy, checks `.cognirunner/forge-permissions.lock`, deploys,",
+  "and installs on the development environment only. A change to the manifest's permissions deploys but is",
   "not installed until the lock is re-approved.",
   "",
   "Secrets and variables the pipeline needs: `FORGE_EMAIL`, `FORGE_API_TOKEN` (an Atlassian API token",
-  "with scopes, app = Forge), `FORGE_SITE` (for example `your-site.atlassian.net`), optional `FORGE_PRODUCT`.",
+  "with scopes, app = Forge), `FORGE_SITE` (for example `your-site.atlassian.net`), optional `FORGE_PRODUCT`,",
+  "and `FORGE_DEVELOPER_SPACE` (your Forge developer space id) until `FORGE_APP_ID` is set.",
   "",
   "## Local development",
   "",
@@ -715,7 +843,42 @@ export const SCAFFOLD_INDEX = Object.entries(SCAFFOLDS).map(([id, s]) => ({ id, 
 
 const substitute = (text, vars) => String(text).replace(/\{\{([A-Z_]+)\}\}/g, (m, k) => (Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m));
 
-const SAFE_VAR = /^[A-Za-z0-9 ._\/-]{1,80}$/;
+const SAFE_VAR_CHARS = /^[A-Za-z0-9 ._\/-]+$/;
+
+/**
+ * F-541 — THE ONE RULE FOR "IS THIS SCAFFOLD VARIABLE USABLE", AND ITS ONE HOME.
+ *
+ * A scaffold variable is substituted into shell words, YAML values and FILE PATHS, so the
+ * character set was never the whole question: "." and "/" are both legal and both needed
+ * (static/app), which means ".." and a leading "/" are reachable and neither belongs in a
+ * path relative to a checkout. The backend's old SAFE_VAR allowed both, so a traversing
+ * UI_DIR was refused only by the admin panel's own copy of the rule -- that is, only in the
+ * browser, and only for the one caller that happens to be a form.
+ *
+ * This is the rule, and both the renderer and the setup resolver call it. The admin panel
+ * imports it too, instead of keeping the copy it grew.
+ *
+ * Returns null when the value is usable, otherwise the sentence to show a human.
+ */
+export const SCAFFOLD_VAR_LABELS = Object.freeze({
+  APP_NAME: "The app name",
+  UI_DIR: "The Custom UI folder",
+});
+
+export const scaffoldVarError = (name, value, label) => {
+  const what = label || SCAFFOLD_VAR_LABELS[name] || String(name || "That value");
+  const v = String(value == null ? "" : value).trim();
+  if (!v) return what + " cannot be empty.";
+  if (v.length > 80) return what + " must be 80 characters or fewer.";
+  if (!SAFE_VAR_CHARS.test(v)) return what + " may only contain letters, numbers, spaces and . _ - /";
+  // Path traversal is refused on EVERY value, not only the folder: the character set has to
+  // allow dots and slashes, so "does this climb out of the checkout" is the real question,
+  // and an app name has no business climbing either.
+  if (v.split("/").some((seg) => seg === "..") || v.startsWith("/")) {
+    return what + " cannot contain .. or start with /";
+  }
+  return null;
+};
 
 /**
  * Render a scaffold into [{ path, content }]. Variables are validated to a safe
@@ -727,10 +890,32 @@ export const renderScaffold = (kind, overrides = {}) => {
   const vars = { ...s.vars };
   for (const [k, v] of Object.entries(overrides || {})) {
     if (!Object.prototype.hasOwnProperty.call(vars, k)) continue;
-    if (!SAFE_VAR.test(String(v))) throw new Error("Scaffold variable " + k + " has unsafe characters");
-    vars[k] = String(v);
+    const err = scaffoldVarError(k, v);
+    if (err) throw new Error("Scaffold variable " + k + " is not usable: " + err);
+    vars[k] = String(v).trim();
   }
-  return s.files.map((f) => ({ path: substitute(f.path, vars).replace(/^\/+/, ""), content: f.lines.map((l) => substitute(l, vars)).join("\n") + "\n" }));
+  return s.files.map((f) => ({
+    path: substitute(f.path, vars).replace(/^\/+/, ""),
+    content: expandLines(f.lines, vars).map((l) => substitute(l, vars)).join("\n") + "\n",
+  }));
+};
+
+/**
+ * Flatten a file's line array, dropping "{ when, lines }" blocks whose predicate is false.
+ * An entry that is neither a string nor such a block THROWS: a scaffold line silently
+ * vanishing because of a typo is the failure mode this shape must not have (F-540).
+ */
+const expandLines = (entries, vars) => {
+  const out = [];
+  for (const entry of entries || []) {
+    if (typeof entry === "string") { out.push(entry); continue; }
+    if (entry && typeof entry === "object" && Array.isArray(entry.lines) && typeof entry.when === "function") {
+      if (entry.when(vars)) out.push(...entry.lines);
+      continue;
+    }
+    throw new Error("Scaffold line entry must be a string or a { when, lines } block");
+  }
+  return out;
 };
 
 /** The permission lock CogniRunner writes when an admin approves a repo's pipeline. */

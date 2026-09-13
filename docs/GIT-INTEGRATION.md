@@ -367,12 +367,30 @@ no git action id maps to it). No UI calls the three resolvers yet; they are docu
 here for what they do.
 
 `setupGitPipeline` (admin) takes `{ connectionId, repo, manifestYaml, site, product?,
-branch?, scaffoldVars? }`, validates everything before any side effect, takes a ten-minute
-claim, and queues a `gitpipeline` task on `async-ai-queue`. The refusals, each with a
-machine `code`: `not_found`, `auth_dead`, `not_allowed` (with `hint: "add-repo-to-allowlist"`),
-`identity_required` and `consent_required` (with `hint: "configure-forge-identity"`),
-`manifest_required`, `scope_not_allowed` (with the `scopes` refused), `lock_mismatch`
-(with `added` / `removed`), `already_running`, `queue`.
+branch?, scaffoldVars?, developerSpaceId?, appId? }`, validates everything before any side effect,
+takes a ten-minute claim, and queues a `gitpipeline` task on `async-ai-queue`. The refusals,
+each with a machine `code`: `not_found`, `auth_dead`, `not_allowed` (with
+`hint: "add-repo-to-allowlist"`), `identity_required` and `consent_required` (with
+`hint: "configure-forge-identity"`), `manifest_required`, `scope_not_allowed` (with the
+`scopes` refused), `lock_mismatch` (with `added` / `removed`), `invalid_developer_space`,
+`invalid_app_id`, `already_running`, `queue`.
+
+**The developer space (F-527).** `forge register` asks for a Developer Space and `-y` does
+not answer that question, so a runner with no space id sits on a prompt it cannot render
+and dies (`Prompts can not be meaningfully rendered in non-TTY environments`, 41s, live
+2026-09-13). `--personal` is not an escape either: a space that disallows personal apps
+refuses it outright. The bootstrap therefore runs `forge register -y -s
+"$FORGE_DEVELOPER_SPACE" "$FORGE_APP_NAME"` with no `--personal`, reading the id from the
+repository variable `FORGE_DEVELOPER_SPACE` through the job's `env:` block (never a `${{ }}`
+expression inside `run:`, which is textual substitution into a shell script).
+`setupGitPipeline` collects the id as the optional `developerSpaceId` — validated against
+`^[0-9a-f-]{36}$` because it becomes a shell word, refused as `invalid_developer_space` when
+it is present and malformed — and writes it as the repository variable
+`FORGE_DEVELOPER_SPACE` next to `FORGE_SITE`, in the step `var:FORGE_DEVELOPER_SPACE`. The
+step exists only on runs that supplied one: a step stamped "done" for a variable nobody
+asked for would be a lie in the only record an admin can read. When the variable is absent
+and the app is not yet registered, the bootstrap fails loud naming the variable rather than
+prompting.
 
 **The permission lock.** The manifest's `permissions:` block is rendered into
 `.cognirunner/forge-permissions.lock` and committed with the pipeline; its hash (over the
@@ -409,12 +427,125 @@ Anything granting app or site administration, any act-as-user variant and any sc
 can mint or read credentials is deliberately absent; widening the list is a security
 decision.
 
+**The app id: who registers and who stores (F-528).** The runner token can never store
+`FORGE_APP_ID`. Repository variables are an `administration` resource, and `GITHUB_TOKEN`
+cannot hold it with or without `actions: write` — probed live 2026-09-13, HTTP 403
+"Resource not accessible by integration" on `POST /repos/:o/:r/actions/variables`, with a
+PAT accepting the identical call on the identical repository seconds later. The scaffold no
+longer pretends otherwise: `actions: write` and the `gh variable set` attempt are gone, the
+bootstrap step registers only when `FORGE_APP_ID` is absent **and** `FORGE_DEVELOPER_SPACE`
+is present, and on a successful register it prints
+`::notice::Registered app id <ari>. … set the repository variable FORGE_APP_ID …` — the
+product cannot read the runner's output, so a human has to carry the id across. The admin
+pastes it back into CogniRunner, which holds a credential that CAN write variables and
+stores it in the `var:FORGE_APP_ID` step; from then on the bootstrap step never runs. The
+id is accepted as `ari:cloud:ecosystem::app/<uuid>` or as the bare uuid and always stored
+as the full ARI, because `.cognirunner/inject-app-id.js` refuses anything else; a malformed
+one is refused as `invalid_app_id` before any side effect. **What is true, and what the
+scaffold comments now say:** until the variable exists, every run registers again — the
+bootstrap is not "at most once" by itself, it is "at most once once a human has stored the
+id".
+
+**Drift on the runner: which class produces which outcome (F-529).** The pipeline's own
+`check-permissions-lock.js` compares the working-copy manifest's `permissions:` block
+against the committed lock and classifies any difference, because the two classes cannot
+share an outcome:
+
+| drift | what changed | what the pipeline does |
+|---|---|---|
+| `none` | nothing | `locked=true`, exit 0 — deploy, then install |
+| `scopes` | a scope was added or removed | `::error::permission lock: DRIFT (scopes) - added …, removed …`, **exit 1 at the lock step**. Nothing is deployed and nothing is installed |
+| `other` | a non-scope permissions line (`content:` / `styles:`) | `locked=false`, exit 0 — **deployed, NOT installed**, with the warning step |
+| `missing` | no lock committed | `locked=false`, exit 0 — deployed, NOT installed |
+
+The `scopes` class exits at the lock step deliberately. `forge deploy --non-interactive`
+refuses a scope widening on its own with `MAJOR_VERSION_RULE` ("The deploy failed due to 1
+approval requested"), so before this the job died at the Deploy step with Forge's message
+about approvals while the lock's correct verdict, computed one step earlier, was thrown
+away with the job — a red run for the right reason, stated wrongly, and the "deployed, NOT
+installed" warning step was unreachable for the only drift the lock exists to catch
+(observed live 2026-09-13, run 34768718033). The lock step is rendered before the Deploy
+step on both hosts; on Bitbucket the checker's exit code is honoured with
+`|| { cat .lock-result; exit 1; }`, because the `;` that used to separate them swallowed
+it. The install remains the human consent gate for the `other` / `missing` classes; a scope
+change must be re-approved in CogniRunner — which rewrites the lock — before the pipeline
+deploys at all. `--approve MAJOR_VERSION_RULE` is deliberately never added: it would deploy
+a wider-scoped version off a drifted manifest, which is the opposite of the lock's purpose.
+
+The scope-vs-structure rule (`scopeOfLockLine` in `src/git-pipeline.js`) is restated inside
+the generated checker because that file is standalone in a customer's repository and can
+import nothing; `git-scaffolds.test.mjs` holds the two regex literals byte-equal so the two
+homes cannot drift apart.
+
+**Scaffold variables (F-541).** `scaffoldVarError(name, value, label?)`, exported from
+`src/shared/git-scaffolds.js`, is the ONE rule for whether a scaffold variable is usable:
+non-empty, 80 characters or fewer, only letters/numbers/spaces/`. _ - /`, no `..` **segment**
+and no leading `/`. It returns `null` or the sentence to show a human, labelled from
+`SCAFFOLD_VAR_LABELS` (`APP_NAME` → "The app name", `UI_DIR` → "The Custom UI folder") unless
+a caller passes its own label. `renderScaffold` calls it (and trims the accepted value before
+substituting), `setupGitPipeline` calls it before any side effect and refuses with
+`code: "invalid_scaffold_var"` plus the offending `variable`, and the admin panel's Code tab
+imports it rather than keeping the copy it grew. A scaffold variable is substituted into
+shell words, YAML values and file **paths** — the character set must allow `.` and `/` for
+`static/app`, which makes `..` and a leading `/` reachable, and the old `SAFE_VAR` allowed
+both. Until this, a traversing `UI_DIR` was refused only in the browser: `renderScaffold`
+would have thrown in the **consumer**, after the deploy secrets were already in the
+customer's repository.
+
+**Backend-only apps (F-540).** The Code tab offers `none` as the Custom UI folder. Both
+pipelines used to emit the Custom UI build step unconditionally, so that choice rendered
+`working-directory: none` on GitHub and `cd none` on Bitbucket and the job failed there —
+the UI could only warn about it, because the step lives in the scaffold. A scaffold line
+array entry may now be either a string or a `{ when, lines }` block whose lines are emitted
+only when the predicate holds; `scaffoldHasCustomUi(vars)` is that predicate and is false for
+`none`, for any casing or padding of it, and for an empty `UI_DIR`. `renderScaffold` throws
+on any other entry shape, because a step silently vanishing from a pipeline is the failure
+mode a conditional renderer must not have. Both branches are parity-tested.
+
+**Re-running setup (F-533).** Setting a pipeline secret or variable is an **upsert on both
+hosts** — the resolver's "validate everything, then queue" story only holds if a second run
+of the same setup does the same thing. GitHub was already idempotent (POST, then PATCH by
+name on 409). Bitbucket only ever POSTed, so the second `setupGitPipeline` for one
+repository died at the very first step with HTTP 409
+`variable-service.variable.duplicate` and left the row `status: "partial"` — for a repo
+whose deploy credential the first run had already installed. Bitbucket has no update-by-key:
+the update is `PUT .../pipelines_config/variables/{uuid}` and the uuid is only discoverable
+by listing, so the adapter POSTs first (one call in the common case) and lists-then-PUTs only
+when the POST says the key is taken. Listing first would cost a call on every write and walk
+into the collection's eventual consistency (F-534). When the 409 arrives but the key is not
+in the list yet — a real state, for exactly that reason — the adapter refuses with
+`conflict` and says to re-run, rather than writing to a uuid it did not read.
+
+**Which branch triggers a deploy (F-531).** Both scaffolds trigger on **`main` and
+`master`**, on both hosts. A repository CogniRunner creates on Bitbucket comes back with
+`mainbranch.name = "master"` (live, the offshoot's `-bb` repo) while the committed
+`bitbucket-pipelines.yml` listed only `main`, so the branch pipeline of a
+CogniRunner-provisioned Bitbucket repo never fired and only the `custom: forge-deploy` entry
+could be started. New GitHub repositories default to `main`, which is why this stayed
+invisible until Bitbucket was exercised. Rendering the repository's own `mainbranch.name`
+into the YAML was rejected: it makes the committed pipeline depend on a value read at setup
+time, so a later rename silently stops deploys and the scaffold stops rendering
+deterministically. Naming both is true whatever the repo does. Where the scaffold is
+COMMITTED is a separate question and was always right — `setupGitPipeline` uses
+`p.branch || getDefaultBranch()`.
+
+**Installing dependencies (F-530).** Both pipelines run `npm install --no-audit --no-fund`,
+not `npm ci`. `npm ci` refuses to run without a lockfile (`npm error code EUSAGE`) and the
+scaffold ships none — live, Bitbucket run #1 of the offshoot died on that line before
+`forge register` was ever reached, while the README the same scaffold commits said
+`npm install`. A generated lockfile is not an option here: it is a resolved dependency graph
+with integrity hashes for the whole transitive tree, and `git-scaffolds.js` is a
+dependency-free list of string arrays that cannot produce a true one. The invariant is held
+in `git-scaffolds.test.mjs`: no rendered file may say `npm ci` unless that scaffold's file
+list actually contains a lockfile.
+
 **The steps.** The consumer runs a fixed chain and records every step on the row before
 the next one starts, so a chain that dies reports `status: "partial"` with the step that
 failed, never "installed": on Bitbucket `enable-pipelines`, then `secret:FORGE_EMAIL`,
 `secret:FORGE_API_TOKEN`, `var:FORGE_SITE`, `var:FORGE_PRODUCT`, `var:FORGE_ENV`
 (`development`; installs are development-only and the rendered workflow enforces it),
-then `commit-scaffold`, which commits the `forge-pipeline` scaffold
+then the optional `var:FORGE_DEVELOPER_SPACE` and `var:FORGE_APP_ID` when the request
+carried them (in that order), then `commit-scaffold`, which commits the `forge-pipeline` scaffold
 (`.github/workflows/forge-deploy.yml`, `bitbucket-pipelines.yml`,
 `.cognirunner/inject-app-id.js`, `.cognirunner/check-permissions-lock.js`) plus the lock
 in one commit. The identity's token is read once, handed to `setSecret`, and never appears
@@ -433,25 +564,29 @@ consent screen, and "Set up pipeline" -> all six steps done, secrets `FORGE_EMAI
 created at the provider, scaffold + lock committed in one commit (`2d0e088e`), the row
 `installed`. A green pipeline run then deployed the app (`permission lock: OK (7 lines)`,
 `locked=true`) and installed it on the site; a second run reused the app id with Bootstrap
-skipped. Four defects were found and are open in the findings ledger:
+skipped. Four defects were found; F-527, F-528 and F-529 are closed above and F-526 remains
+open:
 
 - **F-526** — the Code tab sends no `scaffoldVars`, so the installed workflow always renders
   with the `forge-pipeline` defaults (`FORGE_APP_NAME: Forge app`, `working-directory:
   static/app`). Any repository whose Custom UI is elsewhere gets a pipeline that cannot
   build, and the row still reports `installed`.
-- **F-527** — the bootstrap's `forge register -y --personal "$FORGE_APP_NAME"` cannot run
-  headless: the CLI prompts for a Developer Space in a non-TTY, and `--personal` is refused
-  by a space that disallows personal apps. `forge register -y -s <developer-space-id>`
-  without `--personal` does work; nothing in the app collects a space id.
-- **F-528** — `GITHUB_TOKEN` with `actions: write` CANNOT create a repository variable
-  (HTTP 403, "Resource not accessible by integration"); repository variables are an
-  `administration` resource. The scaffold's fallback (`::error::` + `exit 1`) is correct, so
-  in practice the app id is stored once by a human or by CogniRunner, never by the runner.
-- **F-529** — when the drift is a widened SCOPE, `forge deploy --non-interactive` refuses
-  first with `MAJOR_VERSION_RULE`, so the job fails before the "deployed, NOT installed"
-  warning can render. The lock's own verdict (`permission lock: DRIFT`, `locked=false`, the
-  scopes printed) is computed correctly one step earlier. It fails closed, but not by the
-  mechanism this section and the scaffold comment describe.
+- **F-527** — FIXED. The bootstrap's `forge register -y --personal "$FORGE_APP_NAME"` could
+  not run headless: the CLI prompts for a Developer Space in a non-TTY, and `--personal` is
+  refused by a space that disallows personal apps. The scaffold now passes
+  `-s "$FORGE_DEVELOPER_SPACE"` and no `--personal`, `setupGitPipeline` collects
+  `developerSpaceId`, and an absent variable fails the step with a one-line instruction
+  naming it. See "The developer space" above.
+- **F-528** — FIXED. `GITHUB_TOKEN` with `actions: write` CANNOT create a repository
+  variable (HTTP 403, "Resource not accessible by integration"); repository variables are an
+  `administration` resource. The scaffold no longer attempts it or carries the permission:
+  it prints a `::notice::` naming the variable, and `setupGitPipeline` takes the optional
+  `appId` and stores it. See "The app id" above.
+- **F-529** — FIXED. When the drift was a widened SCOPE, `forge deploy --non-interactive`
+  refused first with `MAJOR_VERSION_RULE`, so the job failed before the "deployed, NOT
+  installed" warning could render and the admin read Forge's reason instead of the lock's.
+  The checker now classifies the drift and exits 1 at the lock step for the `scopes` class;
+  the warning path belongs to `other` / `missing` alone. See the drift table above.
 
 ## 8. Rotation
 

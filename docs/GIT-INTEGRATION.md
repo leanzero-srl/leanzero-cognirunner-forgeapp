@@ -421,8 +421,32 @@ on the row, in a return value or in a log line.
 allow-listed repository and requires `confirm: true` in the payload; an absent flag is
 refused with `code: "confirmation_required"`.
 
-The end-to-end deploy has not been run against a real Atlassian API token; see Known
-limitations in the release notes.
+**Proven end to end, 2026-09-13** (dev 25.8.0 -> `leanzero-srl/cognirunner-forge-offshoot`,
+wolfaenpak). Through the Code tab: a GitHub connection, the Forge deploy identity behind the
+consent screen, and "Set up pipeline" -> all six steps done, secrets `FORGE_EMAIL` /
+`FORGE_API_TOKEN` and variables `FORGE_SITE` / `FORGE_PRODUCT` / `FORGE_ENV=development`
+created at the provider, scaffold + lock committed in one commit (`2d0e088e`), the row
+`installed`. A green pipeline run then deployed the app (`permission lock: OK (7 lines)`,
+`locked=true`) and installed it on the site; a second run reused the app id with Bootstrap
+skipped. Four defects were found and are open in the findings ledger:
+
+- **F-526** — the Code tab sends no `scaffoldVars`, so the installed workflow always renders
+  with the `forge-pipeline` defaults (`FORGE_APP_NAME: Forge app`, `working-directory:
+  static/app`). Any repository whose Custom UI is elsewhere gets a pipeline that cannot
+  build, and the row still reports `installed`.
+- **F-527** — the bootstrap's `forge register -y --personal "$FORGE_APP_NAME"` cannot run
+  headless: the CLI prompts for a Developer Space in a non-TTY, and `--personal` is refused
+  by a space that disallows personal apps. `forge register -y -s <developer-space-id>`
+  without `--personal` does work; nothing in the app collects a space id.
+- **F-528** — `GITHUB_TOKEN` with `actions: write` CANNOT create a repository variable
+  (HTTP 403, "Resource not accessible by integration"); repository variables are an
+  `administration` resource. The scaffold's fallback (`::error::` + `exit 1`) is correct, so
+  in practice the app id is stored once by a human or by CogniRunner, never by the runner.
+- **F-529** — when the drift is a widened SCOPE, `forge deploy --non-interactive` refuses
+  first with `MAJOR_VERSION_RULE`, so the job fails before the "deployed, NOT installed"
+  warning can render. The lock's own verdict (`permission lock: DRIFT`, `locked=false`, the
+  scopes printed) is computed correctly one step earlier. It fails closed, but not by the
+  mechanism this section and the scaffold comment describe.
 
 ## 8. Rotation
 

@@ -916,6 +916,25 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
       `EXECUTED (F-358): a deferred coder turn is re-pushed to long-queue (saw ${pushed && pushed.queueKey})`);
   }
   {
+    // F-378 — THE DEFERRAL KEEPS THE PRODUCER'S PER-ISSUE CONCURRENCY KEY.
+    // `coder_exec` FAILS a second turn, it does not queue it, so `coder:<issueKey>`
+    // limit-1 is what makes the second delivery WAIT. Re-pushing a deferred coder turn
+    // under `ai-budget` let a concurrent turn start and the deferred (already delayed)
+    // one die with "A Coder turn is already running on this issue".
+    const pickSrc = asyncSrc.match(/export const deferralConcurrency = \(body\) => \{[\s\S]*?\n\};/)[0]
+      .replace("export const deferralConcurrency = ", "").replace(/;\s*$/, "");
+    const pick = new Function(`return (${pickSrc});`)();
+    const coder = pick({ taskType: "coder", taskId: "C1", params: { issueKey: "LZPT-7", threadId: "t1" } });
+    ok(coder.key === "coder:LZPT-7" && coder.limit === 1,
+      `EXECUTED (F-378): a deferred coder turn keeps coder:<issueKey> limit 1 (saw ${JSON.stringify(coder)})`);
+    const other = pick({ taskType: "listener", taskId: "L1", params: { listenerId: "L1" } });
+    ok(other.key === "ai-budget" && other.limit === 2, "EXECUTED (F-378): everything else keeps the pacing key");
+    const keyless = pick({ taskType: "coder", taskId: "C2", params: {} });
+    ok(keyless.key === "ai-budget", "EXECUTED (F-378): a coder body with no issue key falls back to the pacing key");
+    ok(/concurrency: deferralConcurrency\(body\)/.test(asyncSrc),
+      "pushDeferred CHOOSES the key through the one helper, never a literal");
+  }
+  {
     // …and everything else still goes back to the short queue it came from.
     let pushed = null;
     const { deps } = regionDeps({

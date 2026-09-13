@@ -1486,6 +1486,23 @@ const refuseQueuedRunWithoutProvider = async (taskType, taskId, params, ruleRow,
 export const AI_TASK_TYPES = new Set(TOKEN_SPENDING_TASK_TYPES);
 
 /**
+ * WHICH concurrency key a deferred task is re-pushed under (F-378). Exported so the
+ * offline suite asserts the CHOICE rather than a stub's behaviour. The `coder` key is
+ * spelled exactly as the producer spells it (`coder:<issueKey>`, limit 1) — a different
+ * spelling is a different queue lane and serialises nothing.
+ */
+export const deferralConcurrency = (body) => {
+  // `body` is the queue event's BODY — `{ taskType, taskId, params }` — the same object
+  // runGatedTask re-pushes; a wrapped `{body:{...}}` is tolerated so a caller cannot get
+  // the shape subtly wrong and silently fall back to the pacing key.
+  const inner = body && body.body && typeof body.body === "object" ? body.body : body;
+  const taskType = inner && inner.taskType;
+  const issueKey = inner && inner.params && inner.params.issueKey;
+  if (taskType === "coder" && issueKey) return { key: `coder:${issueKey}`, limit: 1 };
+  return { key: "ai-budget", limit: 2 };
+};
+
+/**
  * The gate's real collaborators. Injected (rather than closed over) so the offline
  * suite can execute the REAL gate source against stubs — see runGatedTask.
  */
@@ -1506,14 +1523,29 @@ const GATE_DEPS = {
    * long consumer set on the event (and from LONG_QUEUE_ONLY_TASKS as the belt-and-braces
    * half), so a deferral cannot land anywhere the delivery could not have come from.
    *
-   * The `ai-budget` concurrency key is deliberately kept for both queues: it is what
-   * paces deferrals. The Coder's own per-issue guarantee is the `coder_exec` claim, not a
-   * queue concurrency key, so nothing is lost by re-pushing under the pacing key.
+   * THE CONCURRENCY KEY IS THE PRODUCER'S, NOT ALWAYS THE PACER'S (F-378).
+   *
+   * The platform accepts exactly ONE `concurrency` object per push, so this is a choice,
+   * not a merge. It used to be `ai-budget` for everything, and the docblock argued that
+   * "the Coder's own per-issue guarantee is the `coder_exec` claim". That is wrong in the
+   * one way that matters: the claim FAILS a second turn ("A Coder turn is already running
+   * on this issue"), it does not QUEUE it. The producer's `coder:<issueKey>` limit-1 key
+   * is what made the second turn WAIT — so dropping it on a deferral meant the already-
+   * delayed turn came back, found another turn running, and was DISCARDED with an error
+   * the user could not act on. Under load it is exactly the deferred turn that dies.
+   *
+   * So a `coder` deferral is re-pushed under the SAME per-issue key its producer used
+   * (src/index.js, both the turn push and the confirm resume). Everything else keeps
+   * `ai-budget`, which is what paces deferrals. For the Coder the guarantee is then the
+   * pair: the per-issue queue key serialises the deliveries, and `coder_exec` is the
+   * claim that makes a re-delivery of one of them a no-op rather than a second turn.
+   * Pacing is not lost either — a coder turn that cannot fit the minute is still deferred
+   * by this same gate on its next delivery.
    */
   pushDeferred: async (body, delayInSeconds, queueKey = "async-ai-queue") => {
     const { Queue } = await import("@forge/events");
     const queue = new Queue({ key: queueKey });
-    return queue.push({ body, delayInSeconds, concurrency: { key: "ai-budget", limit: 2 } });
+    return queue.push({ body, delayInSeconds, concurrency: deferralConcurrency(body) });
   },
 };
 

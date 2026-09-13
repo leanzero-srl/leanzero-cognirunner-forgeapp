@@ -569,3 +569,9 @@ made before the UI surgeon starts, not after.
   needed; I am not confident the test's current structure makes the exemption expressible
   without weakening the Jira assertion. The surgeon should read
   `test-harness/scripts/jira-events.test.mjs` in full before touching `jira-events.js`.
+
+## Coordinator decisions (2026-09-13)
+
+1. **Start at the provider-agnostic layer.** Commit 1 is the git provider layer (`src/git-providers.js`, mocked-fetch tests); the `managed` AI provider waits for probe (g) (owner key). Nothing else in 1.4 depends on it.
+2. **One manifest bump, including `bitbucket.org`.** An unused outbound host costs nothing; a second major bump costs every tenant a re-consent.
+3. **Render surfaces use a read-only role check.** `checkIsAdmin` (which may bootstrap) stays the admin panel's mount call only; the Code tab reuses that answer, and the issue panel gets a read-only `whoAmI` resolver (`getUserPermissions` without `allowBootstrap`). F-251 is closed, not inherited.

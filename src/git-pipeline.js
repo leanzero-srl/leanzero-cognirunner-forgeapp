@@ -222,13 +222,34 @@ export async function readPipelineRow(connId, repoId) {
   return row && typeof row === "object" ? row : null;
 }
 
-const freshSteps = (kind) => pipelineStepNames(kind).map((name) => ({ name, status: "pending", at: null }));
+const freshSteps = (kind, opts = {}) => pipelineStepNames(kind, opts).map((name) => ({ name, status: "pending", at: null }));
 
 /* =========================================================================
  * THE REQUEST HALF — every refusal happens here, BEFORE any side effect.
  * ========================================================================= */
 
 const invalid = (error, code = "invalid", extra = {}) => ({ ok: false, error, code, ...extra });
+
+/**
+ * F-527 — THE DEVELOPER SPACE ID. `forge register` asks for a Developer Space and no
+ * flag short of `-s <id>` answers it, so a pipeline whose repo has no
+ * `FORGE_DEVELOPER_SPACE` variable can never bootstrap: the runner sits on a prompt it
+ * cannot render and dies. CogniRunner therefore COLLECTS the id (optional — a repo
+ * whose app is already registered does not need one) and writes it as a repository
+ * variable next to FORGE_SITE.
+ *
+ * The shape is the one the live offshoot run proved (36 characters of hex and dashes).
+ * It is validated here rather than trusted because it is interpolated into a shell word
+ * in the rendered workflow; anything outside this set is refused.
+ */
+const DEVELOPER_SPACE_RE = /^[0-9a-f-]{36}$/;
+
+/** `null` when absent, the trimmed id when valid, `false` when present and malformed. */
+export const normalizeDeveloperSpaceId = (value) => {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const v = String(value).trim().toLowerCase();
+  return DEVELOPER_SPACE_RE.test(v) ? v : false;
+};
 
 /**
  * Validate a setup request against everything that can refuse it, take the
@@ -247,6 +268,7 @@ export async function requestPipelineSetup({
   product = "Jira",
   branch = null,
   scaffoldVars = null,
+  developerSpaceId = null,
   accountId = null,
 } = {}) {
   // The security model is DATA, and this is the assertion that keeps it honest.
@@ -283,6 +305,15 @@ export async function requestPipelineSetup({
 
   if (!site || !String(site).trim()) {
     return invalid("The Atlassian site to deploy to is required (FORGE_SITE)");
+  }
+  // F-527. Optional, but a malformed one is a refusal and never a silently dropped
+  // field: the admin would get a pipeline that stops on the first bootstrap.
+  const spaceId = normalizeDeveloperSpaceId(developerSpaceId);
+  if (spaceId === false) {
+    return invalid(
+      "That Forge developer space id is not a space id (expected 36 characters of hex and dashes)",
+      "invalid_developer_space"
+    );
   }
   if (!manifestYaml || !String(manifestYaml).trim()) {
     return invalid("The app's manifest.yml is required — the permission lock is built from it", "manifest_required");
@@ -351,6 +382,7 @@ export async function requestPipelineSetup({
           product: String(product || "Jira").trim() || "Jira",
           branch: branch ? String(branch) : null,
           scaffoldVars: scaffoldVars && typeof scaffoldVars === "object" ? scaffoldVars : null,
+          developerSpaceId: spaceId,
           lock,
           lockHash,
           requestedBy: accountId || null,
@@ -373,7 +405,8 @@ export async function requestPipelineSetup({
     kind: conn.kind,
     scaffold: PIPELINE_SCAFFOLD,
     scaffoldVersion: SCAFFOLD_VERSION,
-    steps: freshSteps(conn.kind),
+    steps: freshSteps(conn.kind, { developerSpaceId: spaceId }),
+    developerSpaceId: spaceId,
     lockHash,
     lockPermissions: lock.permissions.slice(0, 200),
     lockScopes: scopes,
@@ -453,7 +486,7 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
   }
 
   const kind = row.kind;
-  const steps = freshSteps(kind);
+  const steps = freshSteps(kind, { developerSpaceId: p.developerSpaceId });
   let index = 0;
   const write = async (patch) => {
     row = { ...row, ...patch, steps, updatedAt: nowIso() };
@@ -505,6 +538,13 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
       provider.setVariable({ repo: repoId, name: "FORGE_PRODUCT", value: p.product || "Jira" }));
     await step("var:FORGE_ENV", () =>
       provider.setVariable({ repo: repoId, name: "FORGE_ENV", value: PIPELINE_FORGE_ENV }));
+    // F-527 — only when the admin supplied one. The scaffold's bootstrap fails loud and
+    // names this variable when it is absent, which is the honest outcome: this app has
+    // no way to discover a customer's developer space.
+    if (p.developerSpaceId) {
+      await step("var:FORGE_DEVELOPER_SPACE", () =>
+        provider.setVariable({ repo: repoId, name: "FORGE_DEVELOPER_SPACE", value: p.developerSpaceId }));
+    }
 
     let sha = null;
     await step("commit-scaffold", async () => {
@@ -571,6 +611,9 @@ export function publicPipelineRow(row) {
     updatedAt: row.updatedAt || null,
     lastRun: row.lastRun || null,
     requestedBy: row.requestedBy || null,
+    // F-527 — not a secret (it is a space identifier the admin typed), and the UI needs
+    // it to say whether a bootstrap can run at all.
+    developerSpaceId: row.developerSpaceId || null,
   };
 }
 

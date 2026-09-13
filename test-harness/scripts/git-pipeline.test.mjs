@@ -87,12 +87,12 @@ const whoamiOk = () => res(200, { login: "leanzero-bot", id: 42 }, { "x-oauth-sc
  *   commitFiles    = GET ref, GET commit, POST tree, POST commit, PATCH ref
  * plus one GET repo for the default branch.
  */
-const githubSetupChain = () => [
+const githubSetupChain = (vars = 3) => [
   res(200, { key: Buffer.alloc(32, 7).toString("base64"), key_id: "kid" }), // public key
   res(201, {}),                                                             // PUT FORGE_EMAIL
   res(200, { key: Buffer.alloc(32, 7).toString("base64"), key_id: "kid" }),
   res(201, {}),                                                             // PUT FORGE_API_TOKEN
-  res(201, {}), res(201, {}), res(201, {}),                                 // 3 variables
+  ...Array.from({ length: vars }, () => res(201, {})),                       // the variables
   res(200, { default_branch: "main", full_name: REPO }),                    // getDefaultBranch
   res(200, { object: { sha: "parentsha" } }),                               // ref
   res(200, { tree: { sha: "treesha" } }),                                   // parent commit
@@ -166,6 +166,27 @@ const lastParams = () => pushedEvents[pushedEvents.length - 1].body.params;
     "a scope outside the allow-list is named as disallowed");
   ok(pipe.pipelineStepNames("bitbucket").length === pipe.pipelineStepNames("github").length + 1,
     "bitbucket carries the one extra step (enablePipelines) and nothing else");
+
+  /* F-527/F-528 — THE OPTIONAL VARIABLE STEPS. The list is a function of the REQUEST as
+   * well as the provider kind: a step stamped "done" for a variable nobody asked to be
+   * written would be a lie in the only record an admin can read. */
+  ok(pipe.pipelineStepNames("github", { developerSpaceId: "d77c0cce-0000-4000-8000-000000000000" }).join("|")
+    === "secret:FORGE_EMAIL|secret:FORGE_API_TOKEN|var:FORGE_SITE|var:FORGE_PRODUCT|var:FORGE_ENV|var:FORGE_DEVELOPER_SPACE|commit-scaffold",
+    "a developer space id adds var:FORGE_DEVELOPER_SPACE before the commit");
+  ok(pipe.pipelineStepNames("github", { developerSpaceId: "" }).join("|") === pipe.pipelineStepNames("github").join("|"),
+    "an empty value adds no step");
+  ok(pipe.pipelineStepNames("github", {}).slice(-1)[0] === "commit-scaffold",
+    "commit-scaffold is always last - the scaffold commit is the last thing a setup does");
+
+  /* F-527 — the developer space id is VALIDATED, never trusted: it is interpolated into a
+   * shell word in the rendered workflow. */
+  ok(pipe.normalizeDeveloperSpaceId(null) === null && pipe.normalizeDeveloperSpaceId("  ") === null,
+    "an absent space id is null, not a refusal - it is optional");
+  ok(pipe.normalizeDeveloperSpaceId("D77C0CCE-1111-4222-8333-444444444444") === "d77c0cce-1111-4222-8333-444444444444",
+    "a valid one is normalised to lower case");
+  for (const bad of ["not-a-space", "d77c0cce-1111-4222-8333-44444444444", "$(id); echo", "d77c0cce 1111 4222 8333 444444444444"]) {
+    ok(pipe.normalizeDeveloperSpaceId(bad) === false, `a malformed space id is refused (${bad})`);
+  }
 
   /* F-465 — THE STEP IDS HAVE ONE HOME, and three readers that cannot import each
    * other: this executor, the Code tab, and the screenshot fixture that stands in for
@@ -386,6 +407,54 @@ reset();
   const degraded = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
   ok(degraded.success === true && degraded.status.status === "installed" && degraded.deploy === null && typeof degraded.deployError === "string",
     `a CI outage degrades to the row plus a deployError, never a lost status (got ${JSON.stringify(degraded).slice(0, 200)})`);
+}
+
+/* ===== 11. F-527 - the developer space id is collected, refused when malformed,
+ *         and written as a repository variable next to FORGE_SITE =============== */
+reset();
+{
+  const connId = await seedConnection();
+  const SPACE = "d77c0cce-1111-4222-8333-444444444444";
+
+  // a malformed one is REFUSED before anything happens.
+  const bad = await pipe.requestPipelineSetup({
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    developerSpaceId: "oops; rm -rf /", accountId: ADMIN,
+  });
+  ok(bad.ok === false && bad.code === "invalid_developer_space",
+    `a malformed developer space id is refused by code (got ${JSON.stringify(bad)})`);
+  ok(fetchCalls.length === 0 && pushedEvents.length === 0, "...with nothing queued and nothing written");
+  ok(storage.__raw(pipe.gitPipelineClaimKey(connId, REPO)) === undefined, "...and no claim taken");
+
+  const queued = await pipe.requestPipelineSetup({
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    developerSpaceId: SPACE.toUpperCase(), accountId: ADMIN,
+  });
+  ok(queued.ok === true, `a valid one is accepted (got ${JSON.stringify(queued).slice(0, 160)})`);
+  ok(lastParams().developerSpaceId === SPACE, "the queued params carry the normalised id");
+  ok(queued.status.steps.map((x) => x.name).join("|").includes("var:FORGE_DEVELOPER_SPACE"),
+    `the row's FIXED step list includes the variable step (got ${queued.status.steps.map((x) => x.name).join("|")})`);
+
+  fetchQueue = githubSetupChain(4);
+  const out = await runQueued(lastParams());
+  ok(out.ok === true, `the chain completes with the extra variable (${JSON.stringify(out).slice(0, 240)})`);
+  const varCalls = fetchCalls.filter((c) => /actions\/variables/.test(c.url));
+  ok(varCalls.length === 4, `four variables were written (got ${varCalls.length})`);
+  ok(varCalls.some((c) => String(c.body).includes("FORGE_DEVELOPER_SPACE") && String(c.body).includes(SPACE)),
+    "...one of them is FORGE_DEVELOPER_SPACE carrying the id the admin gave");
+  const row = storage.__raw(pipe.gitPipelineKey(connId, REPO));
+  ok(row.status === "installed" && row.developerSpaceId === SPACE, "the row records the space id");
+  ok(pipe.publicPipelineRow(row).developerSpaceId === SPACE, "and the public shape exposes it (it is not a secret)");
+
+  // ...and a setup WITHOUT one still runs the same six steps, unchanged.
+  reset();
+  const connId2 = await seedConnection();
+  const plain = await pipe.requestPipelineSetup({
+    connectionId: connId2, repo: REPO, manifestYaml: MANIFEST, site: SITE, accountId: ADMIN,
+  });
+  ok(plain.ok === true && plain.status.steps.length === 6 &&
+     !plain.status.steps.some((x) => x.name === "var:FORGE_DEVELOPER_SPACE"),
+    `no space id means no step for it (got ${plain.status.steps.map((x) => x.name).join("|")})`);
 }
 
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);

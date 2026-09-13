@@ -27,6 +27,14 @@ const PLACEHOLDER_APP_ID = "ari:cloud:ecosystem::app/PLACEHOLDER";
 // bootstrap registers the app ONCE (only while FORGE_APP_ID is empty) and stores
 // the id as a repository variable; every run injects the id into the working-copy
 // manifest, checks the permission lock, deploys, and installs on development only.
+//
+// F-527 — THE BOOTSTRAP MUST NEVER NEED A TTY. `forge register` asks for a Developer
+// Space and `-y` does not answer that question, so the space id is passed explicitly
+// with `-s "$FORGE_DEVELOPER_SPACE"`. `--personal` is NOT used: a developer space that
+// disallows personal apps refuses it outright ("Personal apps are not allowed in this
+// developer space"), and the non-personal register is what succeeded headless on the
+// offshoot. When the variable is absent the step FAILS LOUD naming it — a prompt in a
+// non-TTY runner is an unexplained 41-second timeout, which is the worst of both.
 const FORGE_DEPLOY_YML = [
   "name: forge-deploy",
   "",
@@ -55,6 +63,7 @@ const FORGE_DEPLOY_YML = [
   "  FORGE_SITE: ${{ vars.FORGE_SITE }}",
   "  FORGE_PRODUCT: ${{ vars.FORGE_PRODUCT || 'Jira' }}",
   "  FORGE_APP_ID: ${{ vars.FORGE_APP_ID }}",
+  "  FORGE_DEVELOPER_SPACE: ${{ vars.FORGE_DEVELOPER_SPACE }}",
   "  FORGE_ENV: ${{ inputs.environment || 'development' }}",
   "  FORGE_APP_NAME: {{APP_NAME}}",
   "",
@@ -79,7 +88,11 @@ const FORGE_DEPLOY_YML = [
   "          GH_TOKEN: ${{ github.token }}",
   "        run: |",
   "          set -euo pipefail",
-  "          forge register -y --personal \"$FORGE_APP_NAME\"",
+  "          if [ -z \"${FORGE_DEVELOPER_SPACE:-}\" ]; then",
+  "            echo \"::error::FORGE_APP_ID is empty and FORGE_DEVELOPER_SPACE is not set. Set the repository variable FORGE_DEVELOPER_SPACE to your Forge developer space id and re-run — forge register cannot ask for it in CI.\"",
+  "            exit 1",
+  "          fi",
+  "          forge register -y -s \"$FORGE_DEVELOPER_SPACE\" \"$FORGE_APP_NAME\"",
   "          APP_ID=$(node -e \"const m=require('fs').readFileSync('manifest.yml','utf8');const r=m.match(/^\\s*id:\\s*(ari:cloud:ecosystem::app\\/[0-9a-f-]+)/m);if(!r){process.exit(2)};console.log(r[1])\")",
   "          echo \"Registered app id: $APP_ID\"",
   "          if gh variable set FORGE_APP_ID --body \"$APP_ID\"; then",
@@ -129,7 +142,11 @@ const BITBUCKET_PIPELINES_YML = [
   "          - export FORGE_ENV=\"${ENVIRONMENT:-development}\"",
   "          - |",
   "            if [ -z \"${FORGE_APP_ID:-}\" ]; then",
-  "              forge register -y --personal \"{{APP_NAME}}\"",
+  "              if [ -z \"${FORGE_DEVELOPER_SPACE:-}\" ]; then",
+  "                echo \"ERROR: FORGE_APP_ID is empty and FORGE_DEVELOPER_SPACE is not set. Add the repository variable FORGE_DEVELOPER_SPACE (your Forge developer space id) and re-run — forge register cannot ask for it in CI.\"",
+  "                exit 1",
+  "              fi",
+  "              forge register -y -s \"$FORGE_DEVELOPER_SPACE\" \"{{APP_NAME}}\"",
   "              APP_ID=$(node -e \"const m=require('fs').readFileSync('manifest.yml','utf8');const r=m.match(/^\\s*id:\\s*(ari:cloud:ecosystem::app\\/[0-9a-f-]+)/m);if(!r){process.exit(2)};console.log(r[1])\")",
   "              echo \"Registered app id: $APP_ID\"",
   "              curl -sf -u \"x-bitbucket-api-token-auth:${BB_API_TOKEN}\" -X POST \"https://api.bitbucket.org/2.0/repositories/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}/pipelines_config/variables/\" -H 'Content-Type: application/json' -d \"{\\\"key\\\":\\\"FORGE_APP_ID\\\",\\\"value\\\":\\\"$APP_ID\\\",\\\"secured\\\":false}\" > /dev/null",
@@ -623,13 +640,14 @@ const README_MD = [
   "## How it deploys",
   "",
   "The committed `manifest.yml` keeps a placeholder app id. The pipeline registers the app once",
-  "(when the repository variable `FORGE_APP_ID` is empty), stores the id as a repository variable, and on",
-  "every run injects it into the working copy, checks `.cognirunner/forge-permissions.lock`, deploys, and",
-  "installs on the development environment only. A change to the manifest's permissions deploys but is",
+  "(when the repository variable `FORGE_APP_ID` is empty and `FORGE_DEVELOPER_SPACE` is set), and on",
+  "every run injects the id into the working copy, checks `.cognirunner/forge-permissions.lock`, deploys,",
+  "and installs on the development environment only. A change to the manifest's permissions deploys but is",
   "not installed until the lock is re-approved.",
   "",
   "Secrets and variables the pipeline needs: `FORGE_EMAIL`, `FORGE_API_TOKEN` (an Atlassian API token",
-  "with scopes, app = Forge), `FORGE_SITE` (for example `your-site.atlassian.net`), optional `FORGE_PRODUCT`.",
+  "with scopes, app = Forge), `FORGE_SITE` (for example `your-site.atlassian.net`), optional `FORGE_PRODUCT`,",
+  "and `FORGE_DEVELOPER_SPACE` (your Forge developer space id) until `FORGE_APP_ID` is set.",
   "",
   "## Local development",
   "",

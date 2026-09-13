@@ -362,12 +362,30 @@ no git action id maps to it). No UI calls the three resolvers yet; they are docu
 here for what they do.
 
 `setupGitPipeline` (admin) takes `{ connectionId, repo, manifestYaml, site, product?,
-branch?, scaffoldVars? }`, validates everything before any side effect, takes a ten-minute
-claim, and queues a `gitpipeline` task on `async-ai-queue`. The refusals, each with a
-machine `code`: `not_found`, `auth_dead`, `not_allowed` (with `hint: "add-repo-to-allowlist"`),
-`identity_required` and `consent_required` (with `hint: "configure-forge-identity"`),
-`manifest_required`, `scope_not_allowed` (with the `scopes` refused), `lock_mismatch`
-(with `added` / `removed`), `already_running`, `queue`.
+branch?, scaffoldVars?, developerSpaceId? }`, validates everything before any side effect,
+takes a ten-minute claim, and queues a `gitpipeline` task on `async-ai-queue`. The refusals,
+each with a machine `code`: `not_found`, `auth_dead`, `not_allowed` (with
+`hint: "add-repo-to-allowlist"`), `identity_required` and `consent_required` (with
+`hint: "configure-forge-identity"`), `manifest_required`, `scope_not_allowed` (with the
+`scopes` refused), `lock_mismatch` (with `added` / `removed`), `invalid_developer_space`,
+`already_running`, `queue`.
+
+**The developer space (F-527).** `forge register` asks for a Developer Space and `-y` does
+not answer that question, so a runner with no space id sits on a prompt it cannot render
+and dies (`Prompts can not be meaningfully rendered in non-TTY environments`, 41s, live
+2026-09-13). `--personal` is not an escape either: a space that disallows personal apps
+refuses it outright. The bootstrap therefore runs `forge register -y -s
+"$FORGE_DEVELOPER_SPACE" "$FORGE_APP_NAME"` with no `--personal`, reading the id from the
+repository variable `FORGE_DEVELOPER_SPACE` through the job's `env:` block (never a `${{ }}`
+expression inside `run:`, which is textual substitution into a shell script).
+`setupGitPipeline` collects the id as the optional `developerSpaceId` — validated against
+`^[0-9a-f-]{36}$` because it becomes a shell word, refused as `invalid_developer_space` when
+it is present and malformed — and writes it as the repository variable
+`FORGE_DEVELOPER_SPACE` next to `FORGE_SITE`, in the step `var:FORGE_DEVELOPER_SPACE`. The
+step exists only on runs that supplied one: a step stamped "done" for a variable nobody
+asked for would be a lie in the only record an admin can read. When the variable is absent
+and the app is not yet registered, the bootstrap fails loud naming the variable rather than
+prompting.
 
 **The permission lock.** The manifest's `permissions:` block is rendered into
 `.cognirunner/forge-permissions.lock` and committed with the pipeline; its hash (over the
@@ -409,7 +427,8 @@ the next one starts, so a chain that dies reports `status: "partial"` with the s
 failed, never "installed": on Bitbucket `enable-pipelines`, then `secret:FORGE_EMAIL`,
 `secret:FORGE_API_TOKEN`, `var:FORGE_SITE`, `var:FORGE_PRODUCT`, `var:FORGE_ENV`
 (`development`; installs are development-only and the rendered workflow enforces it),
-then `commit-scaffold`, which commits the `forge-pipeline` scaffold
+then the optional `var:FORGE_DEVELOPER_SPACE` when the request carried one, then
+`commit-scaffold`, which commits the `forge-pipeline` scaffold
 (`.github/workflows/forge-deploy.yml`, `bitbucket-pipelines.yml`,
 `.cognirunner/inject-app-id.js`, `.cognirunner/check-permissions-lock.js`) plus the lock
 in one commit. The identity's token is read once, handed to `setSecret`, and never appears
@@ -434,10 +453,12 @@ skipped. Four defects were found and are open in the findings ledger:
   with the `forge-pipeline` defaults (`FORGE_APP_NAME: Forge app`, `working-directory:
   static/app`). Any repository whose Custom UI is elsewhere gets a pipeline that cannot
   build, and the row still reports `installed`.
-- **F-527** — the bootstrap's `forge register -y --personal "$FORGE_APP_NAME"` cannot run
-  headless: the CLI prompts for a Developer Space in a non-TTY, and `--personal` is refused
-  by a space that disallows personal apps. `forge register -y -s <developer-space-id>`
-  without `--personal` does work; nothing in the app collects a space id.
+- **F-527** — FIXED. The bootstrap's `forge register -y --personal "$FORGE_APP_NAME"` could
+  not run headless: the CLI prompts for a Developer Space in a non-TTY, and `--personal` is
+  refused by a space that disallows personal apps. The scaffold now passes
+  `-s "$FORGE_DEVELOPER_SPACE"` and no `--personal`, `setupGitPipeline` collects
+  `developerSpaceId`, and an absent variable fails the step with a one-line instruction
+  naming it. See "The developer space" above.
 - **F-528** — `GITHUB_TOKEN` with `actions: write` CANNOT create a repository variable
   (HTTP 403, "Resource not accessible by integration"); repository variables are an
   `administration` resource. The scaffold's fallback (`::error::` + `exit 1`) is correct, so

@@ -10956,6 +10956,7 @@ resolver.define("confirmCoderTicket", async ({ payload, context }) => {
       decision: payload?.decision,
       change: String(payload?.change || "").slice(0, 2000),
       accountId: context.accountId,
+      gateFacts: gate.facts, // F-382 — the engine re-asserts the allow-list against CURRENT capability, not only role
     });
     if (!out.resume || out.duplicate) return out;
     // Resume on the SAME queue the turn ran on. A failure to enqueue is reported, never

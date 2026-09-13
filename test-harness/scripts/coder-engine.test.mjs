@@ -337,6 +337,40 @@ await check("F-375: a ticket opened by an ADMIN is REFUSED after the admin is de
   } finally { globalThis.__coderRole = "admin"; }
 });
 
+await check("F-382: capability that LAPSED inside the ticket's life refuses the confirm", async () => {
+  // The resolver passes `gateFacts: gate.facts` (src/index.js confirmCoderTicket), so the
+  // per-action allow-list is rebuilt against the CURRENT instance facts and not only the
+  // current role. Forge LLM + the Standard edition is the lapse the ledger row names.
+  const world = setupWorld({});
+  await openTicket(world);
+  const r = await confirmCoderTicket({
+    ticketId: "tkt_FIXED_ID", decision: "confirm", accountId: "acct-owner",
+    gateFacts: { edition: "standard", provider: "atlassian", agentModel: "claude-sonnet-5", allowanceLevel: null },
+    deps: { store, gitExecutor: recordingGit(world) },
+  });
+  assert.equal(r.success, false, "a git action is refused once the Coder edition has lapsed");
+  assert.equal(r.reason, "action-not-allowed");
+  assert.deepEqual(r.refused, [{ id: "open_pull_request", reason: "needs-coder-edition" }]);
+  assert.equal(world.gitCalls.length, 0, "NOTHING reached the repository");
+  const ticket = await store.get(coderTicketKey("tkt_FIXED_ID"));
+  assert.equal(ticket.status, "refused", "the ticket is CLOSED, not left open for a retry");
+  const thread = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.ok(thread.messages.some((m) => m.kind === "decision" && /REFUSED/.test(m.content)),
+    "the thread records the refusal as a decision row");
+});
+
+await check("F-382: the SAME ticket executes when the facts still carry the capability", async () => {
+  const world = setupWorld({});
+  await openTicket(world);
+  const r = await confirmCoderTicket({
+    ticketId: "tkt_FIXED_ID", decision: "confirm", accountId: "acct-owner",
+    gateFacts: { edition: "advanced", provider: "anthropic", agentModel: "claude-sonnet-5", allowanceLevel: null },
+    deps: { store, gitExecutor: recordingGit(world) },
+  });
+  assert.equal(r.success, true, "passing facts must not be a downgrade");
+  assert.equal(world.gitCalls.length, 1);
+});
+
 await check("F-375: the same ticket still executes for an owner who IS still an admin", async () => {
   const world = setupWorld({});
   await openTicket(world);

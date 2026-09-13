@@ -59,6 +59,8 @@ import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBas
 // key, so the resolver and the core it calls stay visibly distinct.
 import {
   listConnections as listGitConnections,
+  // F-373 — the editor-floor projection. Defined beside publicConnection, never here.
+  editorConnectionView,
   saveConnection as saveGitConnectionCore,
   testConnection as testGitConnectionCore,
   deleteConnection as deleteGitConnection,
@@ -3382,7 +3384,18 @@ resolver.define("getRuleLists", async ({ context }) => {
         const repos = new Set();
         for (const r of rows) for (const repo of r.repos || []) repos.add(repo);
         return {
-          connections: rows.map((r) => ({ value: r.id, label: `${r.label || r.id} (${r.kind})` })),
+          // F-373 — RICH rows, not a flat picker list. The union below cannot tell the
+          // form which repository belongs to which connection, so an editor could pick
+          // connection A plus a repository only B may read; the rule saved and then
+          // failed CLOSED at every transition. The projection is `editorConnectionView`
+          // in src/git-connections.js — `publicConnection` MINUS the admin-only fields
+          // (no hasToken, no status/authDead*/lastCheckedAt, no host/owner/login, no
+          // createdBy/At, no capabilities). It is defined there, next to the allow-list
+          // it is derived from, so the two can never drift apart unnoticed.
+          connections: rows.map(editorConnectionView).filter(Boolean),
+          // Kept as the flat union for back-compat with the `picker` source vocabulary
+          // (premade-rules-catalog.js `source: "gitrepos"`). A form that has narrowed
+          // from `connections[].repos` should not read this.
           repos: [...repos].sort().map((r) => ({ value: r, label: r })),
         };
       } catch {

@@ -18829,6 +18829,12 @@ export const executePostFunction = async (args) => {
  * enqueue are not states an instance can be in legitimately, and the strict switch exists
  * for "the provider or the licence is not available today", not for "this rule is wrong".
  * Nothing in this table ever falls back to an inline run.
+ *
+ * ORDER IS PART OF THIS TABLE (F-392). The CONFIG rows — no mode, no owner — are answered
+ * FIRST, before any instance fact is read, because otherwise they are unreachable: an
+ * ownerless rule takes savedByRole "editor", the gate empties its allow-list, and the
+ * function returns a GREEN SKIP through `envProblem` — so the ERROR the table promised
+ * never fired and the rule was silently dead on every transition.
  */
 const CODER_PF_TYPE = "postfunction-coder";
 const isCoderPfType = (t) => String(t || "") === CODER_PF_TYPE;
@@ -18904,6 +18910,34 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, registry
         `Open the rule and pick what the Coder should do: ${CODER_PF_MODE_IDS.join(", ")}.`,
         step("error", "Queue the Coder turn", "no valid mode", `Pick one of: ${CODER_PF_MODE_IDS.join(", ")}.`));
     }
+
+    // WHO THE RULE RUNS AS, AND WHO ARMED IT — FIRST, BEFORE THE GATE (F-392).
+    //
+    // ORDER IS THE CONTRACT here. The table above promises "rule has no owner account ⇒
+    // ERROR in both strict columns", and that row was UNREACHABLE while the gate ran
+    // first: an ownerless row takes savedByRole "editor", the gate then emptied its
+    // allow-list, and the function returned through `envProblem` — a GREEN "SKIPPED" entry
+    // nobody is paged for, on every transition, forever. An admin who fixed the edition
+    // then discovered the rule was ALSO ownerless and had been silently dead.
+    //
+    // Owner and role are a pure CONFIG check: they need no instance facts, so they are
+    // answered before any fact is read. Environment problems come after.
+    //
+    // Both are read from the REGISTRY ROW, never computed here (F-394). This used to call
+    // `savedByRoleFor(ownerAccountId)` at transition time — a helper that authorizes the
+    // CALLER, not the subject (`getUserPermissions` arm 2 asks Jira `mypermissions` as the
+    // invoking user), so the answer was about whoever DRAGGED THE ISSUE. The row's
+    // `savedByRole` is stamped at SAVE time by `registerPostFunction` / `commitImportCore`
+    // (the listeners/jobs pattern); a legacy row with no stamp is "editor" — the
+    // restrictive answer — and the refusal below says to re-save it as an admin.
+    const ownerAccountId = registryRow?.createdBy || null;
+    const savedByRole = listenersMod.normalizeSavedByRole(registryRow?.savedByRole);
+    if (!ownerAccountId) {
+      return await write(false,
+        "This Coder rule has no owner account, so there is nobody to run it as and nothing ran.",
+        "Open the rule in the workflow editor and save it once — as an admin, if it should be able to write to the repository. The save stamps the rule with the account the Coder runs as and with the role that armed it.",
+        step("error", "Queue the Coder turn", "no owner account", "Re-save the rule to stamp its owner."));
+    }
     const repo = normalizeRepoId(config?.repo || "");
     const connectionId = String(config?.connectionId || "").trim();
     if (!connectionId || !repo) {
@@ -18942,21 +18976,6 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, registry
     // reach from `headless:true`, computed here so the refusal can be logged BEFORE a
     // token is spent (the engine re-runs it; agreeing twice is the point).
     const facts = await agentGateFacts(null);
-    // WHO the rule runs as, and whether an ADMIN armed it — BOTH read from the registry
-    // row, never computed here (F-394).
-    //
-    // This used to call `savedByRoleFor(ownerAccountId)` at transition time. That helper
-    // authorizes the CALLER, not the subject (`getUserPermissions` arm 2 asks Jira
-    // `mypermissions` as the invoking user), so the answer was about whoever DRAGGED THE
-    // ISSUE: a site admin moving an editor's card armed the rule with repository writes,
-    // and the same rule fired by an agent halted. Privilege by transition actor.
-    //
-    // The row's `savedByRole` is stamped at SAVE time by `registerPostFunction` /
-    // `commitImportCore` (the listeners/jobs pattern). A legacy row with no stamp is
-    // treated as "editor" — the restrictive answer — and the refusal below tells the admin
-    // to re-save the rule as an admin to arm its write actions.
-    const ownerAccountId = registryRow?.createdBy || null;
-    const savedByRole = listenersMod.normalizeSavedByRole(registryRow?.savedByRole);
     const gate = buildAgentGateContext({ ...facts, triggerSource: "external", savedByRole });
     const gated = normalizeAllowedActions(mode.actions, gate);
     const gitAllowed = gated.allowed.filter((id) => (getAgentAction(id) || {}).namespace === "git");
@@ -18966,12 +18985,6 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, registry
         `The Coder was not started: ${why}.`,
         "Switch to a BYOK provider, or upgrade to CogniRunner Coder, in Apps → CogniRunner → Settings. Until then this rule does nothing on every transition.",
       );
-    }
-    if (!ownerAccountId) {
-      return await write(false,
-        "This Coder rule has no owner account, so there is nobody to run it as and nothing ran.",
-        "Open the rule in the workflow editor and save it once — as an admin, if it should be able to write to the repository. The save stamps the rule with the account the Coder runs as and with the role that armed it.",
-        step("error", "Queue the Coder turn", "no owner account", "Re-save the rule to stamp its owner."));
     }
 
     const message = renderCoderPfMessage({ mode: mode.id, issueKey, repo, instructions: config?.instructions });

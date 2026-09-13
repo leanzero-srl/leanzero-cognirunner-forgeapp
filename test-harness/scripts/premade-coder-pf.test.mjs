@@ -175,6 +175,12 @@ if (CAP_OFF) {
   const strict = await lastLog("LZPT-106");
   ok(strict && strict.isValid === false && strict.stepResults[0].status === "error",
     `strict ON ⇒ FAIL CLOSED: an ERROR entry (got ${strict && strict.stepResults[0].status})`);
+  // F-392 — the exact repro: an ownerless rule on an instance where the gate ALSO refuses
+  // everything. The owner row of the table wins, because it is answered first.
+  await fire("LZPT-130", cfg({ ruleId: "rule-coder-ownerless", strict: false }));
+  const owner = await lastLog("LZPT-130");
+  ok(owner && owner.isValid === false && /owner/i.test(owner.reason),
+    `capability OFF + no owner ⇒ the OWNER ERROR, never a green skip (got ${owner && owner.stepResults[0].status})`);
   console.log(`premade-coder-pf (capability off): ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
@@ -293,6 +299,41 @@ if (CAP_OFF) {
   await fire("LZPT-110", cfg({ ruleId: "rule-coder-ownerless", strict: false }));
   const l2 = await lastLog("LZPT-110");
   ok(l2 && l2.isValid === false && /owner/i.test(l2.reason), "a rule with no owner account is an ERROR");
+}
+
+/* ══════════ F-392 — ONE TEST PER ROW OF THE FAIL-OPEN/FAIL-CLOSED TABLE ══════════ */
+// The table beside enqueueCoderPostFunction is the contract; ORDER is part of it. An
+// ownerless rule used to reach the GATE first, empty its allow-list and return a green
+// SKIP, so the "no owner ⇒ ERROR in both columns" row was unreachable.
+{
+  const verdict = async (issueKey, over) => { await fire(issueKey, cfg(over)); return lastLog(issueKey); };
+  const isError = (l) => !!l && l.isValid === false && l.stepResults[0].status === "error";
+  const isSkip = (l) => !!l && l.isValid === true && l.stepResults[0].status === "skipped";
+
+  // ROW: connection missing — SKIP when strict is off, ERROR when on.
+  ok(isSkip(await verdict("LZPT-120", { connectionId: "gone", strict: false })), "connection missing, strict OFF ⇒ SKIP");
+  ok(isError(await verdict("LZPT-121", { connectionId: "gone", strict: true })), "connection missing, strict ON ⇒ ERROR");
+  // ROW: repository off the allow-list — the same two columns.
+  ok(isSkip(await verdict("LZPT-122", { repo: "other/repo", strict: false })), "repo off the allow-list, strict OFF ⇒ SKIP");
+  ok(isError(await verdict("LZPT-123", { repo: "other/repo", strict: true })), "repo off the allow-list, strict ON ⇒ ERROR");
+  // ROW: mode unknown — ERROR in BOTH columns.
+  ok(isError(await verdict("LZPT-124", { mode: "teleport", strict: false })), "unknown mode, strict OFF ⇒ ERROR");
+  ok(isError(await verdict("LZPT-125", { mode: "teleport", strict: true })), "unknown mode, strict ON ⇒ ERROR");
+  // ROW: no owner account — ERROR in BOTH columns…
+  ok(isError(await verdict("LZPT-126", { ruleId: "rule-coder-ownerless", strict: false })), "no owner, strict OFF ⇒ ERROR");
+  ok(isError(await verdict("LZPT-127", { ruleId: "rule-coder-ownerless", strict: true })), "no owner, strict ON ⇒ ERROR");
+  // …INCLUDING when an environment row would also have fired. This is F-392 itself: the
+  // config check is answered FIRST, so the promised red row cannot be masked by a SKIP.
+  const both = await verdict("LZPT-128", { ruleId: "rule-coder-ownerless", connectionId: "", repo: "", strict: false });
+  ok(isError(both) && /owner/i.test(both.reason),
+    "an ownerless rule that ALSO has no connection is the OWNER error, not a green skip (F-392)");
+  // ROW: the queue push failed — ERROR in both columns, and nothing ran inline.
+  const { Queue } = await import("@forge/events");
+  const realPush = Queue.prototype.push;
+  Queue.prototype.push = async () => { throw new Error("queue unavailable"); };
+  let pushFail;
+  try { pushFail = await verdict("LZPT-129", { strict: false }); } finally { Queue.prototype.push = realPush; }
+  ok(isError(pushFail), "a failed queue push is an ERROR even with strict OFF — nothing was started");
 }
 
 /* ══════════ F-394 — the role is STAMPED at save time and read ONLY from the row ══════════ */

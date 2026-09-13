@@ -280,6 +280,53 @@ export const fetchSkillsBlock = async (ids, { capBytes = KNOWLEDGE_BUDGET_BYTES.
 };
 
 /**
+ * F-578 — THE EPOCH OF A GIVEN SET OF SKILLS, for the Coder's per-thread knowledge pin.
+ *
+ * The Coder pins the RENDERED skills block on a thread for up to 90 days (F-574). A skill
+ * that is EDITED or DELETED after that must stop reaching the model, exactly as a deleted
+ * memory must: the pin stores this token and `buildCoderKnowledge` (src/async-handler.js)
+ * replays the pinned bytes only while it still matches.
+ *
+ * DERIVED, not counted, and that is a deliberate difference from `memoryEpoch`. The memory
+ * store has ONE writer (`saveMemories`), so a counter there cannot be forgotten. The skill
+ * index does NOT: `saveSkillInternal` and `seedBuiltinSkills` write it here, and
+ * `deleteSkill`/`saveSkill` write it again in src/index.js. A counter would need a bump at
+ * four call sites and would be wrong the first time a fifth was added — so the epoch is
+ * READ from the index instead, in this one function, and every writer is covered by
+ * construction because every writer must leave the index consistent.
+ *
+ * SCOPED TO THE PINNED IDS, because a thread's prefix only carries those: adding an
+ * unrelated skill to the library must not move a cached prefix. An id missing from the
+ * index renders as "gone", which is itself a change.
+ *
+ * FAIL-OPEN: an unreadable index returns null, and a null epoch is treated by the caller as
+ * "cannot tell" → replay. A storage hiccup must never move a prompt prefix.
+ *
+ * @param {string[]} ids
+ * @returns {Promise<string|null>}
+ */
+export const skillEpochFor = async (ids) => {
+  const list = (Array.isArray(ids) ? ids : []).map(String).slice(0, 40);
+  if (!list.length) return "";
+  let index;
+  try { index = await storage.get(SKILL_INDEX_KEY); } catch (error) {
+    console.warn("skills: could not read the index for the skill epoch:", error && error.message);
+    return null;
+  }
+  if (!Array.isArray(index)) return null;
+  const byId = new Map(index.filter((s) => s && s.id).map((s) => [String(s.id), s]));
+  return list
+    .slice()
+    .sort()
+    .map((id) => {
+      const row = byId.get(id);
+      if (!row) return `${id}:gone`;
+      return `${id}:${row.enabled === false ? "off" : "on"}:${String(row.updatedAt || "")}`;
+    })
+    .join("|");
+};
+
+/**
  * Which of `ids` exist in the skill index. Used by the rule savers (listeners,
  * scheduled jobs) to refuse a `skillIds` binding that names a skill nobody has — a
  * rule that silently binds nothing is a rule whose author believes it has a voice it

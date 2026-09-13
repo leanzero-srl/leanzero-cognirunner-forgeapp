@@ -315,11 +315,19 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
     messages: [{ role: "user", content: turn1.message }], turns: 1,
     fieldGuideSections: k1.fieldGuideSections || [],
   });
-  await storage.set(coder.coderPinKey(ISSUE, THREAD), {
+  // F-578: the engine also stamps the epochs the builder handed it — `memoryEpoch` and
+  // `skillEpoch` are what say the pinned bytes are still TRUE, and a pin without them is
+  // rebuilt once. Stand in for the engine faithfully, stamps included.
+  const pinRow = (k) => ({
     issueKey: ISSUE, threadId: THREAD,
-    skillsBlock: k1.skillsBlock || "", memoryBlock: k1.memoryBlock || "",
-    skillIds: k1.skillIds || [], memoryCount: k1.memoryCount || 0, at: new Date().toISOString(),
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+    memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch,
+    at: new Date().toISOString(),
   });
+  ok(typeof k1.memoryEpoch === "number" && typeof k1.skillEpoch === "string",
+    `the builder hands the engine both epochs to stamp (${k1.memoryEpoch}, ${JSON.stringify(k1.skillEpoch)})`);
+  await storage.set(coder.coderPinKey(ISSUE, THREAD), pinRow(k1));
 
   // BETWEEN THE TURNS: an admin adds a memory, and the user binds one more skill.
   await saveMemoryCandidate({ content: "Deploys need the production environment flag set.", source: "user" });
@@ -360,6 +368,115 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   ok(/production environment flag/.test(String(kNew.memoryBlock || "")),
     "a NEW thread starts from the memories that exist now, in its own stable block");
   ok(kNew.memoryExtraBlock === undefined, "…with nothing hanging off the back of it");
+}
+
+/* ===== 9. F-578 — A PIN IS REPLAYED ONLY WHILE ITS KNOWLEDGE IS STILL TRUE ==========
+ *
+ * F-574 pinned the RENDERED skills and memory bytes for the life of a thread (90 days) and
+ * nothing invalidated them. So a memory the admin DELETED kept reaching the model on every
+ * later turn of that thread, and an EDITED memory reached it TWICE: the stale line inside
+ * the cached prefix and the corrected line in `memoryExtraBlock` after it — two versions of
+ * one fact, with the wrong one in the position the model trusts most.
+ *
+ * The stores now each carry an epoch — `memoryEpoch` (src/memories.js, a counter its ONE
+ * writer bumps on a delete/edit/injection switch and NOT on an add) and `skillEpochFor`
+ * (src/skills.js, derived from the index rows of the pinned ids) — and the pin records both.
+ * Proven here against the REAL stores, on the three cases the finding names:
+ *   delete  → the next turn's PREFIX no longer carries the line, anywhere;
+ *   edit    → the corrected line appears exactly ONCE;
+ *   neither → the bytes do not move (F-574 still holds, and an ADD is still not a move).
+ */
+{
+  const THREAD = "t_epoch";
+  const { buildKnowledgeMessages } = await import("../../src/agent-runner.js");
+  const { saveMemoryCandidate, loadMemories, saveMemories } = await import("../../src/memories.js");
+
+  const STALE = "The staging deploy URL is https://old.staging.invalid for this instance.";
+  const FIXED = "The staging deploy URL is https://new.staging.invalid for this instance.";
+  const added = await saveMemoryCandidate({ content: STALE, source: "user" });
+  const staleId = (added && added.id) || null;
+  ok(!!staleId, `the memory under test is in the real store (${staleId})`);
+
+  const pinIt = async (k) => {
+    await storage.set(coder.coderPinKey(ISSUE, THREAD), {
+      issueKey: ISSUE, threadId: THREAD,
+      skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+      skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+      memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch,
+      at: new Date().toISOString(),
+    });
+  };
+  const turn = (message) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message, skillIds: ["skill_house"],
+  });
+
+  await storage.set(coder.coderThreadKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "turn one" }], turns: 1,
+  });
+  const e1 = await turn("turn one");
+  ok(/old\.staging\.invalid/.test(String(e1.memoryBlock || "")), "turn 1 pins a block carrying the memory");
+  await pinIt(e1);
+
+  // NOTHING CHANGED — the F-574 promise, still kept.
+  const e2 = await turn("turn two");
+  ok(e2.repin === undefined, "an unchanged store does not invalidate the pin");
+  ok(JSON.stringify(buildKnowledgeMessages(e2)) === JSON.stringify(buildKnowledgeMessages(e1)),
+    "…and turn 2's rendered prefix knowledge is byte-identical to turn 1's");
+
+  // AN ADD is still not a prefix move (it is the whole point of the extra block).
+  await saveMemoryCandidate({ content: "Release notes live in the docs repo, not the app repo.", source: "user" });
+  const e3 = await turn("turn three");
+  ok(e3.repin === undefined, "ADDING a memory does not invalidate the pin");
+  ok(JSON.stringify(buildKnowledgeMessages(e3)) === JSON.stringify(buildKnowledgeMessages(e1)),
+    "…and the prefix still has not moved");
+  ok(/Release notes live/.test(String(e3.memoryExtraBlock || "")), "…the addition arrives after the history instead");
+
+  // THE DELETE. Through `saveMemories`, which is the single writer every admin resolver
+  // (deleteMemory, updateMemory, the archive toggle) reaches KVS through.
+  const afterDelete = (await loadMemories()).filter((m) => m.id !== staleId);
+  await saveMemories(afterDelete);
+  const e4 = await turn("turn four");
+  ok(e4.repin === true, "THE FINDING: deleting a memory invalidates this thread's pin");
+  ok(typeof e4.pinInvalidated === "string" && /memoryEpoch/.test(e4.pinInvalidated),
+    `…and the reason names the epoch that moved (${e4.pinInvalidated})`);
+  const rendered4 = JSON.stringify(buildKnowledgeMessages(e4));
+  ok(!/old\.staging\.invalid/.test(rendered4),
+    "…the deleted memory is gone from the PREFIX, not merely contradicted after it");
+  ok(!/old\.staging\.invalid/.test(JSON.stringify(e4)),
+    "…and from every other block of the turn");
+  ok(/Release notes live/.test(String(e4.memoryBlock || "")),
+    "…while the rebuilt block carries what the store says TODAY");
+  ok(e4.memoryExtraBlock === undefined, "…with nothing duplicated after it");
+  await pinIt(e4);
+
+  // THE EDIT. Same single writer; the row's content changes and its id does not.
+  const rows = await loadMemories();
+  const target = rows.find((m) => /Release notes live/.test(String(m.content || "")));
+  ok(!!target, "the row about to be edited is in the store");
+  await saveMemories(rows.map((m) => (m.id === target.id
+    ? { ...m, content: FIXED, updatedAt: new Date().toISOString() }
+    : m)));
+  const e5 = await turn("turn five");
+  ok(e5.repin === true, "editing a memory invalidates the pin too");
+  const rendered5 = JSON.stringify(buildKnowledgeMessages(e5));
+  ok(!/Release notes live/.test(rendered5), "…the stale wording is gone");
+  const hits = rendered5.split("new.staging.invalid").length - 1;
+  ok(hits === 1, `THE FINDING: the corrected line reaches the model exactly ONCE (${hits})`);
+  await pinIt(e5);
+
+  // A SKILL edited mid-thread takes the same route — its epoch is derived, not counted, so
+  // it covers the delete path in src/index.js as well as the save path in src/skills.js.
+  const e6 = await turn("turn six");
+  ok(e6.repin === undefined, "…and an untouched skill keeps the pin alive");
+  await saveSkillInternal(
+    { id: "skill_house", name: "House style", category: "Other" },
+    { instructions: "Four-space indent now, and never tabs.", examples: "" },
+  );
+  const e7 = await turn("turn seven");
+  ok(e7.repin === true, "editing a PINNED skill invalidates the pin");
+  ok(/Four-space indent/.test(String(e7.skillsBlock || "")) && !/Two-space indent/.test(JSON.stringify(e7)),
+    "…and the turn carries the edited skill, once, in the prefix");
 }
 
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);

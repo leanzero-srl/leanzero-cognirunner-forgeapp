@@ -1051,6 +1051,67 @@ await check("F-574: a newly bound skill takes the same route, after the history 
   assert.ok(String(t2[skillAt].content).includes("<<<SKILLS"), "…and the skills addition is fenced like the stable block");
 });
 
+/* ═════════ F-578: a pin is replayed only while its knowledge is still true ═════════
+ *
+ * F-574 pinned the bytes and nothing invalidated them, so a DELETED memory kept reaching
+ * the model for the life of the thread and an EDITED one reached it twice. The builder
+ * (src/async-handler.js) owns the decision — it compares the stores' epochs against the
+ * ones on the pin, and coder-resume-params.test.mjs proves that half against the REAL
+ * memory and skills stores. THIS is the engine half: what the engine does when the builder
+ * says `repin`, and what it stamps so the builder can decide at all.
+ */
+await check("F-578: the engine stamps both store epochs on the pin, so a later turn can tell whether they still hold", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  await startTurn(world, {
+    knowledge: { skillsBlock: SKILLS, memoryBlock: MEM, skillIds: ["skill_house"], memoryCount: 1, memoryEpoch: 4, skillEpoch: "skill_house:on:2026-09-13" },
+  });
+  const pin = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin.memoryEpoch, 4, "the memory store's epoch travels onto the pin");
+  assert.equal(pin.skillEpoch, "skill_house:on:2026-09-13", "…and the pinned skills' epoch with it");
+});
+
+await check("F-578: `repin` REPLACES the pinned bytes and says so — an ordinary turn still never touches them", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()]), reply([finish()])] });
+  const first = { skillsBlock: SKILLS, memoryBlock: MEM, skillIds: ["skill_house"], memoryCount: 1, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: first });
+
+  // An ordinary later turn: the builder replayed the pin, so it sends no `repin` and the
+  // bytes must stay exactly where they are (F-574 — this is the guard against a re-pin
+  // that "fixes" the finding by rebuilding every turn).
+  await startTurn(world, { userMessage: "second", knowledge: { ...first, memoryExtraBlock: MEM_NEW } });
+  const pin2 = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin2.memoryBlock, MEM, "a turn without `repin` leaves the pinned bytes alone");
+
+  // The invalidating turn: the builder rebuilt the blocks live and asked for a re-pin.
+  const rebuilt = `- [user] Deploys need the production environment flag set.`;
+  const r = await startTurn(world, {
+    userMessage: "third",
+    knowledge: { skillsBlock: SKILLS, memoryBlock: rebuilt, skillIds: ["skill_house"], memoryCount: 1, memoryEpoch: 2, skillEpoch: "e1", repin: true, pinInvalidated: "memoryEpoch 1→2" },
+  });
+  const pin3 = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin3.memoryBlock, rebuilt, "THE FINDING: the deleted memory is no longer what this thread replays");
+  assert.ok(!pin3.memoryBlock.includes("Always rebase"), "…the stale line is gone from the pin, not merely contradicted");
+  assert.equal(pin3.memoryEpoch, 2, "…and the pin now records the epoch it was rebuilt under");
+  assert.ok((r.logs || []).some((l) => /memoryEpoch 1→2/.test(l) && /prefix moves once/.test(l)),
+    `the turn's own log says why the prefix moved (${JSON.stringify((r.logs || []).filter((l) => /pin/.test(l)))})`);
+});
+
+await check("F-578: a re-pin too large to write CLEARS the stale row rather than leaving it to replay", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  await startTurn(world, { knowledge: { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" } });
+  assert.ok(await store.get(coderPinKey("LZPT-7", "t1")), "turn 1 pinned");
+  const r = await startTurn(world, {
+    userMessage: "second",
+    knowledge: { skillsBlock: "x".repeat(33 * 1024), memoryBlock: "", memoryEpoch: 2, skillEpoch: "e1", repin: true, pinInvalidated: "memoryEpoch 1→2" },
+  });
+  assert.equal(r.success, true, "the turn still runs — a pin is an optimisation, never a gate");
+  assert.equal(await store.get(coderPinKey("LZPT-7", "t1")), undefined,
+    "the INVALIDATED row is removed: keeping it would hand the deleted memory back to the next turn");
+});
+
 await check("F-550: the cross-turn cache miss gets its own observation line", async () => {
   const { reportCrossTurnCacheDefect, CACHE_BYTES_PER_TOKEN } = await import("../../src/agent-runner.js");
   const lines = [];

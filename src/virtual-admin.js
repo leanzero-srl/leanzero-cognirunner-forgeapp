@@ -1074,12 +1074,29 @@ export const isInShadow = async (job, { receipts = null, store = null } = {}) =>
   let watched = receipts == null ? NaN : Number(receipts);
   if (!Number.isFinite(watched)) {
     if (!store) return null;
-    // The agent id IS the job id, on both surfaces (`loadAgent` in va-admin.js and the
-    // post phase below both take it straight from the record).
-    const health = await readHealth(store, job.id);
-    watched = health.ok ? Number(health.prepareTicks) || 0 : 0;
+    watched = await watchedTicks(store, job.id);
   }
   return shadowStateOf(va, watched);
+};
+
+/**
+ * HOW MANY TICKS HAS THIS AGENT BEEN WATCHED — one home (F-484).
+ *
+ * The answer is the agent's own PREPARE-RECEIPT count, held in `va_health` and written
+ * by the tick (`recordTickHealth`, src/va-ledger.js). Three callers now: the post gate,
+ * `isInShadow` above, and the SAVE-time re-arm in src/va-admin.js, which used to count
+ * five-minute wall-clock buckets since `createdAt` instead — a different number, in a
+ * different unit, compared against the same field.
+ *
+ * The agent id IS the job id on every surface (`loadAgent` in va-admin.js and the post
+ * phase both take it straight from the record).
+ *
+ * A HEALTH READ THAT FAULTS COUNTS AS ZERO, i.e. keeps the agent IN shadow. "I cannot
+ * tell how many times you have been watched" is not "enough times".
+ */
+export const watchedTicks = async (store, agentId) => {
+  const health = await readHealth(store, agentId);
+  return health.ok ? Number(health.prepareTicks) || 0 : 0;
 };
 
 /** GATE 1 — paused, shadow mode, kill switch. Agent-level, checked once per post run. */

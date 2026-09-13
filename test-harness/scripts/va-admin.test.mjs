@@ -193,6 +193,64 @@ let agentId = null;
   const after = await call("getVaStatus", { jobId: agentId });
   ok(after.success && after.shadow && after.shadow.ticksLeft > 0,
     `…and a CONFIG CHANGE re-arms shadow (got ${JSON.stringify(after.shadow)})`);
+  // …IN THE RIGHT UNIT (F-484). `watched` is 12 and `shadowTicks` is 3, so the re-arm is
+  // 15 — three more of the AGENT'S OWN ticks. The old re-arm added `shadowTicks` to a
+  // wall-clock bucket count and would have written something in the thousands here.
+  {
+    const row = await storage.get(`job:${agentId}`) || await storage.get(`sched_job:${agentId}`);
+    ok(row && row.va.status.shadowUntilTick === 15,
+      `…counted in the agent's own prepare receipts: 12 watched + 3 shadowTicks = 15 (got ${row && row.va.status.shadowUntilTick})`);
+    ok(after.shadow && after.shadow.ticksLeft === 3,
+      `…so the admin is told THREE more ticks, not thousands (got ${JSON.stringify(after.shadow)})`);
+  }
+}
+
+/* ═════ 2b. F-484 — A WALL-CLOCK LEFTOVER DOES NOT TRAP AN AGENT IN SHADOW FOR EVER ═══
+ *
+ * `shadowUntilTick` was re-armed from five-minute buckets since `createdAt` while the
+ * post gate has compared it against the PREPARE-RECEIPT count since F-454. A month-old
+ * agent edited once got ≈8640 + shadowTicks, a number its own tick count reaches after
+ * a year on an hourly cadence: one edit, shadow mode for ever, and nothing on either
+ * screen saying why. Rows written by the old code are still out there, so the re-arm
+ * has to RECOGNISE them.
+ *
+ * BOTH DIRECTIONS: a leftover is replaced by "shadowTicks from now"; a legitimate
+ * longer watch is still a FLOOR and is never shortened — which is the arm a blanket
+ * clamp would have broken. */
+{
+  const setWatched = async (n) => storage.set(`va_health:${agentId}`, { consecutiveFailures: 0, prepareTicks: n });
+  const rowOf = async () => (await storage.get(`job:${agentId}`)) || (await storage.get(`sched_job:${agentId}`));
+  const writeRow = async (row) => { for (const k of ["job:", "sched_job:"]) { if (await storage.get(k + agentId)) await storage.set(k + agentId, row); } };
+
+  // BLOCK — the leftover. 8643 is what a 30-day-old agent was re-armed to.
+  {
+    await setWatched(20);
+    const row = await rowOf();
+    row.va.status.shadowUntilTick = 8643;
+    await writeRow(row);
+    const edited = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Ada", voice: { register: "plain", maxSentences: 2 } }, status: { paused: false, shadowUntilTick: 8643 } }) } });
+    ok(edited.success === true, "F-484.BLOCK — an old agent with a wall-clock shadow value still saves");
+    const back = await rowOf();
+    ok(back && back.va.status.shadowUntilTick === 23,
+      `…and shadow ends after shadowTicks MORE of its own ticks (20 + 3 = 23), not 8643 (got ${back && back.va.status.shadowUntilTick})`);
+    const status = await call("getVaStatus", { jobId: agentId });
+    ok(status.success && status.shadow && status.shadow.ticksLeft === 3,
+      `…so the tab promises three ticks, not 8623 (got ${JSON.stringify(status.shadow)})`);
+  }
+
+  // ALLOW — a REACHABLE stored value is a floor and survives. The admin armed a 10-tick
+  // watch and then lowered shadowTicks to 1: the watch they armed must not be cut short.
+  {
+    await setWatched(20);
+    const row = await rowOf();
+    row.va.status.shadowUntilTick = 30;   // 20 watched + a 10-tick watch, all reachable
+    await writeRow(row);
+    const edited = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ guardrails: { shadowTicks: 1 }, status: { paused: false, shadowUntilTick: 30 } }) } });
+    ok(edited.success === true, "F-484.ALLOW — the same agent saves with a shorter shadowTicks");
+    const back = await rowOf();
+    ok(back && back.va.status.shadowUntilTick === 30,
+      `…and the LONGER watch already armed is kept — the re-arm is a floor (got ${back && back.va.status.shadowUntilTick})`);
+  }
 }
 
 /* ═════ 3. PERMISSION FLOORS ═════

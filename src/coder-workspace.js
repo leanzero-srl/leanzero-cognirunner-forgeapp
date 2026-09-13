@@ -63,6 +63,7 @@ import api, { route } from "@forge/api";
 import storage from "@forge/kvs";
 import { safeKeyPart, assertKvsKey } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+import { clampChars } from "./shared/text-clamp.js";
 
 const idx = () => import("./index.js");
 
@@ -149,7 +150,9 @@ const CONTROL_CHARS = /[\u0000-\u001F\u007F]/g;
 
 /** One paragraph node from one plain-text line. An empty line is an empty paragraph. */
 const paragraph = (text) => {
-  const t = String(text == null ? "" : text).replace(CONTROL_CHARS, " ").slice(0, LINE_MAX_CHARS);
+  // F-381 — CODE POINTS, NOT CODE UNITS. A `.slice()` here cut emoji in half and put a
+  // lone surrogate into the ADF that is PUT to Jira. ONE helper, src/shared/text-clamp.js.
+  const t = clampChars(String(text == null ? "" : text).replace(CONTROL_CHARS, " "), LINE_MAX_CHARS);
   return t ? { type: "paragraph", content: [{ type: "text", text: t }] } : { type: "paragraph", content: [] };
 };
 
@@ -362,7 +365,7 @@ export const writeCoderPlan = async ({ issueKey, plan, simulation = false, deps 
 const normalizeLinks = (links) => (Array.isArray(links) ? links : [])
   .map((l) => (l && typeof l === "object" ? l : null))
   .filter(Boolean)
-  .map((l) => ({ kind: String(l.kind || "link").slice(0, 40), url: String(l.url || "").trim().slice(0, 1000), title: String(l.title || l.url || "").slice(0, 250) }))
+  .map((l) => ({ kind: clampChars(l.kind || "link", 40), url: clampChars(String(l.url || "").trim(), 1000), title: clampChars(l.title || l.url || "", 250) }))
   .filter((l) => /^https?:\/\//i.test(l.url))
   .slice(0, STEP_MAX_LINKS);
 
@@ -383,7 +386,7 @@ export const appendStepComment = async ({ issueKey, step, links = [], simulation
   if (!key) return badIssue("Posting the step comment");
   const clean = normalizeLinks(links);
   const body = plainTextAdf(
-    [`Coder step: ${String((step && step.title) || step || "step").slice(0, 200)}`,
+    [`Coder step: ${clampChars((step && step.title) || step || "step", 200)}`,
       ...(step && step.detail ? [String(step.detail)] : []),
       ...clean.map((l) => `${l.kind}: ${l.title} — ${l.url}`)].join("\n"),
     { maxLines: PLAN_MAX_LINES, maxBytes: STEP_MAX_BYTES },
@@ -394,7 +397,7 @@ export const appendStepComment = async ({ issueKey, step, links = [], simulation
       simulated: true,
       would: {
         action: "appendStepComment", issueKey: key,
-        comment: adfNodeText(body).slice(0, 400),
+        comment: clampChars(adfNodeText(body), 400),
         links: clean.map((l) => ({ ...l, globalId: remoteLinkGlobalId(key, l.kind, l.url) })),
       },
     };
@@ -451,7 +454,7 @@ export const updateCoderLog = async ({ issueKey, threadId, lines, simulation = f
   if (!key) return badIssue("Updating the Coder log");
   const incoming = (Array.isArray(lines) ? lines : [lines])
     .filter((l) => l != null && String(l).trim() !== "")
-    .map((l) => String(l).slice(0, LINE_MAX_CHARS));
+    .map((l) => clampChars(l, LINE_MAX_CHARS));
   const thread = String(threadId || "").slice(0, 120);
   if (simulation === true) {
     return { ok: true, simulated: true, would: { action: "updateCoderLog", issueKey: key, threadId: thread, lines: incoming.length } };

@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 const store = (await import("../lib/mock-kvs.mjs")).default;
 const jiraMock = (await import("../lib/mock-forge-api.mjs")).default;
 const ws = await import("../../src/coder-workspace.js");
+const { clampChars, hasLoneSurrogate } = await import("../../src/shared/text-clamp.js");
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(here, "../../src");
@@ -188,6 +189,26 @@ await check("F-376: a USER-authored end marker below the section does not orphan
     "the LAST close is taken, so the stray marker is absorbed rather than left to orphan the next write");
   assert.ok(ws.adfNodeText(current).includes("fresh plan"));
   assert.equal(ws.adfNodeText(current).includes("old plan"), false);
+});
+
+await check("F-381: an emoji exactly at the line boundary is never cut in half", async () => {
+  reset();
+  let written = null;
+  respond([
+    [(p, m) => m === "GET", () => okJson({ fields: { description: null } })],
+    [(p, m) => m === "PUT", (p, o) => { written = JSON.parse(o.body); return okJson({}, 204); }],
+  ]);
+  // The pair straddles LINE_MAX_CHARS: a code-UNIT slice keeps only its high half.
+  const line = "x".repeat(ws.LINE_MAX_CHARS - 1) + "🚀" + "tail";
+  const r = await ws.writeCoderPlan({ issueKey: ISSUE, plan: line });
+  assert.equal(r.ok, true);
+  const body = JSON.stringify(written);
+  assert.equal(hasLoneSurrogate(body), false, "no unpaired surrogate reaches the PUT body");
+  assert.equal(JSON.parse(body).fields.description.content.some((n) => hasLoneSurrogate(ws.adfNodeText(n))), false);
+  // …and the same for a log line, which is clamped by the same rule.
+  assert.equal(hasLoneSurrogate(clampChars(line, ws.LINE_MAX_CHARS)), false);
+  assert.equal(clampChars("ab🚀cd", 3), "ab🚀", "the clamp counts CODE POINTS, so the pair is kept whole");
+  assert.equal(clampChars("ab🚀cd", 2), "ab", "…and a budget that cannot hold it drops it whole");
 });
 
 /* ───────── 2. step comments and remote links ───────── */

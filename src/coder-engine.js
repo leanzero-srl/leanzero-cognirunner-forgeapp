@@ -68,6 +68,7 @@ import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, co
 import { createGitActionExecutor } from "./git-actions.js";
 import { createCoderWorkspace } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
+import { clampChars } from "./shared/text-clamp.js";
 
 const idx = () => import("./index.js");
 
@@ -404,7 +405,9 @@ const PREVIEW_MAX_OBJECT_KEYS = 20;
 const PREVIEW_OBJECT_VALUE_MAX = 120;
 
 const previewItem = (value) => {
-  if (value == null || typeof value !== "object") return String(value).slice(0, PREVIEW_ITEM_TEXT_MAX);
+  // F-381 — every clamp of model-authored text counts CODE POINTS: a preview is rendered
+  // into a step comment's ADF, so half an emoji here is a 400 on the write.
+  if (value == null || typeof value !== "object") return clampChars(value, PREVIEW_ITEM_TEXT_MAX);
   const out = {};
   let omittedBytes = 0;
   for (const [k, v] of Object.entries(value)) {
@@ -430,12 +433,12 @@ const previewValue = (name, schema, value) => {
     const src = value && typeof value === "object" ? value : {};
     const out = {};
     for (const [k, v] of Object.entries(src).slice(0, PREVIEW_MAX_OBJECT_KEYS)) {
-      out[String(k).slice(0, 80)] = typeof v === "boolean" || typeof v === "number" ? v : String(v == null ? "" : typeof v === "object" ? JSON.stringify(v) : v).slice(0, PREVIEW_OBJECT_VALUE_MAX);
+      out[clampChars(k, 80)] = typeof v === "boolean" || typeof v === "number" ? v : clampChars(v == null ? "" : typeof v === "object" ? JSON.stringify(v) : v, PREVIEW_OBJECT_VALUE_MAX);
     }
     return out;
   }
   const max = PREVIEW_LONG_TEXT_FIELDS.has(name) ? PREVIEW_LONG_TEXT_MAX : PREVIEW_TEXT_MAX;
-  return String(value == null ? "" : value).slice(0, max);
+  return clampChars(value, max);
 };
 
 export const buildArgsPreview = (action, args) => {
@@ -478,7 +481,7 @@ export const runCoderTurn = async ({
   const store = deps.store || storage;
   const key = String(issueKey || "").trim();
   const thread = String(threadId || "").trim();
-  const text = String(userMessage || "").trim().slice(0, CODER_USER_MESSAGE_MAX_CHARS);
+  const text = clampChars(String(userMessage || "").trim(), CODER_USER_MESSAGE_MAX_CHARS);
   if (!key || !thread) return fail("A coder turn needs an issue key and a thread id.");
   if (!accountId) return fail("A coder turn needs the account it is running for.", { reason: "no-permission" });
   if (!text) return fail("A coder turn needs a message.");
@@ -520,7 +523,7 @@ const runCoderTurnClaimed = async ({
   const started = Date.now();
   const deadlineMs = deadline || (Date.now() + CODER_TURN_BUDGET_MS);
   const logs = [];
-  const log = (s) => logs.push(String(s).slice(0, 2000));
+  const log = (s) => logs.push(clampChars(s, 2000));
 
   // ── the thread IS the record ──────────────────────────────────────────────
   const threadKey = coderThreadKey(key, thread);
@@ -834,7 +837,7 @@ export const stepLinksFromResult = (action, result) => {
         : /deploy/i.test(id) ? "deploy"
           : /commit/i.test(id) ? "commit" : "link";
   const title = result.title || result.name || `${kind}${result.number ? ` #${result.number}` : ""}`;
-  return [{ kind, url, title: String(title).slice(0, 250) }];
+  return [{ kind, url, title: clampChars(title, 250) }];
 };
 
 /* ───────────────────────────── the confirmation ───────────────────────────── */
@@ -1016,7 +1019,7 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
     const workspace = deps.workspace || createCoderWorkspace({ simulation: ticket.simulation === true });
     stepComment = await workspace.appendStepComment({
       issueKey: ticket.issueKey,
-      step: { title: `${ticket.action} confirmed`, detail: JSON.stringify(ticket.argsPreview || {}).slice(0, 600) },
+      step: { title: `${ticket.action} confirmed`, detail: clampChars(JSON.stringify(ticket.argsPreview || {}), 600) },
       links: stepLinksFromResult(ticket.action, result),
     });
     if (stepComment && stepComment.ok === false) console.warn(`[coder] step comment for ticket ${id}: ${stepComment.error}`);

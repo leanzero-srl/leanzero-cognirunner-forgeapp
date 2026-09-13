@@ -32,7 +32,9 @@
  *       (asserted by reading the engine source, F-518), and the ids that carry a `:detail`
  *       suffix or that the map has never heard of never leak an id or an exception message
  *       into the admin's copy - on the receipt rows AND on the health banner, the reason's
- *       second and durable home (F-524).
+ *       second and durable home (F-524). The extraction reads EVERY literal in the
+ *       compaction sites' ranges and asserts an EXACT set, so a reason written as a ternary,
+ *       a helper or a template cannot slip past it (F-525).
  *
  * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
  */
@@ -517,22 +519,92 @@ try {
        itself, not typed here, so a new id added to `runVaCompaction` fails THIS test rather
        than reaching an admin as a raw string. Comments are stripped first: the docblocks
        quote ids that are not reasons (`compact_backoff_write_failed` is a backoff-write
-       detail, never a compaction reason). */
+       detail, never a compaction reason).
+
+       F-525 - THE EXTRACTOR DOES NOT PATTERN-MATCH ON `reason:`. The first version of this
+       guard only saw a bare literal directly after `reason:`, so a ternary
+       (`reason: spent ? "a" : "b"`), a helper spread (`...compactionFail("x")`) or a
+       leading interpolation (`` `${p}_failed` ``) added a reason the test could not see -
+       and `size >= 8` passed on 8 of 9, so a swallowed id did not even move the count.
+       Instead: take EVERY quoted literal inside the compaction sites' text ranges, split it
+       on the engine's own `compaction:`/`:detail`/`${}` separators, and keep every part
+       that matches the reason-id grammar. That over-collects a handful of JS-ish words that
+       sit in those ranges and are not reasons, so they are named in ALLOW below and the
+       test asserts each one is still there - a stale allow-list entry fails the run rather
+       than silently excusing a real id that happens to share its name. */
     const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     const engineSrc = fs.readFileSync(path.join(__dirname, "../../src/virtual-admin.js"), "utf8");
-    const afterFn = engineSrc.slice(engineSrc.indexOf("export const runVaCompaction"));
-    const fnBody = afterFn.slice(0, afterFn.indexOf("\n};") + 3);
-    const tickBody = engineSrc.slice(engineSrc.indexOf("const compaction = await runVaCompaction"), engineSrc.indexOf("const compactionGated"));
-    ok(fnBody.length > 500 && tickBody.length > 200, "A14 both compaction push sites were located in the engine source");
-    /* The BASE id is what the map is keyed on: the `compaction:` namespace off the front,
-       and the `:detail` the engine appends off the back. */
-    const baseId = (raw) => String(raw).replace(/^compaction:/, "").split(/[:$]/)[0].trim();
-    const engineIds = new Set();
-    for (const chunk of [strip(fnBody), strip(tickBody)]) {
-      for (const m of chunk.matchAll(/reason:\s*(?:\([^)]*\)\s*\|\|\s*)?([`"])([^`"]+)\1/g)) { const b = baseId(m[2]); if (b) engineIds.add(b); }
-      for (const m of chunk.matchAll(/\breason\s*=\s*[^;]+;/g)) for (const l of m[0].matchAll(/([`"])([^`"]+)\1/g)) { const b = baseId(l[2]); if (b) engineIds.add(b); }
+    const ID_RE = /^[a-z][a-z0-9_-]*$/;
+    /* The two sites, by anchor: the whole of `runVaCompaction` (every arm returns a reason),
+       and the tick's compaction slice - which must run PAST `const compactionGated` to the
+       gate-reason line, so a `skipped.push` moved below that line is still inside the range
+       (the old slice stopped short of exactly that). Any other `skipped.push` in the file
+       that mentions compaction is swept in as its own range, so a site moved out of the
+       tick entirely is still read. */
+    const sites = (src) => {
+      const afterFn = src.slice(src.indexOf("export const runVaCompaction"));
+      const fnBody = afterFn.slice(0, afterFn.indexOf("\n};") + 3);
+      const afterTick = src.slice(src.indexOf("const compaction = await runVaCompaction"));
+      const gateLine = afterTick.indexOf("const compactionGateReason");
+      const tickBody = afterTick.slice(0, gateLine >= 0 ? afterTick.indexOf("\n", gateLine) : afterTick.indexOf("\n};") + 3);
+      const pushes = [];
+      for (const m of src.matchAll(/skipped\.push\(/g)) {
+        const seg = src.slice(m.index, src.indexOf(";", m.index) + 1);
+        if (/compaction/.test(seg)) pushes.push(seg);
+      }
+      return { fnBody, tickBody, chunks: [fnBody, tickBody, ...pushes].map(strip) };
+    };
+    /* Every quoted literal in a range, cut into the parts the copy map is keyed on. */
+    const extractIds = (src) => {
+      const out = new Set();
+      for (const chunk of sites(src).chunks) {
+        for (const lit of chunk.matchAll(/(["'`])((?:[^\\`"']|\\.)*?)\1/g)) {
+          for (const part of String(lit[2]).replace(/^compaction:/, "").split(/[:$]/)) {
+            const p = part.trim();
+            if (ID_RE.test(p)) out.add(p);
+          }
+        }
+      }
+      return out;
+    };
+    const found = sites(engineSrc);
+    ok(found.fnBody.length > 500 && found.tickBody.length > 200, "A14 both compaction push sites were located in the engine source");
+    /* PROOF THE EXTRACTOR BITES (F-525). A scratch copy of the engine source - never the
+       file - grows a ternary arm and a template reason. Both must come out, or this guard
+       is back to matching shapes instead of reading the source. */
+    const probeSrc = engineSrc.replace(
+      "export const runVaCompaction = async ({ agent, tick, deps }) => {",
+      'export const runVaCompaction = async ({ agent, tick, deps }) => {\n  if (globalThis.__never__) return { ran: false, gate: "compaction", reason: deps ? "harness_probe_ternary" : "harness_probe_other", detail: `${tick}:harness_probe_tail` };',
+    );
+    const probed = extractIds(probeSrc);
+    for (const id of ["harness_probe_ternary", "harness_probe_other", "harness_probe_tail"]) {
+      ok(probed.has(id), `A14 the extractor sees a reason written as a ternary or a template ("${id}")`);
     }
-    ok(engineIds.size >= 8, `A14 the engine's reason ids were extracted, got ${[...engineIds].sort().join(", ")}`);
+    /* The words in those ranges that are NOT reason ids: the gate/namespace value itself,
+       and two BACKOFF-CAUSE details that ride `armBackoff()`/`detail` and never reach the
+       copy map. Each is asserted present so this list cannot rot into an excuse. */
+    const ALLOW = ["compaction", "compact_backoff_write_failed", "write_refused"];
+    const raw = extractIds(engineSrc);
+    for (const w of ALLOW) ok(raw.has(w), `A14 the allow-listed non-reason word "${w}" is still in the compaction source (stale allow-list otherwise)`);
+    const engineIds = new Set([...raw].filter((id) => !ALLOW.includes(id)));
+    /* THE EXACT SET, listed here on purpose: a new engine id is not a bigger number, it is
+       a failing test naming the id nobody has written a sentence for. */
+    const EXPECTED = [
+      "compaction-backoff",
+      "compaction-backoff-write-failed",
+      "compaction_failed",
+      "compaction_produced_nothing",
+      "did-not-converge",
+      "memory_read_failed",
+      "not_claimed",
+      "pinned_dropped",
+      "summariser-failed",
+      "under_threshold",
+    ];
+    const extra = [...engineIds].filter((id) => !EXPECTED.includes(id)).sort();
+    const missing = EXPECTED.filter((id) => !engineIds.has(id));
+    ok(extra.length === 0, `A14 the engine pushes no reason id this test does not know about (new: ${extra.join(", ")})`);
+    ok(missing.length === 0, `A14 every expected engine reason id is still pushed (gone: ${missing.join(", ")})`);
     const tabSrc = fs.readFileSync(path.join(__dirname, "../admin-panel/src/components/AgentsTab.jsx"), "utf8");
     const mapBody = tabSrc.slice(tabSrc.indexOf("const COMPACTION_COPY = {"));
     const mapText = mapBody.slice(0, mapBody.indexOf("\n};"));

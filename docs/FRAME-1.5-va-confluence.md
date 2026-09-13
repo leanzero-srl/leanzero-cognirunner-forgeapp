@@ -385,6 +385,62 @@ quote the constants from `registry-limits.js`, never retype them.
 | **P3** | **`requestConfluence` from the CONSUMER** (probe d proved it from a **webtrigger**). A VA item and a queued Confluence post-function both run in the consumer. | Different runtime, different context; row 19's evidence does not cover it. | If it fails in the consumer, Confluence effects run **inline** in the post-function (deterministic comment PF already is) and the VA's Confluence powers are hidden with the reason. Cheap to settle: one line in the existing dev hook, driven from the consumer. |
 | **P4** | **`servicedeskapi` from the LONG consumer.** Probe (e) proved desks/queues/queue-issues `asApp()` — from the probe surface. | Same class as P3; the sweep runs in a consumer. | **JQL intake only** (§3.16 row (e)'s fallback, already the plan's): each queue carries its own `jql`, read once at save time by the wizard (a resolver, where the call IS proven) and stored on the record. This is strictly more robust than a live queue read and should arguably be the design regardless. |
 
+### Probe results (2026-09-13) — run live on wolfaenpak, driver `test-harness/scripts/probes-1.5-live.mjs`
+
+**P1 — SETTLED, and the app's own spec is the one that is right.** On the real JSM request
+`JT-15` (dev), `probeJsmComment` posted as the app and read the comment back through
+`/rest/servicedeskapi/request/{key}/comment/{id}`. Internal arm (property
+`sd.public.comment = {internal:true}`): post 201, read 200, **`public: false`**, property read
+200 echoing `{internal:true}`, delete 204. Public arm (no property at all): post 201, read 200,
+**`public: true`**, property read **404**, delete 204. So an internal note IS
+`{internal:true}` (never `sd.public.comment=false`, which the plan text asserted), the ABSENCE
+of the property is what "portal-visible" means, and a portal-public reply as the app **works on
+this site** — the `replyPublic` fallback ("saves refused") is not needed. Both comments were
+deleted: an independent REST re-read of `JT-15` shows 0 comments on both the v3 and the
+servicedeskapi listing, and a positive control (post → both APIs see 1 → delete → 0) proves the
+query can see a comment on that issue at all. Caveat recorded honestly: no portal CUSTOMER
+account exists on this site, so the reporter is an Atlassian-account user; `public` is the
+portal's own field and is what the audience gate reads, but "a customer saw it in the portal
+UI" was not observed.
+
+**P2 — NOT SETTLED, and the probe found a defect instead.** `probeConfluenceInstalled` answers
+`installed=false, status=null, code=network, bodyKeys=[]` on **both** dev and staging — but
+`forge install list` shows the app installed on **Jira + Confluence on wolfaenpak in both
+environments**, and the older route-based lever (`action:"probeConfluence"`,
+`test-hook.js:243`, ``route`/wiki/api/v2/spaces?limit=1` ``) returns **200 with a real spaces
+body on both**. The difference is the transport: `src/confluence-client.js:241` passes a
+**plain string** path to `api.asApp().requestConfluence(path, init)`, and
+`@forge/api` wraps every product request in `requireSafeUrl()`
+(`node_modules/@forge/api/out/api/fetch.js:138-141`), which **throws** on anything that is not a
+`route` object ("You must create your route using the 'route' export from '@forge/api'"). The
+client's header comment justifies the plain string as "the existing plain-path call idiom in
+src/coder-workspace.js and src/index.js" — those call sites pass ``route`…` `` values through a
+variable, not strings. So no Confluence call this client makes can ever leave the app, every
+answer is `code:"network"`, and the not-installed SHAPE is still uncaptured (it also cannot be
+captured on this site while the app IS installed on Confluence there). Filed as **F-441**;
+the fail-open direction of `statusToCode` is unaffected and still correct.
+
+**P3 — NOT VERIFIED, blocked by the same defect.** `probeConfluenceFromConsumer` on staging ran
+on both queues and the consumer executed and recorded within ~1 s each:
+standard → `{status:null, code:"network", installed:false, queue:"standard"}`,
+long → `{status:null, code:"network", installed:false, queue:"long"}`. `forge logs -e staging`
+shows `Async handler: executing probe-confluence (harnessprobe-…)` → `[probe-confluence]
+confluence from the standard/long consumer → harness_probe:confluence:…` → `completed`, with no
+exception. What IS proven: the probe task type, the queue routing, the 10-minute row and the
+read path all work from both consumers. What is NOT: whether `requestConfluence` itself is
+permitted from a consumer — every arm died in our own transport before reaching the platform.
+Re-run P3 after F-441 is cut; until then the fallback (Confluence effects inline in the
+post-function) must not be chosen on this evidence.
+
+**P4 — SETTLED, PASS.** `probeServicedeskFromConsumer` on dev, long queue:
+`statusDesk: 200`, `statusQueue: 200`, keys
+`size,start,limit,isLastPage,_links,values` plus `queue.size,queue.start,queue.limit,
+queue.isLastPage,queue._links,queue.values`, `errorClass: null`. `forge logs -e development`
+shows `[probe-confluence] servicedesk from the long consumer → harness_probe:servicedesk:…`
+and `completed`, no exception. `servicedeskapi` desks AND queue listing are reachable `asApp()`
+from the **900 s long consumer**, so the VA sweep may read queues live; the JQL-intake fallback
+stays a design preference, not a necessity.
+
 **Sequencing rule (§3.16), restated:** no code is built on a PROBE row before its verdict.
 P1 blocks only the `replyPublic` audience arm; P2/P3 block only the Confluence half's error
 semantics; P4 blocks only the queue-intake arm. **Commits 1–3 and 5 depend on none of them**

@@ -35,6 +35,9 @@ const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, expected ${
 const V = await import("../../src/virtual-admin.js");
 const L = await import("../../src/va-ledger.js");
 const { VA_LIMITS } = await import("../../src/shared/va-config.js");
+// The KEY BUILDERS, never retyped as string literals here: a test that spells a key
+// itself passes while the engine writes a different one (F-346's shape, in a suite).
+const K = await import("../../src/shared/va-keys.js");
 
 const AG = "job_va1";
 const reset = () => kvs.__reset();
@@ -2219,6 +2222,62 @@ reset();
   eq((await L.readCompactBackoff(kvs, AG)).active, true, "F-506.clear — (armed)");
   await L.clearCompactBackoff(kvs, AG);
   eq((await L.readCompactBackoff(kvs, AG)).active, false, "F-506.clear — a converged compaction drops the marker");
+}
+
+/* ══ F-575. THE TICK SKIPS WHILE A PURGE IS STILL SETTLING ═══════════════════
+ *
+ * The ledger owns the predicate (va-ledger.test.mjs asserts the window, the claim scan
+ * and the degraded store). THIS is the other half: the first prepare tick of a
+ * re-created agent must not sweep, must not fan out, and must not write a receipt —
+ * the tombstone is still standing, so a receipt is a ledger write the tombstone refuses,
+ * and the sweep would be a JQL search and a model call bought to produce nothing.
+ */
+reset();
+{
+  const T0 = Date.parse("2026-09-13T12:00:00.000Z");
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  // The re-creation: `normalizeJob` server-stamps `createdAt`, so it is HONESTLY newer
+  // than the tombstone. That is exactly what used to be mistaken for "the old turn ended".
+  job.createdAt = new Date(T0 + 5000).toISOString();
+  await L.markAgentPurged(kvs, AG, { now: T0 });
+
+  let searched = 0;
+  const pushed = [];
+  const logged = [];
+  const tickDeps = (nowMs) => ({
+    capability: CAP_ON,
+    store: kvs, now: () => nowMs,
+    jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
+    searchJql: async () => { searched++; return { issues: [issue("SUP-1")] }; },
+    pushTask: async (queueKey, body) => { pushed.push({ queueKey, body }); },
+    log: (l) => logged.push(String(l)),
+  });
+
+  // T+60 s — the tick that used to clear the tombstone and hand the ledger to the
+  // still-running pre-delete turn.
+  const early = await V.runVaTick({ job, tickId: "t-settle-1", deps: tickDeps(T0 + 60000) });
+  eq(early.reason, "purge-settling", "F-575.tick.BLOCK — the tick 60 s after the delete skips, naming the settling purge");
+  // `skipped` is an ARRAY on every arm of runVaTick and `src/va-admin.js` reads it as one
+  // (`asArray`, plus `stoppedAtGate` looking for `gate`). A boolean here would vanish.
+  eq(Array.isArray(early.skipped), true, "F-575.tick.BLOCK — …in the SHAPE the Agents tab reads, not a boolean asArray() would swallow");
+  eq(early.skipped[0].gate, "purge-settling", "F-575.tick.BLOCK — …named as a gate, so the tab shows why nothing happened");
+  eq(searched, 0, "F-575.tick.BLOCK — …having bought no JQL sweep");
+  eq(pushed.length, 0, "F-575.tick.BLOCK — …and fanned out no item task");
+  ok(Boolean(await kvs.get(K.vaPurgedKey(AG))), "F-575.tick.BLOCK — the tombstone is still standing");
+  ok(!(await L.readTick(kvs, AG, "t-settle-1", "prepare")).receipt,
+    "F-575.tick.BLOCK — and the skip is RECEIPT-FREE: a receipt is a ledger write the tombstone refuses");
+  ok(logged.some((l) => l.includes("purge still settling")),
+    `F-575.tick.BLOCK — …but it is not silent (lines: ${JSON.stringify(logged)})`);
+
+  // THE NEXT TICK, past the window: the tombstone clears and the agent works normally.
+  const later = await V.runVaTick({ job, tickId: "t-settle-2", deps: tickDeps(T0 + K.VA_PURGE_SETTLE_MS + 60000) });
+  eq(later.reason, undefined, "F-575.tick.ALLOW — the next tick is not skipped for a settling purge");
+  eq(later.ok, true, "F-575.tick.ALLOW — …it runs");
+  eq(searched, 1, "F-575.tick.ALLOW — …and sweeps");
+  ok((await kvs.get(K.vaPurgedKey(AG))) == null, "F-575.tick.ALLOW — the tombstone is cleared, one tick late instead of three days late");
+  ok(Boolean((await L.readTick(kvs, AG, "t-settle-2", "prepare")).receipt), "F-575.tick.ALLOW — …and the receipt is written again");
 }
 
 /* ══ F-571. A DELETE LANDING MID-TURN STOPS THE WRITES, AND NAMES THE ONES IT MISSED ══

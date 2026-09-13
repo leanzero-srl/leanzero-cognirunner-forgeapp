@@ -46,6 +46,8 @@ import {
   vaExecClaimKey, vaPostClaimKey, vaCompactClaimKey, vaCompactBackoffKey, vaPurgedKey, capsBuckets, tickIdFor,
   VA_ITEM_TTL, VA_INDEX_TTL, VA_TICK_TTL, VA_EFFECT_TTL, VA_CAPS_TTL, VA_CLAIM_TTL, VA_HEALTH_TTL,
   VA_COMPACT_BACKOFF_TTL, VA_PURGED_TTL,
+  // F-575 — the settle window and the three claim prefixes a running turn holds.
+  VA_PURGE_SETTLE_MS, vaClaimPrefixes,
 } from "./shared/va-keys.js";
 
 const nowIso = (now) => new Date(now == null ? Date.now() : now).toISOString();
@@ -117,21 +119,91 @@ export const markAgentPurged = async (store, agent, { now = Date.now() } = {}) =
 };
 
 /**
+ * F-575 — "IS A TURN OF THE DELETED AGENT STILL HOLDING A CLAIM?"
+ *
+ * A bounded `BEGINS_WITH` scan of the three claim prefixes (`src/shared/va-keys.js` lists
+ * them; this file retypes none of them). The rows are `{at}` written by
+ * `claimRuleExecution`, so a claim is treated as LIVE only when its `at` is inside the
+ * settle window — and that qualification is the whole reason this is usable at all:
+ *
+ *   `withItemClaim` DOES NOT RELEASE ON SUCCESS, deliberately, so that a queue
+ *   redelivery cannot repeat a finished turn. The row therefore survives for
+ *   `VA_CLAIM_TTL` — TWO DAYS — after the turn ended. "A claim row exists" is not
+ *   "a turn is running"; testing mere existence would mean no tombstone could ever be
+ *   cleared inside two days, which is the three-day lockout with extra steps.
+ *
+ * It answers `{ok, live, checked}` and NEVER throws. `ok:false` means "could not tell" —
+ * an unavailable `query()` (the production `lazyStore` only grew one for this) or a scan
+ * fault — and the caller treats that as corroboration it did not get, NOT as proof of a
+ * live turn, because the settle window above it is the actual guarantee.
+ */
+const SETTLE_SCAN_LIMIT = 25;
+export const liveClaimFor = async (store, agent, { now = Date.now(), window = VA_PURGE_SETTLE_MS } = {}) => {
+  const q = typeof store.query === "function" ? store.query() : null;
+  if (!q) return { ok: false, live: false, checked: 0, reason: "scan_unavailable" };
+  let checked = 0;
+  for (const prefix of vaClaimPrefixes(agent)) {
+    let page = null;
+    try {
+      page = await store.query().where("key", { condition: "BEGINS_WITH", values: [prefix] }).limit(SETTLE_SCAN_LIMIT).getMany();
+    } catch (e) {
+      return { ok: false, live: false, checked, reason: "scan_failed", detail: String((e && e.message) || e) };
+    }
+    for (const row of (page && Array.isArray(page.results) ? page.results : [])) {
+      checked += 1;
+      const v = row && row.value;
+      const at = Date.parse((isObj(v) && v.at) || "");
+      // AN UNPARSEABLE `at` COUNTS AS LIVE. A claim row we cannot date is a claim we
+      // cannot prove is finished, and this is the one place in the function where doubt
+      // must block rather than pass.
+      if (!Number.isFinite(at)) return { ok: true, live: true, checked, key: row && row.key, reason: "claim_undated" };
+      if (now - at < window) return { ok: true, live: true, checked, key: row && row.key, at: v.at };
+    }
+  }
+  return { ok: true, live: false, checked };
+};
+
+/**
  * F-512's shape, applied to the tombstone: an agent id can COME BACK (`normalizeJob` takes a
  * caller-supplied `src.id`, which is the import/restore path), and a re-created agent that
  * inherited a dead one's tombstone could not write a single ledger row until it expired.
  *
- * So the first PREPARE TICK clears it — but ONLY when the tombstone was stamped BEFORE the
- * job row's `createdAt`. That comparison is the whole safety of this function: a prepare
- * tick of the DELETED agent that is still in flight carries the OLD `createdAt`, which is
- * older than the tombstone, so it cannot unlock the ledger it is racing. A genuinely
- * re-created job was normalized with no `existing` row and therefore has a `createdAt` after
- * the delete, which is after the tombstone.
+ * So the first PREPARE TICK clears it — but only under THREE conditions, and F-575 is the
+ * bill for shipping with one of them.
  *
- * A missing or unparseable `createdAt` CLEARS NOTHING. Refusing to clear costs a re-created
- * agent three days of ledger; clearing on an unknown date reopens F-553 in full.
+ * 1. THE TOMBSTONE PREDATES THE JOB'S `createdAt`. A prepare tick of the DELETED agent that
+ *    is still in flight carries the OLD `createdAt`, which is older than the tombstone, so
+ *    it cannot unlock the ledger it is racing. A missing or unparseable `createdAt` clears
+ *    nothing.
+ *
+ *    THIS PROVES THE JOB IS NEW. IT DOES NOT PROVE THE OLD TURN HAS FINISHED — which is
+ *    F-575, and is a different clock entirely: delete at T+0 (tombstone stamped), re-create
+ *    through the REST API at T+5 s (server-stamped `createdAt`, honestly newer), tick clears
+ *    at T+60 s, and the pre-delete turn — delivered before the delete and still inside its
+ *    120 s consumer — writes at T+90 s into the LIVE agent's ledger. Every F-553 guard
+ *    passes again because the thing they refuse under has been deleted.
+ *
+ * 2. THE TOMBSTONE HAS SETTLED: at least `VA_PURGE_SETTLE_MS` has passed since it was
+ *    stamped. THIS is the guarantee, and it is a proof rather than a margin. The only turn
+ *    that can reach a write seam without seeing a standing tombstone is one that passed the
+ *    ENTRY check BEFORE the tombstone existed; anything delivered afterwards refuses at
+ *    entry, redeliveries included. Such a turn is bounded by the consumer's 120 s. Once the
+ *    marker is older than that bound plus slop, no pre-delete turn can still be in flight.
+ *
+ * 3. NO CLAIM FOR THE AGENT IS STILL LIVE (`liveClaimFor`). Corroboration, not the
+ *    guarantee, and it earns its place by covering the ONE case the clock cannot see: a turn
+ *    that got past the entry check because its tombstone read FAULTED —
+ *    `readPurgeTombstone` fails soft and `purgedGuard` treats a fault as "write on",
+ *    deliberately and documented there. A scan that cannot run (no `query()`) or that faults
+ *    is corroboration NOT OBTAINED, and does not block: condition 2 already holds, and
+ *    making an unavailable scan mean "refuse" would restore the three-day lockout on any
+ *    store without a query builder.
+ *
+ * The refusal reason for 2 and 3 is `purge-settling`, and it is not an error: the tick that
+ * gets it skips, and the NEXT tick clears. The cost of the whole fix is one extra tick for a
+ * re-created agent.
  */
-export const clearPurgeTombstone = async (store, agent, { createdAt = null } = {}) => {
+export const clearPurgeTombstone = async (store, agent, { createdAt = null, now = Date.now(), settleMs = VA_PURGE_SETTLE_MS } = {}) => {
   const t = await readPurgeTombstone(store, agent);
   if (t.readFailed) return { ok: false, cleared: false, reason: "tombstone_read_failed", detail: t.detail };
   if (!t.purged) return { ok: true, cleared: false, reason: "no_tombstone" };
@@ -145,7 +217,17 @@ export const clearPurgeTombstone = async (store, agent, { createdAt = null } = {
     // agent that was just deleted, not a re-creation. Leave it standing.
     return { ok: false, cleared: false, reason: "tombstone_newer_than_job" };
   }
-  try { await store.delete(vaPurgedKey(agent)); return { ok: true, cleared: true }; }
+  /* — 2. THE SETTLE WINDOW (F-575). The guarantee. — */
+  const age = Number(now) - stamped;
+  if (!(age >= settleMs)) {
+    return { ok: false, cleared: false, reason: "purge-settling", settling: "window", ageMs: age, settleMs };
+  }
+  /* — 3. THE CLAIM SCAN (F-575). Corroboration; "could not tell" does not block. — */
+  const claim = await liveClaimFor(store, agent, { now, window: settleMs });
+  if (claim.ok && claim.live) {
+    return { ok: false, cleared: false, reason: "purge-settling", settling: "claim", claimKey: claim.key || null };
+  }
+  try { await store.delete(vaPurgedKey(agent)); return { ok: true, cleared: true, claimScan: claim.ok ? "clear" : claim.reason }; }
   catch (e) { return { ok: false, cleared: false, reason: "tombstone_clear_failed", detail: String((e && e.message) || e) }; }
 };
 

@@ -967,10 +967,113 @@ reset();
     "tombstone: an unknown createdAt clears NOTHING");
   ok((await L.saveItem(kvs, AG2, "SUP-1", { state: "queued", event: "queued" })).ok === false,
     "tombstone: …and the ledger is still refusing");
-  const newer = await L.clearPurgeTombstone(kvs, AG2, { createdAt: "2026-09-13T12:30:00.000Z" });
-  ok(newer.cleared === true, `tombstone.RECREATED — a job created AFTER the tombstone clears it (got ${JSON.stringify(newer)})`);
+  // `now` is EXPLICIT since F-575: the clear also requires the tombstone to have SETTLED,
+  // so a test that let `now` default to the wall clock would pass or fail depending on
+  // what time of day it ran — the tombstone above is stamped at a fixed 2026-09-13T12:00Z.
+  const newer = await L.clearPurgeTombstone(kvs, AG2, { createdAt: "2026-09-13T12:30:00.000Z", now: Date.parse("2026-09-13T13:00:00.000Z") });
+  ok(newer.cleared === true, `tombstone.RECREATED — a job created AFTER the tombstone, once SETTLED, clears it (got ${JSON.stringify(newer)})`);
   ok((await L.saveItem(kvs, AG2, "SUP-1", { state: "queued", event: "queued" })).ok === true,
     "tombstone.RECREATED — …and the re-created agent writes its ledger from its first tick");
+
+  /* ── F-575. THE CLEAR MUST ALSO PROVE THE OLD TURN HAS FINISHED ──────────────
+   *
+   * `stamped < createdAt` proves the JOB is new. The timeline from the finding, run to
+   * the minute: T+0 delete, T+5 s re-create (server-stamped createdAt, honestly newer),
+   * T+60 s the first prepare tick asks to clear, T+90 s the pre-delete turn — delivered
+   * before the delete and still inside its 120 s consumer — reaches its write seam.
+   *
+   * Before the fix the T+60 s clear SUCCEEDED and the T+90 s turn wrote into the live
+   * agent's ledger. It must now answer `purge-settling`.
+   */
+  reset();
+  {
+    const AG3 = "job_tomb_settle";
+    const T0 = Date.parse("2026-09-13T12:00:00.000Z");
+    const CREATED = new Date(T0 + 5000).toISOString();      // T+5 s — the re-creation
+    await L.markAgentPurged(kvs, AG3, { now: T0 });         // T+0   — the delete
+
+    // T+60 s — THE TICK THAT USED TO UNLOCK THE LEDGER.
+    const early = await L.clearPurgeTombstone(kvs, AG3, { createdAt: CREATED, now: T0 + 60000 });
+    eq(early.cleared, false, "F-575.BLOCK_window — the tick 60 s after the delete does NOT clear the tombstone");
+    eq(early.reason, "purge-settling", "F-575.BLOCK_window — …and names the reason the tick skips on");
+    eq(early.settling, "window", "F-575.BLOCK_window — …which is the settle window, not a claim");
+    ok(Boolean(await kvs.get(K.vaPurgedKey(AG3))), "F-575.BLOCK_window — the tombstone is still standing");
+
+    // T+90 s — THE PRE-DELETE TURN'S WRITE. This is the whole point: with the tombstone
+    // still standing, the write that used to land in the LIVE agent's ledger is refused.
+    const late = await L.saveItem(kvs, AG3, "SUP-1", { state: "queued", event: "queued" });
+    eq(late.ok, false, "F-575.BLOCK_window — the pre-delete turn's write at T+90 s is still refused");
+    eq(late.reason, "agent-purged", "F-575.BLOCK_window — …for the right reason");
+
+    // THE NEXT TICK, past the settle window, clears — the cost of the fix is ONE tick,
+    // not the tombstone's three days.
+    const later = await L.clearPurgeTombstone(kvs, AG3, { createdAt: CREATED, now: T0 + K.VA_PURGE_SETTLE_MS + 1000 });
+    eq(later.cleared, true, `F-575.ALLOW_settled — the next tick clears once the window has passed (got ${JSON.stringify(later)})`);
+    ok((await L.saveItem(kvs, AG3, "SUP-1", { state: "queued", event: "queued" })).ok === true,
+      "F-575.ALLOW_settled — …and the re-created agent writes its ledger from that tick");
+  }
+
+  /* ── F-575 (b). THE CLAIM SCAN — the case the clock cannot see ───────────────
+   *
+   * The settle window is the guarantee, but it assumes the old turn refused at its ENTRY
+   * check. A turn whose tombstone READ FAULTED did not (reads fail soft, deliberately),
+   * and it can still be holding its claim well past the window. `liveClaimFor` is what
+   * sees that, and a LIVE claim keeps the tombstone standing. */
+  reset();
+  {
+    const AG4 = "job_tomb_claim";
+    const T0 = Date.parse("2026-09-13T12:00:00.000Z");
+    const CREATED = new Date(T0 + 5000).toISOString();
+    await L.markAgentPurged(kvs, AG4, { now: T0 });
+    const NOW = T0 + K.VA_PURGE_SETTLE_MS + 60000;   // well past the window
+
+    // A turn that took its item claim JUST NOW — it cannot have finished.
+    await kvs.set(K.vaExecClaimKey(AG4, "SUP-1", "t-late"), { at: new Date(NOW - 10000).toISOString() });
+    const blocked = await L.clearPurgeTombstone(kvs, AG4, { createdAt: CREATED, now: NOW });
+    eq(blocked.cleared, false, "F-575.BLOCK_claim — a LIVE va_exec claim keeps the tombstone standing past the window");
+    eq(blocked.reason, "purge-settling", "F-575.BLOCK_claim — …with the same reason the tick skips on");
+    eq(blocked.settling, "claim", "F-575.BLOCK_claim — …attributed to the claim, so an operator can tell them apart");
+    ok(String(blocked.claimKey || "").startsWith("va_exec:"), `F-575.BLOCK_claim — …and names the claim (got ${blocked.claimKey})`);
+
+    // The OTHER two claim prefixes count too, or the scan is a hole with a fence round it.
+    await kvs.delete(K.vaExecClaimKey(AG4, "SUP-1", "t-late"));
+    for (const [label, key] of [
+      ["va_post", K.vaPostClaimKey(AG4, "SUP-1", "2026-09-13T12:00:00.000Z")],
+      ["va_compact", K.vaCompactClaimKey(AG4, "t-late")],
+    ]) {
+      await kvs.set(key, { at: new Date(NOW - 10000).toISOString() });
+      const r = await L.clearPurgeTombstone(kvs, AG4, { createdAt: CREATED, now: NOW });
+      eq(r.reason, "purge-settling", `F-575.BLOCK_claim — a live ${label} claim blocks the clear too`);
+      await kvs.delete(key);
+    }
+
+    /*
+     * AND THE ONE THAT MAKES THE SCAN USABLE AT ALL: `withItemClaim` DOES NOT RELEASE ON
+     * SUCCESS, so a claim row survives its turn by VA_CLAIM_TTL — two days. A scan that
+     * tested mere EXISTENCE would refuse to clear for two days, which is the lockout this
+     * function exists to avoid. Only a claim inside the settle window counts as live.
+     */
+    await kvs.set(K.vaExecClaimKey(AG4, "SUP-9", "t-old"), { at: new Date(NOW - K.VA_PURGE_SETTLE_MS - 60000).toISOString() });
+    const stale = await L.clearPurgeTombstone(kvs, AG4, { createdAt: CREATED, now: NOW });
+    eq(stale.cleared, true, `F-575.ALLOW_stale_claim — a FINISHED turn's claim row (kept 2 days on purpose) does not block the clear (got ${JSON.stringify(stale)})`);
+
+    // An UNDATED claim row is the one doubt that blocks: we cannot prove it is finished.
+    reset();
+    await L.markAgentPurged(kvs, AG4, { now: T0 });
+    await kvs.set(K.vaExecClaimKey(AG4, "SUP-1", "t-weird"), { nope: true });
+    const undated = await L.clearPurgeTombstone(kvs, AG4, { createdAt: CREATED, now: NOW });
+    eq(undated.reason, "purge-settling", "F-575.BLOCK_claim — an UNDATED claim row cannot be proven finished, so it blocks");
+
+    // A STORE WITH NO `query()` must still clear once settled — corroboration not
+    // obtained is not proof of a live turn, and refusing here would restore the
+    // three-day lockout on any store without a query builder.
+    reset();
+    await L.markAgentPurged(kvs, AG4, { now: T0 });
+    const noQuery = { get: (k) => kvs.get(k), set: (k, v, o) => kvs.set(k, v, o), delete: (k) => kvs.delete(k) };
+    const degraded = await L.clearPurgeTombstone(noQuery, AG4, { createdAt: CREATED, now: NOW });
+    eq(degraded.cleared, true, `F-575.DEGRADED — a store with no query() still clears once the window has passed (got ${JSON.stringify(degraded)})`);
+    eq(degraded.claimScan, "scan_unavailable", "F-575.DEGRADED — …and SAYS the corroboration was not obtained, rather than implying it was");
+  }
 
   // THE GUARD FAILS OPEN ON A READ FAULT — stated in the source, asserted here, because a
   // blip that refused every write would silently mute a LIVE agent.

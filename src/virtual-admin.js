@@ -660,8 +660,36 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
      * health counter), and a re-created agent that was paused or briefly unlicensed would
      * otherwise never reach the clear and would stay mute for the tombstone's three days.
      * Fail-soft — a tombstone that will not clear costs rows, never the tick.
+     *
+     * F-575 — AND THE TICK STOPS WHEN THE CLEAR SAYS `purge-settling`.
+     *
+     * `stamped < createdAt` proved only that the JOB is new. The old agent's TURN can still
+     * be inside its 120 s consumer, and clearing under it hands the pre-delete turn the
+     * LIVE agent's ledger to write into. `clearPurgeTombstone` now also requires the
+     * tombstone to have settled and no claim to be live, and answers `purge-settling` when
+     * it has not — which means the tombstone IS STILL STANDING, so every ledger writer
+     * downstream would refuse anyway and this tick could only spend a JQL sweep and a model
+     * call to produce nothing. It skips instead, and the NEXT tick clears.
+     *
+     * RECEIPT-FREE, for the reason the item turn's entry check is: the receipt is a ledger
+     * write and the tombstone is exactly what refuses it. The reason goes to the log and to
+     * the return value, which the queue log carries.
      */
-    await clearPurgeTombstone(deps.store, agent, { createdAt: job.createdAt || null });
+    const cleared = await clearPurgeTombstone(deps.store, agent, { createdAt: job.createdAt || null, now: deps.now() });
+    if (cleared.reason === "purge-settling") {
+      const detail = `purge still settling (${cleared.settling}${cleared.claimKey ? `: ${cleared.claimKey}` : ""})`;
+      deps.log(`[va] ${agent}: ${detail} — tick skipped, the tombstone stands`);
+      // `skipped` IS AN ARRAY on every other arm of this function, and `src/va-admin.js`
+      // reads it as one (`asArray(r.skipped)`, and `stoppedAtGate` looks for `gate`). A
+      // boolean here would be silently swallowed by `asArray` and the Agents tab would
+      // show a tick that did nothing, for no stated reason — so this takes the same shape
+      // the paused and capability arms take, and names its gate.
+      return {
+        ok: true, reason: "purge-settling", settling: cleared.settling,
+        candidates: 0, fannedOut: 0,
+        skipped: [{ key: "(agent)", gate: "purge-settling", reason: detail }],
+      };
+    }
 
     // A PAUSED agent does no work at all, and says so in its receipt. The post gate
     // checks this too — both, deliberately: pausing must stop the SPEND (here) as well
@@ -2197,10 +2225,23 @@ const lazyStore = () => {
       get: async (k) => (await import("@forge/kvs")).kvs.get(k),
       set: async (k, v, o) => (await import("@forge/kvs")).kvs.set(k, v, o),
       delete: async (k) => (await import("@forge/kvs")).kvs.delete(k),
+      /*
+       * F-575 — the BOUNDED CLAIM SCAN needs a query builder, and this store had none, so
+       * `liveClaimFor` would have reported `scan_unavailable` on every production call.
+       *
+       * `query()` is SYNCHRONOUS in the KVS API (it returns a builder), so it cannot use
+       * the lazy `await import` shape the other three do — it is the same split
+       * `src/va-admin.js` already carries for its receipts and effects scans, and it is
+       * primed by `primeDeps()`, which the consumer awaits before every VA task. A scan
+       * before priming degrades to "could not tell", never to "nothing found": an empty
+       * answer here would read as "no turn is running", the proven-negative trap.
+       */
+      query: () => (_kvsSync ? _kvsSync.query() : null),
     };
   }
   return _store;
 };
+let _kvsSync = null;
 
 /**
  * THE AGENT CAPABILITY VERDICT FOR THE VIRTUAL ADMINISTRATOR — one home, three
@@ -2603,6 +2644,10 @@ export const primeDeps = async () => {
   if (!_confluenceActions) _confluenceActions = await import("./confluence-actions.js");
   if (!_gitActions) _gitActions = await import("./git-actions.js");
   if (!_webSearchTool) _webSearchTool = await import("./web-search-tool.js");
+  // F-575 — the SYNCHRONOUS kvs handle the claim scan's `query()` needs. Primed here
+  // because this is the one function the consumer awaits before every VA task; a failure
+  // leaves it null, and `liveClaimFor` then answers "could not tell" rather than "empty".
+  if (!_kvsSync) { try { _kvsSync = (await import("@forge/kvs")).kvs; } catch (e) { _kvsSync = null; } }
 };
 
 /** Merge injected deps over the defaults. One home, so no entry point can forget one. */

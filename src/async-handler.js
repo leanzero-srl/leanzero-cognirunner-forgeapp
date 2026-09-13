@@ -91,6 +91,8 @@ import {
 } from "./memories.js";
 import { executeListenerTask, getListener, dispatchGitEvent } from "./listeners.js";
 import { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS } from "./shared/git-ids.js";
+// F-335 live proof — the dev-only fault lever (inert without HARNESS_SECRET; see src/harness-fault.js).
+import { harnessFaultArmed, HarnessFault, HARNESS_FAULT_GIT_DISPATCH } from "./harness-fault.js";
 // 1.4 commit 4b — the PR review engine and the connection layer it runs over. The
 // engine holds NO opinion about credentials or transports: the consumer injects the
 // provider (built from the saved connection) and the model callback.
@@ -1185,6 +1187,15 @@ const executeGitEvent = async (params) => {
     return { success: false, error: "git-event requires params.envelope" };
   }
   try {
+    // DEV-ONLY FAULT LEVER (F-335 live proof). The ONE seam where a planted failure can
+    // stand in for a dispatch throw: before `dispatchGitEvent`, therefore before ANY side
+    // effect (no run queued, no issue property written), so the catch below sees exactly
+    // the state a real throw would leave. `harnessFaultArmed` returns false on its first
+    // statement — with no KVS read — unless process.env.HARNESS_SECRET is set; dev and
+    // staging builds carry it, PRODUCTION NEVER DOES, so this line is inert in production.
+    if (await harnessFaultArmed(HARNESS_FAULT_GIT_DISPATCH, envelope.connectionId, envelope.deliveryId)) {
+      throw new HarnessFault(`harness fault armed for conn=${envelope.connectionId || "?"} delivery=${envelope.deliveryId || "?"} — dispatch refused before any side effect`);
+    }
     const out = await dispatchGitEvent(envelope);
     console.log(`[git-event] ${out.eventType || "?"} ${out.repoId || "?"}: ${out.queued || 0} run(s) queued, ${out.propertyWrites || 0} issue propert(ies) written`);
     return { success: true, ...out };

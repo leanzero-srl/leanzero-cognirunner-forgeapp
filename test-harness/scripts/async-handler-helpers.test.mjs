@@ -1084,8 +1084,14 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     set: async (k, v) => { gitStore.set(k, v); },
     delete: async (k) => { gitStore.delete(k); },
   };
-  const mk = (dispatch) => new Function("dispatchGitEvent", "console", "storage", "gitDeliveryClaimKey", "gitDeliveryAttemptKey", "GIT_DISPATCH_MAX_ATTEMPTS",
-    `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet, gitStorage, gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS);
+  // The handler now also reads the dev-only fault lever (F-335 live proof). It is injected
+  // like every other dependency of this slice; `armedFault` is what the stub answers.
+  const { HarnessFault, HARNESS_FAULT_GIT_DISPATCH } = await import("../../src/harness-fault.js");
+  let armedFault = false;
+  const faultCalls = [];
+  const fakeArmed = async (kind, ...parts) => { faultCalls.push([kind, ...parts].join("|")); return armedFault; };
+  const mk = (dispatch) => new Function("dispatchGitEvent", "console", "storage", "gitDeliveryClaimKey", "gitDeliveryAttemptKey", "GIT_DISPATCH_MAX_ATTEMPTS", "harnessFaultArmed", "HarnessFault", "HARNESS_FAULT_GIT_DISPATCH",
+    `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet, gitStorage, gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS, fakeArmed, HarnessFault, HARNESS_FAULT_GIT_DISPATCH);
   let seen = null;
   const okHandler = mk(async (env) => { seen = env; return { eventType: env.eventType, repoId: "o/r", queued: 2, propertyWrites: 1 }; });
   const r1 = await okHandler({ envelope: { eventType: "git:pull_request:opened", repoId: "o/r" } });
@@ -1110,6 +1116,90 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const r3 = await mk(async () => { throw new Error("kvs down"); })({ envelope: { eventType: "git:push" } });
   ok(r3.success === false && /kvs down/.test(r3.error), "EXECUTED: a delivery with no connection/delivery id cannot be re-claimed, so it is dropped and reported, never rethrown blind");
   ok(/if \(error && error\.requeue\) throw error;/.test(asyncSrc), "the consumer's outer catch lets a requeue-marked error out AFTER recording it");
+
+  // ---- F-335 LIVE PROOF LEVER: an armed fault stands in for a dispatch throw ----
+  // The seam sits BEFORE dispatchGitEvent, so an armed delivery queues nothing and writes
+  // no issue property — the catch below sees exactly the state a real throw would leave.
+  ok(g.indexOf("harnessFaultArmed") < g.indexOf("await dispatchGitEvent"),
+    "the fault lever is read BEFORE the dispatch — no side effect can precede a planted failure");
+  gitStore.clear();
+  gitStore.set(gitDeliveryClaimKey("gc_f", "d-f"), { at: "now" });
+  let dispatched = 0;
+  const faulted = mk(async () => { dispatched += 1; return { eventType: "git:push", repoId: "o/r", queued: 1, propertyWrites: 1 }; });
+  const envF = { envelope: { eventType: "git:push", connectionId: "gc_f", deliveryId: "d-f" } };
+  armedFault = true;
+  let fThrow = null;
+  try { await faulted(envF); } catch (e) { fThrow = e; }
+  ok(fThrow && fThrow.name === "HarnessFault" && fThrow.requeue === true,
+    "EXECUTED: an armed fault throws a NAMED HarnessFault and is rethrown for redelivery");
+  ok(dispatched === 0, "EXECUTED: …and dispatchGitEvent never ran — nothing queued, no property written");
+  ok((gitStore.get(gitDeliveryAttemptKey("gc_f", "d-f")) || {}).attempts === 1, "EXECUTED: the attempt counter advances on a planted fault, exactly as on a real one");
+  ok(gitStore.get(gitDeliveryClaimKey("gc_f", "d-f")) === undefined, "EXECUTED: …and the delivery claim is released so the redelivery is not answered 'duplicate'");
+  ok(faultCalls[faultCalls.length - 1] === `${HARNESS_FAULT_GIT_DISPATCH}|gc_f|d-f`, "EXECUTED: the lever is keyed by connection + delivery, never globally");
+  armedFault = false;
+  const okAfter = await faulted(envF);
+  ok(okAfter.success === true && dispatched === 1, "EXECUTED: with the lever disarmed the very next attempt dispatches for real");
+}
+
+// =====================================================================================
+// F-335 live proof — src/harness-fault.js: ONE home for the dev-only lever, and INERT in
+// production. The env gate is what makes this safe to ship: with HARNESS_SECRET absent the
+// helper must not perform a single KVS read, so the production path is byte-identical.
+// =====================================================================================
+{
+  const fault = await import("../../src/harness-fault.js");
+  const { kvs } = await import("../lib/mock-kvs.mjs");
+  const { HARNESS_FAULT_GIT_DISPATCH: KIND, HARNESS_FAULT_MAX_COUNT } = fault;
+  const parts = ["gc live", "harness/../delivery 7"];
+  const key = fault.harnessFaultKey(KIND, ...parts);
+
+  ok(key.startsWith("harness_fault:git-dispatch:"), "the row shape is harness_fault:<kind>:<parts>");
+  ok(!/[^a-zA-Z0-9:._#\s-]/.test(key), "EXECUTED: every part is sanitised — a raw provider delivery header cannot shape the key (F-334)");
+  ok(/^(?!\s+$)[a-zA-Z0-9:._\s#-]+$/.test(key) && key.length <= 500, "EXECUTED: …and the result is a key the platform accepts (assertKvsKey)");
+
+  // --- env ABSENT: the production path. Count reads of the fault key; expect zero. ---
+  const realGet = kvs.get;
+  let reads = 0;
+  kvs.get = async function countingGet(k) { if (String(k).startsWith("harness_fault:")) reads += 1; return realGet.call(this, k); };
+  const savedEnv = process.env.HARNESS_SECRET;
+  delete process.env.HARNESS_SECRET;
+  // Arm the row FIRST (arming is the dev hook's job and is not env-gated itself — the
+  // Bearer gate in test-hook.js is; what must be inert is the READ on the hot path).
+  process.env.HARNESS_SECRET = "armed-by-the-hook";
+  await fault.armHarnessFault(KIND, parts, 2);
+  delete process.env.HARNESS_SECRET;
+  reads = 0;
+  ok((await fault.harnessFaultArmed(KIND, ...parts)) === false, "EXECUTED: with HARNESS_SECRET absent (production) the lever is never armed, even with a row present");
+  ok(reads === 0, "EXECUTED: …and it performs ZERO KVS reads of the fault key — the production path does not touch storage");
+  ok((await fault.readHarnessFault(KIND, parts)).value.count === 2, "EXECUTED: …and the row was NOT consumed by that call");
+
+  // --- env PRESENT: dev/staging. The counter advances and then stops. ---
+  process.env.HARNESS_SECRET = "dev";
+  ok((await fault.harnessFaultArmed(KIND, ...parts)) === true, "EXECUTED: armed fault #1 fires");
+  ok((await fault.readHarnessFault(KIND, parts)).value.count === 1, "EXECUTED: …and consumes exactly one unit");
+  ok((await fault.harnessFaultArmed(KIND, ...parts)) === true, "EXECUTED: armed fault #2 fires");
+  ok((await fault.readHarnessFault(KIND, parts)).value === null, "EXECUTED: …and the exhausted row is deleted, not left at zero");
+  ok((await fault.harnessFaultArmed(KIND, ...parts)) === false, "EXECUTED: the third attempt is NOT faulted — count=2 means exactly two failures then a real run");
+  ok(reads > 0, "EXECUTED: (sanity) the dev path really does read the row — the zero above is the env gate, not a broken spy");
+
+  // --- cap + disarm ---
+  const armed = await fault.armHarnessFault(KIND, parts, 99);
+  ok(armed.count === HARNESS_FAULT_MAX_COUNT, `EXECUTED: the arm count is clamped to ${HARNESS_FAULT_MAX_COUNT} — a lever cannot outlive the four-retry cap by much`);
+  await fault.disarmHarnessFault(KIND, parts);
+  ok((await fault.readHarnessFault(KIND, parts)).value === null, "EXECUTED: disarm removes the row");
+  ok((await fault.harnessFaultArmed(KIND, ...parts)) === false, "EXECUTED: …and a disarmed lever passes the dispatch through");
+
+  // --- the named error, and the wiring ---
+  const e = new fault.HarnessFault("planted");
+  ok(e instanceof Error && e.name === "HarnessFault" && e.harnessFault === true, "EXECUTED: the planted failure is NAMED, so no log reader mistakes it for a product error");
+  ok(/if \(!process\.env\.HARNESS_SECRET\) return false;/.test(readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8").split("harnessFaultArmed = async")[1].slice(0, 200)),
+    "the env gate is the FIRST statement of harnessFaultArmed — before any storage call");
+  const hookSrc = readFileSync(path.join(here, "../../src/test-hook.js"), "utf8");
+  ok(/armGitDispatchFault/.test(hookSrc) && /disarmGitDispatchFault/.test(hookSrc), "arm/disarm are dev-hook actions (HARNESS_SECRET Bearer gated), not resolvers");
+  ok(!/harness_fault:/.test(hookSrc) && !/harness_fault:/.test(asyncSrc), "neither the hook nor the consumer retypes the key shape — it has ONE home");
+
+  kvs.get = realGet;
+  if (savedEnv === undefined) delete process.env.HARNESS_SECRET; else process.env.HARNESS_SECRET = savedEnv;
 }
 
 // =====================================================================================

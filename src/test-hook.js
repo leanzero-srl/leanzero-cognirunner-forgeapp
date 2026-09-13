@@ -112,6 +112,28 @@ export async function testStateTrigger(req) {
       const r = await deleteHarnessConnection(connId);
       return json(r.ok ? 200 : 400, r);
     }
+    // ===== F-335 live proof: the dev-only dispatch fault lever =====
+    // Arms N consecutive forced throws at the git-event dispatch seam so the live driver
+    // can prove the retry/attempt-cap/claim-release contract without breaking anything
+    // for real. All of it — the key shape, the cap, the TTL and the env gate — lives in
+    // src/harness-fault.js; this is wiring behind the same HARNESS_SECRET Bearer gate as
+    // every other action here, and the lever itself is additionally inert whenever that
+    // env var is absent (production).
+    if (body.action === "armGitDispatchFault" || body.action === "disarmGitDispatchFault" || body.action === "readGitDispatchFault") {
+      const connId = String(body.connectionId || body.connId || "");
+      const deliveryId = String(body.deliveryId || "");
+      if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(connId)) return json(400, { error: "connectionId required" });
+      if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(deliveryId)) return json(400, { error: "deliveryId required" });
+      const { armHarnessFault, disarmHarnessFault, readHarnessFault, HARNESS_FAULT_GIT_DISPATCH, HARNESS_FAULT_MAX_COUNT } = await import("./harness-fault.js");
+      const parts = [connId, deliveryId];
+      if (body.action === "armGitDispatchFault") {
+        const n = Math.floor(Number(body.count) || 1);
+        if (!(n >= 1 && n <= HARNESS_FAULT_MAX_COUNT)) return json(400, { error: `count must be 1-${HARNESS_FAULT_MAX_COUNT}` });
+        return json(200, { ok: true, ...(await armHarnessFault(HARNESS_FAULT_GIT_DISPATCH, parts, n)) });
+      }
+      if (body.action === "disarmGitDispatchFault") return json(200, { ok: true, ...(await disarmHarnessFault(HARNESS_FAULT_GIT_DISPATCH, parts)) });
+      return json(200, { ok: true, ...(await readHarnessFault(HARNESS_FAULT_GIT_DISPATCH, parts)) });
+    }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });

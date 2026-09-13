@@ -323,14 +323,17 @@ const ADMINS = {
   success: true,
   admins: [
     { accountId: ACCT, displayName: "Mihai Perdum", avatarUrl: "https://secure.gravatar.com/avatar/aaa?d=identicon&s=48", role: "admin", scope: "all" },
-    { accountId: "557058:22222222-2222-2222-2222-222222222222", displayName: "Dana Editor", avatarUrl: "https://secure.gravatar.com/avatar/bbb?d=identicon&s=48", role: "editor", scope: "all" },
+    /* F-647 — a STORED roster row that carries an emailAddress. `addAppAdmin` persists the
+       email the admin clicked (0811b8a), so the card must render it from the stored row and
+       not only from the optimistic one the add just pushed. */
+    { accountId: "557058:22222222-2222-2222-2222-222222222222", displayName: "Dana Editor", avatarUrl: "https://secure.gravatar.com/avatar/bbb?d=identicon&s=48", role: "editor", scope: "all", emailAddress: "dana.editor@wolfaenpak.example" },
     { accountId: "557058:33333333-3333-3333-3333-333333333333", displayName: "Sam Viewer", avatarUrl: "https://secure.gravatar.com/avatar/ccc?d=identicon&s=48", role: "viewer", scope: "own" },
     { accountId: "557058:44444444-4444-4444-4444-444444444444", displayName: "Priya Editor", avatarUrl: null, role: "editor", scope: "own" },
     /* F-645 — the roster's own namesake: a SECOND "Mihai Perdum", exactly the pair that
-       made Remove a coin flip live. `addAppAdmin` stores only accountId/displayName/role/
-       scope (src/index.js), so a roster row has NO emailAddress and the id segment is the
-       only discriminator available on this surface. Placed deliberately as the last card,
-       away from the admin row it shares a name with. */
+       made Remove a coin flip live. This row deliberately carries NO emailAddress (a grant
+       made before 0811b8a, or a Jira account whose email is hidden), so it is the fixture
+       that proves the id segment still stands alone when there is nothing else. Placed
+       deliberately as the last card, away from the admin row it shares a name with. */
     { accountId: "557058:99999999-9999-9999-9999-999999999999", displayName: "Mihai Perdum", avatarUrl: null, role: "editor", scope: "own" },
   ],
 };
@@ -2127,6 +2130,13 @@ function invoke(name, payload) {
        the rows tellable apart without reordering them. Any other query keeps the original
        two-row fixture, so the F-259 refusal journey and the capture shots are untouched. */
     case "searchUsers": {
+      /* F-648 — Jira answered, and it answered badly. The resolver now fails CLOSED with
+         reason "jira_unavailable" instead of reporting an empty success, because a picker
+         that feeds a PERMISSION GRANT must say what it does not know: "No users found"
+         under a 429 is the negative that authorises the wrong action. */
+      if (typeof window !== "undefined" && window.__USER_SEARCH_429__) {
+        return Promise.resolve({ success: false, reason: "jira_unavailable", error: "User search failed (HTTP 429). Jira did not answer - try again.", status: 429 });
+      }
       const q = String((payload && payload.query) || "").toLowerCase();
       if (q.includes("mihai") || q.includes("perdum")) {
         return Promise.resolve({ success: true, users: [
@@ -2137,6 +2147,16 @@ function invoke(name, payload) {
       }
       return Promise.resolve({ success: true, users: [{ accountId: "557058:55555555-5555-5555-5555-555555555555", displayName: "Alex Newman", avatarUrl: "https://secure.gravatar.com/avatar/ddd?d=identicon&s=24" }, { accountId: "557058:66666666-6666-6666-6666-666666666666", displayName: "Jordan Lee", avatarUrl: null }] });
     }
+    /* F-647 — the grant echoes the emailAddress it was given, which is what makes the
+       roster card able to repeat the discriminator the admin actually clicked. A bridge
+       that silently dropped it would hide exactly the defect this arm exists to catch. */
+    case "addAppAdmin": return Promise.resolve({ success: true, admin: {
+      accountId: payload && payload.accountId,
+      displayName: payload && payload.displayName,
+      role: payload && payload.role,
+      scope: payload && payload.scope,
+      ...(payload && payload.emailAddress ? { emailAddress: payload.emailAddress } : {}),
+    } });
     case "getContextDocs": return Promise.resolve((typeof window !== "undefined" && window.__EMPTY__) ? { success: true, docs: [] } : DOCS);
     /* F-634 - the SUCCESS arm only. This door carries the F-235 viewer floor since F-626, and
        both refusal shapes are served above: `__NO_ROSTER__` for the whole-tenant state (which

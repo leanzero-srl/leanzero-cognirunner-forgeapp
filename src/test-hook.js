@@ -230,6 +230,31 @@ export async function testStateTrigger(req) {
       if (body.action === "disarmGitDispatchFault") return json(200, { ok: true, ...(await disarmHarnessFault(HARNESS_FAULT_GIT_DISPATCH, parts)) });
       return json(200, { ok: true, ...(await readHarnessFault(HARNESS_FAULT_GIT_DISPATCH, parts)) });
     }
+    // ===== F-504 live proof: the dev-only HOOK-PROMOTE fault lever =====
+    // Same shape, same allow-list discipline and same one-shot semantics as the dispatch
+    // lever above — arming N units makes the next N promotions of THIS connection+repo
+    // throw at step 3 of rotateGitHookSecret, which is the only way a live driver can
+    // reach `hookState:"rotation-failed"`, the pending-secret acceptance window (F-481)
+    // and the reconcile-on-retry (F-491). No secret is accepted or returned on any of the
+    // three actions: the lever is keyed by connection and repo alone.
+    if (body.action === "armHookPromoteFault" || body.action === "disarmHookPromoteFault" || body.action === "readHookPromoteFault") {
+      const connId = String(body.connectionId || body.connId || "");
+      const repoId = String(body.repoId || body.repo || "");
+      if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(connId)) return json(400, { error: "connectionId required" });
+      if (!/^[^/\s]+\/[^/\s]+$/.test(repoId) || repoId.length > 120) return json(400, { error: "repoId must be owner/name" });
+      const { armHarnessFault, disarmHarnessFault, readHarnessFault, HARNESS_FAULT_HOOK_PROMOTE, HARNESS_FAULT_MAX_COUNT } = await import("./harness-fault.js");
+      const { normalizeRepoId } = await import("./shared/git-ids.js");
+      // The consumer keys on the NORMALISED repo id (that is what rotate holds), so the
+      // arming side must normalise too or the lever would never be found.
+      const parts = [connId, normalizeRepoId(repoId)];
+      if (body.action === "armHookPromoteFault") {
+        const n = Math.floor(Number(body.count) || 1);
+        if (!(n >= 1 && n <= HARNESS_FAULT_MAX_COUNT)) return json(400, { error: `count must be 1-${HARNESS_FAULT_MAX_COUNT}` });
+        return json(200, { ok: true, ...(await armHarnessFault(HARNESS_FAULT_HOOK_PROMOTE, parts, n)) });
+      }
+      if (body.action === "disarmHookPromoteFault") return json(200, { ok: true, ...(await disarmHarnessFault(HARNESS_FAULT_HOOK_PROMOTE, parts)) });
+      return json(200, { ok: true, ...(await readHarnessFault(HARNESS_FAULT_HOOK_PROMOTE, parts)) });
+    }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });

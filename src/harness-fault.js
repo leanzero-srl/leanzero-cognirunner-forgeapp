@@ -42,8 +42,30 @@ export const HARNESS_FAULT_MAX_COUNT = 5;
 /** TTL of an armed lever. Short on purpose: a forgotten arm must not outlive the test. */
 export const HARNESS_FAULT_TTL = { value: 10, unit: "MINUTES" };
 
-/** The one kind in use today: a forced throw at the git-event dispatch seam. */
+/** A forced throw at the git-event dispatch seam (F-335). */
 export const HARNESS_FAULT_GIT_DISPATCH = "git-dispatch";
+
+/**
+ * F-504 — the SECOND kind. SAME home, SAME env gate, SAME one-shot semantics; a fault
+ * kind that grew its own arming/consuming code elsewhere would be the defect this file
+ * exists to prevent.
+ *
+ * WHY IT EXISTS: `rotateGitHookSecret` step 3 (the PROMOTE write) is the failure F-481
+ * was built for — the provider already signs the new secret while the store still holds
+ * the old one, so the row must keep BOTH (`getHookSecretCandidates` returns two) and the
+ * connection must be stamped `hookState:"rotation-failed"`. Offline that state is reached
+ * by failing a mock KVS write; LIVE there was no way to reach it at all, so F-481's
+ * pending-secret acceptance window and F-491's reconcile-on-retry were unobservable on a
+ * real tenant — an invariant about failure that nothing could exercise.
+ *
+ * Keyed by `<connId>:<repoId>`: the repo id is normalised by the caller and sanitised by
+ * `harnessFaultKey`, never embedded raw (F-334/F-346 — a "/" is not a legal key part).
+ * Consumed INSIDE step 3's own try block, so a planted throw takes exactly the path a
+ * real storage refusal takes: same catch, same `rotation-failed` stamp, same refusal
+ * string, no side effect the real failure would not have had. One armed unit == one
+ * failed promote; the retry the banner invites then runs for real.
+ */
+export const HARNESS_FAULT_HOOK_PROMOTE = "hook-promote";
 
 /** THE key shape. Parts are sanitised here, never at the call sites. */
 export const harnessFaultKey = (kind, ...parts) =>

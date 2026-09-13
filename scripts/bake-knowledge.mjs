@@ -699,6 +699,67 @@ export const checkTitlesCurrent = (expectedText) => {
   return { checked: true };
 };
 
+/**
+ * THE FINGERPRINT OF THE TEXT THAT ACTUALLY REACHES A MODEL (F-584).
+ *
+ * `KNOWLEDGE_CONTENT_VERSION` hashes the section bodies as the CORPUS holds them, and
+ * `KNOWLEDGE_INDEX_META_VERSION` hashes what the index says about them. Neither is
+ * recomputed from the nine files under src/shared/knowledge-packs/, which is where the
+ * bodies are actually read from at runtime — so this hashes the emitted pack MODULES,
+ * byte for byte, exactly as they would be written.
+ */
+export const emittedPacksFingerprint = (texts) => sha(
+  [...texts.keys()].sort().map((pack) => `${pack}:${sha(texts.get(pack))}`).join("\n"),
+).slice(0, 16);
+
+/**
+ * THE DRIFT PROBE FOR THE PACK BODIES (F-584).
+ *
+ * Until this existed, `--check` compared the index and the titles module and NOTHING
+ * else: the nine pack modules were written by the bake and read back by no gate, so a
+ * hand edit to a sentence inside a section body — model-facing instruction inside a
+ * trusted fence, injected into every codegen, validator and VA prompt — passed
+ * `npm run bake:check` green. The content version is computed from `knowledge/`, never
+ * from the emitted files, so it agreed with itself while the shipped text differed.
+ *
+ * Same mechanism as `checkIndexCurrent`: re-emit from the corpus and compare the bytes
+ * on disk. `emitPack` is pure, so this costs nothing but the comparison. A pack file on
+ * disk that the bake would NOT write (a rename left behind, a stray module) is a failure
+ * too — it is still statically importable and still ships.
+ */
+export const checkPacksCurrent = (expectedTexts) => {
+  const fingerprint = emittedPacksFingerprint(expectedTexts);
+  if (!existsSync(P.packs)) {
+    die("--check: NOT A PASS — no pack modules exist (src/shared/knowledge-packs/ is missing).\n"
+      + "  Run `npm run bake` and commit the generated packs; the index alone is not the corpus.", 1);
+    return { checked: false, fingerprint };
+  }
+  const onDisk = new Set(readdirSync(P.packs).filter((f) => f.endsWith(".js")));
+  const problems = [];
+  for (const pack of [...expectedTexts.keys()].sort()) {
+    const file = path.join(P.packs, `${pack}.js`);
+    onDisk.delete(`${pack}.js`);
+    if (!existsSync(file)) {
+      problems.push(`src/shared/knowledge-packs/${pack}.js is MISSING — the bake would write it`);
+      continue;
+    }
+    if (readFileSync(file, "utf8") !== expectedTexts.get(pack)) {
+      problems.push(`src/shared/knowledge-packs/${pack}.js is NOT what the bake would write`);
+    }
+  }
+  for (const stray of [...onDisk].sort()) {
+    problems.push(`src/shared/knowledge-packs/${stray} is not emitted by this corpus (stray or renamed pack)`);
+  }
+  if (problems.length) {
+    die("the emitted field-guide packs have drifted — these bodies go into every prompt (F-584):\n  "
+      + problems.join("\n  ")
+      + "\n  Edit the SOURCE under knowledge/ and re-bake; never the generated pack.", 1);
+    return { checked: false, fingerprint };
+  }
+  console.log(`bake-knowledge --check: ${expectedTexts.size} pack module(s) current (packs ${fingerprint}).`);
+  return { checked: true, fingerprint };
+};
+
 export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
   const { denylist } = runPreflight();
   const cfg = readSources();
@@ -850,29 +911,42 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
       + "  The saving is the whole reason the module exists. NOTHING was written.", 1);
   }
 
+  // Emitted ONCE, then either compared (--check) or written (F-584): the bytes the gate
+  // reads and the bytes the bake writes must come from the same call, or the gate proves
+  // something about text nobody ships.
+  const packTexts = new Map([...byPack.entries()].map(([pack, list]) => [pack, emitPack(pack, list)]));
+
   /* ---- --check: the pinned hashes ------------------------------------ */
   if (check) {
     checkIndexCurrent(contentVersion, indexText);
     checkTitlesCurrent(titlesText);
-    return { sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins, checked: true };
+    const packsCheck = checkPacksCurrent(packTexts);
+    return {
+      sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins,
+      packsVersion: packsCheck.fingerprint, checked: true,
+    };
   }
 
   /* ---- stage 5: emit -------------------------------------------------- */
   if (!dryRun) {
     mkdirSync(P.packs, { recursive: true });
-    for (const [pack, list] of byPack) {
-      writeFileSync(path.join(P.packs, `${pack}.js`), emitPack(pack, list));
+    for (const [pack, text] of packTexts) {
+      writeFileSync(path.join(P.packs, `${pack}.js`), text);
     }
     writeFileSync(P.index, indexText);
     writeFileSync(P.titles, titlesText);
     writeFileSync(P.manifest, renderManifest({ cfg, docs, sections, packSummaries, contentVersion, findings, pins }));
   }
 
-  console.log(`\nbake-knowledge: ${sections.length} sections across ${packSummaries.length} packs · content ${contentVersion}${dryRun ? " (dry run — nothing written)" : ""}`);
+  console.log(`\nbake-knowledge: ${sections.length} sections across ${packSummaries.length} packs · content ${contentVersion}`
+    + ` · packs ${emittedPacksFingerprint(packTexts)}${dryRun ? " (dry run — nothing written)" : ""}`);
   for (const p of packSummaries) console.log(`  ${p.id.padEnd(30)} ${String(p.sections).padStart(4)} sections  ${(p.bytes / 1024).toFixed(1)} KB`);
   console.log(`  ${"(UI titles module)".padEnd(30)} ${String(sections.length).padStart(4)} titles    ${(titlesBytes / 1024).toFixed(1)} KB`
     + `  — ${((titlesBytes / indexBytes) * 100).toFixed(0)} % of the ${(indexBytes / 1024).toFixed(1)} KB index, which stays backend-only`);
-  return { sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins, findings };
+  return {
+    sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins, findings,
+    packsVersion: emittedPacksFingerprint(packTexts),
+  };
 };
 
 /** knowledge/MANIFEST.md — the artefact the owner reads BEFORE any pack is committed. */

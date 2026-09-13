@@ -321,5 +321,42 @@ const secLit = JSON.stringify(sections);
   ok(true, "knowledge/sources.json is the one home for pins");
 }
 
+/* ---- the EMITTED PACK BODIES have a drift probe too (F-584) ----
+   --check compared the index and the titles module and nothing else, so a hand edit to a
+   sentence inside a section body — text injected into every codegen, validator and VA
+   prompt — passed `npm run bake:check` green. These assertions are on the exit code,
+   because that is all a CI step or a pre-commit hook can read. */
+{
+  const packsDir = path.join(repoRoot, "src/shared/knowledge-packs");
+  const load = `import fs from "node:fs"; import path from "node:path";\n`
+    + `const dir = ${JSON.stringify(packsDir)};\n`
+    + `const texts = new Map(fs.readdirSync(dir).filter((f) => f.endsWith(".js")).sort()\n`
+    + `  .map((f) => [f.replace(/\\.js$/, ""), fs.readFileSync(path.join(dir, f), "utf8")]));\n`;
+
+  const current = run(`${load}B.checkPacksCurrent(texts);`);
+  ok(current.status === 0, `the committed pack modules pass the probe (exit ${current.status})`);
+  ok(/pack module\(s\) current \(packs [0-9a-f]{16}\)/.test(current.out),
+    `and the check output carries the emitted-pack hash (${current.out.trim().split("\n").pop()})`);
+
+  const edited = run(`${load}texts.set("voice-rules", texts.get("voice-rules").replace('"body": "', '"body": "HAND EDIT. '));\n`
+    + `B.checkPacksCurrent(texts);`);
+  ok(edited.status !== 0, `a hand edit inside a pack BODY refuses --check (exit ${edited.status})`);
+  ok(/voice-rules\.js is NOT what the bake would write/.test(edited.out),
+    "and the refusal names the pack file that drifted");
+
+  const missing = run(`${load}texts.delete("voice-rules");\nB.checkPacksCurrent(texts);`);
+  ok(missing.status !== 0, `a pack on disk this corpus does not emit refuses --check (exit ${missing.status})`);
+  ok(/voice-rules\.js is not emitted by this corpus/.test(missing.out),
+    "a stray or renamed pack module is a failure too — it still ships");
+
+  // The fingerprint is a fingerprint: stable for the same bytes, different for one changed byte.
+  const a = new Map([["p", "x"], ["q", "y"]]);
+  const b = new Map([["q", "y"], ["p", "x"]]);
+  ok(bake.emittedPacksFingerprint(a) === bake.emittedPacksFingerprint(b),
+    "emittedPacksFingerprint does not depend on map order");
+  ok(bake.emittedPacksFingerprint(a) !== bake.emittedPacksFingerprint(new Map([["p", "x "], ["q", "y"]])),
+    "and one changed byte changes it");
+}
+
 console.log(`\nbake-knowledge: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

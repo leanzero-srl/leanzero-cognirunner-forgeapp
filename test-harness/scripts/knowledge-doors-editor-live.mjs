@@ -209,8 +209,15 @@ async function main() {
   PASS(`hook reachable on ${ENV_NAME}, secret accepted`);
 
   /* ── STEP 0 — snapshots ───────────────────────────────────────────────────── */
+  /* F-652 — `app_admins` carries real `emailAddress` values since F-647. The RAW
+     snapshot is what the byte-identical RESTORE check at the end compares against, so
+     it is held IN MEMORY ONLY and never written; every copy that reaches disk or a
+     terminal goes through `redactSecrets`, which masks the address to
+     `<initial>***@<domain>` — enough to tell namesakes apart, not a contactable
+     address in an artefact. */
   const rosterBefore = (await kvs("app_admins"))?.value || [];
-  ev.rosterBefore = rosterBefore;
+  const rosterBeforeJson = JSON.stringify(rosterBefore);   // in-memory, for the restore diff
+  ev.rosterBefore = rosterBefore;                          // redacted at the file boundary
   fs.writeFileSync(`${OUT}/roster-before.json`, JSON.stringify(redactSecrets(rosterBefore), null, 2));
   info(`roster snapshot: ${rosterBefore.length} row(s) -> ${OUT}/roster-before.json`);
   const docsBefore = (await invoke("getContextDocs", {})).json?.docs || [];
@@ -438,9 +445,13 @@ async function main() {
       } catch (e) { FAIL("the roster restore UI failed", { error: String(e.message).slice(0, 200) }); }
       const rosterEnd = (await kvs("app_admins"))?.value || [];
       ev.rosterAfter = rosterEnd;
-      const same = JSON.stringify(rosterEnd) === JSON.stringify(rosterBefore);
+      /* The comparison is RAW on both sides — a redacted diff would pass while two
+         different addresses sat behind the same mask. Only the FAIL payload is
+         redacted, and it is redacted BEFORE the slice: cutting first can leave a
+         half-address under the 300-char boundary that no email pattern would match. */
+      const same = JSON.stringify(rosterEnd) === rosterBeforeJson;
       if (same) PASS("SECOND READ: the app roster is byte-identical to the snapshot taken before this run", { rows: rosterEnd.length });
-      else FAIL("THE ROSTER IS NOT RESTORED — restore it by hand from roster-before.json", { before: JSON.stringify(rosterBefore).slice(0, 300), now: JSON.stringify(rosterEnd).slice(0, 300) });
+      else FAIL("THE ROSTER IS NOT RESTORED — restore it by hand from roster-before.json", { before: redactString(rosterBeforeJson).slice(0, 300), now: redactString(JSON.stringify(rosterEnd)).slice(0, 300) });
       const endRole = (await invoke("checkIsAdmin", {}, EDITOR)).json;
       if (endRole && endRole.role === null) PASS("…and the product's own checkIsAdmin reports the second account back to NO role", { role: endRole.role });
       else FAIL("the second account still holds a role", { answer: JSON.stringify(endRole).slice(0, 200) });

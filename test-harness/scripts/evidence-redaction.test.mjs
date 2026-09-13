@@ -100,6 +100,53 @@ const beforeCgr = { token: CGR };
 redactSecrets(beforeCgr);
 ok(beforeCgr.token === CGR, "the no-mutation contract still holds with the new layers");
 
+/* ── 2c. F-652 — PII: `emailAddress` lands in `app_admins` since F-647 ─────────── */
+const ROSTER = [
+  { accountId: "557058:aaa", displayName: "Mihai Perdum", emailAddress: "mihai@wolfaenpak.com", role: "admin", scope: "all" },
+  { accountId: "557058:bbb", displayName: "Mihai Perdum", emailAddress: "mihai.perdum+contractor2025@wolfaenpak.com", role: "editor", scope: "own" },
+];
+const noAddr = (v) => !/mihai@|contractor2025@/.test(JSON.stringify(v));
+const rRoster = redactSecrets(ROSTER);
+
+ok(noAddr(rRoster), "F-652: `emailAddress` in a roster row is masked (it was passing through verbatim)");
+ok(rRoster[0].emailAddress === "m***@wolfaenpak.com", "…to <local-initial>***@<domain>");
+ok(rRoster[0].emailAddress.endsWith("@wolfaenpak.com"),
+  "…the DOMAIN is KEPT on purpose — a flat [REDACTED] would destroy the namesake evidence");
+ok(rRoster[0].accountId === "557058:aaa" && rRoster[0].displayName === "Mihai Perdum" && rRoster[1].role === "editor",
+  "…while accountId / displayName / role — the fields the namesake proof needs — survive");
+ok(ROSTER[0].emailAddress === "mihai@wolfaenpak.com", "the no-mutation contract holds for the PII layer too");
+ok(JSON.stringify(redactSecrets(rRoster)) === JSON.stringify(rRoster),
+  "the mask is IDEMPOTENT — a payload redacted by a writer AND at the file boundary is stable");
+
+// The other arm: the driver stringifies the roster and slices it into a FAIL payload.
+ok(noAddr(redactSecrets({ before: JSON.stringify(ROSTER) })),
+  "F-652: an email inside an ALREADY-STRINGIFIED roster is masked (the key-walk alone would miss it)");
+ok(noAddr(redactString(JSON.stringify(ROSTER)).slice(0, 300)),
+  "…and redacting BEFORE the slice leaves no half-address under the cut");
+ok(redactSecrets({ email: "x@y.co" }).email === "x***@y.co"
+  && redactSecrets({ emailAddress: "x@y.co" }).emailAddress === "x***@y.co"
+  && redactSecrets({ email_address: "x@y.co" }).email_address === "x***@y.co",
+  "the PII key set covers email / emailAddress / email_address");
+ok(redactSecrets({ email: "not-an-address" }).email === REDACTED,
+  "a PII key whose value is not an address is masked outright rather than half-shown");
+ok(redactSecrets({ note: "reach me at mihai@wolfaenpak.com about it" }).note === "reach me at m***@wolfaenpak.com about it",
+  "an email in PROSE under an innocent key is masked, and the sentence stays readable");
+ok(redactSecrets({ id: "557058:653160a5-6112-470d-baea-333ac760364e" }).id === "557058:653160a5-6112-470d-baea-333ac760364e",
+  "NEGATIVE: an account id is NOT an email and is left whole — it is the discriminator under test");
+
+/* THE RESTORE MUST STILL WORK. The byte-identical roster restore compares the RAW
+   snapshot held in memory. Redacted comparison is what would break, and it breaks the
+   dangerous way: two DIFFERENT addresses collapse onto one mask and compare EQUAL. */
+const restored = JSON.parse(JSON.stringify(ROSTER));
+const notRestored = JSON.parse(JSON.stringify(ROSTER));
+notRestored[1].emailAddress = "mihai.perdum+contractor2024@wolfaenpak.com";  // a DIFFERENT account
+ok(JSON.stringify(restored) === JSON.stringify(ROSTER),
+  "RESTORE: a raw in-memory snapshot still compares byte-identical to an unchanged roster");
+ok(JSON.stringify(notRestored) !== JSON.stringify(ROSTER),
+  "RESTORE: a raw comparison still DETECTS a roster that came back different");
+ok(JSON.stringify(redactSecrets(notRestored)) === JSON.stringify(redactSecrets(ROSTER)),
+  "…and this is exactly why the comparison must stay RAW: the redacted forms are EQUAL");
+
 /* ── 3. it must survive whatever an evidence writer hands it ───────────────────── */
 const cyc = { a: 1 }; cyc.self = cyc;
 ok(redactSecrets(cyc).self === "[CIRCULAR]", "a cyclic payload does not hang the writer");
@@ -215,8 +262,24 @@ for (const f of liveFiles) {
 ok(scannedVars >= 4, `the scan located mint-response variables to follow (${scannedVars})`);
 ok(offenders.length === 0, `no live driver stringifies a mint response un-redacted (offending sites: ${offenders.join(", ")})`);
 
-/* ── 5. the two hardened drivers redact in the writers themselves ──────────────── */
-for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs"]) {
+/* ── 4c. F-652 — NO DRIVER WRITES AN `app_admins` SNAPSHOT UN-REDACTED ──────────
+   The roster is the one artefact that carries PII, and it reaches disk through named
+   snapshot files as well as through evidence.json. This is a whole-directory rule, so
+   a NEW driver that snapshots the roster inherits it instead of having to remember. */
+const rosterWriters = [];
+for (const f of liveFiles) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  if (!/app_admins/.test(src)) continue;
+  rosterWriters.push(f);
+  const bad = src.split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => /writeFileSync\(/.test(l) && /roster|evidence\.json/i.test(l) && !/redactSecrets\(/.test(l));
+  ok(bad.length === 0, `${f}: every roster/evidence file write is redacted (raw at: ${bad.map((b) => b.n).join(", ")})`);
+}
+ok(rosterWriters.length >= 2, `the roster-snapshot rule found drivers to apply to (${rosterWriters.join(", ")})`);
+
+/* ── 5. the hardened drivers redact in the writers themselves ──────────────────── */
+for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "perm-namesake-ui-live.mjs"]) {
   const src = readFileSync(path.join(here, f), "utf8");
   ok(/from "\.\.\/lib\/redact\.mjs"/.test(src), `${f} imports the shared redactor`);
   for (const w of ["PASS", "FAIL", "NV"]) {

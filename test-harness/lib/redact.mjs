@@ -43,6 +43,24 @@
  * those would trade one leak for a pile of unreadable evidence, so the substring rule
  * fires only on a non-empty STRING value; the anchored list keeps its stronger
  * "mask any value, whatever its type" contract.
+ *
+ * F-652 — PII IS NOT A SECRET, AND IT STILL MUST NOT LAND ON DISK. F-647 put real
+ * `emailAddress` values into the `app_admins` roster, and the drivers that snapshot
+ * that key wrote the rows out verbatim — a SECRET redactor has no notion of PII, so
+ * `emailAddress` was neither a SECRET_KEY nor a SECRET_VALUE and passed straight
+ * through to `roster-before.json` and `evidence.json`, the files whose excerpts get
+ * pasted into ledger rows.
+ *
+ * WHY THE DOMAIN IS KEPT. The mask is `<local-initial>***@<domain>`, not [REDACTED].
+ * The evidence this protects is the NAMESAKE proof — "two accounts, same display
+ * name, told apart by their addresses" — and a flat mask would destroy the very
+ * thing being proven while a domain-preserving one keeps it checkable. The mask is
+ * idempotent, so a payload that passes a writer AND the file boundary is stable.
+ *
+ * WHY BOTH LAYERS AGAIN. A roster reaches evidence as an OBJECT in one arm and as
+ * `JSON.stringify(roster).slice(0, 300)` in another; a key-walk alone would mask the
+ * first and miss the second. Drivers that slice must redact BEFORE slicing, or a
+ * truncated address escapes under the cut.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
 export const REDACTED = "[REDACTED]";
@@ -75,6 +93,26 @@ const SECRET_VALUE = /(sk-[A-Za-z0-9_\-]{8,}|ghp_[A-Za-z0-9]{16,}|github_pat_[A-
  */
 const SECRET_QUERY = /([?&](?:token|secret|key|api[_-]?key|apikey|password|auth|access_token)=)[^&\s"'<>\\]+/gi;
 
+/**
+ * F-652 — PII. An email ANYWHERE in a string, and the keys that carry one.
+ * `+`-tagged locals (`mihai.perdum+contractor2025@…`) are in scope on purpose: that
+ * is the exact namesake shape the Permissions tab renders.
+ */
+const EMAIL = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+const PII_KEY = /^(email|emailaddress|email_address|mail|useremail|user_email)$/i;
+
+/**
+ * `mihai@wolfaenpak.com` → `m***@wolfaenpak.com`. The domain survives so namesake
+ * evidence stays useful. IDEMPOTENT: re-masking `m***@wolfaenpak.com` yields itself,
+ * which is what lets a payload pass a writer and the file boundary unchanged.
+ */
+export function maskEmail(s) {
+  const str = String(s);
+  const at = str.lastIndexOf("@");
+  if (at <= 0 || at === str.length - 1) return REDACTED;
+  return `${str[0]}***@${str.slice(at + 1)}`;
+}
+
 /** The dev/staging web-trigger host: a bearer-less URL that is itself a capability. */
 const DEV_URL = /https?:\/\/[^\s"'<>]*atlassian-dev\.net[^\s"'<>]*/gi;
 
@@ -96,6 +134,7 @@ const isDevUrlKey = (key, value) =>
  * Order is load-bearing: EMBEDDED_PAIR first so a `"token":"…"` pair keeps its readable
  * shape instead of being eaten value-first, and DEV_URL before SECRET_QUERY so a dev
  * web-trigger URL is swallowed whole rather than surviving with masked parameters.
+ * EMAIL runs last, on whatever text is left (F-652).
  */
 export function redactString(s) {
   if (typeof s !== "string") return s;
@@ -103,7 +142,8 @@ export function redactString(s) {
     .replace(EMBEDDED_PAIR, `$1"${REDACTED}"`)
     .replace(DEV_URL, REDACTED)
     .replace(SECRET_VALUE, REDACTED)
-    .replace(SECRET_QUERY, `$1${REDACTED}`);
+    .replace(SECRET_QUERY, `$1${REDACTED}`)
+    .replace(EMAIL, maskEmail);
 }
 
 /**
@@ -122,6 +162,8 @@ export function redactSecrets(value, _seen = new WeakSet(), _depth = 0) {
   const out = {};
   for (const [k, v] of Object.entries(value)) {
     if (SECRET_KEY.test(k)) { out[k] = v === null || v === undefined ? v : REDACTED; continue; }
+    // F-652 — PII, masked domain-first so namesake evidence survives.
+    if (PII_KEY.test(k) && typeof v === "string" && v) { out[k] = v.includes("@") ? maskEmail(v) : REDACTED; continue; }
     // F-650 — a key SHAPED like a credential. String values only, so token COUNTS stay.
     if (SECRET_KEY_PART.test(k) && typeof v === "string" && v) { out[k] = REDACTED; continue; }
     if (isDevUrlKey(k, v)) { out[k] = REDACTED; continue; }

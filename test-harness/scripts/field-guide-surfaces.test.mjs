@@ -57,11 +57,12 @@ const SURFACES = [
   ["index.js", "validators, plain (callOpenAI)", /const callOpenAI = async[\s\S]{0,4000}?getRuntimeFieldGuide/],
   ["index.js", "validators, agentic (callOpenAIWithTools)", /const callOpenAIWithTools = async[\s\S]{0,12000}?getRuntimeFieldGuide/],
   ["listeners.js", "the agent run (buildAgentKnowledge)", /buildAgentKnowledge[\s\S]{0,4000}?resolveFieldGuideBlock/],
-  // The window is 8000 here because the Coder's builder grew a skills/memory REPLAY half
-  // above its guide half (F-574) — it is a distance heuristic over one function, and the
-  // invariant being gated is "this builder calls the door", not "it calls it within N
-  // characters". Widen it again if the function grows; never delete the surface.
-  ["async-handler.js", "the Coder turn (buildCoderKnowledge)", /buildCoderKnowledge[\s\S]{0,8000}?resolveFieldGuideBlock/],
+  // The window is 12000 here because the Coder's builder grew a skills/memory REPLAY half
+  // above its guide half (F-574), and then an epoch VALIDITY check above that (F-578) — it
+  // is a distance heuristic over one function, and the invariant being gated is "this
+  // builder calls the door", not "it calls it within N characters". Widen it again if the
+  // function grows; never delete the surface.
+  ["async-handler.js", "the Coder turn (buildCoderKnowledge)", /buildCoderKnowledge[\s\S]{0,12000}?resolveFieldGuideBlock/],
   ["git-review.js", "the PR review engine", /resolveFieldGuideBlock/],
 ];
 

@@ -1417,6 +1417,66 @@ const buildCoderKnowledge = async (p) => {
   let pinned = null;
   try { pinned = await getCoderPinnedKnowledge(issueKey, threadId); } catch (e) { pinned = null; }
 
+  /*
+   * F-578 — A PIN IS REPLAYED ONLY WHILE THE KNOWLEDGE IT FROZE IS STILL TRUE.
+   *
+   * F-574 pinned the rendered bytes for up to 90 days and nothing invalidated them, so a
+   * memory the admin DELETED kept reaching the model for the life of the thread, and an
+   * EDITED memory reached it TWICE: the stale line inside the prefix and the corrected one
+   * in `memoryExtraBlock` after it. A skill edited or deleted mid-thread did the same.
+   *
+   * The rule is the one the injection-OFF branch below already applies: an explicit admin
+   * instruction wins over the prefix, and the prefix moves ONCE. The stores each own a
+   * single epoch — `memoryEpoch()` (src/memories.js, a counter its one writer bumps on a
+   * delete/edit/injection switch and NOT on an add) and `skillEpochFor()` (src/skills.js,
+   * derived from the index rows of the pinned ids). The pin records both at creation; while
+   * both still match, the bytes replay exactly as before and an ADDED memory or a newly
+   * bound skill still costs only its own extra block. When either has moved, the pin is
+   * dropped, the blocks are rebuilt live — which is also what keeps a rebuilt extra block
+   * from repeating a line the prefix already carries, because there is no prefix left to
+   * repeat — and `repin` asks the engine to re-pin today's bytes.
+   *
+   * FAIL-OPEN on every fault: a null epoch means "cannot tell", and cannot-tell replays.
+   * A storage hiccup must never move a prompt prefix, and must never cost a turn.
+   */
+  // Read BEFORE the blocks are built, never after: if a delete lands between this read and
+  // `buildMemoryBlock` below, the block already excludes the row while the stamp is the OLD
+  // epoch, so the NEXT turn invalidates and rebuilds. The opposite order would stamp the new
+  // epoch onto bytes rendered from the old store and the delete would never take effect.
+  let liveMemoryEpoch = null;
+  try {
+    const { memoryEpoch } = await import("./memories.js");
+    liveMemoryEpoch = await memoryEpoch();
+  } catch (e) { console.warn("[coder] memory epoch unreadable:", e && e.message); }
+
+  if (pinned) {
+    let verdict = null;
+    try {
+      const { skillEpochFor } = await import("./skills.js");
+      const liveSkillEpoch = await skillEpochFor(Array.isArray(pinned.skillIds) ? pinned.skillIds : []);
+      if (liveMemoryEpoch === null) throw new Error("memory epoch unreadable");
+      // A pin written before this finding carries neither epoch. It is invalidated ONCE —
+      // its bytes were never validated against anything and may already be the stale ones
+      // this finding is about — and the re-pin below stamps both, after which it is stable.
+      if (pinned.memoryEpoch === undefined || pinned.skillEpoch === undefined) {
+        verdict = "pin predates epoch stamping";
+      } else if (Number(pinned.memoryEpoch) !== Number(liveMemoryEpoch)) {
+        verdict = `memoryEpoch ${Number(pinned.memoryEpoch) || 0}→${liveMemoryEpoch}`;
+      } else if (liveSkillEpoch !== null && String(pinned.skillEpoch) !== String(liveSkillEpoch)) {
+        verdict = "skillEpoch changed — a pinned skill was edited, disabled or deleted";
+      }
+    } catch (e) {
+      console.warn("[coder] pin epoch check skipped, replaying the pinned knowledge:", e && e.message);
+      verdict = null;
+    }
+    if (verdict) {
+      console.log(`[coder] pin invalidated: ${verdict} — rebuilding this thread's knowledge (the prompt prefix moves once)`);
+      out.pinInvalidated = verdict;
+      out.repin = true;
+      pinned = null;
+    }
+  }
+
   if (pinned) {
     // A THREAD THAT ALREADY DECIDED. The bytes come off the row BEFORE any store is
     // touched, so even a skills or memories outage cannot move the prompt prefix.
@@ -1532,14 +1592,40 @@ const buildCoderKnowledge = async (p) => {
       // audience's budget so a thread can never spend more than one budget's worth at once.
       const room = Math.max(0, budget - (guide.bytes || 0));
       if (room > 0) {
-        const picked = await selectFieldGuide({ audience, text: String((p && p.message) || ""), maxBytes: room });
-        const known = new Set((guide.sectionIds || []).map((x) => String(x)));
-        const extra = (picked.sections || []).filter((sec) => !known.has(String(sec.id)));
-        const built = buildFieldGuideBlock(extra);
+        /*
+         * F-586 — THE TOP-UP ASKS FOR WHAT THE THREAD DOES NOT HAVE, and asks for it once.
+         *
+         * This used to select from the whole corpus against `room` and filter the stored ids
+         * out afterwards. Two things were wrong with that and they compounded:
+         *   - pass 1 spent the PINNED SHARE (0.4 × room) re-buying the audience's pins, which
+         *     a thread that pinned its guide on turn 1 already carries verbatim, and then they
+         *     were discarded — so on a thread whose stored guide had taken most of the budget,
+         *     the top-up could come back empty with every byte of `room` already "spent";
+         *   - because the pins were bought and dropped, `pinnedDropped`/`pinnedDemoted` on
+         *     this lowered budget described a shortfall that was not real, which is why this
+         *     path must NOT report one (F-576's `reportPinnedShortfall` is for selections that
+         *     actually own their pinned core; this one is a top-up on top of one).
+         * Excluding BEFORE selection and turning pass 1 off makes `room` mean what it says.
+         */
+        const known = (guide.sectionIds || []).map((x) => String(x));
+        const picked = await selectFieldGuide({
+          audience, text: String((p && p.message) || ""), maxBytes: room,
+          excludeIds: known, pins: false,
+        });
+        const built = buildFieldGuideBlock(picked.sections || []);
         if (built.block) {
           out.fieldGuideExtraBlock = built.block;
           out.fieldGuideExtraSections = built.sectionIds;
+          out.fieldGuideExtraReason = "new";
+        } else {
+          // AN EMPTY TOP-UP IS NOW EXPLAINED. It has exactly two causes and they mean
+          // opposite things to whoever reads the turn: "this thread already holds everything
+          // the question matched" is healthy, "something matched and the room was too small"
+          // is the budget squeezing the guide out and is worth acting on.
+          out.fieldGuideExtraReason = (picked.skipped || 0) > 0 ? "budget" : "none-new";
         }
+      } else {
+        out.fieldGuideExtraReason = "budget";
       }
     } else {
       // THE THREAD'S FIRST TURN — and the only turn that gets to choose. The query is this
@@ -1556,6 +1642,23 @@ const buildCoderKnowledge = async (p) => {
       }
     }
   } catch (e) { console.warn("[coder] field guide skipped:", e && e.message); }
+
+  /*
+   * F-578 — THE STAMP the engine writes onto the pin, decided here because this is the
+   * function that decided the bytes. `memoryEpoch` was read before `buildMemoryBlock` ran
+   * (see above); the skill epoch is read over the ids that ACTUALLY reached the model, which
+   * is the same list the pin stores — computing it over the requested ids instead would make
+   * a disabled or over-budget skill look like a change on every single later turn.
+   *
+   * Both are advisory: a null one is simply not stamped, the engine pins without it, and the
+   * next turn treats the unstamped pin as "cannot tell" in the direction of one rebuild.
+   */
+  if (liveMemoryEpoch !== null) out.memoryEpoch = liveMemoryEpoch;
+  try {
+    const { skillEpochFor } = await import("./skills.js");
+    const stamp = await skillEpochFor(Array.isArray(out.skillIds) ? out.skillIds : []);
+    if (stamp !== null) out.skillEpoch = stamp;
+  } catch (e) { console.warn("[coder] skill epoch unreadable:", e && e.message); }
   return out;
 };
 

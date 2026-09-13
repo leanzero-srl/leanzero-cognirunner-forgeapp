@@ -202,7 +202,7 @@ export const sectionsForSettings = (settings) => {
  * it is deliberate: a caller cannot talk its way past the ceiling registry-limits sets
  * for who is reading. Passing nothing gets the audience's full budget.
  */
-export const selectFieldGuide = async ({ audience = "review", text = "", operationType, hints, maxBytes } = {}) => {
+export const selectFieldGuide = async ({ audience = "review", text = "", operationType, hints, maxBytes, excludeIds, pins } = {}) => {
   const settings = await getKnowledgeSettings();
   return selectKnowledge({
     audience,
@@ -210,6 +210,11 @@ export const selectFieldGuide = async ({ audience = "review", text = "", operati
     operationType,
     hints,
     maxBytes,
+    // F-586 — a TOP-UP selection for a caller that already holds part of the corpus passes
+    // the ids it holds and `pins: false`; the selector then never scores or pays for them.
+    // Forwarded, never interpreted: the rule lives in src/shared/knowledge-select.js.
+    excludeIds,
+    pins,
     sections: sectionsForSettings(settings),
   });
 };

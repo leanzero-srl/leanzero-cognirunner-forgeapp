@@ -148,6 +148,42 @@ export const PR_COMMENT_RESOLVED_UNKNOWN = null;
 /** Hard ceiling on any single list call, so a huge repo cannot blow the budget. */
 export const LIST_PAGE_SIZE = 100;
 
+/**
+ * THE EVENTS A COGNIRUNNER WEBHOOK SUBSCRIBES TO, per provider — ONE home.
+ *
+ * These are PROVIDER event names, and they are the inverse of `mapGitEvent`
+ * (src/index.js), which is the one home of "provider event → catalogue id". Every
+ * name here must be a case `mapGitEvent` answers, and every one of the NINE git rows
+ * in src/shared/jira-events.js must be reachable from some name here — otherwise a
+ * listener offers an event no hook ever delivers, which is a rule that looks armed
+ * and never fires. test-harness/scripts/git-connections.test.mjs asserts BOTH
+ * directions, so the lockstep is a failing test rather than a habit.
+ *
+ * GitHub sends four catalogue ids (opened / synchronize / closed / merged) on the
+ * single `pull_request` event and discriminates by `action` + `merged`, which is why
+ * this list is shorter than the catalogue. Bitbucket has no check run; its build
+ * verdict arrives as `repo:commit_status_updated` → `git:pipeline:completed`.
+ */
+export const GIT_HOOK_EVENTS = Object.freeze({
+  github: Object.freeze([
+    "pull_request",
+    "push",
+    "pull_request_review",
+    "issue_comment",
+    "check_run",
+  ]),
+  bitbucket: Object.freeze([
+    "pullrequest:created",
+    "pullrequest:updated",
+    "pullrequest:fulfilled",
+    "pullrequest:rejected",
+    "pullrequest:approved",
+    "pullrequest:comment_created",
+    "repo:push",
+    "repo:commit_status_updated",
+  ]),
+});
+
 const API_BASE = {
   github: "https://api.github.com",
   bitbucket: "https://api.bitbucket.org/2.0",
@@ -1090,7 +1126,47 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
       return { kind: "github", ...rollUpChecks(runs), checks: runs };
     },
 
-    async createWebhook({ repo, url, secret, events = ["pull_request", "push"] }) {
+    /**
+     * Every hook on the repo, id + url + events. READ-ONLY, and the half that makes
+     * setup idempotent: the caller matches on the URL it is about to register rather
+     * than creating a second hook for the same repo (F-460).
+     * The provider does NOT return the configured secret, and nothing here would emit
+     * it if it did — only `id`, `url`, `events` and `active` are mapped out.
+     */
+    async listWebhooks({ repo }) {
+      const { data } = await client.json(
+        "listWebhooks",
+        "GET",
+        repoPath(repo, "listWebhooks") + "/hooks?per_page=" + LIST_PAGE_SIZE
+      );
+      return (Array.isArray(data) ? data : []).map((h) => ({
+        id: h.id,
+        url: (h.config && h.config.url) || null,
+        events: Array.isArray(h.events) ? h.events : [],
+        active: h.active !== false,
+      }));
+    },
+
+    /**
+     * Re-point an EXISTING hook at our url/events and (re)install the signing secret.
+     * The whole `config` is sent every time because GitHub REPLACES it: a PATCH that
+     * omitted `secret` would silently unsign the hook, which fails closed at the
+     * webtrigger and looks exactly like a wrong secret.
+     */
+    async updateWebhook({ repo, id, url, secret, events = GIT_HOOK_EVENTS.github }) {
+      requireArg("github", "updateWebhook", "id", id);
+      requireArg("github", "updateWebhook", "url", url);
+      registerSecret(secret);
+      const { data } = await client.json(
+        "updateWebhook",
+        "PATCH",
+        repoPath(repo, "updateWebhook") + "/hooks/" + enc(id),
+        { active: true, events, config: { url, content_type: "json", insecure_ssl: "0", secret } }
+      );
+      return { id: (data && data.id) || id, url, events };
+    },
+
+    async createWebhook({ repo, url, secret, events = GIT_HOOK_EVENTS.github }) {
       requireArg("github", "createWebhook", "url", url);
       // F-266: the secret joins the redaction list BEFORE the call, because the
       // failure path is exactly the one that echoes it (a 422 body repeating the
@@ -1615,7 +1691,39 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
      * GitHub uses on `X-Hub-Signature-256`). The secret rides the create call;
      * the verifier lives with the webtrigger, not here.
      */
-    async createWebhook({ repo, url, secret, events = ["pullrequest:created", "pullrequest:updated", "repo:push"] }) {
+    /** Read-only hook list — same contract as the GitHub half (F-460). Bitbucket pages
+     *  under `values` and keys a hook by `uuid`. */
+    async listWebhooks({ repo }) {
+      const { data } = await client.json(
+        "listWebhooks",
+        "GET",
+        repoPath(repo, "listWebhooks") + "/hooks?pagelen=" + LIST_PAGE_SIZE
+      );
+      const rows = data && Array.isArray(data.values) ? data.values : [];
+      return rows.map((h) => ({
+        id: h.uuid,
+        url: h.url || null,
+        events: Array.isArray(h.events) ? h.events : [],
+        active: h.active !== false,
+      }));
+    },
+
+    /** PUT replaces the hook definition, so the full body (url, events, secret) rides
+     *  every update for the same reason GitHub's config does. */
+    async updateWebhook({ repo, id, url, secret, events = GIT_HOOK_EVENTS.bitbucket }) {
+      requireArg("bitbucket", "updateWebhook", "id", id);
+      requireArg("bitbucket", "updateWebhook", "url", url);
+      registerSecret(secret);
+      const { data } = await client.json(
+        "updateWebhook",
+        "PUT",
+        repoPath(repo, "updateWebhook") + "/hooks/" + enc(id),
+        { description: "CogniRunner", url, active: true, events, secret }
+      );
+      return { id: (data && data.uuid) || id, url, events };
+    },
+
+    async createWebhook({ repo, url, secret, events = GIT_HOOK_EVENTS.bitbucket }) {
       requireArg("bitbucket", "createWebhook", "url", url);
       // F-266: the secret joins the redaction list BEFORE the call, because the
       // failure path is exactly the one that echoes it (a 422 body repeating the
@@ -1775,7 +1883,9 @@ export const GIT_PROVIDER_METHODS = [
   "approvePullRequest",
   "requestChanges",
   "getBuildState",
+  "listWebhooks",
   "createWebhook",
+  "updateWebhook",
   "setSecret",
   "setVariable",
   "enablePipelines",

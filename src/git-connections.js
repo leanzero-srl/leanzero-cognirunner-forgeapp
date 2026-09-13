@@ -31,7 +31,11 @@
  *                                    applyCredentialRotation (QUEUED TASK ONLY)
  *   4. `git_hook_secret:<c>:<r>`   — ensureHookSecret (create-if-absent),
  *                                    rotateHookSecret (QUEUED TASK ONLY),
- *                                    deleteConnection (erase, best-effort)
+ *                                    rotateGitHookSecret (F-460, the ADMIN path —
+ *                                    provider first, storage only on success),
+ *                                    deleteConnection (erase, best-effort).
+ *                                    All of them write through `writeHookSecret`,
+ *                                    which is the key's ONE writer.
  *   5. `COGNIRUNNER_FORGE_IDENTITY` — saveForgeIdentity, clearForgeIdentity,
  *                                    applyCredentialRotation (QUEUED TASK ONLY)
  * There is no sixth. A caller that wants to change a credential goes through a
@@ -67,7 +71,7 @@
  */
 
 import storage from "@forge/kvs";
-import { createGitProvider, GitProviderError, GIT_PROVIDER_KINDS } from "./git-providers.js";
+import { createGitProvider, GitProviderError, GIT_PROVIDER_KINDS, GIT_HOOK_EVENTS } from "./git-providers.js";
 import { safeKeyPart, isKeyConflict, assertKvsKey } from "./shared/kvs-keys.js";
 // F-310 - the repo-id canonical form has ONE home, and it is a shared/ module because
 // the admin panel needs the same answer and cannot import this file (it loads @forge/kvs).
@@ -239,7 +243,29 @@ export function publicConnection(row) {
     login: row.login || null,
     repos: Array.isArray(row.repos) ? row.repos.slice() : [],
     capabilities: row.capabilities || null,
+    // F-460 — WHICH REPOS HAVE A WEBHOOK INSTALLED, and nothing about its secret.
+    // `{ "<repoId>": { hookId, provider, createdAt, rotatedAt } }`, built field by
+    // field like everything else here so a future field on the stored hook row
+    // cannot ride along. The signing secret lives at `git_hook_secret:*` and has no
+    // representation in any public shape, here or anywhere else.
+    hooks: publicHooks(row.hooks),
   };
+}
+
+/** The emit shape of the per-repo hook record. Whitelist, never a spread. */
+export function publicHooks(hooks) {
+  const out = {};
+  if (!hooks || typeof hooks !== "object") return out;
+  for (const [repoId, h] of Object.entries(hooks)) {
+    if (!h || typeof h !== "object") continue;
+    out[repoId] = {
+      hookId: h.hookId == null ? null : String(h.hookId),
+      provider: h.provider || null,
+      createdAt: h.createdAt || null,
+      rotatedAt: h.rotatedAt || null,
+    };
+  }
+  return out;
 }
 
 /**
@@ -822,8 +848,23 @@ export async function ensureHookSecret(connId, repoId) {
   const existing = await storage.get(key);
   if (existing && existing.secret) return { secret: existing.secret, created: false };
   const secret = generateWebhookSecret();
-  await storage.set(key, { secret, connId, repoId: normalizeRepoId(repoId), createdAt: nowIso() });
+  await writeHookSecret(connId, repoId, secret, { rotated: false });
   return { secret, created: true };
+}
+
+/**
+ * THE ONE WRITER of `git_hook_secret:<connId>:<repoId>`. Both `ensureHookSecret` and
+ * `rotateHookSecret` go through it so the stored shape (and the key builder) has one
+ * home — two writers of one key is how the row's fields come to disagree.
+ */
+async function writeHookSecret(connId, repoId, secret, { rotated = false } = {}) {
+  await storage.set(gitHookSecretKey(connId, repoId), {
+    secret,
+    connId,
+    repoId: normalizeRepoId(repoId),
+    createdAt: nowIso(),
+    ...(rotated ? { rotatedAt: nowIso() } : {}),
+  });
 }
 
 /**
@@ -839,6 +880,179 @@ export async function ensureHookSecret(connId, repoId) {
 export async function getHookSecret(connId, repoId) {
   const row = await storage.get(gitHookSecretKey(connId, repoId));
   return row && row.secret ? row.secret : null;
+}
+
+/* ===== PER-REPO WEBHOOK INSTALLATION (F-460) =====
+ *
+ * Until this existed, `ensureHookSecret`, `rotateHookSecret` and the adapters'
+ * `createWebhook` had NO caller but the dev hook: a real tenant could add a
+ * connection, arm a git listener and never receive a single delivery, because
+ * nothing registered the hook. These three functions are that missing half, and the
+ * resolvers in src/index.js are a permission skin over them.
+ *
+ * THE ROUTING URL IS THE IDENTITY. The webtrigger is one URL for the whole
+ * installation; which connection and which repo a delivery belongs to is carried in
+ * the query string `?conn=<id>&repo=<owner/name>`, and `gitWebhook` (src/index.js)
+ * reads exactly those two names. That is also what makes setup idempotent: the hook
+ * for THIS connection+repo is the one whose url equals the url we are about to
+ * register, so a second setup updates it instead of creating a twin that would
+ * double every delivery.
+ *
+ * WHAT NEVER LEAVES: the signing secret. It is written to KVS, handed to the
+ * provider inside the create/update call, and is absent from every return value
+ * here — including the error paths, which carry the adapter's message only.
+ */
+
+/** The url a delivery for this connection+repo must arrive on. ONE builder. */
+export function hookUrlFor(triggerUrl, connId, repoId) {
+  const base = String(triggerUrl || "");
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}conn=${encodeURIComponent(connId)}&repo=${encodeURIComponent(normalizeRepoId(repoId))}`;
+}
+
+/** Shared refusals for the three functions below. FAIL CLOSED, named reasons. */
+async function hookTarget(connId, repoId) {
+  const row = await getConnection(connId);
+  if (!row) return { error: { ok: false, error: "Unknown git connection", code: "not_found" } };
+  if (isHarnessConnection(row)) return { error: { ok: false, error: HARNESS_REFUSAL, code: "auth_dead" } };
+  const repo = normalizeRepoId(repoId);
+  if (!repo) return { error: { ok: false, error: "A repository is required", code: "invalid" } };
+  // The allow-list is a SECURITY control, so it gates this too: an admin may only
+  // install a hook on a repository the connection is already allowed to touch.
+  if (!isRepoAllowed(row, repo)) {
+    return { error: { ok: false, error: `The repository ${repo} is not on this connection’s allow-list`, code: "forbidden" } };
+  }
+  return { row, repo };
+}
+
+/** An adapter failure → the one refusal vocabulary, and a dead token raises the flag. */
+async function hookProviderFailure(connId, e) {
+  const code = e instanceof GitProviderError ? e.code : "network";
+  if (code === "auth_dead") {
+    await markAuthDead(connId, "The provider rejected this credential");
+    return { ok: false, error: "The provider rejected this credential", code: "auth_dead" };
+  }
+  return { ok: false, error: (e && e.message) || "The provider could not be reached", code };
+}
+
+/** Record (or refresh) the hook this connection has on this repo. Never the secret. */
+async function recordRepoHook(connId, repo, hook) {
+  const row = await getConnection(connId);
+  if (!row) return null;
+  const prev = (row.hooks && typeof row.hooks === "object" && row.hooks[repo]) || {};
+  const next = {
+    ...row,
+    hooks: {
+      ...(row.hooks && typeof row.hooks === "object" ? row.hooks : {}),
+      [repo]: {
+        hookId: hook.hookId == null ? null : String(hook.hookId),
+        provider: row.kind,
+        createdAt: prev.createdAt || nowIso(),
+        rotatedAt: hook.rotated ? nowIso() : (prev.rotatedAt || null),
+      },
+    },
+    updatedAt: nowIso(),
+  };
+  await storage.set(gitConnKey(connId), next);
+  return next;
+}
+
+/**
+ * INSTALL the webhook for one repo. IDEMPOTENT by URL: an existing hook pointing at
+ * this connection+repo is REUSED (its config is re-written so the events and the
+ * secret we hold are the ones actually installed), never duplicated.
+ *
+ * ORDER: the secret is minted first because it is inert on its own — a secret with
+ * no hook verifies nothing and is picked up by the next setup. The reverse order
+ * would leave a live hook signing with a secret we never stored, and every delivery
+ * would then fail closed at the webtrigger.
+ */
+export async function setupRepoWebhook(connId, repoId, { triggerUrl, fetchImpl } = {}) {
+  const t = await hookTarget(connId, repoId);
+  if (t.error) return t.error;
+  if (!triggerUrl) {
+    return { ok: false, error: "The webhook URL for this installation could not be read", code: "not_supported" };
+  }
+  const url = hookUrlFor(triggerUrl, connId, t.repo);
+  const events = GIT_HOOK_EVENTS[t.row.kind] || [];
+  let provider;
+  try {
+    provider = await providerForConnection(connId, { repo: t.repo, fetchImpl });
+  } catch (e) {
+    return hookProviderFailure(connId, e);
+  }
+  const { secret } = await ensureHookSecret(connId, t.repo);
+  try {
+    const existing = (await provider.listWebhooks({ repo: t.repo })) || [];
+    const match = existing.find((h) => String(h.url || "") === url);
+    const hook = match
+      ? await provider.updateWebhook({ repo: t.repo, id: match.id, url, secret, events })
+      : await provider.createWebhook({ repo: t.repo, url, secret, events });
+    const next = await recordRepoHook(connId, t.repo, { hookId: hook && hook.id });
+    return {
+      ok: true,
+      reused: !!match,
+      repo: t.repo,
+      hook: { repo: t.repo, hookId: hook && hook.id != null ? String(hook.id) : null, provider: t.row.kind, events: events.slice() },
+      connection: publicConnection(next || t.row),
+    };
+  } catch (e) {
+    return hookProviderFailure(connId, e);
+  }
+}
+
+/**
+ * NEW SIGNING SECRET for one repo's hook, and the new one is installed in the
+ * provider BEFORE it is stored. That order is the whole point: if the provider call
+ * fails, nothing was written and the OLD secret is still valid on both sides, so a
+ * failed rotation leaves a working webhook rather than a silently deaf one.
+ * The secret is never returned — there is no read path for it anywhere.
+ */
+export async function rotateGitHookSecret(connId, repoId, { triggerUrl, fetchImpl } = {}) {
+  const t = await hookTarget(connId, repoId);
+  if (t.error) return t.error;
+  const recorded = (t.row.hooks && typeof t.row.hooks === "object" && t.row.hooks[t.repo]) || null;
+  if (!recorded || !recorded.hookId) {
+    return { ok: false, error: "There is no webhook installed for this repository yet", code: "not_found" };
+  }
+  if (!triggerUrl) {
+    return { ok: false, error: "The webhook URL for this installation could not be read", code: "not_supported" };
+  }
+  const url = hookUrlFor(triggerUrl, connId, t.repo);
+  const events = GIT_HOOK_EVENTS[t.row.kind] || [];
+  const secret = generateWebhookSecret();
+  try {
+    const provider = await providerForConnection(connId, { repo: t.repo, fetchImpl });
+    await provider.updateWebhook({ repo: t.repo, id: recorded.hookId, url, secret, events });
+  } catch (e) {
+    return hookProviderFailure(connId, e);
+  }
+  await writeHookSecret(connId, t.repo, secret, { rotated: true });
+  const next = await recordRepoHook(connId, t.repo, { hookId: recorded.hookId, rotated: true });
+  return { ok: true, repo: t.repo, connection: publicConnection(next || t.row) };
+}
+
+/** READ-ONLY: the hooks the provider actually has on this repo, id/url/events only. */
+export async function listRepoWebhooks(connId, repoId, { fetchImpl } = {}) {
+  const t = await hookTarget(connId, repoId);
+  if (t.error) return t.error;
+  try {
+    const provider = await providerForConnection(connId, { repo: t.repo, fetchImpl });
+    const hooks = (await provider.listWebhooks({ repo: t.repo })) || [];
+    return {
+      ok: true,
+      repo: t.repo,
+      hooks: hooks.map((h) => ({
+        hookId: h.id == null ? null : String(h.id),
+        url: h.url || null,
+        events: Array.isArray(h.events) ? h.events.slice() : [],
+        active: h.active !== false,
+      })),
+      recorded: publicHooks(t.row.hooks)[t.repo] || null,
+    };
+  } catch (e) {
+    return hookProviderFailure(connId, e);
+  }
 }
 
 /* ===== FORGE DEPLOY IDENTITY (write-only) ===== */
@@ -1178,12 +1392,6 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
 /** Rotate ONE repo's webhook secret. Queued-task half, same reason as above. */
 export async function rotateHookSecret(connId, repoId) {
   const secret = generateWebhookSecret();
-  await storage.set(gitHookSecretKey(connId, repoId), {
-    secret,
-    connId,
-    repoId: normalizeRepoId(repoId),
-    createdAt: nowIso(),
-    rotatedAt: nowIso(),
-  });
+  await writeHookSecret(connId, repoId, secret, { rotated: true });
   return { secret };
 }

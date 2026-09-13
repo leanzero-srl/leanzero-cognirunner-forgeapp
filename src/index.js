@@ -79,6 +79,13 @@ import {
   getHookSecret,
   isRepoAllowed,
   normalizeRepoId,
+  // F-460 — the per-repo webhook installation. The behaviour (idempotence by URL,
+  // the provider-first rotation order, the allow-list gate) lives there; the
+  // resolvers below own permission and the webtrigger URL, which only a resolver
+  // can read.
+  setupRepoWebhook,
+  rotateGitHookSecret,
+  listRepoWebhooks,
 } from "./git-connections.js";
 // GIT PIPELINE SETUP (1.4 commit 7). Same rule as the connection layer above: the
 // behaviour lives in src/git-pipeline.js and these resolvers are a permission skin.
@@ -10932,6 +10939,66 @@ resolver.define("deleteGitConnection", async ({ payload, context }) => {
   return okOr(async () => {
     const r = await deleteGitConnection(payload?.id);
     return r.ok ? { success: true } : { success: false, error: r.error, code: r.code };
+  });
+});
+
+/* ---- PER-REPO WEBHOOKS (F-460) ----------------------------------------------
+ *
+ * The inbound half of the git integration was unusable by a real tenant: the
+ * per-repo signing secret and the provider hook could only be planted by the
+ * harness, so an admin could add a connection, arm a git listener and never see a
+ * delivery. These three resolvers are the missing door.
+ *
+ * THE URL IS READ HERE AND NOWHERE ELSE. `webTrigger.getUrl("git-webhook")` is a
+ * platform call only a Forge function may make, so the resolver reads it (cached in
+ * KVS like the attachment bridges) and hands it to the core, which appends the
+ * `?conn=&repo=` routing pair `gitWebhook` parses. The query-parameter NAMES have
+ * one home — `hookUrlFor` in git-connections.js — and `gitWebhook` reads the same
+ * two; nothing else may retype them.
+ *
+ * NO SECRET IS RETURNED, by any of them, on any path. `publicConnection.hooks` is
+ * the admin-visible fact ("this repo has hook <id>, installed at <time>"), and the
+ * secret has no representation in it.
+ */
+const getGitWebhookUrl = () =>
+  getWebtriggerUrlFor("git-webhook", "webtrigger_url:git-webhook");
+
+// Install (or converge) the webhook for ONE repo. IDEMPOTENT: a second call reuses
+// the hook whose URL already points here rather than creating a twin that would
+// double every delivery.
+resolver.define("setupGitWebhook", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const triggerUrl = await getGitWebhookUrl();
+    const r = await setupRepoWebhook(payload?.connectionId, payload?.repo, { triggerUrl });
+    return r.ok
+      ? { success: true, reused: r.reused === true, repo: r.repo, hook: r.hook, connection: r.connection }
+      : { success: false, error: r.error, code: r.code };
+  });
+});
+
+// New signing secret for one repo's hook. The provider is updated FIRST, so a
+// failure leaves the old secret working on both sides instead of a deaf hook.
+resolver.define("rotateGitWebhookSecret", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const triggerUrl = await getGitWebhookUrl();
+    const r = await rotateGitHookSecret(payload?.connectionId, payload?.repo, { triggerUrl });
+    return r.ok
+      ? { success: true, repo: r.repo, connection: r.connection }
+      : { success: false, error: r.error, code: r.code };
+  });
+});
+
+// READ-ONLY: what the provider actually has on this repo, so the Code tab can show
+// "installed" from the provider's answer rather than from our own record alone.
+resolver.define("listGitWebhooks", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await listRepoWebhooks(payload?.connectionId, payload?.repo);
+    return r.ok
+      ? { success: true, repo: r.repo, hooks: r.hooks, recorded: r.recorded }
+      : { success: false, error: r.error, code: r.code };
   });
 });
 

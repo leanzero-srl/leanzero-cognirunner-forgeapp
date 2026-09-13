@@ -678,5 +678,125 @@ ok(conns.editorConnectionView(null) === null, "editorConnectionView refuses a no
 const asViewer = await call("getRuleLists", {}, VIEWER);
 ok(asViewer.success !== true, "a viewer is still refused the editor floor");
 
+/* ===================== 13. F-460 — PER-REPO WEBHOOK SETUP ====================== *
+ * Before this, `ensureHookSecret` / `rotateHookSecret` / `createWebhook` had NO
+ * caller but the dev hook: an admin could add a connection, arm a git listener and
+ * never receive one delivery. What must hold, in the order it would hurt:
+ *   1. the SECRET never appears in a return value, on any path;
+ *   2. setup is IDEMPOTENT — a second call reuses the hook whose url already points
+ *      here, so a repo never ends up with two hooks double-delivering;
+ *   3. rotation talks to the PROVIDER FIRST and stores only on success, so a failed
+ *      rotation leaves a working hook rather than a deaf one;
+ *   4. the admin gate, through the one refusal shape;
+ *   5. the subscribed event list and the nine catalogue git rows are in LOCKSTEP —
+ *      an event the catalogue offers but no hook subscribes to is a rule that looks
+ *      armed and never fires.
+ */
+const { GIT_HOOK_EVENTS } = await import("../../src/git-providers.js");
+const { mapGitEvent } = await import("../../src/index.js");
+const { GIT_EVENT_IDS } = await import("../../src/shared/jira-events.js");
+
+reset();
+fetchQueue = [whoamiOk()];
+const hookConn = await call("saveGitConnection", { kind: "github", label: "Hooks", token: GH_TOKEN, repos: ["acme/app"] });
+const hookId = hookConn.connection.id;
+const HOOK_URL = `https://mock.webtrigger/git-webhook?conn=${encodeURIComponent(hookId)}&repo=acme%2Fapp`;
+
+// --- the admin gate, first: a refused call reaches neither provider nor storage.
+for (const key of ["setupGitWebhook", "rotateGitWebhookSecret", "listGitWebhooks"]) {
+  const r = await callScanned(key, { connectionId: hookId, repo: "acme/app" }, EDITOR);
+  ok(r && r.success === false && r.reason === "no-permission", `${key} refuses an EDITOR through the one refusal shape`);
+}
+ok(storage.__raw(conns.gitHookSecretKey(hookId, "acme/app")) === undefined, "a refused setup minted no secret");
+
+// --- (1) first setup: list (empty) → create exactly one hook.
+fetchCalls = [];
+fetchQueue = [res(200, []), res(201, { id: 4242 })];
+const setup1 = await callScanned("setupGitWebhook", { connectionId: hookId, repo: "acme/app" });
+ok(setup1.success === true && setup1.reused === false, `setup installs the hook (${JSON.stringify(setup1).slice(0, 200)})`);
+ok(setup1.hook.hookId === "4242" && setup1.hook.provider === "github", "…and reports the provider's hook id");
+ok(fetchCalls.length === 2 && fetchCalls[0].method === "GET" && fetchCalls[1].method === "POST",
+  `…through one list and one create (${JSON.stringify(fetchCalls.map((c) => c.method))})`);
+ok(/\/repos\/acme\/app\/hooks/.test(fetchCalls[1].url), `…on the repo's hooks endpoint (${fetchCalls[1].url})`);
+const hookPlanted = storage.__raw(conns.gitHookSecretKey(hookId, "acme/app"));
+ok(hookPlanted && typeof hookPlanted.secret === "string" && hookPlanted.secret.length === 64, "the per-repo signing secret is stored, 32 bytes hex");
+ok(setup1.connection.hooks["acme/app"].hookId === "4242", "the connection row records the hook per repo");
+ok(setup1.connection.hooks["acme/app"].secret === undefined, "…and the record carries no secret field");
+const HOOK_SECRET = hookPlanted.secret;
+ok(findSecret(setup1, HOOK_SECRET) === null, "setupGitWebhook does not return the signing secret");
+
+// --- (2) second setup: the SAME hook is reused, never duplicated.
+fetchCalls = [];
+fetchQueue = [res(200, [{ id: 4242, active: true, events: ["push"], config: { url: HOOK_URL } }]), res(200, { id: 4242 })];
+const setup2 = await callScanned("setupGitWebhook", { connectionId: hookId, repo: "acme/app" });
+ok(setup2.success === true && setup2.reused === true, `a second setup REUSES the existing hook (${JSON.stringify(setup2).slice(0, 160)})`);
+ok(fetchCalls.length === 2 && fetchCalls[1].method === "PATCH", `…converging it with an update, never a second create (${fetchCalls.map((c) => c.method).join(",")})`);
+ok(storage.__raw(conns.gitHookSecretKey(hookId, "acme/app")).secret === HOOK_SECRET,
+  "…and it does NOT mint a new secret, which would silently invalidate the installed hook");
+
+// --- (3) rotation: the provider is updated FIRST; the store follows on success.
+fetchCalls = [];
+fetchQueue = [res(200, { id: 4242 })];
+const hookRot = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+ok(hookRot.success === true, `rotation succeeds (${JSON.stringify(hookRot).slice(0, 160)})`);
+ok(fetchCalls.length === 1 && fetchCalls[0].method === "PATCH", "…through one hook-config update");
+const hookSecret2 = storage.__raw(conns.gitHookSecretKey(hookId, "acme/app"));
+ok(hookSecret2.secret !== HOOK_SECRET && hookSecret2.secret.length === 64, "…the stored secret is a NEW one");
+ok(typeof hookSecret2.rotatedAt === "string", "…stamped with the moment it hookSecret2");
+ok(findSecret(hookRot, hookSecret2.secret) === null && findSecret(hookRot, HOOK_SECRET) === null,
+  "rotateGitWebhookSecret returns neither the new secret nor the old one");
+ok(typeof hookRot.connection.hooks["acme/app"].rotatedAt === "string", "the connection row shows THAT it hookSecret2, never the value");
+
+// a provider failure during rotation changes NOTHING.
+fetchQueue = [res(404, { message: "no such hook" })];
+const rotFail = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+ok(rotFail.success === false && rotFail.code === "not_found", `a refused rotation is named (${JSON.stringify(rotFail)})`);
+ok(storage.__raw(conns.gitHookSecretKey(hookId, "acme/app")).secret === hookSecret2.secret,
+  "…and the stored secret is untouched — a failed rotation leaves a WORKING hook, not a deaf one");
+
+// --- rotation before setup is refused, and the allow-list gates both.
+fetchCalls = [];
+const rotNever = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/other" });
+ok(rotNever.success === false && rotNever.code === "forbidden", `a repo off the allow-list is refused (${JSON.stringify(rotNever)})`);
+const setupOff = await callScanned("setupGitWebhook", { connectionId: hookId, repo: "acme/other" });
+ok(setupOff.success === false && setupOff.code === "forbidden", "…for setup too: the allow-list is a security control, not a convenience");
+ok(fetchCalls.length === 0, "…and neither reached the network");
+
+// --- the read-only door.
+fetchCalls = [];
+fetchQueue = [res(200, [{ id: 4242, active: true, events: GIT_HOOK_EVENTS.github.slice(), config: { url: HOOK_URL, secret: HOOK_SECRET } }])];
+const hookListed = await callScanned("listGitWebhooks", { connectionId: hookId, repo: "acme/app" });
+ok(hookListed.success === true && hookListed.hooks.length === 1 && hookListed.hooks[0].hookId === "4242", `listGitWebhooks reads the provider (${JSON.stringify(hookListed).slice(0, 200)})`);
+ok(findSecret(hookListed, HOOK_SECRET) === null, "…and drops the secret even when the provider echoes it back");
+ok(fetchCalls.every((c) => c.method === "GET"), "…and writes nothing");
+
+// --- (5) LOCKSTEP: every subscribed event maps, and every catalogue git row is reachable.
+const GH_SAMPLES = {
+  pull_request: [
+    { action: "opened" }, { action: "synchronize" },
+    { action: "closed", pull_request: { merged: true } }, { action: "closed", pull_request: { merged: false } },
+  ],
+  pull_request_review: [{ action: "submitted" }],
+  issue_comment: [{ action: "created", issue: { pull_request: {} } }],
+  push: [{}],
+  check_run: [{ action: "completed", check_run: { status: "completed" } }],
+};
+const reachable = new Set();
+for (const ev of GIT_HOOK_EVENTS.github) {
+  const samples = GH_SAMPLES[ev] || [{}];
+  const ids = samples.map((p) => mapGitEvent("github", ev, p)).filter(Boolean);
+  ok(ids.length > 0, `the subscribed GitHub event "${ev}" maps to a catalogue id (mapGitEvent answers it)`);
+  ids.forEach((id) => reachable.add(id));
+}
+for (const ev of GIT_HOOK_EVENTS.bitbucket) {
+  const id = mapGitEvent("bitbucket", ev, {});
+  ok(!!id, `the subscribed Bitbucket event "${ev}" maps to a catalogue id`);
+  if (id) reachable.add(id);
+}
+ok(GIT_EVENT_IDS.length === 9, `the catalogue still has nine git rows (${GIT_EVENT_IDS.length})`);
+for (const id of GIT_EVENT_IDS) {
+  ok(reachable.has(id), `the catalogue event "${id}" is reachable from an event the hook SUBSCRIBES to`);
+}
+
 console.log(`git-connections: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

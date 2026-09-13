@@ -512,6 +512,31 @@ try {
         ok(!/Azure Endpoint|LM Studio Public URL/.test(body),
           "E4b the managed engine shows no endpoint/URL field");
 
+        /* F-591 — THE CONTRADICTION ARM. The managed panel used to render the correct
+           "no API key and no endpoint to configure" line and, a few lines below it, the
+           generic BYOK empty-key block: "No key configured" / "Provide your CogniRunner
+           Cloud AI API key to get started" — asking for the one thing saveOpenAIKey refuses
+           server-side. Both blocks now read the SAME `noKeyNeeded` predicate, so neither
+           can come back alone. */
+        ok(!/No key configured/i.test(body),
+          "E4b the managed engine is never told 'No key configured'");
+        ok(!/API key configured\. Provide your/i.test(body),
+          "E4b the managed engine is never asked to provide an API key");
+        ok(/no key needed/i.test(body),
+          "E4b the managed status line says the engine needs no key");
+        ok(await page.locator("input[placeholder*='sk-']").count() === 0,
+          "E4b no key input of any placeholder on the managed engine");
+        const dotIsError = await page.locator(".openai-status .status-dot").first().evaluate((el) => {
+          const cs = getComputedStyle(el);
+          const err = getComputedStyle(document.documentElement).getPropertyValue("--error-color").trim();
+          // Resolve the token through a throwaway element so both sides are computed rgb().
+          const probe = document.createElement("span");
+          probe.style.color = err; document.body.appendChild(probe);
+          const errRgb = getComputedStyle(probe).color; probe.remove();
+          return cs.backgroundColor === errRgb;
+        });
+        ok(!dotIsError, "E4b the managed status dot is not the no-key error red");
+
         // The one-line data note.
         ok(/processed by\s+OpenRouter and Anthropic under LeanZero/i.test(body.replace(/\s+/g, " ")),
           "E4b the data note names OpenRouter and Anthropic under LeanZero's account");
@@ -553,6 +578,33 @@ try {
         await shot(page, `E4b-managed-available-${theme}`);
         ok(env.errors.length === 0, "E4b no page errors: " + env.errors.join(" | "));
       } catch (e) { fail++; console.log("  ✗ E4b threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+
+    /* ---- E4b2 F-591 — THE OTHER SIDE OF THE SAME PREDICATE. Routing the key block through
+       `noKeyNeeded` must leave a BYOK provider exactly as it was: a stored key still reads
+       "Using your <provider> key" with the masked field and Remove Key, and a tenant with NO
+       key still gets the nag AND the input to act on it. A gate that hides the key form for
+       everyone would pass the managed arm above and break every paying tenant. */
+    for (const [name, extra, wantNag] of [["byok-key", {}, false], ["byok-nokey", { __NOKEY__: true }, true]]) {
+      console.log(`E4b2 BYOK unchanged (${name})`);
+      const env = await openAdmin(browser, "light", false, false, extra);
+      const { page } = env;
+      try {
+        await tab(page, "Settings");
+        await page.waitForTimeout(500);
+        const body = await page.locator(".container").innerText();
+        if (wantNag) {
+          ok(/No key configured/i.test(body), "E4b2 a keyless BYOK tenant is still told so");
+          ok(await page.locator("input[type=password]").count() >= 1,
+            "E4b2 a keyless BYOK tenant still gets a key input");
+        } else {
+          ok(/Using your .* key/i.test(body), "E4b2 a BYOK tenant with a key still reads 'Using your … key'");
+          ok(!/No key configured/i.test(body), "E4b2 a BYOK tenant with a key is not nagged");
+          ok(/Remove Key/.test(body), "E4b2 the stored-key form still offers Remove Key");
+        }
+        ok(env.errors.length === 0, "E4b2 no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  ✗ E4b2 threw: " + e.message.split("\n")[0]); }
       await close(env);
     }
 

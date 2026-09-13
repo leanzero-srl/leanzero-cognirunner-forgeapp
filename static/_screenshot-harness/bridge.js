@@ -871,8 +871,19 @@ function invoke(name, payload) {
     // that F-219 corrected to `canEdit` needs a fixture on BOTH sides of the new line, or
     // the correction is only half tested: the editor arm proves the controls appeared, and
     // this one proves they did not appear for someone the backend would refuse.
+    // F-230 — `__ROLE_UNKNOWN__` is the FOURTH answer, and the only one that is not a
+    // verdict about the user. The backend returns it when the permission probe AND the
+    // group scan both threw, i.e. Jira could not be asked at all. It is deliberately
+    // shaped like the others (`success: true`) because the resolver DID answer — what it
+    // reports is that it has no information, which is a different thing from a failed
+    // invoke and a very different thing from `role: null` meaning "no role". The frontend
+    // must not collapse the two: without a fixture on this side, the only rendering a real
+    // Jira outage produces ("CogniRunner has you as no role, ask an admin") is untested
+    // and reads as a confident false claim to the admin most likely to hit it.
     case "checkIsAdmin": return Promise.resolve(
-      typeof window !== "undefined" && window.__VIEWER__
+      typeof window !== "undefined" && window.__ROLE_UNKNOWN__
+        ? { success: true, isAdmin: false, role: null, unknown: true, reason: "jira-unreachable", accountId: ACCT }
+        : typeof window !== "undefined" && window.__VIEWER__
         ? { success: true, isAdmin: false, role: "viewer", scope: "mine", accountId: ACCT }
         : typeof window !== "undefined" && (window.__NOT_ADMIN__ || window.__DEMOTED_ADMIN__)
         ? { success: true, isAdmin: false, role: "editor", scope: "mine", accountId: ACCT }

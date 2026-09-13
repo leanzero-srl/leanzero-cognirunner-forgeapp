@@ -21,6 +21,7 @@ import DocsTab from "./components/DocsTab";
 import CodeTab from "./components/CodeTab";
 import SkillsAdminTab from "./components/SkillsAdminTab";
 import MemoriesAdminTab from "./components/MemoriesAdminTab";
+import KnowledgeTab from "./components/KnowledgeTab";
 /* F-243 — the role-outage sentence has ONE home and it is MemoriesTab, one of the
    byte-identical copies shared with config-ui. Importing it here rather than retyping it
    is the only direction the duplication convention allows (a shared component may not
@@ -2407,6 +2408,200 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .memories-admin-archived-badge { background: #64748b; }
     html[data-color-mode="dark"] .memories-admin-reinforced { color: #14b8a6; }
     html[data-color-mode="dark"] .memories-admin-edit-input { border-color: #14b8a6; }
+
+    /* === Knowledge tab (1.4 commit 14b) — the baked field-guide packs ===
+       HUE: amber, the agents colour from the project map (#b45309 light / #f59e0b dark).
+       The field guide is what the agents read, so it borrows their hue rather than minting
+       a sixth knowledge colour with no relationship to anything.
+       Every solid amber fill carries DARK text on the dark-theme shade (#2a1602), exactly
+       as .memories-admin-src-test does: white on #f59e0b is the one combination in the map
+       that fails contrast, and it is not worth a special case elsewhere.
+       No left rail anywhere here: state is carried by a FULL 2px border plus a solid pill. */
+    .kn-tab { animation: tabContentFade 0.2s ease both; --kn-hue: #b45309; --kn-ink: #ffffff; }
+    html[data-color-mode="dark"] .kn-tab { --kn-hue: #f59e0b; --kn-ink: #2a1602; }
+
+    .kn-loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .kn-error {
+      margin-bottom: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--error-color);
+    }
+
+    /* Refusals and faults share a shape and differ only in hue: slate for "not you",
+       red for "it broke". A refusal never gets the red, because it is not a fault. */
+    .kn-tab .kn-refusal {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+      padding: 14px 16px;
+      border: 2px solid #475569;
+    }
+    .kn-tab .kn-refusal-fault { border-color: #dc2626; }
+    html[data-color-mode="dark"] .kn-tab .kn-refusal { border-color: #64748b; }
+    html[data-color-mode="dark"] .kn-tab .kn-refusal-fault { border-color: #ef4444; }
+    .kn-refusal-head { font-size: 14px; font-weight: 700; color: var(--text-color); }
+    .kn-refusal-text { font-size: 12px; color: var(--text-secondary); }
+
+    .kn-tab .kn-summary {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 5px;
+      padding: 12px 16px;
+      margin-bottom: 14px;
+      border: 2px solid var(--kn-hue);
+    }
+    .kn-summary-eyebrow {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: var(--kn-ink);
+      background: var(--kn-hue);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    .kn-summary-line { font-size: 13px; color: var(--text-color); }
+    .kn-summary-num { font-weight: 700; color: var(--kn-hue); font-size: 15px; }
+    .kn-summary-note { font-size: 12px; color: var(--text-secondary); }
+
+    .kn-packs {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .kn-tab .kn-pack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 2px solid var(--kn-hue);
+    }
+    /* OFF is a real state, not a dimmed one: a solid slate border, full opacity text.
+       Fading a switched-off card would say "unavailable" when it says "you turned this
+       off", and it is the one card an admin most needs to read. */
+    .kn-tab .kn-pack.is-off { border-color: #475569; }
+    html[data-color-mode="dark"] .kn-tab .kn-pack.is-off { border-color: #64748b; }
+
+    .kn-pack-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .kn-pack-title { font-size: 14px; font-weight: 700; color: var(--text-color); }
+
+    /* The switch. A button with role="switch", never a native control. Solid amber when
+       on, solid slate when off; the knob and the word move together so the state reads
+       without relying on colour alone. */
+    .kn-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      flex-shrink: 0;
+      padding: 4px 10px 4px 5px;
+      border: none;
+      border-radius: 12px;
+      background: #475569;
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .kn-switch.is-on { background: var(--kn-hue); color: var(--kn-ink); }
+    .kn-switch:disabled { cursor: default; }
+    .kn-switch:focus-visible { outline: 2px solid var(--kn-hue); outline-offset: 2px; }
+    .kn-switch-knob {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: currentColor;
+      transition: transform 0.15s ease;
+    }
+    .kn-switch.is-on .kn-switch-knob { transform: translateX(2px); }
+    .kn-switch-text { min-width: 20px; text-align: left; }
+    html[data-color-mode="dark"] .kn-switch { background: #64748b; }
+    html[data-color-mode="dark"] .kn-switch.is-on { background: var(--kn-hue); color: var(--kn-ink); }
+
+    /* A viewer's read-only twin of the switch: the same two words, the same two solid
+       fills, and no control at all. A disabled button here would read as "try again
+       later" when the answer is "not you". */
+    .kn-state {
+      flex-shrink: 0;
+      padding: 3px 10px;
+      border-radius: 12px;
+      background: #475569;
+      color: #ffffff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .kn-state.is-on { background: var(--kn-hue); color: var(--kn-ink); }
+    html[data-color-mode="dark"] .kn-state { background: #64748b; }
+    html[data-color-mode="dark"] .kn-state.is-on { background: var(--kn-hue); color: var(--kn-ink); }
+
+    .kn-pack-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+    .kn-pack-fact {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 2px 7px;
+    }
+    .kn-pack-pinned {
+      border-color: transparent;
+      background: var(--kn-hue);
+      color: var(--kn-ink);
+    }
+
+    .kn-pack-prov { display: flex; flex-direction: column; gap: 2px; }
+    .kn-prov-line { font-size: 11px; color: var(--text-secondary); }
+
+    .kn-tab .kn-budgets {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 12px 16px;
+      margin-bottom: 10px;
+    }
+    .kn-budgets-head { font-size: 14px; font-weight: 700; color: var(--text-color); }
+    .kn-budgets-sub { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+    .kn-budget-table { border-collapse: collapse; width: 100%; max-width: 420px; }
+    .kn-budget-table th {
+      text-align: left;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      padding: 4px 8px 4px 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .kn-budget-table td {
+      font-size: 12px;
+      color: var(--text-color);
+      padding: 5px 8px 5px 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .kn-budget-num { font-weight: 700; color: var(--kn-hue); }
+
+    .kn-version-line { font-size: 11px; color: var(--text-secondary); margin: 0; }
+    .kn-version-line strong { color: var(--text-color); font-weight: 700; }
 
     /* === Skills admin tab === */
     .skills-admin-tab {
@@ -5893,6 +6088,35 @@ const injectCopiedComponentStyles = () => {
     .gmc-docs { background: #2563eb; }
     .gmc-skill { background: #7c3aed; }
     .gmc-mem { background: #0d9488; }
+    /* 1.4 commit 14b - the BAKED field guide. Amber (the agents hue), because the guide is
+       what the agents read; docs/skills/memories keep their own colours. It is a BUTTON, so
+       it carries the button reset the other three chips do not need. Dark theme takes dark
+       ink on #f59e0b: white on that amber is the one pair in the project map that fails
+       contrast (.memories-admin-src-test already makes the same exception). */
+    .gmc-fieldguide {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: none;
+      background: #b45309;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .gmc-fieldguide:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
+    html[data-color-mode="dark"] .gmc-fieldguide { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #f59e0b; }
+    .fg-chip-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+    .fg-chip-caret { font-size: 8px; }
+    .fg-chip-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .fg-chip-item {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 1px 6px;
+      white-space: nowrap;
+    }
 
     .truncation-warning {
       width: 100%;
@@ -6275,6 +6499,11 @@ const TABS = [
   { key: "docs", label: "Documentation" },
   { key: "skills", label: "Skills" },
   { key: "memories", label: "Memories" },
+  // 1.4 commit 14b - the BAKED field guide, beside the three knowledge stores an admin
+  // already curates here. Deliberately NOT adminOnly, for the reason the Code tab is not:
+  // `getKnowledgePacks` has a VIEWER floor, so a non-admin genuinely can read the state,
+  // and only the switch belongs to an admin.
+  { key: "knowledge", label: "Knowledge" },
   // Deliberately NOT adminOnly. Every resolver behind it is requireAdmin, so a
   // non-admin sees the backend's own refusal note - which names the remedy - instead of
   // a tab that silently does not exist and a feature they cannot find out about.
@@ -6316,6 +6545,7 @@ const SURFACES = {
     terms: [{ label: "provenance", def: "The record of exactly which docs, skills, and memories the AI drew on when it generated a step's code — shown as chips on each rule." }] },
   skills: { eyebrow: "SKILLS", what: "Reusable instruction packs the AI applies when generating post-function code — auto-matched by keyword, or picked per step.",
     terms: [{ label: "auto-match", def: "On top of any skills you pick, the AI automatically applies up to 2 whose keywords match your step's description." }] },
+  knowledge: { eyebrow: "KNOWLEDGE", what: "Platform knowledge baked into the app - Jira, JSM, Confluence and Forge facts the models read before they write code. Switch a pack off to keep it out of every prompt on this site." },
   memories: { eyebrow: "MEMORIES", what: "Short facts this instance has learned from fixes and your corrections. They sharpen future AI output; runtime use is opt-in (per-transition token cost).",
     terms: [
       { label: "distill", def: "When a production failure is new, the AI writes a short (≤400-char) lesson from it and saves it as a memory — no repeat AI cost for known errors." },
@@ -8316,6 +8546,11 @@ function App() {
       {/* Memories Tab */}
       {activeTab === "memories" && (
         <MemoriesAdminTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} accountId={accountId} />
+      )}
+
+      {/* Knowledge Tab - the baked field-guide packs and their switches (1.4 commit 14b) */}
+      {activeTab === "knowledge" && (
+        <KnowledgeTab invoke={invoke} isAdmin={isAdmin} />
       )}
 
       {/* Permissions Tab (admin only) — app admin management */}

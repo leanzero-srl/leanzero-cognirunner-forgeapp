@@ -1,0 +1,304 @@
+/*
+ * CogniRunner - AI-powered workflow validation for Jira
+ * Copyright (C) 2025 LeanZero
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * admin-panel KNOWLEDGE tab browser journeys (mock-bridge harness) — 1.4 commit 14b.
+ * Drives the REAL admin-panel build with @forge/bridge aliased to bridge.js, whose pack
+ * list is built from the REAL generated index (src/shared/knowledge-index.js) and whose
+ * budget table comes from the REAL per-audience rule (src/shared/registry-limits.js). So a
+ * pack title, a byte count or a budget asserted here is one this build actually ships.
+ *
+ * What it proves, and why each one is here:
+ *   K1  every baked pack is listed, with the title, section count and size from the index —
+ *       the tab's entire claim is that it reports what is in THIS bundle, so a card count
+ *       or a title that came from anywhere but the index would make the tab decorative.
+ *   K2  an admin's toggle WRITES the whole disabled list and re-renders from what the
+ *       backend says it STORED. The payload is asserted, not just the pixel: a tab that
+ *       flipped its own state and never sent the list would look identical.
+ *   K3  the switch is a real control with role="switch" and aria-checked — never a native
+ *       checkbox and never a native select (the owner's standing rule), and the a11y state
+ *       moves with the click.
+ *   K4  a VIEWER sees the same state and NO switch. Not a disabled button: a greyed control
+ *       reads as "try again later" when the answer is "not you" (the F-224 shape).
+ *   K5  a REFUSED read renders as a refusal with the remedy, never as an outage with a
+ *       Retry — re-asking the identical question gets the identical no. Its twin: a
+ *       transport FAULT does get the Retry, and the two must not be collapsed.
+ *   K6  both themes, with COMPUTED colours: the amber hue is #b45309 light / #f59e0b dark,
+ *       the off state is solid slate, and NO card carries a left accent rail or a faded
+ *       low-alpha tint.
+ *   K7  the version line names both versions, because they answer two different questions
+ *       ("did the text change?" and "did the way we pick text change?").
+ *
+ * Run: node static/_screenshot-harness/knowledge-tab.test.mjs   (add --shots to save PNGs)
+ */
+import { chromium } from "playwright";
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
+/* The packs and the budgets come from THEIR one home, never retyped here. A suite that
+   hand-listed nine titles would pass forever against a corpus that had been re-baked. */
+import { KNOWLEDGE_PACKS, KNOWLEDGE_CONTENT_VERSION } from "../../src/shared/knowledge-index.js";
+import { KNOWLEDGE_VERSION } from "../../src/shared/knowledge-select.js";
+import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SHOTS = process.argv.includes("--shots");
+const OUT = path.join(__dirname, "out"); if (SHOTS) fs.mkdirSync(OUT, { recursive: true });
+
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml" };
+function serve(root) {
+  return new Promise((resolve) => {
+    const s = http.createServer((req, res) => {
+      let p = decodeURIComponent(req.url.split("?")[0]); if (p === "/") p = "/index.html";
+      const f = path.join(root, p);
+      if (!f.startsWith(root) || !fs.existsSync(f)) { res.writeHead(404); return res.end("x"); }
+      res.writeHead(200, { "Content-Type": MIME[path.extname(f)] || "application/octet-stream" }); fs.createReadStream(f).pipe(res);
+    });
+    s.listen(0, "127.0.0.1", () => resolve({ s, port: s.address().port }));
+  });
+}
+let pass = 0, fail = 0;
+const ok = (cond, msg) => { if (cond) pass++; else { fail++; console.log("  ✗ " + msg); } };
+/* The tab fades in over 0.2s (tabContentFade). A screenshot taken on the same tick catches
+   a near-invisible page and is worthless as visual proof, so shots wait the animation out. */
+const shot = async (page, name) => { if (SHOTS) { await page.waitForTimeout(400); await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); } };
+
+/** Open the admin panel on the Knowledge tab. `extraInit` seeds window flags. */
+async function openKnowledge(browser, theme = "light", extraInit = null, { expectTab = true } = {}) {
+  const root = ensureFreshBuildShot("admin-panel");
+  const { s, port } = await serve(root);
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
+  await ctx.addInitScript(([th, extra]) => { window.__SHOT__ = "admin"; window.__THEME__ = th; if (extra) for (const k in extra) window[k] = extra[k]; }, [theme, extraInit]);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e && e.message)));
+  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!document.querySelector(".container"), { timeout: 15000 }).catch(() => {});
+  if (expectTab) {
+    await page.locator(".tab-btn", { hasText: /^\s*Knowledge\s*$/ }).first().click();
+    await page.locator(".kn-tab").waitFor({ timeout: 10000 });
+  }
+  return { page, ctx, s, errors, port };
+}
+const close = async (env) => { await env.ctx.close(); await new Promise((r) => env.s.close(r)); };
+
+/* No left rail, no faded tint — the two standing design rules, checked on the computed
+   style rather than on the stylesheet text, so a rule reintroduced by any selector is
+   caught. A "rail" is a left border materially thicker than the other three. */
+async function assertNoRailsOrTints(page, where, sel) {
+  const bad = await page.locator(sel).evaluateAll((els) => {
+    const out = [];
+    for (const el of els) {
+      const c = getComputedStyle(el);
+      const l = parseFloat(c.borderLeftWidth) || 0;
+      const others = [c.borderTopWidth, c.borderRightWidth, c.borderBottomWidth].map((v) => parseFloat(v) || 0);
+      if (l >= 3 && l > Math.max(...others) + 1) out.push(`rail ${l}px on ${el.className}`);
+      const m = /rgba?\(([^)]+)\)/.exec(c.backgroundColor);
+      if (m) {
+        const parts = m[1].split(",").map((x) => parseFloat(x));
+        /* A low-alpha wash as a FILL. 0 (fully transparent) is not a tint, it is no fill. */
+        if (parts.length === 4 && parts[3] > 0 && parts[3] < 0.9) out.push(`tint ${c.backgroundColor} on ${el.className}`);
+      }
+    }
+    return out;
+  });
+  ok(bad.length === 0, `${where} no rails and no faded tints (${bad.join("; ")})`);
+}
+
+const AMBER = { light: "rgb(180, 83, 9)", dark: "rgb(245, 158, 11)" };
+const SLATE = { light: "rgb(71, 85, 105)", dark: "rgb(100, 116, 139)" };
+
+const browser = await chromium.launch();
+try {
+  /* ---------- K1 every baked pack, from the index ---------- */
+  {
+    console.log("K1 the pack list is the baked corpus");
+    const env = await openKnowledge(browser);
+    const { page } = env;
+    try {
+      const cards = page.locator(".kn-pack");
+      ok(await cards.count() === KNOWLEDGE_PACKS.length, `K1 one card per pack (want ${KNOWLEDGE_PACKS.length}, got ${await cards.count()})`);
+      const titles = await page.locator(".kn-pack-title").allInnerTexts();
+      for (const p of KNOWLEDGE_PACKS) ok(titles.includes(p.title), `K1 "${p.title}" is listed`);
+
+      /* The section count and size of one named pack, from the index — not a spot check of
+         "some number is on screen". A card that printed the wrong pack's numbers would pass
+         a shape assertion and fail this one. */
+      const biggest = KNOWLEDGE_PACKS.slice().sort((a, b) => b.bytes - a.bytes)[0];
+      const card = page.locator(".kn-pack").filter({ hasText: biggest.title }).first();
+      const facts = (await card.locator(".kn-pack-fact").allInnerTexts()).join(" | ");
+      ok(facts.includes(`${biggest.sections} sections`), `K1 ${biggest.title} shows ${biggest.sections} sections, got "${facts}"`);
+      ok(facts.includes(`${Math.round(biggest.bytes / 1024)} KB`), `K1 ${biggest.title} shows its size, got "${facts}"`);
+
+      /* Provenance: at least one "source, licence" line per card, never an empty block. */
+      const provCounts = await page.locator(".kn-pack").evaluateAll((els) => els.map((e) => e.querySelectorAll(".kn-prov-line").length));
+      ok(provCounts.every((n) => n > 0), `K1 every card names its source and licence (${provCounts.join(",")})`);
+
+      /* The PINNED pack is the one the index says is pinned — a chip nobody else gets. */
+      const pinnedPack = KNOWLEDGE_PACKS.find((p) => (p.pinned || []).length > 0);
+      if (pinnedPack) {
+        const pinned = page.locator(".kn-pack").filter({ hasText: pinnedPack.title }).first();
+        ok(await pinned.locator(".kn-pack-pinned").count() === 1, `K1 ${pinnedPack.title} carries the pinned chip`);
+        ok(await page.locator(".kn-pack-pinned").count() === 1, "K1 only the pinned pack carries it");
+      }
+
+      /* The budget table is the REAL per-audience rule, not a decorative list. */
+      const rows = await page.locator(".kn-budget-table tbody tr").allInnerTexts();
+      const joined = rows.join(" | ");
+      for (const a of ["codegen", "coder", "validator"]) {
+        const b = fieldGuideBudget(a);
+        const want = b < 1024 ? `${Math.round(b)} bytes` : `${Math.round(b / 1024)} KB`;
+        ok(joined.includes(want), `K1 the ${a} budget reads ${want}, got "${joined}"`);
+      }
+
+      await shot(page, "kn-tab-all-on");
+      ok(env.errors.length === 0, `K1 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  /* ---------- K2/K3 the admin's switch ---------- */
+  {
+    console.log("K2/K3 toggling a pack");
+    const env = await openKnowledge(browser);
+    const { page } = env;
+    try {
+      const target = KNOWLEDGE_PACKS[KNOWLEDGE_PACKS.length - 1];
+      const card = page.locator(".kn-pack").filter({ hasText: target.title }).first();
+      const sw = card.locator(".kn-switch");
+
+      ok(await sw.count() === 1, "K3 the card carries one switch");
+      ok(await sw.getAttribute("role") === "switch", "K3 it is role=switch, not a native checkbox");
+      ok(await sw.getAttribute("aria-checked") === "true", "K3 it starts on");
+      ok(await page.locator(".kn-tab input[type=checkbox]").count() === 0, "K3 no native checkbox anywhere on the tab");
+      ok(await page.locator(".kn-tab select").count() === 0, "K3 no native select anywhere on the tab");
+
+      await sw.click();
+      await page.locator(".kn-pack").filter({ hasText: target.title }).first()
+        .locator(".kn-switch[aria-checked='false']").waitFor({ timeout: 8000 });
+      ok(true, "K2 the switch reads off after the write");
+
+      /* WHAT WENT OVER THE WIRE. The resolver takes the WHOLE disabled list because that
+         is the only shape its clamp can evaluate; a tab that sent a delta would look
+         identical on screen and would silently store one id as the entire list. */
+      const sent = await page.evaluate(() => window.__KN_LAST_SAVE__);
+      ok(sent && Array.isArray(sent.disabled), "K2 the write sends a `disabled` array");
+      ok(sent && sent.disabled.length === 1 && sent.disabled[0] === target.id,
+        `K2 it names exactly the pack that was switched off, got ${JSON.stringify(sent && sent.disabled)}`);
+
+      const offCard = page.locator(".kn-pack").filter({ hasText: target.title }).first();
+      ok((await offCard.getAttribute("class")).includes("is-off"), "K2 the card takes the off state");
+
+      /* THE RE-RENDER CAME FROM THE BACKEND, not from optimism: leave the tab and come
+         back, which re-reads getKnowledgePacks. The mock stores what saveKnowledgeSettings
+         clamped, so a tab that had only flipped local state would come back ON. */
+      await page.locator(".tab-btn", { hasText: /^\s*Memories\s*$/ }).first().click();
+      await page.locator(".kn-tab").waitFor({ state: "detached", timeout: 8000 });
+      await page.locator(".tab-btn", { hasText: /^\s*Knowledge\s*$/ }).first().click();
+      await page.locator(".kn-tab").waitFor({ timeout: 8000 });
+      const back = page.locator(".kn-pack").filter({ hasText: target.title }).first();
+      ok(await back.locator(".kn-switch").getAttribute("aria-checked") === "false", "K2 the write survived a reload — the backend has it");
+
+      /* The summary line counts what is ON, and it moved. */
+      const num = await page.locator(".kn-summary-num").first().innerText();
+      ok(Number(num) === KNOWLEDGE_PACKS.length - 1, `K2 the summary says ${KNOWLEDGE_PACKS.length - 1} on, got ${num}`);
+
+      await shot(page, "kn-tab-one-off");
+
+      /* And back on again, so the journey is a round trip rather than a one-way flip. */
+      await back.locator(".kn-switch").click();
+      await page.locator(".kn-pack").filter({ hasText: target.title }).first()
+        .locator(".kn-switch[aria-checked='true']").waitFor({ timeout: 8000 });
+      ok(true, "K2 switching back on round-trips");
+
+      ok(env.errors.length === 0, `K2 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  /* ---------- K4 a viewer ---------- */
+  {
+    console.log("K4 a viewer reads, and cannot switch");
+    const env = await openKnowledge(browser, "light", { __VIEWER__: true, __NOT_ADMIN__: true });
+    const { page } = env;
+    try {
+      ok(await page.locator(".kn-pack").count() === KNOWLEDGE_PACKS.length, "K4 a viewer still sees every pack");
+      ok(await page.locator(".kn-switch").count() === 0, "K4 no switch at all — not a disabled one");
+      ok(await page.locator(".kn-state").count() === KNOWLEDGE_PACKS.length, "K4 each card shows its state as a solid pill");
+      const note = await page.locator(".kn-summary-note").count();
+      ok(note === 1, "K4 the tab says who can change it");
+      await shot(page, "kn-tab-viewer");
+      ok(env.errors.length === 0, `K4 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  /* ---------- K5 a refusal is not an outage, and an outage is not a refusal ---------- */
+  {
+    console.log("K5 refusal vs fault");
+    const env = await openKnowledge(browser, "light", { __REFUSE__: ["getKnowledgePacks"], __REFUSE_ROLE__: "viewer" });
+    const { page } = env;
+    try {
+      await page.locator(".kn-refusal").waitFor({ timeout: 8000 });
+      const text = await page.locator(".kn-refusal").first().innerText();
+      ok(/CogniRunner viewer access/i.test(text), `K5 the refusal names the role wanted, got "${text}"`);
+      ok(/Permissions/.test(text), "K5 and the remedy");
+      ok(await page.locator(".kn-refusal button").count() === 0, "K5 a refusal offers NO Retry — re-asking gets the same no");
+      ok(await page.locator(".kn-pack").count() === 0, "K5 and no pack cards");
+      await shot(page, "kn-tab-refused");
+      ok(env.errors.length === 0, `K5 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  {
+    const env = await openKnowledge(browser, "light", { __FAIL__: ["getKnowledgePacks"] });
+    const { page } = env;
+    try {
+      await page.locator(".kn-refusal-fault").waitFor({ timeout: 8000 });
+      ok(await page.locator(".kn-refusal-fault button").count() === 1, "K5 a TRANSPORT fault does get a Retry");
+      const border = await page.locator(".kn-refusal-fault").first().evaluate((el) => getComputedStyle(el).borderTopColor);
+      ok(border === "rgb(220, 38, 38)", `K5 a fault is solid red, got ${border}`);
+      await shot(page, "kn-tab-fault");
+    } finally { await close(env); }
+  }
+
+  /* ---------- K6/K7 both themes, computed colours, the version line ---------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`K6/K7 ${theme}`);
+    const env = await openKnowledge(browser, theme, { __KNOWLEDGE_OFF__: [KNOWLEDGE_PACKS[0].id] });
+    const { page } = env;
+    try {
+      const on = page.locator(".kn-pack:not(.is-off)").first();
+      const off = page.locator(".kn-pack.is-off").first();
+      ok(await off.count() === 1, `K6 ${theme} the seeded pack renders OFF`);
+
+      const onBorder = await on.evaluate((el) => getComputedStyle(el).borderTopColor);
+      ok(onBorder === AMBER[theme], `K6 ${theme} an ON card is solid amber ${AMBER[theme]}, got ${onBorder}`);
+      const offBorder = await off.evaluate((el) => getComputedStyle(el).borderTopColor);
+      ok(offBorder === SLATE[theme], `K6 ${theme} an OFF card is solid slate ${SLATE[theme]}, got ${offBorder}`);
+
+      const swOn = await page.locator(".kn-switch.is-on").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(swOn === AMBER[theme], `K6 ${theme} the ON switch is solid amber, got ${swOn}`);
+      const swOff = await page.locator(".kn-switch:not(.is-on)").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(swOff === SLATE[theme], `K6 ${theme} the OFF switch is solid slate, got ${swOff}`);
+
+      /* Amber on dark takes DARK ink. White on #f59e0b is the one pair in the project
+         palette that fails contrast, and this is the assertion that keeps the exception. */
+      const ink = await page.locator(".kn-switch.is-on").first().evaluate((el) => getComputedStyle(el).color);
+      ok(theme === "light" ? ink === "rgb(255, 255, 255)" : ink === "rgb(42, 22, 2)", `K6 ${theme} the switch ink is legible on its fill, got ${ink}`);
+
+      await assertNoRailsOrTints(page, `K6 ${theme}`, ".kn-tab .card, .kn-tab .kn-switch, .kn-tab .kn-state, .kn-tab .kn-pack-fact");
+
+      const version = await page.locator(".kn-version-line").innerText();
+      ok(version.includes(KNOWLEDGE_VERSION), `K7 ${theme} the engine version is named, got "${version}"`);
+      ok(version.includes(KNOWLEDGE_CONTENT_VERSION), `K7 ${theme} the corpus fingerprint is named, got "${version}"`);
+
+      await shot(page, `kn-tab-${theme}`);
+      ok(env.errors.length === 0, `K6 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+} finally {
+  await browser.close();
+}
+console.log(`\nknowledge-tab: ${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

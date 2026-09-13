@@ -42,6 +42,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect.jsx";
+import FieldGuideChip from "./FieldGuideChip.jsx";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 import { isPermissionRefusal, isUpgradeRequired, permissionRefusalText, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "../refusal.js";
 // F-436 - the capability read with a retry ladder, and the ONE wording for a read that never
@@ -693,6 +694,12 @@ export default function CoderPanel({ issueKey, accountId }) {
               <div className={`coder-msg coder-msg-${role} anim-rise`} key={i}>
                 <div className="coder-msg-who">{decision ? "Decision" : (ROLE_LABEL[m.role] || "Coder")}</div>
                 {paragraphs(m.content).map((p, j) => <p className="coder-msg-p" key={j}>{p}</p>)}
+                {/* 1.4 commit 14b - what BAKED knowledge this turn was shown. The receipt
+                    rides on the USER message, because that is the turn the engine stamped
+                    (summarizeKnowledge, src/agent-runner.js) - the reply is the model's
+                    answer to it, not a second injection. Absent on every turn that carried
+                    no guide, so the chip is not a permanent row of "0". */}
+                <FieldGuideChip sections={m.knowledge && m.knowledge.fieldGuideSections} />
               </div>
             );
           })}

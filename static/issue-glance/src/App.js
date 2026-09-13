@@ -204,6 +204,23 @@ const injectStyles = () => {
     .coder-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
     html[data-color-mode="dark"] .coder-skill-chip.is-on:disabled { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
     span.coder-skill-chip { cursor: default; }
+    /* 1.4 commit 14b - the field-guide provenance chip. The .gen-meta-chip base is carried
+       here as well as in config-ui/admin-panel because FieldGuideChip.jsx is byte-identical
+       across the three apps and must not depend on styles only two of them inject. Amber
+       matches the Dry run switch above (#b45309 / #f59e0b), and the dark shade takes dark
+       ink for contrast.
+       NO BACKTICKS IN THIS BLOCK. injectStyles' CSS is a TEMPLATE LITERAL, so a backtick
+       used to quote a class name in a comment CLOSES THE STRING - the app white-screened
+       with "meta is not defined" until this comment was rewritten. */
+    .gen-meta-chip { padding: 2px 10px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #ffffff; white-space: nowrap; }
+    .gmc-fieldguide { display: inline-flex; align-items: center; gap: 4px; border: none; background: #b45309; font-family: inherit; cursor: pointer; }
+    .gmc-fieldguide:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
+    html[data-color-mode="dark"] .gmc-fieldguide { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #f59e0b; }
+    .fg-chip-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+    .fg-chip-caret { font-size: 8px; }
+    .fg-chip-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .fg-chip-item { font-size: 10px; font-weight: 600; color: var(--text-secondary); border: 1px solid var(--border-color); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
     .coder-skills-note { margin: 0; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
     /* F-371: why the Dry run switch is not a choice any more. A plain sentence in the
        app's own secondary text, never a tinted callout and never a rail. */

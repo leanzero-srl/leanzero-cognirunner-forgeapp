@@ -28,6 +28,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
+/* 1.4 commit 14b - the field-guide chip resolves baked section ids to TITLES out of the
+   generated index. Both the ids the mock stamps and the titles they render come from that
+   one home, so this suite cannot assert a name the corpus does not carry. */
+import { KNOWLEDGE_INDEX } from "../../src/shared/knowledge-index.js";
+const FG_IDS = KNOWLEDGE_INDEX
+  .filter((x) => x.pack === "jira-rest-correctness" || x.pack === "cognirunner-sandbox-traps")
+  .slice(0, 3).map((x) => x.id);
+const FG_TITLES = [...new Set(FG_IDS.map((id) => KNOWLEDGE_INDEX.find((x) => x.id === id).title))];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = process.argv.includes("--shots");
@@ -249,6 +257,36 @@ try {
       }));
       ok(shape.tags.length === 0, `${id} the model's reply rendered as TEXT only (stray: ${shape.tags.join(",")})`);
       ok(shape.paras === 2, `${id} blank lines became paragraphs (got ${shape.paras})`);
+
+      /* 1.4 commit 14b - WHAT BAKED KNOWLEDGE THIS TURN WAS SHOWN.
+         The receipt rides on the USER row, because that is the turn the engine stamps
+         (summarizeKnowledge, src/agent-runner.js); the reply is the model's answer to it,
+         not a second injection. A chip on the assistant row would be a claim about a
+         message nothing stamped - and the "TEXT only" assertion above would catch it. */
+      const fgUser = page.locator(".coder-msg-user .gmc-fieldguide");
+      ok(await fgUser.count() === 1, `${id} the user turn carries the field-guide chip`);
+      ok(await page.locator(".coder-msg-assistant .gmc-fieldguide").count() === 0,
+        `${id} and the reply does not`);
+      ok(new RegExp(`Field guide: ${FG_TITLES.length} sections?`).test(await fgUser.innerText()),
+        `${id} it counts the sections it can NAME, got "${await fgUser.innerText()}"`);
+      ok(await fgUser.evaluate((el) => el.tagName) === "BUTTON", `${id} the chip is a real button`);
+      /* Collapsed by default: the section names are long and this is provenance, not the
+         subject of the conversation. */
+      ok(await page.locator(".fg-chip-list").count() === 0, `${id} the section list starts collapsed`);
+      await fgUser.click();
+      await page.locator(".fg-chip-list").first().waitFor({ timeout: 5000 });
+      const fgItems = await page.locator(".fg-chip-item").allInnerTexts();
+      for (const t of FG_TITLES) ok(fgItems.includes(t), `${id} the expanded list names "${t}"`);
+      /* SOLID amber in both themes, with legible ink on each - no faded tint, and the
+         dark shade takes dark ink because white on #f59e0b fails contrast. */
+      const fgBg = await fgUser.evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(fgBg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"),
+        `${id} the chip is solid amber for ${theme}, got ${fgBg}`);
+      const fgInk = await fgUser.evaluate((el) => getComputedStyle(el).color);
+      ok(fgInk === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"),
+        `${id} the chip ink is legible on its fill, got ${fgInk}`);
+      await fgUser.click();
+      ok(await page.locator(".fg-chip-list").count() === 0, `${id} it collapses again`);
       // The composer: a real text box, a Dry run switch that is a button with role=switch
       // (never a native checkbox), and NO connection picker while the fixture has two
       // connections... which it does, so the picker IS expected here.

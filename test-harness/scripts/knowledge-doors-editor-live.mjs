@@ -33,6 +33,7 @@
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { redactSecrets, redactString } from "../lib/redact.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -51,10 +52,13 @@ fs.mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
 const ev = { at: new Date().toISOString(), env: ENV_NAME, editorAccount: EDITOR, checks: [] };
-const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const info = (s) => console.log(`        ${s}`);
+/* F-646 — EVERY evidence payload is redacted ONCE, here, before it reaches the
+   console or `ev` (which is what gets written to results/evidence.json). Call sites
+   must never have to remember; that is exactly the memory that failed. */
+const PASS = (s, d) => { const r = d ? redactSecrets(d) : d; passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d: r } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const FAIL = (s, d) => { const r = d ? redactSecrets(d) : d; fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d: r } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const NV = (s, d) => { const r = d ? redactSecrets(d) : d; unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d: r } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 const readRes = async (res) => {
   let text = ""; try { text = await res.text(); } catch { return { status: 0, json: null, text: "" }; }
@@ -207,13 +211,13 @@ async function main() {
   /* ── STEP 0 — snapshots ───────────────────────────────────────────────────── */
   const rosterBefore = (await kvs("app_admins"))?.value || [];
   ev.rosterBefore = rosterBefore;
-  fs.writeFileSync(`${OUT}/roster-before.json`, JSON.stringify(rosterBefore, null, 2));
+  fs.writeFileSync(`${OUT}/roster-before.json`, JSON.stringify(redactSecrets(rosterBefore), null, 2));
   info(`roster snapshot: ${rosterBefore.length} row(s) -> ${OUT}/roster-before.json`);
   const docsBefore = (await invoke("getContextDocs", {})).json?.docs || [];
   const skillsBefore = (await invoke("getSkills", {})).json?.skills || [];
   ev.docsBefore = docsBefore.map((d) => ({ id: d.id, builtin: !!d.builtin, disabled: !!d.disabled }));
   ev.skillsBefore = skillsBefore.map((s) => ({ id: s.id, builtin: !!s.builtin, enabled: s.enabled !== false }));
-  fs.writeFileSync(`${OUT}/knowledge-before.json`, JSON.stringify({ docs: ev.docsBefore, skills: ev.skillsBefore }, null, 2));
+  fs.writeFileSync(`${OUT}/knowledge-before.json`, JSON.stringify(redactSecrets({ docs: ev.docsBefore, skills: ev.skillsBefore }), null, 2));
 
   const roleOf = async (acc) => (await invoke("checkIsAdmin", {}, acc)).json;
   const preRole = await roleOf(EDITOR);
@@ -286,17 +290,53 @@ async function main() {
     console.log("\nSTEP 4 - F-622 saveSkill as the scope-'own' editor: unknown id vs a colleague's skill");
     const freeSkill = `skill_f642free${Date.now().toString(36)}`;
     const body = (id) => ({ id, name: "probe", category: "Other", instructions: "probe" });
+
+    /* F-649 — THE PRE-READ, TAKEN BEFORE ANYTHING IS ATTEMPTED. "the row was not
+       modified" is only a claim about the REFUSAL if we know what the row said first,
+       and the old check compared one field (`name`) against the STEP-3 index row, which
+       an edit to `instructions` would sail straight past. Read the full stored object
+       as the AUTHOR (admin) — getSkillContent returns `{ success, skill }`, the bytes. */
+    const preRead = await invoke("getSkillContent", { id: skillAdmin }, ADMIN);
+    const preBytes = preRead.json?.success === true && preRead.json.skill ? JSON.stringify(preRead.json.skill) : null;
+    if (preBytes) PASS("PRE-READ: the colleague's skill bytes are on record before the refused save", { id: skillAdmin, bytes: preBytes.length });
+    else FAIL("the pre-read failed, so 'unchanged' below could not be proven — it is not a pass", { id: skillAdmin, answer: preRead.text.slice(0, 200) });
+
     const uS = await invoke("saveSkill", body(freeSkill), EDITOR);
     const fS = await invoke("saveSkill", body(skillAdmin), EDITOR);
     ev.saveSkill = { unknown: uS.text, foreign: fS.text };
     info(`unknown -> ${uS.status} ${uS.text.slice(0, 140)}`);
     info(`foreign -> ${fS.status} ${fS.text.slice(0, 140)}`);
     assertIdentical("saveSkill", uS, fS);
+
+    /* F-649 — THE ARM USED TO BE VACUOUS. `assertIdentical` only requires the two
+       answers to MATCH, and "does not say 'not found'" is satisfied by silence, so two
+       identical HTTP 500s from a wholly broken saveSkill printed three PASSes. The
+       sibling deleteSkill arm at least rejected `success:true`; this one asserted
+       nothing positive at all. Mirror it, and go further: assert the SHAPE of the
+       shared refusal on BOTH answers, so a uniform outage is a FAIL, not a clean step. */
     if (!/not found/i.test(uS.text)) PASS("saveSkill: the shared answer never says 'not found'");
     else FAIL("saveSkill: the shared answer still leaks existence wording", { body: uS.text.slice(0, 200) });
-    const stillThere = ((await invoke("getSkills", {})).json?.skills || []).find((s) => s.id === skillAdmin);
-    if (stillThere && stillThere.name === cRow.name) PASS("SECOND READ: the colleague's skill was not modified by the refused save", { id: skillAdmin });
-    else FAIL("the refused save changed the colleague's skill", { row: JSON.stringify(stillThere || null).slice(0, 200) });
+    for (const [arm, r] of [["unknown id", uS], ["a colleague's skill", fS]]) {
+      const j = r.json || {};
+      // The one refusal shape: notOwner() = permissionDenied(…, null, { hint: "not-owner" }).
+      const isRefusal = j.success === false;
+      const named = j.reason === "no-permission" && (j.hint === "not-owner" || /belongs to someone else/i.test(String(j.error || "")));
+      if (isRefusal && named)
+        PASS(`saveSkill (${arm}): the answer is the REAL refusal — success:false, reason:"no-permission", the not-owner hint`, { reason: j.reason, hint: j.hint });
+      else if (j.success === true)
+        FAIL(`saveSkill (${arm}): answered success — the write door is open`, { body: r.text.slice(0, 200) });
+      else
+        FAIL(`saveSkill (${arm}): not the shared ownership refusal — an outage answers this way too, and that must not grade PASS`, { status: r.status, body: r.text.slice(0, 200) });
+    }
+
+    const postRead = await invoke("getSkillContent", { id: skillAdmin }, ADMIN);
+    const postBytes = postRead.json?.success === true && postRead.json.skill ? JSON.stringify(postRead.json.skill) : null;
+    if (!preBytes || !postBytes)
+      FAIL("SECOND READ: the colleague's skill could not be read back, so 'unchanged' is NOT VERIFIABLE here", { id: skillAdmin, pre: !!preBytes, post: !!postBytes });
+    else if (postBytes === preBytes)
+      PASS("SECOND READ: the colleague's skill is byte-for-byte what it was before the refused save", { id: skillAdmin, bytes: postBytes.length });
+    else
+      FAIL("the refused save CHANGED the colleague's skill", { id: skillAdmin, preBytes: preBytes.length, postBytes: postBytes.length });
 
     /* ── STEP 5 — F-624 deleteSkill: unknown vs colleague, then the author's own ─ */
     console.log("\nSTEP 5 - F-624 deleteSkill: unknown id vs a colleague's, then the author deleting their OWN");
@@ -308,6 +348,15 @@ async function main() {
     assertIdentical("deleteSkill", uD, fD);
     if (!/"success":\s*true/.test(uD.text)) PASS("deleteSkill: an unknown id is REFUSED, not silently 'deleted' (the F-624 write attempt is gone)");
     else FAIL("deleteSkill: an unknown id still answers success — the oracle is open", { body: uD.text.slice(0, 200) });
+    /* F-649 (same class as the saveSkill arm above) — "not success:true" is still
+       satisfied by an outage. Name the refusal on BOTH answers here too. */
+    for (const [arm, r] of [["unknown id", uD], ["a colleague's skill", fD]]) {
+      const j = r.json || {};
+      const named = j.success === false && j.reason === "no-permission" &&
+        (j.hint === "not-owner" || /belongs to someone else/i.test(String(j.error || "")));
+      if (named) PASS(`deleteSkill (${arm}): the answer is the REAL refusal — success:false, reason:"no-permission", the not-owner hint`, { reason: j.reason, hint: j.hint });
+      else FAIL(`deleteSkill (${arm}): not the shared ownership refusal — an outage answers this way too`, { status: r.status, body: r.text.slice(0, 200) });
+    }
     const afterDel = (await invoke("getSkills", {})).json?.skills || [];
     if (afterDel.find((s) => s.id === skillAdmin)) PASS("SECOND READ: the colleague's skill SURVIVED the refused delete", { id: skillAdmin });
     else FAIL("the refused delete removed the colleague's skill", { id: skillAdmin });
@@ -402,7 +451,9 @@ async function main() {
     if (beforeIds === nowIds) PASS("SECOND READ: the documentation index is identical to the pre-run snapshot (ids, builtin flags, disabled flags)");
     else FAIL("the documentation index changed across this run", { before: beforeIds.slice(0, 300), now: nowIds.slice(0, 300) });
 
-    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(ev, null, 2));
+    /* F-646 — redacted AGAIN at the file boundary: `ev.f626`/`ev.f633`/`ev.saveSkill`
+       are assigned directly and never pass through PASS/FAIL/NV. */
+    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
     if (fails > 0) process.exitCode = 1;
   }

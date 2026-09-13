@@ -1413,10 +1413,12 @@ const buildCoderKnowledge = async (p) => {
    * thread posts `skillIds: []`. That is an ABSENT SELECTION, not an instruction to run
    * with none, and the difference only matters on the re-pin path below (see `ids`).
    *
-   * `skillIdsExplicit` is how a caller says it means the empty list: a turn that wants to
+   * `skillIdsExplicit` is how a caller says it means the list it sent: a turn that wants to
    * CHANGE a thread's skills passes the flag, and then `[]` clears them. Absent, `[]` falls
-   * back to the pin. Nothing produces the flag yet — no surface offers "unbind" — so the
-   * only direction it can currently take is the safe one.
+   * back to the pin. F-610 gave the flag its producer (`startCoderTurn` replays the stored
+   * per-thread params), and F-630 made a pinned thread OBEY it: an explicit set that differs
+   * from the pin's is a deliberate prefix move and invalidates the pin — see the verdict
+   * block below, which is the only place either flag is acted on.
    */
   const skillIdsExplicit = !!(p && p.skillIdsExplicit === true);
   let ids = Array.isArray(p && p.skillIds) ? p.skillIds : [];
@@ -1515,7 +1517,34 @@ const buildCoderKnowledge = async (p) => {
   } catch (e) { console.warn("[coder] memory epoch unreadable:", e && e.message); }
 
   if (pinned) {
-    let verdict = null;
+    /*
+     * F-630 — A TURN THAT CHANGES THE THREAD'S SKILLS MOVES THE PREFIX, ON PURPOSE.
+     *
+     * F-610 gave `skillIdsExplicit` a producer, and the unbind was then REMEMBERED but never
+     * OBEYED: the turn-params row was written `[]` while the replay arm below refilled
+     * `out.skillsBlock` from the pin, turn after turn (measured live on staging, thread
+     * t_f610_mu0a1b8f — `coder_turn` said `[]`, `coder_pin` still held two skills and a
+     * 5604-byte block). The only path that honoured it was a pin invalidation caused by
+     * something else entirely, because the "dropping the pinned N" line sat inside
+     * `if (verdict)`. The picker lied: the prompt still carried the skills.
+     *
+     * An EXPLICIT skill change is a deliberate prefix move, exactly like F-578's re-pin —
+     * so it is one more REASON in the same verdict, not a second branch. The pin is dropped,
+     * the blocks rebuild from what the turn asked for, and the re-bill travels through the
+     * F-615 INFO path (`cacheReset.reason`) as a change this turn decided, never the DEFECT
+     * WARN. Set-compare, not order: re-sending the same ids is not a change and must not
+     * cost a prefix. A NON-explicit turn still inherits the pin's ids (F-610/F-594) — an
+     * absent selection is a second browser, not an instruction.
+     */
+    const heldIds = Array.isArray(pinned.skillIds) ? pinned.skillIds.map((x) => String(x)) : [];
+    const wantedIds = ids.map((x) => String(x));
+    const heldSet = new Set(heldIds);
+    const wantedSet = new Set(wantedIds);
+    const sameSkillSet = heldSet.size === wantedSet.size && [...heldSet].every((id) => wantedSet.has(id));
+    const explicitSkillChange = skillIdsExplicit && !sameSkillSet
+      ? `skills changed by the turn: [${heldIds.join(", ")}]→[${wantedIds.join(", ")}]`
+      : null;
+    let verdict = explicitSkillChange;
     try {
       const { skillEpochFor } = await import("./skills.js");
       const liveSkillEpoch = await skillEpochFor(Array.isArray(pinned.skillIds) ? pinned.skillIds : []);
@@ -1530,7 +1559,7 @@ const buildCoderKnowledge = async (p) => {
       // its bytes were never validated against anything and may already be the stale ones
       // this finding is about — and the re-pin below stamps both, after which it is stable.
       if (pinned.memoryEpoch === undefined || pinned.skillEpoch === undefined) {
-        verdict = "pin predates epoch stamping";
+        verdict = [explicitSkillChange, "pin predates epoch stamping"].filter(Boolean).join("; ");
       } else {
         /*
          * F-619 — TWO STORES, TWO VERDICTS. A PIN IS KEPT ONLY IF BOTH ARMS VERIFY.
@@ -1547,7 +1576,9 @@ const buildCoderKnowledge = async (p) => {
          * string — the reasons are joined — because downstream (`out.pinInvalidated`, the
          * engine's re-pin log) reads a single sentence naming why the prefix moved.
          */
-        const reasons = [];
+        // F-630 — the explicit skill change is the FIRST reason, so the one verdict sentence
+        // reads in the order the causes happened and the epoch arms still add their own.
+        const reasons = explicitSkillChange ? [explicitSkillChange] : [];
         let memoryVerified = false;
 
         // MEMORY ARM — the epoch is INSTANCE-GLOBAL while the pinned block is one project's
@@ -1586,7 +1617,9 @@ const buildCoderKnowledge = async (p) => {
       }
     } catch (e) {
       console.warn("[coder] pin epoch check skipped, replaying the pinned knowledge:", e && e.message);
-      verdict = null;
+      // F-593 — an unreadable epoch replays the pin. But a storage fault cannot un-say what
+      // THIS turn explicitly asked for, so an explicit skill change survives it (F-630).
+      verdict = explicitSkillChange;
     }
     if (verdict) {
       console.log(`[coder] pin invalidated: ${verdict} — rebuilding this thread's knowledge (the prompt prefix moves once)`);
@@ -1603,13 +1636,13 @@ const buildCoderKnowledge = async (p) => {
        *
        * So the pin's ids are the fallback, and the only way DOWN is an explicit one.
        */
-      const held = Array.isArray(pinned.skillIds) ? pinned.skillIds.map((x) => String(x)) : [];
-      if (held.length && !ids.length && !skillIdsExplicit) {
-        ids = held;
-        console.log(`[coder] re-pin: this turn carried no skill selection, so the pin's ${held.length} skill(s) are kept and re-rendered (${held.join(", ")})`);
-      } else if (held.length && skillIdsExplicit && !ids.length) {
-        console.log(`[coder] re-pin: this turn asked to run with NO skills, dropping the pinned ${held.length} (${held.join(", ")})`);
+      if (heldIds.length && !ids.length && !skillIdsExplicit) {
+        ids = heldIds;
+        console.log(`[coder] re-pin: this turn carried no skill selection, so the pin's ${heldIds.length} skill(s) are kept and re-rendered (${heldIds.join(", ")})`);
       }
+      // F-630 — when the turn WAS explicit there is no fallback at all: `ids` is already
+      // exactly what it asked for (possibly none), the pin is dropped just below, and the
+      // replay arm can no longer refill skills this turn deliberately let go.
       pinned = null;
     }
   }

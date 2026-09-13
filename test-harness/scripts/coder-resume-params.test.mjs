@@ -972,5 +972,92 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   }
 }
 
+/* ===== F-630 — AN EXPLICIT SKILL CHANGE IS OBEYED ON A PINNED THREAD ===============
+ *
+ * F-610 gave `skillIdsExplicit` a producer. The unbind was then REMEMBERED but never
+ * OBEYED: the turn-params row was written `[]` while `buildCoderKnowledge`'s replay arm
+ * refilled `out.skillsBlock` from the pin, turn after turn — the "dropping the pinned N"
+ * branch sat INSIDE `if (verdict)` and only ran when the pin was already being invalidated
+ * for an unrelated reason. Measured live on staging (thread t_f610_mu0a1b8f, 2026-09-13):
+ * `coder_turn` held `[]` while `coder_pin` still held two skills and a 5604-byte block, and
+ * the turn log still said "Knowledge injected: skills".
+ *
+ * The cut: an explicit set that DIFFERS from the pin's (set-compare) is a deliberate prefix
+ * move — one more reason in the same F-578 verdict, so the rebuild and the F-615 INFO path
+ * are the ones already built for it. Same ids, no move. Non-explicit, still inherits.
+ */
+{
+  const T = "t_f630";
+  const pinKey = coder.coderPinKey(ISSUE, T);
+  const { reportCrossTurnCacheDefect } = await import("../../src/agent-runner.js");
+
+  const build = (extra) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: T, message: "go", ...extra,
+  });
+  // Stand in for the engine's pin write, epoch stamps included (as section 8 does).
+  const pinFrom = (k) => storage.set(pinKey, {
+    issueKey: ISSUE, threadId: T,
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+    memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch,
+    at: new Date().toISOString(),
+  });
+
+  const base = await build({ skillIds: ["skill_house", "skill_adf"], skillIdsExplicit: true });
+  ok(/### Skill: House style/.test(String(base.skillsBlock || "")) && /### Skill: ADF rules/.test(String(base.skillsBlock || "")),
+    "F-630: turn 1 binds two skills and renders both");
+  await pinFrom(base);
+
+  /* (a) the turn says `[]` and means it — the pin is REBUILT, not replayed */
+  {
+    const k = await build({ skillIds: [], skillIdsExplicit: true });
+    ok(/^skills changed by the turn: \[skill_house, skill_adf\]→\[\]$/.test(String(k.pinInvalidated || "")),
+      `THE FINDING: an explicit unbind invalidates the pin on its own (${JSON.stringify(k.pinInvalidated)})`);
+    ok(k.repin === true, "…and asks the engine to re-pin what this turn actually runs with");
+    ok(!k.skillsBlock && !k.skillsExtraBlock,
+      `…and NO skills reach the model, in the prefix or after it (${String(k.skillsBlock || k.skillsExtraBlock || "").slice(0, 60)})`);
+    ok(!(k.skillIds || []).length, `…and the receipt names none (${JSON.stringify(k.skillIds)})`);
+    ok(k.pinEpochVerified !== true, "…a pin being rebuilt is never also re-stamped");
+    // F-615: the re-bill this causes is an INFO naming the cause, never the DEFECT WARN.
+    const v = reportCrossTurnCacheDefect({
+      provider: "managed", usage: { firstRoundCacheReadTokens: 0 },
+      priorPrefixBytes: 60000, prefixReset: k.pinInvalidated,
+    });
+    ok(v && v.defect === false && /skills changed by the turn/.test(v.line),
+      `…and the prefix move is reported as a deliberate one (${v && v.line ? v.line.slice(0, 70) : v})`);
+    // The engine re-pins what the turn ran with: an empty skills pin.
+    await pinFrom(k);
+  }
+
+  /* (b) a silent turn AFTER the unbind stays unbound — the pin no longer holds skills */
+  {
+    const k = await build({});
+    ok(!k.pinInvalidated, `a non-explicit turn does not move the prefix again (${JSON.stringify(k.pinInvalidated)})`);
+    ok(!k.skillsBlock && !k.skillsExtraBlock && !(k.skillIds || []).length,
+      `…and inherits the CLEARED binding rather than resurrecting it (${JSON.stringify(k.skillIds)})`);
+  }
+
+  /* (c) a NARROWING change rebuilds with exactly what was asked for */
+  await pinFrom(base);
+  {
+    const k = await build({ skillIds: ["skill_house"], skillIdsExplicit: true });
+    ok(/skills changed by the turn: \[skill_house, skill_adf\]→\[skill_house\]/.test(String(k.pinInvalidated || "")),
+      `dropping ONE of two is the same deliberate move (${JSON.stringify(k.pinInvalidated)})`);
+    ok(/### Skill: House style/.test(String(k.skillsBlock || "")) && !/### Skill: ADF rules/.test(String(k.skillsBlock || "")),
+      "…and the rebuilt prefix carries the kept skill and only it");
+    ok(!/### Skill: ADF rules/.test(String(k.skillsExtraBlock || "")), "…with nothing hanging off the back of it either");
+  }
+
+  /* (d) re-sending the SAME set is not a change — set-compare, not order */
+  await pinFrom(base);
+  {
+    const k = await build({ skillIds: ["skill_adf", "skill_house"], skillIdsExplicit: true });
+    ok(!k.pinInvalidated && k.repin !== true,
+      `re-sending the same ids in another order keeps the pin (${JSON.stringify(k.pinInvalidated)})`);
+    ok(k.skillsBlock === base.skillsBlock, "…and replays the pinned bytes exactly, so the prefix does not move");
+    ok(!k.skillsExtraBlock, "…and fetches nothing extra for ids the prefix already carries");
+  }
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

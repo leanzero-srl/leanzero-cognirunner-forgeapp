@@ -60,11 +60,12 @@ const SURFACES = [
   // The window is 20000 here because the Coder's builder grew a skills/memory REPLAY half
   // above its guide half (F-574), an epoch VALIDITY check above that (F-578), the fail-open
   // and skills-fallback arms of that check (F-593, F-594), and the memoized project-scoped
-  // memory render the check re-uses (F-598) — it is a distance
+  // memory render the check re-uses (F-598), and the explicit-skill-change verdict arm
+  // (F-630) — it is a distance
   // heuristic over one function, and the invariant being gated is "this builder calls the
   // door", not "it calls it within N characters". Widen it again if the function grows;
   // never delete the surface.
-  ["async-handler.js", "the Coder turn (buildCoderKnowledge)", /buildCoderKnowledge[\s\S]{0,20000}?resolveFieldGuideBlock/],
+  ["async-handler.js", "the Coder turn (buildCoderKnowledge)", /buildCoderKnowledge[\s\S]{0,24000}?resolveFieldGuideBlock/],
   ["git-review.js", "the PR review engine", /resolveFieldGuideBlock/],
 ];
 

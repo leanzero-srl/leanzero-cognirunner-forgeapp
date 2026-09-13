@@ -45,7 +45,7 @@ import {
   resolveEdition, EDITIONS, EDITION_IDS, ADVANCED_FEATURES, isFeatureAllowed,
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, normalizeModelId,
-  agentCapability,
+  agentCapability, agentCapabilityCopy,
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -106,6 +106,11 @@ import { executePremadeRule } from "./premade-rules.js";
 // (no top-level cycle) for the shared sandbox / AI / log / permission internals
 // exported at the bottom of this file.
 import * as listenersMod from "./listeners.js";
+// THE CODER ENGINE (1.4 commit 8). The thread store, the consent ticket, the per-issue
+// claim and the owner check all live in src/coder-engine.js; the resolvers below are
+// permission-gated wrappers and a producer for the long queue. Nothing about a turn is
+// re-implemented here.
+import * as coderMod from "./coder-engine.js";
 import * as jobsMod from "./scheduled-jobs.js";
 import { createApiTokenInternal, listApiTokens, revokeApiTokenInternal, RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY } from "./rules-api.js";
 import { isKnownEvent, buildEventPromptBlock, GIT_EVENT_IDS } from "./shared/jira-events.js";
@@ -10713,6 +10718,174 @@ resolver.define("getAgentCapability", async ({ context }) => {
       agentModel: facts.agentModel,
       allowanceLevel: facts.allowanceLevel,
     };
+  });
+});
+
+/* =========================================================================
+ * THE CODER — resolvers (1.4 commit 8, plan §3.8)
+ *
+ * Three doors, and nothing else: start a turn (queued on the LONG consumer), read a
+ * thread, answer a consent ticket. The engine (src/coder-engine.js) owns the thread,
+ * the ticket, the claim and the owner check; these wrappers own PERMISSION and the
+ * ENQUEUE, which is all a resolver may own.
+ *
+ * THE GATE, once, in one helper: the Coder is an ADVANCED (Coder-edition) feature AND it
+ * needs an agent-capable provider, and those are two different refusals with two
+ * different remedies. `requireAdvanced` answers the first with `upgradeRequired("coder")`;
+ * `agentCapability` answers the second, rendered through `agentCapabilityCopy` so the
+ * sentence is the same one the Code tab and the action checklist already show. Neither is
+ * a new refusal shape.
+ *
+ * ADMIN-INDEPENDENT: a Coder thread belongs to the person who opened it, so the floor is
+ * the EDITOR role plus ownership — not admin. Reading somebody else's thread is refused
+ * with the ownership refusal (`hint:"not-owner"`), except for an admin, who can already
+ * read every rule in the registry.
+ */
+const coderGate = async (context) => {
+  const adv = await requireAdvanced(context, "coder");
+  if (!adv.ok) return { refusal: adv.refusal };
+  const facts = await agentGateFacts(context);
+  // FAILS TO THE RESTRICTIVE SIDE, like every other consumer of these facts: no provider
+  // read means no capability, never an assumed one.
+  const verdict = facts.provider ? agentCapability(facts) : { enabled: false, reason: "unknown" };
+  if (!verdict.enabled) {
+    return {
+      refusal: {
+        success: false,
+        agentDisabled: true,
+        reason: verdict.reason,
+        error: `The Coder can't run right now: ${agentCapabilityCopy(verdict.reason)}`,
+      },
+    };
+  }
+  return { facts };
+};
+
+/**
+ * START ONE TURN. Returns `{ success, async: true, taskId, threadId }` — the panel polls
+ * `getAsyncTaskResult(taskId)` exactly like every other queued AI task.
+ *
+ * IT ENQUEUES ON `long-queue` AND NOWHERE ELSE. A coder turn is up to eight model rounds;
+ * the 120 s consumer cannot hold one, and `src/async-handler.js` refuses a `coder` task
+ * that arrives anywhere else. Two at a time per ISSUE would be two writers on one thread,
+ * so concurrency is keyed on the issue — and the engine's `coder_exec:<issueKey>` claim is
+ * the guarantee behind it, this is only politeness to the queue.
+ */
+resolver.define("startCoderTurn", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("use the Coder", "editor");
+  const gate = await coderGate(context);
+  if (gate.refusal) return gate.refusal;
+  return okOr(async () => {
+    const issueKey = String(payload?.issueKey || "").trim();
+    const message = String(payload?.message || "").trim();
+    if (!issueKey) return { success: false, error: "An issue key is required." };
+    if (!message) return { success: false, error: "Type a message for the Coder." };
+    const threadId = String(payload?.threadId || "").trim() || `t_${Date.now().toString(36)}`;
+    // The thread is the record and it has ONE owner. A turn on somebody else's thread is
+    // refused HERE as well as in the engine: the queue is asynchronous, and a refusal the
+    // user only learns about by polling is a refusal told as an outage.
+    const existing = await coderMod.getCoderThread(issueKey, threadId);
+    if (existing && existing.ownerAccountId && existing.ownerAccountId !== context.accountId) {
+      return notOwner("continue this Coder thread");
+    }
+    const savedByRole = await savedByRoleFor(context.accountId);
+    const taskId = makeTaskId("coder");
+    const params = {
+      issueKey, threadId, accountId: context.accountId,
+      message: message.slice(0, coderMod.CODER_USER_MESSAGE_MAX_CHARS),
+      simulation: payload?.simulation === true,
+      connectionId: payload?.connectionId ? String(payload.connectionId).slice(0, 100) : null,
+      maxRounds: payload?.maxRounds,
+      // The instance's facts are read HERE (only a resolver can) and travel with the task;
+      // the engine never reads them itself, exactly as listeners and jobs do it.
+      gateFacts: gate.facts,
+      savedByRole,
+    };
+    const { Queue } = await import("@forge/events");
+    const queue = new Queue({ key: "long-queue" });
+    const pushResult = await queue.push({
+      body: { taskType: "coder", taskId, params },
+      concurrency: { key: `coder:${issueKey}`, limit: 1 },
+    });
+    await writeAsyncJob({
+      taskId, jobId: pushResult?.jobId || null, taskType: "coder", status: "queued",
+      ruleId: null, ruleName: `Coder ${issueKey}`, issueKey,
+      accountId: context.accountId, enqueuedAt: new Date().toISOString(),
+    });
+    return { success: true, async: true, taskId, threadId };
+  });
+});
+
+/** READ a thread. Owner, or an admin. Never another editor. */
+resolver.define("getCoderThread", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("read Coder threads", "editor");
+  return okOr(async () => {
+    const issueKey = String(payload?.issueKey || "").trim();
+    const threadId = String(payload?.threadId || "").trim();
+    if (!issueKey || !threadId) return { success: false, error: "An issue key and a thread id are required." };
+    const thread = await coderMod.getCoderThread(issueKey, threadId);
+    if (!thread) return { success: false, error: "Coder thread not found" };
+    // READ-ONLY admin check (the coordinator's F-251 decision): `requireAdmin` →
+    // `requireRole` → `getUserPermissions` WITHOUT `allowBootstrap`, so rendering a panel
+    // can never write the admin roster.
+    if (thread.ownerAccountId && thread.ownerAccountId !== context.accountId && !(await requireAdmin(context.accountId))) {
+      // F-261 shape: a caller who may not see it is told the same thing whether or not it
+      // exists — "not found" is the answer, and ownership is the reason.
+      return notOwner("read this Coder thread");
+    }
+    return { success: true, thread };
+  });
+});
+
+/**
+ * ANSWER a consent ticket. Owner only, exactly once (the engine's
+ * `coder_ticket_exec:<ticketId>` claim), and the confirmed step runs INLINE here rather
+ * than on the queue: it is a single provider call inside the git executor's own 10 s cap,
+ * and putting it on the queue would mean a second at-least-once delivery of a write we
+ * have just promised to perform exactly once.
+ *
+ * After any decision the conversation RESUMES: the engine hands back the sentence to send,
+ * and this resolver is the ONE producer that pushes the follow-up turn.
+ */
+resolver.define("confirmCoderTicket", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("answer a Coder confirmation", "editor");
+  const gate = await coderGate(context);
+  if (gate.refusal) return gate.refusal;
+  return okOr(async () => {
+    const out = await coderMod.confirmCoderTicket({
+      ticketId: payload?.ticketId,
+      decision: payload?.decision,
+      change: String(payload?.change || "").slice(0, 2000),
+      accountId: context.accountId,
+    });
+    if (!out.resume || out.duplicate) return out;
+    // Resume on the SAME queue the turn ran on. A failure to enqueue is reported, never
+    // swallowed: the decision has already been recorded in the thread, so the user must be
+    // told that the follow-up did not start rather than left watching a spinner.
+    try {
+      const savedByRole = await savedByRoleFor(context.accountId);
+      const taskId = makeTaskId("coder");
+      const { Queue } = await import("@forge/events");
+      const queue = new Queue({ key: "long-queue" });
+      const pushResult = await queue.push({
+        body: {
+          taskType: "coder", taskId,
+          params: {
+            issueKey: out.issueKey, threadId: out.threadId, accountId: context.accountId,
+            message: out.resumeMessage, gateFacts: gate.facts, savedByRole,
+          },
+        },
+        concurrency: { key: `coder:${out.issueKey}`, limit: 1 },
+      });
+      await writeAsyncJob({
+        taskId, jobId: pushResult?.jobId || null, taskType: "coder", status: "queued",
+        ruleId: null, ruleName: `Coder ${out.issueKey}`, issueKey: out.issueKey,
+        accountId: context.accountId, enqueuedAt: new Date().toISOString(),
+      });
+      return { ...out, async: true, taskId };
+    } catch (e) {
+      return { ...out, resumed: false, error: `The decision was recorded, but the Coder could not be resumed: ${String((e && e.message) || e).slice(0, 200)}` };
+    }
   });
 });
 

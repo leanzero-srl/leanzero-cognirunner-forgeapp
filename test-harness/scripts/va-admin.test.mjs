@@ -878,6 +878,69 @@ let agentId = null;
       "F-507: ...and an agent-level gate skip is still not an ok tick (F-502 holds)");
   }
 
+  /* -- F-510: THE GATE IS THE FIELD, NOT THE KEY -------------------------------
+   *
+   * F-502 made a tick the engine stopped at a gate report `ok:false`, and wrote the
+   * predicate as `key === "(agent)" && gate` - reading the gate off the KEY as well as
+   * off the field, while its own commit message states the rule it did not implement:
+   * "the gate field is exactly the line between the two". The next gate the engine
+   * added proved the difference. F-506's convergence gate marks a compaction that was
+   * PAID FOR and left the memory over budget as `{key:"(memory)", gate:"compaction"}`
+   * and fails the tick (`recordTickHealth(..., false)`), while this projection still
+   * answered `ok:true` - the same disagreement between the health counter and the
+   * receipt that F-502 existed to remove, on the next gate that shipped.
+   *
+   * BOTH SHAPES, THROUGH `getVaStatus`, plus the three no-ops that must stay GREEN. */
+  {
+    // The engine's exact F-506 rows: `runVaCompaction` returns `gate:"compaction"` with
+    // `summariser-failed` or `did-not-converge`, and the tick pushes them as
+    // `{key:"(memory)", reason:"compaction:<reason>"}` with the gate riding along.
+    for (const reason of ["summariser-failed", "did-not-converge"]) {
+      const id = `f510-${reason}`;
+      await recordTick(storage, agentId, {
+        tickId: id, phase: "prepare", candidates: 2, staged: 2,
+        skipped: [{ key: "(memory)", gate: "compaction", reason: `compaction:${reason}` }],
+        compacted: { before: 7000, after: 7000, reason, fellBack: reason === "summariser-failed" },
+      });
+      const r = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === id);
+      ok(r && r.ok === false,
+        `F-510: a compaction the engine GATED (${reason}) reports ok:false on the receipt too (got ${JSON.stringify(r && { ok: r.ok, skipped: r.skipped })})`);
+      ok(r && r.error === null,
+        "F-510: ...with `error` still null - nothing threw, the engine refused, and those are different claims");
+      ok(r && (r.skipped[0] || {}).itemKey === "(memory)",
+        `F-510: ...and the key is carried as written - it says WHAT was gated, and it is not an issue key the tab should hide (got ${JSON.stringify(r && r.skipped)})`);
+      // F-507 and F-510 answer the same tick together: the verdict AND the bytes.
+      ok(r && r.compacted && r.compacted.before === 7000 && r.compacted.after === 7000,
+        `F-510/F-507: ...and the receipt SHOWS the spend that achieved nothing (got ${JSON.stringify(r && r.compacted)})`);
+    }
+
+    // The capability gate is untouched by the widening (F-502's original case).
+    await recordTick(storage, agentId, {
+      tickId: "f510cap", phase: "prepare",
+      skipped: [{ key: "(agent)", gate: "capability", reason: "needs-coder-edition" }],
+    });
+    const cap = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === "f510cap");
+    ok(cap && cap.ok === false, "F-510: the capability gate still fails the tick - widening the predicate did not narrow it");
+
+    /* THE GREEN SIDE, which is what stops this becoming a banner that cries wolf. A
+     * skip with NO `gate` field is a healthy no-op, and the engine writes all three
+     * that way: the paused arm, the post phase's `gate.`-PREFIXED REASON strings (a
+     * string, not the field), and F-506's compaction BACKOFF row - a tick that
+     * deliberately did not spend on a provider known to be failing is the brake
+     * working, not the agent failing. */
+    const greens = [
+      ["f510paused", "prepare", { key: "(agent)", reason: "paused" }, "a PAUSED tick"],
+      ["f510shadow", "post", { key: "SUP-9", reason: "gate.shadow" }, "a post held back by SHADOW"],
+      ["f510backoff", "prepare", { key: "(memory)", reason: "compaction:compaction-backoff" }, "a compaction BACKOFF tick (F-506)"],
+    ];
+    for (const [id, phase, skip, label] of greens) {
+      await recordTick(storage, agentId, { tickId: id, phase, candidates: 1, staged: 1, skipped: [skip] });
+      const r = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === id);
+      ok(r && r.ok === true,
+        `F-510: ${label} stays GREEN - it carries no \`gate\` field, and the field is the whole question (got ${JSON.stringify(r && { ok: r.ok, skipped: r.skipped })})`);
+    }
+  }
+
   const agents = await call("listVaAgents", {});
   has(agents, ["agents"], "listVaAgents");
   has(agents.agents[0], ["id", "name", "enabled", "va"], "an agent row (job row + {va})");

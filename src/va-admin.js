@@ -647,11 +647,26 @@ const publicReceipt = (r) => {
    * the whole run stopped here — the same statement it takes a health failure for. So the
    * verdict is read from it rather than inferred from the absence of an exception.
    *
-   * A skip on `(agent)` WITHOUT a gate stays ok: that is the paused arm, and a paused
-   * agent is a healthy no-op, not a failure. The gate field is exactly the line between
-   * the two, which is why F-482 added it.
+   * A skip WITHOUT a gate stays ok: that is the paused arm, the shadow arm, the post
+   * phase's `gate.`-prefixed reason strings and F-506's compaction BACKOFF row — all of
+   * them healthy no-ops. The gate FIELD is exactly the line between the two, which is
+   * why F-482 added it.
+   *
+   * F-510 — THE KEY IS NOT PART OF THE QUESTION. F-502 wrote this predicate as
+   * `key === "(agent)" && gate`, reading the gate off the KEY as well as off the field,
+   * and its own commit message states the rule it did not implement: "the gate field is
+   * exactly the line between the two". The next gate the engine added proved the
+   * difference. F-506's convergence gate marks a compaction that was PAID FOR and left
+   * the memory over budget as `{key:"(memory)", gate:"compaction"}` and fails the tick
+   * — `recordTickHealth(..., false)` — while this projection answered `ok:true`, because
+   * the key was not `(agent)`. That is exactly the F-233 symptom F-502 was raised to
+   * remove, reappearing on the next gate.
+   *
+   * So: ANY skip carrying a `gate` stopped the tick, whatever it was gating. The key
+   * says WHAT was gated (the whole agent, its memory); the field says THAT the engine
+   * refused, and that is the only thing `ok` is asking about.
    */
-  const stoppedAtGate = asArray(r.skipped).some((s) => s && s.key === "(agent)" && s.gate);
+  const stoppedAtGate = asArray(r.skipped).some((s) => s && s.gate);
   return {
     at: r.finished || r.started || null,
     startedAt: r.started || null,

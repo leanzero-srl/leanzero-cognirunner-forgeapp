@@ -29,6 +29,11 @@ import { buildSystemPromptApiSection, API_USAGE_GUARD, getApiMethodNames } from 
 import { buildEndpointPromptBlock } from "../../src/shared/jira-endpoints.js";
 import { defangFence, getMemorySettings, buildMemoryBlock, MEMORIES_KEY, MEMORY_SETTINGS_KEY } from "../../src/memories.js";
 import { autoMatchSkills, fetchSkillsBlock, seedBuiltinSkills, SKILL_INDEX_KEY, SKILL_PREFIX, SKILL_SEED_META_KEY } from "../../src/skills.js";
+// 1.4 commit 14b — the REAL field-guide door, not a stub: the point of this file is that
+// the extracted builder runs its true dependencies, and the guide is now one of them.
+import { resolveFieldGuideBlock, saveKnowledgeSettings, invalidateKnowledgeSettingsCache, KNOWN_PACK_IDS } from "../../src/knowledge-packs.js";
+import { FIELD_GUIDE_MARKER, FIELD_GUIDE_GUARD_SENTENCE } from "../../src/shared/knowledge-select.js";
+import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -56,6 +61,7 @@ const factory = new Function(
   "autoMatchSkills", "fetchSkillsBlock", "getMemorySettings", "buildMemoryBlock",
   "buildSystemPromptApiSection", "buildEndpointPromptBlock", "API_USAGE_GUARD",
   "getApiMethodNames", "console", "isKnownEvent", "buildEventPromptBlock", "describeCron",
+  "resolveFieldGuideBlock",
   `"use strict";
    ${srcRuntime}
    ${srcPriorSteps}
@@ -70,11 +76,12 @@ const { buildCodegenRequest, buildFixRequest } = factory(
   autoMatchSkills, fetchSkillsBlock, getMemorySettings, buildMemoryBlock,
   buildSystemPromptApiSection, buildEndpointPromptBlock, API_USAGE_GUARD,
   getApiMethodNames, console, isKnownEvent, buildEventPromptBlock, describeCron,
+  resolveFieldGuideBlock,
 );
 
 // ---- helpers ----
 // short-circuit builtin-skill seeding so each test controls the skill index deterministically
-const reset = () => { storage.__reset(); storage.__seed(SKILL_SEED_META_KEY, { seedVersion: 999 }); };
+const reset = () => { storage.__reset(); storage.__seed(SKILL_SEED_META_KEY, { seedVersion: 999 }); invalidateKnowledgeSettingsCache(); };
 const build = async (fn, payload) => {
   const r = await fn(payload);
   return { r, sys: r.messages[0].content, usr: r.messages[1].content, meta: r.meta };
@@ -264,6 +271,95 @@ reset();
   ok(jUsr.includes("scheduled job step"), "job user message noun");
   const { sys: fx } = await build(buildFixRequest, { code: "x", error: "e", prompt: "p", runtime: "listener", eventTypes: ["avi:jira:created:issue"] });
   ok(fx.includes("RUNTIME CONTEXT — LISTENER"), "fix request carries the runtime preamble too");
+}
+
+// =====================================================================================
+// THE FIELD GUIDE (1.4 commit 14b) — the third knowledge layer in the codegen/fix prompt
+// =====================================================================================
+// Ordering is the point: the trust ladder of this prompt is what an admin of THIS instance
+// typed (skills), then what the vendor baked (field guide), then what previous runs guessed
+// (memories), then untrusted data (reference docs, current code, test logs). A block that
+// moves changes what the model believes it may obey.
+
+// --- G1: present, fenced exactly once, carrying its own guard sentence ---
+reset();
+{
+  const { sys, meta } = await build(buildCodegenRequest, { prompt: "create a Forge manifest module and a resolver" });
+  ok(sys.includes(`<<<${FIELD_GUIDE_MARKER}`), "codegen: the field guide fence is in the system prompt");
+  ok(count(sys, `<<<${FIELD_GUIDE_MARKER}`) === 1, "codegen: exactly ONE opening field-guide fence");
+  ok(count(sys, `${FIELD_GUIDE_MARKER}>>>`) === 1, "codegen: exactly ONE closing field-guide fence");
+  ok(sys.includes(FIELD_GUIDE_GUARD_SENTENCE), "codegen: the guard sentence rides inside the block, not in the caller's prose");
+  ok(sys.includes("## Field Guide (baked platform knowledge — fenced)"), "codegen: the block has a heading the log/UI can point at");
+  ok(Array.isArray(meta.fieldGuide) && meta.fieldGuide.length > 0,
+    `codegen: meta.fieldGuide carries the section ids (${(meta.fieldGuide || []).length})`);
+  ok(meta.fieldGuide.every((id) => typeof id === "string" && id.includes("/")),
+    "codegen: every reported id is a real section id, not a pack name or a count");
+  // A receipt that names sections the model never saw is worse than no receipt.
+  const picked = await resolveFieldGuideBlock({ audience: "codegen", text: "create a Forge manifest module and a resolver " });
+  ok(JSON.stringify(picked.sectionIds) === JSON.stringify(meta.fieldGuide),
+    "codegen: meta.fieldGuide equals what the selector returned for the same query");
+}
+
+// --- G2: ORDER — skills, then field guide, then memories, then the untrusted docs fence ---
+reset();
+{
+  seedSkill("s1", "House style", "Always log the issue key first.");
+  storage.__seed(MEMORIES_KEY, [{ id: "m1", content: "customfield_10001 is a number field", source: "fix", createdAt: new Date().toISOString() }]);
+  storage.__seed(MEMORY_SETTINGS_KEY, { autoCapture: false, injection: true, runtimeInjection: false });
+  const { sys, usr, meta } = await build(buildCodegenRequest, {
+    prompt: "set a number custom field", selectedSkillIds: ["s1"], contextDocs: "a doc the user pasted",
+  });
+  const iSkills = sys.indexOf("<<<SKILLS");
+  const iGuide = sys.indexOf(`<<<${FIELD_GUIDE_MARKER}`);
+  const iMem = sys.indexOf("<<<LEARNED_MEMORIES");
+  ok(iSkills >= 0 && iGuide >= 0 && iMem >= 0, "all three knowledge blocks present");
+  ok(iSkills < iGuide, "the field guide comes AFTER the operator's skills");
+  ok(iGuide < iMem, "...and BEFORE the advisory memories");
+  ok(usr.includes("<<<REFERENCE_DOCS"), "the untrusted docs fence is in the USER message");
+  ok(!usr.includes(`<<<${FIELD_GUIDE_MARKER}`), "the field guide never lands in the user message beside untrusted data");
+  ok(meta.appliedSkills.length === 1 && meta.appliedMemories === 1 && meta.fieldGuide.length > 0,
+    "meta reports all three layers independently");
+}
+
+// --- G3: the fix prompt gets it too, on its own audience ---
+reset();
+{
+  const { sys, meta } = await build(buildFixRequest, { code: "api.foo()", error: "api.foo is not a function", prompt: "add a label" });
+  ok(sys.includes(`<<<${FIELD_GUIDE_MARKER}`), "fix: the field guide is injected");
+  ok(Array.isArray(meta.fieldGuide) && meta.fieldGuide.length > 0, "fix: meta.fieldGuide carries ids");
+  const iGuide = sys.indexOf(`<<<${FIELD_GUIDE_MARKER}`);
+  const iSec = sys.indexOf("SECURITY: Any text inside the <<<CURRENT_CODE>>>");
+  ok(iGuide >= 0 && iSec > iGuide, "fix: the guide precedes the untrusted-code security note");
+  const picked = await resolveFieldGuideBlock({ audience: "fix", text: "add a label api.foo is not a function" });
+  ok(picked.budget === fieldGuideBudget("fix"), "fix: the selection is made on the FIX budget row, not codegen's by luck");
+}
+
+// --- G4: BUDGET — the rendered block never exceeds the audience's ceiling ---
+reset();
+{
+  // a query that touches every pack, so the selector has more to offer than it can spend
+  const wide = "forge manifest module resolver jira rest adf confluence page queue consumer agent permission scope jsm automation smart value";
+  const { sys } = await build(buildCodegenRequest, { prompt: wide });
+  const open = sys.indexOf(`<<<${FIELD_GUIDE_MARKER}`);
+  const close = sys.indexOf(`${FIELD_GUIDE_MARKER}>>>`);
+  const blockBytes = Buffer.byteLength(sys.slice(open, close), "utf8");
+  const budget = fieldGuideBudget("codegen");
+  // The budget bounds the SECTION BODIES; the fence, the heading and the guard sentence
+  // are the block's own overhead, so allow a small constant rather than asserting a number
+  // the builder never promised.
+  ok(blockBytes <= budget + 1024, `codegen: the rendered block stays within ${budget} bytes + fence overhead (${blockBytes})`);
+  ok(blockBytes > 1024, `codegen: ...and it is not trivially empty (${blockBytes} bytes)`);
+}
+
+// --- G5: an admin who switches every pack off gets a prompt with NO field guide at all ---
+reset();
+{
+  await saveKnowledgeSettings({ disabled: KNOWN_PACK_IDS });
+  const { sys, meta } = await build(buildCodegenRequest, { prompt: "create a resolver" });
+  ok(!sys.includes(`<<<${FIELD_GUIDE_MARKER}`), "every pack off -> no field-guide fence in the prompt");
+  ok(!sys.includes("## Field Guide"), "...and no empty heading left behind either");
+  ok(Array.isArray(meta.fieldGuide) && meta.fieldGuide.length === 0, "...and meta.fieldGuide is empty rather than absent");
+  await saveKnowledgeSettings({ disabled: [] });
 }
 
 console.log(`\nprompt-builders: ${pass} passed, ${fail} failed`);

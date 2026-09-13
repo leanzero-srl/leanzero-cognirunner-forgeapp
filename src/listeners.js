@@ -41,7 +41,7 @@ import {
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { knowledgeBudget, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
+import { knowledgeBudget, fieldGuideAudience, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
@@ -391,6 +391,27 @@ export const buildAgentKnowledge = async (agent, { projectKey = null, audience =
       if (b.text) out.memoryCount = Number(b.count) || 0;
     } catch (e) { console.warn("[knowledge] memory block skipped:", e && e.message); }
   }
+  // THE BAKED FIELD GUIDE (1.4 commit 14b) — the third layer, and the one an agent gets
+  // without anybody binding anything: skills are chosen per rule and memories are opt-in,
+  // but the platform facts an agent needs to not call a dead endpoint are ours to supply.
+  //
+  // Dynamic import for the same reason the two above are: this module is loaded by paths
+  // that never run an agent, and the packs are 582 KB.
+  //
+  // FAIL-OPEN like both halves above — the block is absent and the run proceeds.
+  try {
+    const { resolveFieldGuideBlock } = await import("./knowledge-packs.js");
+    const guide = await resolveFieldGuideBlock({
+      audience: fieldGuideAudience(audience),
+      text: `${(agent && agent.instructions) || ""} ${(agent && agent.name) || ""}`,
+    });
+    if (guide.block) {
+      out.fieldGuideBlock = guide.block;
+      // The receipt slot `summarizeKnowledge` already reserves (F-487): ids only, never
+      // text, so a wrong answer can be traced to the sections that caused it.
+      out.fieldGuideSections = guide.sectionIds;
+    }
+  } catch (e) { console.warn("[knowledge] field guide skipped:", e && e.message); }
   return out;
 };
 

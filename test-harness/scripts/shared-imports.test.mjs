@@ -128,6 +128,55 @@ ok(!/from\s+["']\.\/knowledge-(index|packs)/.test(selectSrc),
   "knowledge-select.js does NOT static-import the generated index or packs");
 ok(select.buildFieldGuideBlock([]).block === "", "an empty selection builds an empty block, not an empty fence");
 
+// ...but once the packs HAVE been baked, they are shared modules too and the loop above
+// does not see them: it reads src/shared/*.js and they live in src/shared/knowledge-packs/.
+// 1.4 commit 14b bakes them, so the same four rules apply — import cleanly, export
+// something, declare it in source, and stay dependency-free — plus the shape the backend
+// door destructures. Absent packs are not a failure: bake:check owns "are they current?",
+// this file owns "if they are here, do they load?".
+{
+  const packsDir = path.join(sharedDir, "knowledge-packs");
+  let packFiles = [];
+  try {
+    packFiles = readdirSync(packsDir).filter((f) => f.endsWith(".js")).sort();
+  } catch { packFiles = []; }
+  if (packFiles.length) {
+    ok(packFiles.length >= 1, `src/shared/knowledge-packs/ holds ${packFiles.length} generated modules`);
+    let totalSections = 0;
+    for (const f of packFiles) {
+      const abs = path.join(packsDir, f);
+      let mod = null, err = null;
+      try { mod = await import(pathToFileURL(abs).href); } catch (e) { err = e; }
+      ok(err === null, `src/shared/knowledge-packs/${f} import()s cleanly (${err ? err.message : "ok"})`);
+      if (err) continue;
+      const src = readFileSync(abs, "utf8");
+      ok(/^\s*export\s/m.test(src), `knowledge-packs/${f} declares at least one export in source`);
+      const badImport = (src.match(/^\s*import\s[^\n]*?from\s+["']([^"'.][^"']*)["']/m) || [])[1];
+      ok(!badImport, `knowledge-packs/${f} has no non-relative import (offender: ${badImport || "none"})`);
+      ok(/GENERATED — DO NOT EDIT/.test(src), `knowledge-packs/${f} says GENERATED — DO NOT EDIT`);
+      ok(typeof mod.PACK_ID === "string" && mod.PACK_ID === f.replace(/\.js$/, ""),
+        `knowledge-packs/${f} exports PACK_ID matching its filename`);
+      ok(Array.isArray(mod.SECTIONS) && mod.SECTIONS.length > 0, `knowledge-packs/${f} exports a non-empty SECTIONS array`);
+      ok(mod.SECTIONS.every((s) => s && s.id && s.pack === mod.PACK_ID && typeof s.body === "string" && s.body.length > 0),
+        `knowledge-packs/${f}: every section has an id, its own pack id and a body`);
+      ok(mod.SECTIONS.every((s) => Array.isArray(s.audience) && s.audience.length > 0),
+        `knowledge-packs/${f}: every section names at least one audience`);
+      ok(mod.SECTIONS.every((s) => s.provenance && s.provenance.source && s.provenance.licence),
+        `knowledge-packs/${f}: every section carries source + licence provenance`);
+      totalSections += mod.SECTIONS.length;
+    }
+    // The index the UI bundles import must agree with the packs the backend imports.
+    const idx = await import(pathToFileURL(path.join(sharedDir, "knowledge-index.js")).href);
+    ok(Array.isArray(idx.KNOWLEDGE_INDEX) && idx.KNOWLEDGE_INDEX.length === totalSections,
+      `knowledge-index.js lists exactly the ${totalSections} sections the packs export`);
+    ok(idx.KNOWLEDGE_INDEX.every((e) => !("body" in e)),
+      "the index carries NO bodies — a UI bundle importing it costs kilobytes, not megabytes");
+    ok(idx.KNOWLEDGE_PACKS.length === packFiles.length, "the index lists exactly the packs on disk");
+    const idxSrc = readFileSync(path.join(sharedDir, "knowledge-index.js"), "utf8");
+    ok(!/^\s*import\s/m.test(idxSrc), "knowledge-index.js imports nothing — it is pure generated data");
+  }
+}
+
 /* ===== 1.5 commit 1 — the Virtual Administrator's two new shared modules ===== */
 // Both are named EXPLICITLY here (the loop above discovers them, but a named check says
 // which contracts must exist, so deleting an export fails with a sentence rather than

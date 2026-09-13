@@ -58,5 +58,10 @@ static/submission-material/_marketing/out/
 # knowledge/raw/ is a verbatim copy of the owner's sources (client-bearing, unscrubbed).
 # knowledge/denylist.local is the list of names we are protecting; committing it would
 # leak exactly what it exists to keep out. The .example template IS committed.
-knowledge/raw/
+#
+# Both patterns are written WITHOUT a trailing slash on purpose: a worktree commonly
+# reaches the sources by SYMLINKING knowledge/raw at the main checkout, and
+# `knowledge/raw/` (with the slash) matches only a real directory — git would have
+# offered the symlink for commit, which is the leak this block exists to prevent.
+knowledge/raw
 knowledge/denylist.local

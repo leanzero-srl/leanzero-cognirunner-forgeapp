@@ -130,7 +130,7 @@ import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 import { createConfluenceClient } from "./confluence-client.js";
 import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL } from "./coder-engine.js";
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
-import { knowledgeBudget } from "./shared/registry-limits.js";
+import { knowledgeBudget, fieldGuideAudience } from "./shared/registry-limits.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict, safeKeyPart, assertKvsKey } from "./shared/kvs-keys.js";
@@ -1415,6 +1415,28 @@ const buildCoderKnowledge = async (p) => {
       if (b.text) out.memoryCount = Number(b.count) || 0;
     }
   } catch (e) { console.warn("[coder] memory block skipped:", e && e.message); }
+  // THE BAKED FIELD GUIDE (1.4 commit 14b) — the Coder's turn is the widest budget in the
+  // table (16 KB) because it is the surface that writes Forge apps, and the packs are the
+  // Forge knowledge it writes them from. Same shape as `buildAgentKnowledge`
+  // (src/listeners.js): dynamic import, receipt stamped by the builder, fail-open.
+  //
+  // `coderTurn` is the skills/memories vocabulary; `fieldGuideAudience` translates it to
+  // the field guide's `coder` in the ONE place that map lives (shared/registry-limits.js).
+  try {
+    const { resolveFieldGuideBlock } = await import("./knowledge-packs.js");
+    const guide = await resolveFieldGuideBlock({
+      audience: fieldGuideAudience("coderTurn"),
+      // The user's turn text is what the selector scores against — the same question the
+      // model is about to answer. It is a SCORING QUERY only: it is tokenized and thrown
+      // away, never echoed into the prompt, so untrusted text here cannot reach the model
+      // through this path.
+      text: String((p && p.message) || ""),
+    });
+    if (guide.block) {
+      out.fieldGuideBlock = guide.block;
+      out.fieldGuideSections = guide.sectionIds;
+    }
+  } catch (e) { console.warn("[coder] field guide skipped:", e && e.message); }
   return out;
 };
 

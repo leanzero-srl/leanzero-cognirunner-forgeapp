@@ -396,6 +396,33 @@ export const fieldGuideBudget = (audience) =>
   FIELD_GUIDE_BUDGET_BYTES[audience]
   || Math.min(...Object.values(FIELD_GUIDE_BUDGET_BYTES));
 
+/**
+ * THE TWO AUDIENCE VOCABULARIES, RECONCILED IN ONE PLACE (1.4 commit 14b).
+ *
+ * `KNOWLEDGE_BUDGET_BYTES` (skills + memories) names its rows `agentRun` / `coderTurn` /
+ * `prReview`; the field guide's rows are `agent` / `coder` / `review`, because the bake
+ * tags each SECTION with the audiences it serves and those tags are written by hand into
+ * knowledge/sources.json, where a reviewer wants `agent`, not `agentRun`.
+ *
+ * Two vocabularies for the same set of readers is a translation, and a translation always
+ * gets a home or it gets retyped. `buildAgentKnowledge` takes the skills/memories name and
+ * needs the field-guide one, so the map lives HERE, beside both tables it reconciles,
+ * rather than as a ternary in listeners.js and another in async-handler.js.
+ *
+ * An unmapped name passes through unchanged, so a caller that already speaks the field
+ * guide's vocabulary ("validator", "va", "fix") needs no entry — and an unknown name
+ * still lands on `fieldGuideBudget`'s smallest-row rule rather than on a default budget
+ * invented here.
+ */
+export const FIELD_GUIDE_AUDIENCE_FOR = Object.freeze({
+  agentRun: "agent",
+  coderTurn: "coder",
+  prReview: "review",
+});
+
+/** Translate a skills/memories audience name into the field guide's. One home. */
+export const fieldGuideAudience = (audience) => FIELD_GUIDE_AUDIENCE_FOR[audience] || audience;
+
 /** Skills a rule may bind. Small on purpose: a rule picks a VOICE, not a library. */
 export const MAX_RULE_SKILL_IDS = 4;
 

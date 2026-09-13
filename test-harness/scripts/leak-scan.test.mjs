@@ -130,5 +130,50 @@ const example = readFileSync(path.join(repoRoot, "knowledge/denylist.local.examp
 ok(scanText(example, "denylist.local.example").filter((f) => f.severity === "fail").length === 0,
   "knowledge/denylist.local.example carries placeholders only");
 
+/* 11. THE EMITTED PACKS (1.4 commit 14b).
+       Everything above proves the scanner works. This proves it WORKED — it scans the
+       generated modules that actually ship, which is the only artefact a customer ever
+       receives. The bake scans its inputs; this scans its output, because a scrub rule
+       that silently stopped matching would leave the bake green and the packs dirty.
+
+       The denylist is gitignored on purpose (knowledge/denylist.local names the people
+       and clients we are protecting, so committing it leaks exactly what it exists to
+       keep out). When it is absent the denylist KINDS cannot fire and the test says so
+       out loud rather than passing quietly — an unrun guard must never read as a pass. */
+{
+  const packsDir = path.join(repoRoot, "src/shared/knowledge-packs");
+  let packFiles = [];
+  try {
+    packFiles = readdirSync(packsDir).filter((f) => f.endsWith(".js")).map((f) => path.join(packsDir, f));
+  } catch { packFiles = []; }
+
+  if (!packFiles.length) {
+    console.log("leak-scan: NOTE — no baked packs on disk; the emitted-pack scan did not run.");
+  } else {
+    const denylistPath = path.join(repoRoot, "knowledge/denylist.local");
+    const denylist = loadDenylist(denylistPath);
+    const haveDenylist = Boolean(denylist && (denylist.terms?.length || denylist.projectKeys?.length || denylist.patterns?.length));
+
+    const findings = scanFiles(packFiles, { cwd: repoRoot, denylist: haveDenylist ? denylist : undefined });
+    const fatal = findings.filter((f) => f.severity === "fail");
+    ok(fatal.length === 0,
+      `the ${packFiles.length} emitted packs carry no fail-severity leak (${formatFindings(fatal.slice(0, 5))})`);
+
+    // Kind-by-kind, so a regression names the shape that got through rather than a count.
+    for (const kind of Object.keys(KINDS)) {
+      if (KINDS[kind] !== "fail") continue;
+      if (kind.startsWith("denylist.") && !haveDenylist) continue;
+      ok(!findings.some((f) => f.kind === kind), `no ${kind} in the emitted packs`);
+    }
+
+    if (haveDenylist) {
+      ok(!findings.some((f) => f.kind.startsWith("denylist.")),
+        "no denylisted client, person or project key survived the scrub into the shipped packs");
+    } else {
+      console.log(`leak-scan: NOTE — knowledge/denylist.local is absent, so the denylist kinds did NOT run over the emitted packs. This is a SKIP, not a pass. Copy knowledge/denylist.local.example and fill it in before a release.`);
+    }
+  }
+}
+
 console.log(`\nleak-scan: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

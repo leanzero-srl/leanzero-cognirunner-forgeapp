@@ -149,11 +149,85 @@ const bytesOf = (v) => Buffer.byteLength(JSON.stringify(v) || "", "utf8");
  * If decisions alone still exceed the cap, the OLDEST decisions are dropped last and the
  * note says so — a cap that cannot be met is reported, never silently exceeded.
  *
+ * COMPACTION IS BY LOGICAL UNIT, NEVER BY INDEX (F-361). An assistant message carrying
+ * `tool_calls` and the `role:"tool"` rows answering them are ONE unit: keep it or drop it
+ * whole. Dropping by index orphaned them — a recent window that began on a `tool` row
+ * whose parent had fallen into the dropped block produced a transcript OpenAI answers 400
+ * to ("messages with role 'tool' must be a response to preceding tool_calls") and
+ * Anthropic rejects as an unmatched tool_use_id. The compacted array is what is
+ * PERSISTED, so that corruption was permanent: every later turn on the thread failed the
+ * same way. `repairTranscript` is the floor under it — whatever path produced the kept
+ * array, an unpaired row cannot leave this function.
+ *
  * @returns {{messages: Array, compacted: boolean, dropped: number}}
  */
+/**
+ * THE UNITS of a transcript: index → the index of the message it must travel with.
+ * An assistant message with `tool_calls` leads; every `tool` row answering one of its
+ * ids belongs to it. A `tool` row whose id matches no leader leads itself — it is
+ * already an orphan, and `repairTranscript` removes it rather than dragging it along.
+ */
+const threadUnits = (all) => {
+  const leaderOf = new Array(all.length).fill(-1);
+  const members = new Map();
+  const owner = new Map(); // tool_call_id → leader index
+  all.forEach((msg, i) => {
+    if (msg && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+      leaderOf[i] = i;
+      members.set(i, [i]);
+      for (const tc of msg.tool_calls) if (tc && tc.id) owner.set(String(tc.id), i);
+    }
+  });
+  all.forEach((msg, i) => {
+    if (leaderOf[i] !== -1) return;
+    if (msg && msg.role === "tool" && msg.tool_call_id && owner.has(String(msg.tool_call_id))) {
+      const lead = owner.get(String(msg.tool_call_id));
+      leaderOf[i] = lead;
+      members.get(lead).push(i);
+    } else {
+      leaderOf[i] = i;
+      members.set(i, [i]);
+    }
+  });
+  return { leaderOf, members };
+};
+
+/**
+ * THE FLOOR: no message may leave compaction unpaired. Orphan `tool` rows are dropped,
+ * and an assistant's `tool_calls` are narrowed to the ones whose results survived (with
+ * the message itself dropped when nothing is left of it). Pure, and cheap enough to run
+ * on every path — including the last-resort one, which slices by index.
+ */
+export const repairTranscript = (msgs) => {
+  const rows = Array.isArray(msgs) ? msgs : [];
+  const answered = new Set();
+  for (const m of rows) if (m && m.role === "tool" && m.tool_call_id) answered.add(String(m.tool_call_id));
+  const out = [];
+  const keptIds = new Set();
+  for (const m of rows) {
+    if (m && Array.isArray(m.tool_calls)) {
+      const calls = m.tool_calls.filter((tc) => tc && tc.id && answered.has(String(tc.id)));
+      if (calls.length !== m.tool_calls.length) {
+        const trimmed = { ...m };
+        if (calls.length) trimmed.tool_calls = calls;
+        else delete trimmed.tool_calls;
+        // An assistant row that carried nothing but unanswered calls says nothing at all.
+        if (!calls.length && !String(trimmed.content || "").trim()) continue;
+        for (const tc of calls) keptIds.add(String(tc.id));
+        out.push(trimmed);
+        continue;
+      }
+      for (const tc of m.tool_calls) if (tc && tc.id) keptIds.add(String(tc.id));
+    }
+    out.push(m);
+  }
+  return out.filter((m) => !(m && m.role === "tool" && (!m.tool_call_id || !keptIds.has(String(m.tool_call_id)))));
+};
+
 export const compactThread = (messages, { maxBytes = CODER_THREAD_MAX_BYTES, keepRecent = CODER_THREAD_KEEP_RECENT } = {}) => {
   const all = Array.isArray(messages) ? messages.slice() : [];
   if (bytesOf(all) <= maxBytes) return { messages: all, compacted: false, dropped: 0 };
+  const { leaderOf, members } = threadUnits(all);
 
   const isDecision = (msg) => msg && msg.kind === "decision";
   const textOf = (msg) => {
@@ -180,6 +254,13 @@ export const compactThread = (messages, { maxBytes = CODER_THREAD_MAX_BYTES, kee
     if (all.length) keepIdx.add(0);
     all.forEach((msg, i) => { if (isDecision(msg)) keepIdx.add(i); });
     for (let i = Math.max(0, all.length - recent); i < all.length; i++) keepIdx.add(i);
+    // WHOLE UNITS ONLY (F-361): keeping any row of a tool-call group keeps the group, so
+    // the recent window can never begin on a `tool` row whose parent was dropped. It only
+    // ever GROWS the kept set — the cap is re-checked below and `recent` shrinks if it is
+    // still exceeded, so this cannot loop forever.
+    for (const group of members.values()) {
+      if (group.some((i) => keepIdx.has(i))) for (const i of group) keepIdx.add(i);
+    }
     const dropped = all.filter((_, i) => !keepIdx.has(i));
     if (!dropped.length) break;
     const kept = [];
@@ -188,17 +269,20 @@ export const compactThread = (messages, { maxBytes = CODER_THREAD_MAX_BYTES, kee
       if (keepIdx.has(i)) { kept.push(msg); return; }
       if (!noteInserted) { kept.push(noteFor(dropped)); noteInserted = true; }
     });
-    if (bytesOf(kept) <= maxBytes) return { messages: kept, compacted: true, dropped: dropped.length };
+    if (bytesOf(kept) <= maxBytes) return { messages: repairTranscript(kept), compacted: true, dropped: dropped.length };
     recent -= 4;
   }
 
   // Last resort: the decisions alone are over the cap. Drop the OLDEST of them — and SAY
   // so, because a lost decision the user is not told about is worse than a long thread.
-  const kept = all.filter((m, i) => isDecision(m) || i >= all.length - 2);
+  // Even here the slice is by unit: a lone `tool` row in the last two would be an orphan,
+  // so the tail is widened to its leader before anything is measured.
+  const tailFrom = Math.min(...[Math.max(0, all.length - 2)].map((i) => (leaderOf[i] >= 0 ? Math.min(i, leaderOf[i]) : i)));
+  const kept = all.filter((m, i) => isDecision(m) || i >= tailFrom);
   let dropped = all.length - kept.length;
   while (kept.length > 2 && bytesOf(kept) > maxBytes) { kept.shift(); dropped++; }
   return {
-    messages: [noteFor(all.slice(0, Math.max(0, all.length - kept.length)), "; some earlier DECISIONS were dropped to stay inside the thread size cap — re-state any constraint that still applies"), ...kept],
+    messages: repairTranscript([noteFor(all.slice(0, Math.max(0, all.length - kept.length)), "; some earlier DECISIONS were dropped to stay inside the thread size cap — re-state any constraint that still applies"), ...kept]),
     compacted: true,
     dropped,
   };

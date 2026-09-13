@@ -51,7 +51,7 @@ const store = (await import("../lib/mock-kvs.mjs")).default;
 const {
   runCoderTurn, confirmCoderTicket, compactThread, buildCoderSystemPrompt, buildArgsPreview,
   coderThreadKey, coderTicketKey, coderExecClaimKey, coderTicketExecClaimKey,
-  CODER_MAX_ROUNDS, CODER_CLAIM_TTL_MINUTES,
+  CODER_MAX_ROUNDS, CODER_CLAIM_TTL_MINUTES, repairTranscript,
 } = await import("../../src/coder-engine.js");
 const { runAgentTask, runAgentLoop, createAgentActionDispatcher } = await import("../../src/agent-runner.js");
 const { createGitActionExecutor } = await import("../../src/git-actions.js");
@@ -507,6 +507,56 @@ await check("a thread of nothing but oversized decisions is capped, and says dec
   const out = compactThread(msgs, { maxBytes: 6000, keepRecent: 2 });
   assert.ok(Buffer.byteLength(JSON.stringify(out.messages), "utf8") <= 6000);
   assert.match(out.messages[0].content, /DECISIONS were dropped/);
+});
+
+await check("F-361: compaction never orphans a tool result from its tool_calls (odd cut point)", async () => {
+  // A thread whose recent window deliberately BEGINS mid tool-call group: the assistant
+  // that made the calls sits just outside it. By index that orphans the tool rows; by
+  // unit it cannot.
+  const pad = (i) => ({ role: "user", at: "x", content: `filler ${i} `.repeat(60) });
+  const msgs = [{ role: "user", content: "the original ask" }];
+  for (let i = 0; i < 20; i++) msgs.push(pad(i));
+  msgs.push({ role: "assistant", at: "x", content: null, tool_calls: [{ id: "c1", function: { name: "get_issue", arguments: "{}" } }, { id: "c2", function: { name: "search_issues", arguments: "{}" } }] });
+  msgs.push({ role: "tool", at: "x", tool_call_id: "c1", content: "{\"ok\":true}" });
+  msgs.push({ role: "tool", at: "x", tool_call_id: "c2", content: "{\"ok\":true}" });
+  for (let i = 20; i < 24; i++) msgs.push(pad(i));
+  // keepRecent = 6 ⇒ the window starts on the SECOND tool row: an index cut orphans it.
+  const out = compactThread(msgs, { maxBytes: 6000, keepRecent: 6 });
+  assert.equal(out.compacted, true);
+  const kept = out.messages;
+  const leaders = new Set();
+  kept.forEach((m) => { if (Array.isArray(m.tool_calls)) m.tool_calls.forEach((tc) => leaders.add(tc.id)); });
+  for (const m of kept) {
+    if (m.role === "tool") assert.ok(leaders.has(m.tool_call_id), `orphan tool row ${m.tool_call_id} survived compaction`);
+  }
+  const answered = new Set(kept.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
+  for (const id of leaders) assert.ok(answered.has(id), `tool_call ${id} kept with no result row`);
+  // …and the group really did survive, so the two loops above were not vacuous.
+  assert.equal(leaders.size, 2, "the whole tool-call group is kept together, not dropped to dodge the pairing");
+  assert.ok(Buffer.byteLength(JSON.stringify(kept), "utf8") <= 6000, "still inside the cap");
+});
+
+await check("F-361: repairTranscript drops an orphan tool row and strips an unanswered tool_calls", async () => {
+  const repaired = repairTranscript([
+    { role: "user", content: "a" },
+    { role: "tool", tool_call_id: "gone", content: "{}" },
+    { role: "assistant", content: "", tool_calls: [{ id: "x", function: { name: "f", arguments: "{}" } }] },
+    { role: "assistant", content: "I said something", tool_calls: [{ id: "y", function: { name: "f", arguments: "{}" } }] },
+  ]);
+  assert.deepEqual(repaired.map((m) => m.role), ["user", "assistant"]);
+  assert.equal(repaired[1].content, "I said something");
+  assert.equal(repaired[1].tool_calls, undefined, "an unanswered tool_calls is stripped, not replayed");
+});
+
+await check("F-361: a paired group that fits is left exactly as it was", async () => {
+  const msgs = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", function: { name: "f", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "{}" },
+  ];
+  const out = compactThread(msgs, { maxBytes: 10000 });
+  assert.equal(out.compacted, false);
+  assert.deepEqual(out.messages, msgs);
 });
 
 /* ═════════ 8. the prompt and the preview ═════════ */

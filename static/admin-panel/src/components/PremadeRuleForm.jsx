@@ -25,20 +25,16 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
-import { getCatalog, findRule, COMPARE_OPS, EXPRESSION_BACKED_CONDITIONS, CONDITION_NOT_EXPRESSIBLE_REASON, conditionFieldSupport } from "../../../../src/shared/premade-rules-catalog.js";
+import { getCatalog, findRule, COMPARE_OPS, PR_MATCH_OPTIONS, PR_MATCH_DEFAULT, EXPRESSION_BACKED_CONDITIONS, CONDITION_NOT_EXPRESSIBLE_REASON, conditionFieldSupport } from "../../../../src/shared/premade-rules-catalog.js";
 import { redosRisk } from "../../../../src/shared/regex-safety.js";
 import { gitProviderKindMeta, normalizeRepoId } from "../../../../src/shared/git-ids.js";
 import { isPermissionRefusal } from "./refusal";
 
-// The three `prMatch` ids are the executor's vocabulary, not this form's — runGitValidator
-// (src/premade-rules.js) reads exactly "property" | "branch" | "both" and treats anything
-// else as "both". The labels say what each one MEANS at a transition, because the ids are
-// only meaningful next to the cognirunner.git property they index.
-const PR_MATCH_OPTIONS = [
-  { value: "property", label: "Linked by CogniRunner", hint: "Accept the pull request CogniRunner recorded for this issue." },
-  { value: "branch", label: "Branch names the issue", hint: "Only accept it if the live source branch contains the issue key." },
-  { value: "both", label: "Either", hint: "Accept either of the two. The widest match, and the default." },
-];
+// F-379 — the labels and hints live in the CATALOG (PR_MATCH_OPTIONS), beside the ids the
+// executor reads, because explain-facts.js renders the same rule in the same words. This
+// form used to carry its own copy, and after F-362 that copy still promised a trust the
+// executor had dropped: the cognirunner.git property NOMINATES a pull request number and
+// nothing more, so "property" and "both" are the same check and the picker now says so.
 
 export default function PremadeRuleForm({ mode = "validator", fields = [], initial, onChange }) {
   const catalog = getCatalog(mode);
@@ -715,7 +711,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
                 </button>
               ))}
             </div>
-            <p className="hint">{(PR_MATCH_OPTIONS.find((o) => o.value === prMatch) || PR_MATCH_OPTIONS[2]).hint}</p>
+            <p className="hint">{(PR_MATCH_OPTIONS.find((o) => o.value === prMatch) || PR_MATCH_OPTIONS.find((o) => o.value === PR_MATCH_DEFAULT)).hint}</p>
           </div>
 
           <div className="form-group">

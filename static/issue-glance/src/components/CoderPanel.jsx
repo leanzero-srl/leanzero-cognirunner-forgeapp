@@ -108,6 +108,51 @@ const paragraphs = (text) => String(text || "").split(/\n{2,}/).map((p) => p.tri
 
 const ROLE_LABEL = { user: "You", assistant: "Coder", system: "Coder" };
 
+/* F-374 - THE CONSENT PREVIEW IS DATA, NOT A SENTENCE.
+   `buildArgsPreview` (src/coder-engine.js) returns an OBJECT keyed by the action's own
+   parameter schema, already clamped: scalars, arrays of scalars-or-flat-objects, and flat
+   objects (`trigger_deploy.inputs`). Handing that to React as a child throws, and before
+   the boundary landed it took the whole panel with it.
+
+   It is rendered as a definition list, one row per LEAF, because the fields F-363 added are
+   exactly the ones a sentence would have dropped: `private: false` decides whether a new
+   repository is public, and `inputs.environment` decides which environment a deploy hits.
+   So booleans and numbers are printed LITERALLY (`false` is a value, never an absence),
+   nested objects are flattened onto their path, and only strings are clamped. */
+const PREVIEW_VALUE_MAX = 300;
+const PREVIEW_MAX_ROWS = 40;
+
+export const previewRows = (preview) => {
+  if (!preview || typeof preview !== "object" || Array.isArray(preview)) return [];
+  const rows = [];
+  const push = (key, value) => {
+    if (rows.length >= PREVIEW_MAX_ROWS) return;
+    if (value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      if (!value.length) { rows.push({ key, text: "(none)" }); return; }
+      value.forEach((item, i) => push(`${key}[${i}]`, item));
+      return;
+    }
+    if (typeof value === "object") {
+      const entries = Object.entries(value);
+      if (!entries.length) { rows.push({ key, text: "(none)" }); return; }
+      for (const [k, v] of entries) push(`${key}.${k}`, v);
+      return;
+    }
+    // String(false) is "false" and String(0) is "0": a literal, not a blank.
+    rows.push({ key, text: typeof value === "string" ? value.slice(0, PREVIEW_VALUE_MAX) : String(value) });
+  };
+  for (const [k, v] of Object.entries(preview)) push(k, v);
+  return rows.slice(0, PREVIEW_MAX_ROWS);
+};
+
+/* The ticket outlived the page: the thread record keeps only `pendingTicketId`, so the
+   arguments are genuinely gone. Say that plainly rather than render an empty preview that
+   reads like "this action takes no arguments" - the user is being asked to authorise a
+   write, and "I cannot show you what it does" is the honest answer. */
+const noPreviewText = (action) =>
+  `The details of this step were not kept when the page reloaded, so ${action ? `${action} ` : "it "}cannot be described here. Nothing has run. Skip it and ask again to see the full preview before confirming.`;
+
 export default function CoderPanel({ issueKey, accountId }) {
   const [cap, setCap] = useState(null);            // the getAgentCapability answer
   const [capState, setCapState] = useState("loading"); // loading | ok | refused | upgrade | error
@@ -542,7 +587,24 @@ export default function CoderPanel({ issueKey, accountId }) {
             <span className="coder-chip coder-chip-consent">Needs your OK</span>
             <span className="coder-consent-action">{ticket.action || "a step"}</span>
           </div>
-          <p className="coder-consent-args">{ticket.argsPreview || "The Coder is waiting for your answer before it writes anything."}</p>
+          {(() => {
+            // F-374: an OBJECT preview becomes rows; a string one (or none) stays a sentence.
+            if (typeof ticket.argsPreview === "string" && ticket.argsPreview.trim()) {
+              return <p className="coder-consent-args">{ticket.argsPreview}</p>;
+            }
+            const rows = previewRows(ticket.argsPreview);
+            if (!rows.length) return <p className="coder-consent-args">{noPreviewText(ticket.action)}</p>;
+            return (
+              <dl className="coder-consent-args coder-args">
+                {rows.map((r) => (
+                  <div className="coder-arg-row" key={r.key}>
+                    <dt className="coder-arg-k">{r.key}</dt>
+                    <dd className="coder-arg-v">{r.text}</dd>
+                  </div>
+                ))}
+              </dl>
+            );
+          })()}
           <div className="coder-consent-btns">
             <button type="button" className={`coder-btn coder-btn-go${deciding === "confirm" ? " is-busy busy-solid" : ""}`} onClick={() => decide("confirm")} disabled={busy}>Confirm</button>
             <button type="button" className="coder-btn coder-btn-alt" onClick={() => setChangeOpen((v) => !v)} disabled={busy}>Change</button>

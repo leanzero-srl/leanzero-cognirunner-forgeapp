@@ -239,6 +239,20 @@ try {
       ok(await page.locator(".pr-seg-btn").count() === 3, `J16g (${theme}) prMatch is a 3-option segmented control, not a dropdown`);
       ok(await page.locator(".pr-git-toggle-row input[type=checkbox]").count() === 1, `J16g (${theme}) the Strict toggle renders`);
 
+      /* F-379 - the picker must not promise a trust the executor dropped. After F-362 the
+         cognirunner.git property only NOMINATES a pull request number: its branch or title
+         must still name the issue key, so "property" and "both" are the SAME check and the
+         labels come from the catalog that explain-facts.js also reads. */
+      const segLabels = await page.locator(".pr-seg-btn").allInnerTexts();
+      ok(!segLabels.some((t) => /^Linked by CogniRunner$/.test(t.trim())) && !segLabels.some((t) => /^Either$/.test(t.trim())),
+        `J16g (${theme}) the retired prMatch labels are gone (got ${JSON.stringify(segLabels)})`);
+      ok(segLabels.filter((t) => /names the issue|title/i.test(t)).length === 3,
+        `J16g (${theme}) every option says what LIVE signal binds the pull request (got ${JSON.stringify(segLabels)})`);
+      await page.locator(".pr-seg-btn", { hasText: "(linked by CogniRunner)" }).first().click();
+      const propHint = await page.locator(".pr-seg").locator("xpath=following-sibling::p[1]").innerText();
+      ok(/only a candidate/i.test(propHint) && /must still name the issue key/i.test(propHint),
+        `J16g (${theme}) the property option's hint tells the truth (got "${propHint}")`);
+
       // Connection list — both mock connections, each carrying its provider kind.
       const connPicker = page.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first();
       ok(await connPicker.count() > 0, `J16g (${theme}) the connection picker renders with its placeholder`);
@@ -2564,6 +2578,34 @@ try {
       ok(await page.getByText(/PROJ-481|PROJ-479|PROJ-512/).count() > 0, "J23 log entries show real issue keys + reasons");
     } catch (e) { fail++; console.log("  ✗ J23 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
+  }
+
+  /* ---------------- J23b — F-380: config-view names the git CONNECTION ---------------- */
+  {
+    console.log("J23b config-view git rule summary (view-premade-git)");
+    for (const theme of ["light", "dark"]) {
+    const env = await openEditor(browser, "config-view", "view-premade-git", theme);
+    const { page } = env;
+    try {
+      const row = page.locator(".config-item", { hasText: "Connection:" }).first();
+      await row.waitFor({ timeout: 8000 });
+      const value = (await row.innerText()).replace(/^Connection:/, "").trim();
+      /* The whole finding: this screen has no picker, so an id here is unanswerable.
+         `premadeSummaryRows(config, connections)` had the human-label branch since F-372
+         and no call site ever passed a list. */
+      ok(value === "Acme engineering", `J23b (${theme}) the connection row shows the LABEL, not the id (got "${value}")`);
+      ok(!/gc_1/.test(await page.locator("body").innerText()), `J23b (${theme}) the raw connection id is nowhere on the read-only summary`);
+      // The rest of the git group still renders, so the label did not cost a row.
+      const body = await page.locator("body").innerText();
+      ok(/acme\/web/.test(body), `J23b (${theme}) the repository still renders`);
+      ok(/source branch name or the pull request title/.test(body), `J23b (${theme}) the prMatch sentence still renders`);
+      // The row is a summary row like any other, so it inherits the surface's own colours
+      // in both themes: the fix is DATA, and it must not have introduced a hue.
+      const contrast = await page.locator(".config-item", { hasText: "Connection:" }).first().evaluate((el) => getComputedStyle(el).color);
+      ok(!!contrast, `J23b (${theme}) the connection row renders in ${theme}`);
+    } catch (e) { fail++; console.log("  \u2717 J23b threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+    }
   }
 
   /* ---------------- J24 — jira:issueContext "CogniRunner on this issue" glance ---------------- */

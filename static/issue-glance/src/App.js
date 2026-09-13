@@ -19,6 +19,7 @@ import React, { useEffect, useState } from "react";
 import { invoke, view } from "@forge/bridge";
 import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
 import CoderPanel from "./components/CoderPanel.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
 
 // Component CSS lives here (injectStyles is the live source; public/index.html carries only the
 // token bootstrap). Solid saturated status hues + white text, glyph+label badges (status is never
@@ -125,6 +126,13 @@ const injectStyles = () => {
     .coder-consent-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .coder-consent-action { font-size: 12.5px; font-weight: 700; color: var(--text-color); word-break: break-all; }
     .coder-consent-args { margin: 7px 0 0; font-size: 12px; font-weight: 500; color: var(--text-secondary); word-break: break-word; }
+    /* F-374 - the preview is a key/value LIST, so a boolean the user must see (create_repo
+       private:false) cannot hide inside a sentence. Key column is bold and dark; the value
+       is the plain text. No rail, no tint - the separation is typography. */
+    .coder-args { display: grid; grid-template-columns: minmax(72px, auto) 1fr; gap: 3px 10px; }
+    .coder-arg-row { display: contents; }
+    .coder-arg-k { font-size: 11.5px; font-weight: 700; color: var(--text-color); word-break: break-word; }
+    .coder-arg-v { margin: 0; font-size: 12px; font-weight: 500; color: var(--text-secondary); word-break: break-word; white-space: pre-wrap; }
     .coder-consent-btns { margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap; }
     .coder-change { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 
@@ -158,6 +166,12 @@ const injectStyles = () => {
     /* -- a failure is NAMED, in solid red with white text; never a tint -- */
     .coder-error { border-radius: 8px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 600; padding: 9px 11px; word-break: break-word; }
     html[data-color-mode="dark"] .coder-error { background: #ef4444; color: #2a0404; }
+    /* F-374 - the render-fault banner. Same solid red as any other named failure, plus a
+       way out. The button is white-on-red so it reads as an action inside the banner. */
+    .cr-boundary { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+    .cr-boundary-p { margin: 0; }
+    .cr-boundary-btn { font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; border: none; border-radius: 6px; padding: 6px 12px; background: #fff; color: #b91c1c; }
+    html[data-color-mode="dark"] .cr-boundary-btn { background: #2a0404; color: #fecaca; }
 
     /* -- the composer -- */
     .coder-composer { display: flex; flex-direction: column; gap: 7px; border-radius: 8px; }
@@ -582,7 +596,13 @@ export default function App() {
       {/* F-294 still holds: on this path the bundle renders the CODER and never the activity
           list, and issues no getIssueActivity. 1.4 commit 9b replaced the placeholder card
           with the real panel. */}
-      {coder && <CoderPanel issueKey={coderCtx?.issueKey || null} accountId={coderCtx?.accountId || null} />}
+      {/* F-374: the consent surface never blanks. A render fault inside the panel is caught
+          here and told as a named failure with a way out, not as an empty right rail. */}
+      {coder && (
+        <ErrorBoundary message="The Coder panel couldn't be displayed.">
+          <CoderPanel issueKey={coderCtx?.issueKey || null} accountId={coderCtx?.accountId || null} />
+        </ErrorBoundary>
+      )}
       {state === "loading" && <div className="glance-spinner" aria-label="Loading activity" />}
       {state === "error" && <div className="glance-err">Couldn't load activity. Try reloading the issue.</div>}
       {(state === "ready" || state === "notVisible") && items.length === 0 && (

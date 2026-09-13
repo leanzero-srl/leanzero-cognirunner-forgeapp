@@ -1028,7 +1028,25 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 // 1.4 commit 5c — the git-event consumer: a delivery becomes RUNS, and spends nothing.
 // =====================================================================================
 {
-  const g = asyncSrc.slice(asyncSrc.indexOf("const executeGitEvent = async"), asyncSrc.indexOf("// === Task registry"));
+  // F-342 — this slice used to end on the `// === Task registry` comment, so ANY
+  // handler declared between executeGitEvent and that comment was pulled into the
+  // eval'd text and the suite died with a SyntaxError about an unrelated function
+  // (commit 7's executePipelineSetup did exactly that). Anchor on the NEXT
+  // top-level declaration instead: whatever is added after this handler ends the
+  // slice cleanly, wherever the registry comment sits.
+  const sliceTopLevelDecl = (src, startNeedle) => {
+    const at = src.indexOf(startNeedle);
+    if (at < 0) throw new Error(`source slice anchor not found: ${startNeedle}`);
+    const from = at + startNeedle.length;
+    const ends = [/\nconst \w/g, /\nexport /g, /\nasync function /g, /\nfunction /g, /\n\/\/ === /g]
+      .map((re) => { re.lastIndex = from; const m = re.exec(src); return m ? m.index : -1; })
+      .filter((i) => i >= 0);
+    return src.slice(at, ends.length ? Math.min(...ends) : src.length);
+  };
+  const g = sliceTopLevelDecl(asyncSrc, "const executeGitEvent = async");
+  ok(/^const executeGitEvent = async[\s\S]*\n\};\s*$/.test(g.trimEnd() + "\n") || g.trimEnd().endsWith("};"),
+    "F-342: the executeGitEvent slice ends on its own closing brace, not on a comment");
+  ok(!/\nconst execute\w+ = async/.test(g), "F-342: …and no sibling handler is swallowed by the slice");
   ok(/params && params\.envelope/.test(g), "the handler reads the 5a envelope from params.envelope");
   ok(/await dispatchGitEvent\(envelope\)/.test(g), "…and delegates to listeners.js — matching, brakes and ignoreSelf have ONE home");
   ok(!/callAIChat|callModel|reviewPullRequest/.test(g), "the dispatch makes NO model call: the AI runs in the task it enqueues");

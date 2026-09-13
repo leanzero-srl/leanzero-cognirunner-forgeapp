@@ -231,6 +231,33 @@ const secLit = JSON.stringify(sections);
     "and the committed one passes");
 }
 
+/* ---- a pin that outgrows its share REFUSES the bake (F-576) ----
+   Forgiving at runtime, strict at bake time. The runtime lets a too-big pin fall through
+   to the scorer, which is right; the bake is where the growth happens and the last moment
+   a human is looking, so it refuses rather than shipping a guardrail that evaporates on
+   the wrong query. */
+{
+  const ap = await import(pathToFileURL(path.join(repoRoot, "src/shared/knowledge-packs/administrator-practice.js")).href);
+  const pins = { va: ["administrator-practice#administrator-practice"] };
+
+  ok(bake.assertPinnedSectionsFitShare(ap.SECTIONS, pins) === true,
+    "today's corpus passes: every pinned section fits its audience's share");
+
+  const idx = await import(pathToFileURL(path.join(repoRoot, "src/shared/knowledge-index.js")).href);
+  const pinnedId = (idx.KNOWLEDGE_INDEX.find((s) => /administrator-practice-1$/.test(s.id)) || {}).id;
+  ok(!!pinnedId, "the va pin resolves to a section in the committed index");
+  const grown = ap.SECTIONS.map((s) => (s.id === pinnedId ? { ...s, body: `${s.body}\n${"x".repeat(300)}` } : s));
+
+  const r = run(`import { SECTIONS } from ${JSON.stringify(pathToFileURL(path.join(repoRoot, "src/shared/knowledge-packs/administrator-practice.js")).href)};\n`
+    + `const grown = SECTIONS.map((s) => (s.id === ${JSON.stringify(pinnedId)} ? { ...s, body: s.body + "\\n" + "x".repeat(300) } : s));\n`
+    + `B.assertPinnedSectionsFitShare(grown, ${JSON.stringify(pins)});`);
+  ok(r.status !== 0, `a pinned section 300 B past the share REFUSES the bake (exit ${r.status})`);
+  ok(/does not fit the .* pinned share/.test(r.out), "and the refusal names the share it no longer fits");
+  ok(/NOTHING was written/.test(r.out), "refusing before the emit, as everywhere else here");
+  ok(new RegExp(pinnedId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(r.out), "naming the section by id");
+  void grown;
+}
+
 /* ---- what the MANIFEST renders is what the selector reads (F-429) ---- */
 {
   const cfg = { packs: { "forge-app-builder": { pinned: ["forge-app-builder#core-concepts"], pinnedFor: ["coder"] } } };

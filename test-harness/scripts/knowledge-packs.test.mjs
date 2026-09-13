@@ -376,5 +376,54 @@ reset();
   ok(total < 700 * 1024, `the whole corpus is under 700 KB of section text (${total})`);
 }
 
+/* ---- a pin that did not fit is LOUD, at the one seam that has the numbers (F-576) ----
+   `resolveFieldGuideBlock` is the call every prompt-building surface makes — the
+   listener/job agent through buildAgentKnowledge, the validator, the semantic PF, the
+   Coder, the PR review. Reporting here is what makes it impossible for a caller to lose:
+   the alternative, a line per consumer, is the N-copies-of-one-rule defect this repo keeps
+   paying for. */
+{
+  const { reportPinnedShortfall } = await import("../../src/knowledge-packs.js");
+  const warned = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => warned.push(a.join(" "));
+  try {
+    // Nothing to say: no line at all. A log that fires on every healthy call is noise, and
+    // noise is how the next real one gets missed.
+    const quiet = reportPinnedShortfall({ pinnedDropped: [], pinnedDemoted: [], pinnedBytes: 3061, budget: 8192 }, "va");
+    ok(quiet === null && warned.length === 0, "a selection with no shortfall logs nothing");
+
+    const out = reportPinnedShortfall(
+      { pinnedDropped: ["administrator-practice/x/y/administrator-practice-1"], pinnedDemoted: [], pinnedBytes: 0, budget: 8192 },
+      "va",
+    );
+    ok(out && out.dropped.length === 1, "a dropped pin is reported back to the caller");
+    ok(warned.length === 1, "and logged exactly once");
+    ok(/PINNED SECTION NOT IN THE PROMPT/.test(warned[0]), "loudly — the drop is the serious one");
+    ok(/administrator-practice-1/.test(warned[0]), "naming the section by id");
+    ok(/audience "va"/.test(warned[0]) && /3276 B share/.test(warned[0]) && /budget 8192/.test(warned[0]),
+      `and the arithmetic that explains it: ${warned[0]}`);
+
+    warned.length = 0;
+    reportPinnedShortfall({ pinnedDropped: [], pinnedDemoted: ["a/b/c/d-1"], pinnedBytes: 0, budget: 8192 }, "va");
+    ok(warned.length === 1 && /rescued by the scorer/.test(warned[0]),
+      "a demoted pin gets its own, quieter wording — it is still in the prompt");
+
+    // Shape-tolerant: it is called on the fail-open path and must never throw.
+    warned.length = 0;
+    ok(reportPinnedShortfall(null, "va") === null && reportPinnedShortfall({}, "va") === null,
+      "a missing or empty selection is not an error — the field guide is advisory");
+  } finally {
+    console.warn = realWarn;
+  }
+
+  // The real call carries the fields through, or nothing downstream can stamp them.
+  const built = await resolveFieldGuideBlock({ audience: "va", text: "administrator practice" });
+  ok(Array.isArray(built.pinnedDropped) && Array.isArray(built.pinnedDemoted),
+    "resolveFieldGuideBlock returns both pinned-shortfall arrays");
+  ok(built.pinnedDropped.length === 0,
+    `and today's corpus drops nothing for va (${built.pinnedBytes} B pinned)`);
+}
+
 console.log(`knowledge-packs: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

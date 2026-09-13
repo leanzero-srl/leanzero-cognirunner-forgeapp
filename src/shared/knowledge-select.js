@@ -100,6 +100,33 @@ export const FIELD_GUIDE_GUARD_SENTENCE =
  * to, and the majority of every prompt's knowledge must still answer the question asked.
  * A pinned section that does not fit inside the share is NOT dropped — it falls through to
  * the ranked pass and competes on its score like anything else.
+ *
+ * IT STAYS ONE NUMBER, AND F-576 IS WHY THAT WAS RE-DECIDED RATHER THAN ASSUMED.
+ * Measured on the baked corpus, per audience, by the bake itself:
+ *
+ *   coder    2847 B of 6553 B (16384 budget)   3706 B headroom
+ *   codegen  3058 B of 4915 B (12288 budget)   1857 B headroom
+ *   fix      3058 B of 4915 B (12288 budget)   1857 B headroom
+ *   va       3061 B of 3276 B ( 8192 budget)    215 B headroom   <- the tight one
+ *
+ * `va` survives on 215 bytes, so a per-audience share was considered. It was NOT added:
+ *
+ *   - 0.45 for `va` buys 410 B and 0.5 buys 1024 B, but 0.5 is no longer a majority for
+ *     the request, which is the rule this constant exists to state. The most a special
+ *     case can honestly buy is ~400 bytes.
+ *   - It would put a second per-audience number beside `FIELD_GUIDE_BUDGET_BYTES` in
+ *     registry-limits, encoding a policy that is not audience-specific. The budgets differ
+ *     because the CALLERS differ; the share expresses "most of the guide answers the
+ *     question", which is true of all of them.
+ *   - Tuning it to `va` would be tuning a constant to one section's byte count on one
+ *     corpus — the drift that produced this finding.
+ *   - It would not remove the cliff, only move it.
+ *
+ * What removes the cliff is that the failure is no longer silent: a pin that misses the
+ * share is named in `pinnedDemoted`/`pinnedDropped` and logged by
+ * `reportPinnedShortfall` (src/knowledge-packs.js), and `assertPinnedSectionsFitShare`
+ * refuses the BAKE — the moment the growth actually happens, with a human watching —
+ * rather than letting a guardrail evaporate on a query that does not favour it.
  */
 export const PINNED_BUDGET_SHARE = 0.4;
 
@@ -381,13 +408,28 @@ const matchesAudience = (section, audience) => {
  * bodies, and the budget bounds that same number. 0 when nothing was selected, because an
  * empty selection emits no fence at all.
  *
- * Returns `{ sections, sectionIds, bytes, pinnedBytes, budget, audience, skipped }`.
+ * Returns `{ sections, sectionIds, bytes, pinnedBytes, budget, audience, skipped,
+ * pinnedDemoted, pinnedDropped }`.
  * `skipped` counts
  * sections that scored but did not fit, so a caller can tell "nothing matched" from
  * "plenty matched and the budget is too small" — the same distinction `fetchSkillsBlock`
  * lost when it `break`ed on the first oversized entry and silently dropped everything
  * ranked below it. This one CONTINUES: an oversized section is skipped, and a smaller
  * section behind it still gets its chance.
+ *
+ * A PIN THAT DID NOT FIT IS NAMED, NOT COUNTED (F-576). Measured on the baked corpus, the
+ * `va` audience's pinned core renders to 3061 B against a share of 3276 B — 215 B of
+ * headroom. Two more sentences in a future bake push it out of pass 1, and the graceful
+ * fall-through to the scorer, which is the right BEHAVIOUR, is also what makes the loss
+ * invisible: on a query that does not favour it, the guardrail core the pack exists to pin
+ * is simply not there, and `skipped` is one number nobody prints. So the two outcomes are
+ * reported separately and by ID:
+ *
+ *   `pinnedDemoted` — missed the pinned share, was rescued by the scorer. Still in the
+ *                     prompt, but it is now competing, and it is the warning shot.
+ *   `pinnedDropped` — not in the selection at all. The pin did nothing this call.
+ *
+ * Both are always arrays, so a caller can log them without a shape test.
  */
 export const selectKnowledge = ({
   audience = "review",
@@ -406,7 +448,10 @@ export const selectKnowledge = ({
   const pool = (Array.isArray(sections) ? sections.filter(isUsableSection) : REGISTERED)
     .filter((s) => matchesAudience(s, audience));
 
-  const empty = { sections: [], sectionIds: [], bytes: 0, budget, audience, skipped: 0, pinnedBytes: 0 };
+  const empty = {
+    sections: [], sectionIds: [], bytes: 0, budget, audience, skipped: 0, pinnedBytes: 0,
+    pinnedDemoted: [], pinnedDropped: [],
+  };
   if (!pool.length || budget <= 0) return empty;
 
   const byId = (a, b) => String(a.id).localeCompare(String(b.id));
@@ -439,9 +484,12 @@ export const selectKnowledge = ({
   // estimated — `renderSection` is the emitter's own renderer.
   const costOf = (section) =>
     utf8Len(renderSection(section)) + (chosen.length === 0 ? FIELD_GUIDE_ENVELOPE_BYTES : utf8Len(SECTION_JOINER));
+  // The pins that missed the share, by id. Resolved against the final selection below:
+  // whichever of them pass 2 rescued is DEMOTED, the rest are DROPPED (F-576).
+  const missedShare = [];
   for (const section of pinned) {
     const size = costOf(section);
-    if (bytes + size > pinnedBudget) continue;
+    if (bytes + size > pinnedBudget) { missedShare.push(String(section.id)); continue; }
     chosen.push(section);
     takenIds.add(String(section.id));
     pinnedBytes += size;
@@ -482,6 +530,10 @@ export const selectKnowledge = ({
     budget,
     audience,
     skipped,
+    // Resolved against what was ACTUALLY chosen, not against pass 2's shortlist: a pin the
+    // scorer ranked but the budget then refused is dropped, not demoted.
+    pinnedDemoted: missedShare.filter((id) => takenIds.has(id)),
+    pinnedDropped: missedShare.filter((id) => !takenIds.has(id)),
   };
 };
 
@@ -509,7 +561,7 @@ export const buildFieldGuideBlock = (sections) => {
 
 /**
  * The one-call convenience for a prompt builder: select, then build.
- * Returns `{ block, sectionIds, bytes, budget, skipped }`.
+ * Returns `{ block, sectionIds, bytes, budget, skipped, pinnedDemoted, pinnedDropped }`.
  */
 export const resolveFieldGuide = (options = {}) => {
   const picked = selectKnowledge(options);
@@ -521,6 +573,11 @@ export const resolveFieldGuide = (options = {}) => {
     pinnedBytes: picked.pinnedBytes,
     budget: picked.budget,
     skipped: picked.skipped,
+    // Carried, not swallowed: the seam that LOGS this is the backend's
+    // `resolveFieldGuideBlock` (src/knowledge-packs.js), and it cannot report what this
+    // function does not hand it (F-576).
+    pinnedDemoted: picked.pinnedDemoted,
+    pinnedDropped: picked.pinnedDropped,
     knowledgeVersion: KNOWLEDGE_VERSION,
   };
 };

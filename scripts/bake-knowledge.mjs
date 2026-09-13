@@ -63,7 +63,10 @@ import { runGuardFixtures, loadDenylist, scanText, formatFindings } from "./leak
 // The SELECTOR's own pin parser and matcher (F-429). The bake must decide "does this pin
 // match anything?" with the same code the runtime uses, or the MANIFEST goes back to
 // describing a selector that does not exist.
-import { parsePin, pinMatchesSection } from "../src/shared/knowledge-select.js";
+import {
+  parsePin, pinMatchesSection, selectKnowledge, PINNED_BUDGET_SHARE,
+} from "../src/shared/knowledge-select.js";
+import { fieldGuideBudget } from "../src/shared/registry-limits.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const P = {
@@ -434,6 +437,48 @@ export const assertPinsAgree = (packs, byAudience = {}) => {
   return true;
 };
 
+/**
+ * EVERY PINNED SECTION MUST FIT ITS AUDIENCE'S SHARE (F-576).
+ *
+ * The runtime is deliberately forgiving here: a pin that does not fit `PINNED_BUDGET_SHARE`
+ * is not dropped, it falls through to the scorer and competes. That is the right behaviour
+ * and it is also what makes the failure silent — on a query that does not favour it, the
+ * section the pack exists to pin is just absent.
+ *
+ * Forgiving at runtime, strict at BAKE time. The bake is where the growth actually happens
+ * (somebody adds two sentences to the corpus) and it is the last moment a human is looking,
+ * so a pin that no longer fits refuses the bake instead of shipping a guardrail that
+ * evaporates on the wrong query. Measured with the SELECTOR's own code — the same
+ * `selectKnowledge` the runtime calls, with only the pinned pass's outcome read — because
+ * a second implementation of the cost arithmetic here is exactly the defect this repo
+ * keeps paying for.
+ *
+ * The query is empty on purpose: with no query the scorer selects nothing, so `chosen` is
+ * the pinned pass and nothing else, which is the question being asked.
+ */
+export const assertPinnedSectionsFitShare = (sections, byAudience = {}) => {
+  const problems = [];
+  for (const [audience, pins] of Object.entries(byAudience)) {
+    if (!pins.length) continue;
+    const picked = selectKnowledge({ audience, text: "", sections, pins });
+    const budget = fieldGuideBudget(audience);
+    const share = Math.floor(budget * PINNED_BUDGET_SHARE);
+    for (const id of picked.pinnedDropped || []) {
+      problems.push(`audience "${audience}": pinned section ${id} does not fit the ${share} B pinned share `
+        + `(${PINNED_BUDGET_SHARE * 100} % of ${budget} B); ${picked.pinnedBytes} B fit`);
+    }
+    const headroom = share - (picked.pinnedBytes || 0);
+    console.log(`  pinned share · ${audience.padEnd(10)} ${String(picked.pinnedBytes || 0).padStart(5)} B of ${share} B `
+      + `(${headroom} B headroom, ${picked.sectionIds.length} section(s))`);
+  }
+  if (problems.length) {
+    die("a pinned section no longer fits its audience's share — it would fall through to the\n"
+      + "  scorer and go missing on any query that does not favour it (F-576). NOTHING was written:\n  "
+      + problems.join("\n  "), 1);
+  }
+  return true;
+};
+
 const emitIndex = (sections, packs, contentVersion, metaVersion, pins = {}) =>
   `${GENERATED_HEADER("The knowledge INDEX: titles, tags, audiences and provenance — no bodies.\n *\n * This is the module the UI bundles import. Bodies live in the packs and are only ever\n * loaded by the backend, so a Knowledge tab costs kilobytes rather than megabytes.")}
 /** Content fingerprint of the baked corpus. Changes whenever any section changes. */
@@ -783,6 +828,9 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
   // The tab's view and the selector's view of the SAME pinned list must agree, or the
   // Knowledge tab lies about what a pack pins (F-570). Before the emit, as ever.
   if (!tiers) assertPinsAgree(packSummaries, pins.byAudience);
+  // ...and every pin must actually fit the share it is meant to be paid out of (F-576).
+  // `sections` here are the freshly chunked ones, so this measures what is about to ship.
+  if (!tiers) assertPinnedSectionsFitShare(sections, pins.byAudience);
 
   const contentVersion = sha(sections.map((s) => `${s.id}:${sha(s.body)}`).join("\n")).slice(0, 16);
   const metaVersion = indexMetaFingerprint(sections, packSummaries, pins.byAudience);

@@ -853,6 +853,86 @@ ok((await conns.getHookSecretCandidates(hookId, "acme/app")).length === 1, "…s
 ok(healed.connection.webhooks["acme/app"].hookState === null,
   `…and the loud banner is cleared only by a call that PROVED the hook healthy (${JSON.stringify(healed.connection.webhooks["acme/app"])})`);
 
+/* --- F-491: A SECOND ROTATION ON TOP OF A HALF-DONE ONE RECONCILES, NEVER EVICTS --
+ *
+ * The `rotation-failed` banner invites a retry, and "Rotate secret" stays enabled.
+ * Before this, that retry rebuilt the row as `{secret: OLD, pending: NEW2}` and threw
+ * away NEW — the secret the provider had already been PATCHed with — so every
+ * delivery 401d from that instant, and if the retry's PATCH then failed the
+ * compensating write left `{secret: OLD}` and the repo was deaf until someone pressed
+ * "Set up webhook". The invariant under test is the one the module claims: at every
+ * instant, the secret the PROVIDER signs with is among `getHookSecretCandidates`.
+ */
+const providerHolds = async (expected, when) => {
+  const cands = await conns.getHookSecretCandidates(hookId, "acme/app");
+  ok(cands.includes(expected), `${when}: the provider's live secret is still a candidate (${cands.length} slot(s))`);
+};
+
+// Rotation A: PATCH ok, promotion throws -> the fatal shape, again.
+fetchCalls = [];
+fetchQueue = [res(200, { id: 4242 })];
+const beforeA = storage.__raw(HOOK_KEY).secret;
+storage.__failSetWhen((key, value) => key === HOOK_KEY && value && !value.pending);
+const rotA = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+ok(rotA.success === false && rotA.code === "rotation-failed", `rotation A breaks at the promotion (${rotA.code})`);
+const installedA = JSON.parse(fetchCalls[0].body || "{}").config.secret;
+ok(storage.__raw(HOOK_KEY).secret === beforeA && storage.__raw(HOOK_KEY).pending === installedA,
+  "…leaving {secret: OLD, pending: the secret the provider now signs with}");
+await providerHolds(installedA, "after rotation A");
+
+// Rotation B, pressed on top of it. Step 0 must PROMOTE installedA before minting.
+fetchCalls = [];
+fetchQueue = [res(200, { id: 4242 })];
+// The eviction is a MID-rotation state — it is gone by the time the call returns — so
+// the row is snapshotted at the instant of the PATCH, which is the instant a delivery
+// would arrive and have to verify.
+let rowAtPatchB = null;
+const realFetchB = globalThis.fetch;
+globalThis.fetch = async (url, init) => {
+  if (String((init && init.method) || "") === "PATCH" && !rowAtPatchB) rowAtPatchB = storage.__raw(HOOK_KEY);
+  return realFetchB(url, init);
+};
+const rotB = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+globalThis.fetch = realFetchB;
+ok(rowAtPatchB && (rowAtPatchB.secret === installedA || rowAtPatchB.pending === installedA),
+  `MID-rotation, the secret the provider is signing with is STILL in a slot — the retry reconciled instead of evicting (${JSON.stringify({ secret: rowAtPatchB && rowAtPatchB.secret === installedA, pending: rowAtPatchB && rowAtPatchB.pending === installedA })})`);
+ok(rotB.success === true, `a second rotation on top of a broken one SUCCEEDS (${JSON.stringify(rotB).slice(0, 140)})`);
+const installedB = JSON.parse(fetchCalls[0].body || "{}").config.secret;
+ok(installedB !== installedA && installedB !== beforeA, "…installing a genuinely new secret at the provider");
+ok(storage.__raw(HOOK_KEY).secret === installedB && storage.__raw(HOOK_KEY).pending === undefined,
+  "…and the row ends on the installed secret with no window left open");
+await providerHolds(installedB, "after rotation B");
+ok(!(await conns.getHookSecretCandidates(hookId, "acme/app")).includes(beforeA),
+  "…and the secret the provider stopped honouring at rotation A's PATCH is gone");
+ok(findSecret(rotB, installedA) === null && findSecret(rotB, installedB) === null,
+  "…and the reconciling rotation still returns no secret of any generation");
+
+// The same retry, but its own PATCH fails: the provider is still signing installedC
+// (rotation D's PATCH never landed), and installedC must be in a slot - never in
+// neither, which is the "deaf until Set up webhook" state.
+fetchCalls = [];
+fetchQueue = [res(200, { id: 4242 })];
+storage.__failSetWhen((key, value) => key === HOOK_KEY && value && !value.pending);
+const rotC = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+ok(rotC.success === false && rotC.code === "rotation-failed", "rotation C breaks at the promotion again");
+const installedC = JSON.parse(fetchCalls[0].body || "{}").config.secret;
+await providerHolds(installedC, "after rotation C");
+fetchCalls = [];
+fetchQueue = [res(500, { message: "provider is down" })];
+const rotD = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+ok(rotD.success === false, `rotation D is refused by the provider (${JSON.stringify(rotD).slice(0, 140)})`);
+ok(storage.__raw(HOOK_KEY).secret === installedC,
+  "…and a PATCH failure on the retry leaves the PROVIDER'S secret as the stored current one, never out of both slots");
+await providerHolds(installedC, "after rotation D's provider failure");
+
+// Self-heal from here re-installs that same secret, so provider and store agree.
+fetchCalls = [];
+fetchQueue = [res(200, [{ id: 4242, active: true, events: GIT_HOOK_EVENTS.github.slice(), config: { url: HOOK_URL } }]), res(200, { id: 4242 })];
+const healed2 = await callScanned("setupGitWebhook", { connectionId: hookId, repo: "acme/app" });
+ok(healed2.success === true && JSON.parse(fetchCalls[1].body || "{}").config.secret === installedC,
+  "…and “Set up webhook” re-installs exactly that secret");
+ok(healed2.connection.webhooks["acme/app"].hookState === null, "…clearing the banner");
+
 // --- rotation before setup is refused, and the allow-list gates both.
 fetchCalls = [];
 const rotNever = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/other" });

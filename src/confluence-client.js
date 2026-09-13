@@ -203,7 +203,11 @@ export function statusToCode(status, opts = {}) {
 
 const isWriteMethod = (method) => method !== "GET" && method !== "HEAD";
 
-const enc = (v) => encodeURIComponent(String(v == null ? "" : v));
+/*
+ * There is no `enc` helper any more (F-441). Escaping happens ONCE, in the `route` tag:
+ * a path segment is checked for traversal, a query value is percent-encoded. Encoding a
+ * value here as well would double-encode every title and space key that reaches Confluence.
+ */
 
 /** Minimal entity set — enough for text Confluence actually emits in storage format. */
 const ENTITIES = {
@@ -262,14 +266,23 @@ export function storageToText(html, maxBytes = PAGE_TEXT_MAX_BYTES) {
  * Build a Confluence client.
  *
  * @param {object} [deps]
- * @param {(path: string, init: object) => Promise<{status:number, ok?:boolean, headers?:any, text:() => Promise<string>}>} [deps.request]
+ * @param {(path: object, init: object) => Promise<{status:number, ok?:boolean, headers?:any, text:() => Promise<string>}>} [deps.request]
  *   The transport. Injected by the offline suite; defaults to
- *   `asApp().requestConfluence(path, init)`. The path handed to it is ALREADY
- *   fully encoded by this module (every dynamic segment and query value goes
- *   through encodeURIComponent), which is why it is passed as a plain string
- *   rather than through the `route` tag — `route` would percent-encode an
- *   interpolated whole path a second time. This matches the existing plain-path
- *   call idiom in src/coder-workspace.js and src/index.js.
+ *   `asApp().requestConfluence(path, init)`.
+ *
+ *   THE PATH IS A `route` OBJECT, NEVER A STRING (F-441). `@forge/api` wraps every
+ *   product request in `requireSafeUrl(path)`, which THROWS unless it is handed a
+ *   route built by the `route` tagged template — so a plain string does not merely
+ *   skip a safety check, it fails every call in-app (surfacing here as `network`).
+ *   The earlier note claiming a "plain-path call idiom" elsewhere in this repo was
+ *   wrong: those call sites pass route VALUES through a variable.
+ *
+ *   Escaping happens ONCE, and `route` does it: a dynamic path segment is checked
+ *   for path manipulation and a query value is percent-encoded by the tag itself.
+ *   Nothing here pre-encodes with `encodeURIComponent` — doing both is a
+ *   double-encoded path, which is how this rule usually gets broken.
+ * @param {Function} [deps.route] the `route` tag. Injected by the offline suite so
+ *   the module needs no @forge/* at load; defaults to the SDK's, imported lazily.
  * @param {number} [deps.timeoutMs]
  * @param {(ms:number)=>Promise<void>} [deps.sleep]
  */
@@ -284,6 +297,23 @@ export function createConfluenceClient(deps = {}) {
       const { default: api } = await import("@forge/api");
       return api.asApp().requestConfluence(path, init);
     });
+
+  /**
+   * The `route` tag (F-441). Lazily imported for the same reason as the transport: this
+   * module must load with no @forge/* available, so the offline suite can exercise every
+   * path. A caller may inject one; the default is the SDK's, which is the only thing
+   * `requireSafeUrl` accepts.
+   */
+  let routeTag = typeof deps.route === "function" ? deps.route : null;
+  const getRoute = async () => {
+    if (routeTag) return routeTag;
+    const mod = await import("@forge/api");
+    routeTag = mod.route || (mod.default && mod.default.route);
+    if (typeof routeTag !== "function") {
+      throw fail("confluence_unavailable", "the Forge `route` tag is unavailable", {});
+    }
+    return routeTag;
+  };
 
   const fail = (code, message, details = {}) => new ConfluenceError(code, message, details);
 
@@ -455,8 +485,9 @@ export function createConfluenceClient(deps = {}) {
    */
   async function probeInstalled() {
     try {
+      const r = await getRoute();
       return await withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
-        await request("probeInstalled", "GET", INSTALL_PROBE_PATH, undefined, { installProbe: true }, budget);
+        await request("probeInstalled", "GET", r`/wiki/api/v2/spaces?limit=1`, undefined, { installProbe: true }, budget);
         return { installed: true, code: null, message: null };
       });
     } catch (e) {
@@ -470,8 +501,9 @@ export function createConfluenceClient(deps = {}) {
     const op = "searchCql";
     const q = requireString(op, "cql", cql);
     const n = Math.max(1, Math.min(SEARCH_MAX_LIMIT, Number(limit) || 1));
+    const r = await getRoute();
     return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
-      const data = await json(op, "GET", `/wiki/rest/api/search?cql=${enc(q)}&limit=${n}`, undefined, undefined, budget);
+      const data = await json(op, "GET", r`/wiki/rest/api/search?cql=${q}&limit=${n}`, undefined, undefined, budget);
       const results = Array.isArray(data && data.results) ? data.results : [];
       return {
         results: results.slice(0, n).map((r) => ({
@@ -494,8 +526,9 @@ export function createConfluenceClient(deps = {}) {
     const op = "getPage";
     const pageId = requireString(op, "id", id);
     const fmt = bodyFormat === "atlas_doc_format" ? "atlas_doc_format" : "storage";
+    const r = await getRoute();
     return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
-      const data = await json(op, "GET", `/wiki/api/v2/pages/${enc(pageId)}?body-format=${fmt}`, undefined, undefined, budget);
+      const data = await json(op, "GET", r`/wiki/api/v2/pages/${pageId}?body-format=${fmt}`, undefined, undefined, budget);
       return shapePage(data, fmt);
     });
   }
@@ -520,7 +553,8 @@ export function createConfluenceClient(deps = {}) {
   /** Resolve a space KEY to its numeric id — page writes need the id, configs carry the key. */
   async function resolveSpaceId(op, spaceKey, budget) {
     const key = requireString(op, "spaceKey", spaceKey);
-    const data = await json(op, "GET", `/wiki/api/v2/spaces?keys=${enc(key)}&limit=1`, undefined, undefined, budget);
+    const r = await getRoute();
+    const data = await json(op, "GET", r`/wiki/api/v2/spaces?keys=${key}&limit=1`, undefined, undefined, budget);
     const hit = Array.isArray(data && data.results) ? data.results[0] : null;
     if (!hit || hit.id == null) {
       throw fail("not_found", `${op}: no space with key ${key}`, { operation: op });
@@ -536,12 +570,13 @@ export function createConfluenceClient(deps = {}) {
   async function getPageByTitle({ spaceKey, title } = {}) {
     const op = "getPageByTitle";
     const wanted = requireString(op, "title", title);
+    const r = await getRoute();
     return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
       const spaceId = await resolveSpaceId(op, spaceKey, budget);
       const data = await json(
         op,
         "GET",
-        `/wiki/api/v2/spaces/${enc(spaceId)}/pages?title=${enc(wanted)}&limit=1&body-format=storage`,
+        r`/wiki/api/v2/spaces/${spaceId}/pages?title=${wanted}&limit=1&body-format=storage`,
         undefined,
         undefined,
         budget
@@ -558,6 +593,7 @@ export function createConfluenceClient(deps = {}) {
     const value = String(storage == null ? "" : storage);
     if (!value) throw fail("invalid", `${op}: storage body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, PAGE_STORAGE_MAX_BYTES, "");
+    const r = await getRoute();
     return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
       const spaceId = await resolveSpaceId(op, spaceKey, budget);
       const body = {
@@ -567,7 +603,7 @@ export function createConfluenceClient(deps = {}) {
         body: { representation: "storage", value: capped.text },
       };
       if (parentId) body.parentId = String(parentId);
-      const data = await json(op, "POST", "/wiki/api/v2/pages", body, undefined, budget);
+      const data = await json(op, "POST", r`/wiki/api/v2/pages`, body, undefined, budget);
       return {
         id: String((data && data.id) || ""),
         title: String((data && data.title) || pageTitle),
@@ -599,10 +635,11 @@ export function createConfluenceClient(deps = {}) {
     if (!value) throw fail("invalid", `${op}: storage body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, PAGE_STORAGE_MAX_BYTES, "");
 
+    const r = await getRoute();
     return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
       let pageTitle = title == null ? "" : String(title).trim();
       if (!pageTitle) {
-        const existing = await json(op, "GET", `/wiki/api/v2/pages/${enc(pageId)}`, undefined, undefined, budget);
+        const existing = await json(op, "GET", r`/wiki/api/v2/pages/${pageId}`, undefined, undefined, budget);
         const live = Number((existing && existing.version && existing.version.number) || 0);
         if (live !== current) {
           throw fail(
@@ -613,7 +650,7 @@ export function createConfluenceClient(deps = {}) {
         }
         pageTitle = String((existing && existing.title) || "");
       }
-      const data = await json(op, "PUT", `/wiki/api/v2/pages/${enc(pageId)}`, {
+      const data = await json(op, "PUT", r`/wiki/api/v2/pages/${pageId}`, {
         id: pageId,
         status: "current",
         title: pageTitle,
@@ -637,8 +674,9 @@ export function createConfluenceClient(deps = {}) {
     const value = String(body == null ? "" : body);
     if (!value.trim()) throw fail("invalid", `${op}: body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, COMMENT_MAX_BYTES, "");
+    const r = await getRoute();
     return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
-      const data = await json(op, "POST", "/wiki/api/v2/footer-comments", {
+      const data = await json(op, "POST", r`/wiki/api/v2/footer-comments`, {
         pageId: id,
         body: { representation: "storage", value: capped.text },
       }, undefined, budget);

@@ -211,8 +211,10 @@ export const vaCompactBackoffKey = (agent) =>
  * the claim window with room to spare. Shorter than the claim TTL would reopen the race at
  * exactly the horizon the claims were sized for.
  *
- * IT IS CLEARED, NOT ONLY EXPIRED (F-512's shape). An agent id can come BACK — `normalizeJob`
- * accepts a caller-supplied `src.id`, which is the import/restore path — and a re-created
+ * IT IS CLEARED, NOT ONLY EXPIRED (F-512's shape). An agent id can come BACK: `normalizeJob`
+ * still accepts a caller-supplied `src.id`, but since F-616 every save door (resolver and
+ * REST) refuses an id that names no row, so today an id only returns through the dev-only
+ * test-hook `vaTombstone` door or a future deliberate import/restore path. A re-created
  * agent inheriting a dead one's tombstone could not write a single row for three days. So the
  * first prepare tick clears it, but ONLY when the tombstone predates the job's `createdAt`:
  * that comparison is what distinguishes a genuinely re-created job from a tick of the DELETED

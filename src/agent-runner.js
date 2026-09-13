@@ -191,6 +191,11 @@ export const runAgentLoop = async ({
   log = () => {},
   isCancelled = null,
   roundLabel = (n) => `Agent round ${n}`,
+  // ONE optional per-round hook, awaited after every round's tool calls. The Coder uses it
+  // to flush its running log onto the issue (src/coder-workspace.js). It is OPTIONAL and it
+  // can never fail a round — a hook that throws is logged and swallowed, because by the time
+  // it runs the model's work for that round has already happened.
+  onRound = null,
 }) => {
   const m = await idx();
   const rounds = clampInt(maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS);
@@ -278,6 +283,10 @@ export const runAgentLoop = async ({
       }
       const raw = JSON.stringify(res === undefined ? { ok: true } : res);
       messages.push({ role: "tool", tool_call_id: tc.id, content: defangFence(raw.length > TOOL_RESULT_MAX_CHARS ? raw.slice(0, TOOL_RESULT_MAX_CHARS) + `\n…[tool result truncated: ${raw.length - TOOL_RESULT_MAX_CHARS} more chars]` : raw) });
+    }
+    if (onRound) {
+      try { await onRound({ round: out.rounds, actions: out.actions, halted, finished }); }
+      catch (e) { log(`round hook failed: ${String((e && e.message) || e).slice(0, 200)}`); }
     }
     if (halted || finished) break;
     if (exhausted) { out.error = `Stopped after ${rounds} tool rounds without finish`; out.endedBy = "rounds"; log(`LIMIT: ${out.error}`); break; }

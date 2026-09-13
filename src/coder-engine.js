@@ -63,6 +63,7 @@ import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { runAgentLoop, createAgentActionDispatcher, compactIssue } from "./agent-runner.js";
 import { createGitActionExecutor } from "./git-actions.js";
+import { createCoderWorkspace } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
 
 const idx = () => import("./index.js");
@@ -382,6 +383,26 @@ const runCoderTurnClaimed = async ({
   });
   const dispatch = createAgentActionDispatcher({ issueKey: key, session, allowed, executors: { git: gitExecutor }, m });
 
+  // -- the workspace: THE one writer onto the issue ------------------------
+  // Injectable so the engine's own suite can stub it whole (deps.workspace). Every effect
+  // this turn leaves on the issue - the plan section, the running log, the session
+  // artifact - goes through it and through nothing else (src/coder-workspace.js). NONE of
+  // its calls can fail the turn: they all answer {ok:false,...} instead of throwing, and
+  // the turn records the answer rather than acting on it.
+  const workspace = deps.workspace || createCoderWorkspace({ simulation: simulation === true });
+  const workspaceResults = [];
+  // The running log is flushed ONCE PER ROUND, with only the lines added since the last
+  // flush: the writer appends to what it already stored, so re-sending the whole buffer
+  // would duplicate every line.
+  let flushedLogs = 0;
+  const onRound = async () => {
+    const fresh = logs.slice(flushedLogs);
+    flushedLogs = logs.length;
+    if (!fresh.length) return;
+    const r = await workspace.updateCoderLog({ issueKey: key, threadId: thread, lines: fresh });
+    if (r && r.ok === false) workspaceResults.push({ what: "log", ...r });
+  };
+
   // ── the consent ticket ────────────────────────────────────────────────────
   let pendingTicket = null;
   const execute = async (name, args) => {
@@ -440,6 +461,7 @@ const runCoderTurnClaimed = async ({
     messages, tools, maxRounds: clampRounds(maxRounds), deadlineMs, execute, apiKey, model, provider, log,
     isCancelled: cancelToken ? () => m.isJobCancelled(cancelToken) : null,
     roundLabel: (n) => `Coder round ${n}`,
+    onRound,
   });
 
   // ── write the thread back ─────────────────────────────────────────────────
@@ -461,6 +483,35 @@ const runCoderTurnClaimed = async ({
   else delete record.pendingTicketId;
   await store.set(threadKey, record, { ttl: { value: 90, unit: "DAYS" } });
 
+  // -- the workspace writes, AFTER the record is safe ----------------------
+  // Order matters: the thread row IS the record, so it is written first. If a Jira write
+  // then fails, the conversation still exists and the next turn can retry - the reverse
+  // would lose the turn to a failed comment.
+  //
+  // THE PLAN is written on the FIRST turn of a thread, which is the turn in which the
+  // model plans (the prompt makes "PLAN first" the opening move, and nothing can execute
+  // an external write before a confirmation). Later turns replace the same
+  // marker-delimited section in place rather than adding a second one, so widening this
+  // condition later is safe by construction - it is a bounded section, not an append.
+  const planText = String((loop && loop.summary) || "").trim() || lastAssistantText(loop);
+  if (record.turns === 1 && planText) {
+    const r = await workspace.writeCoderPlan({ issueKey: key, plan: planText });
+    workspaceResults.push({ what: "plan", ...r });
+  }
+  // Whatever the last round added to the log, including the loop's own ending line.
+  try { await onRound(); } catch (e) { log(`log flush failed: ${(e && e.message) || e}`); }
+  // THE SESSION ARTIFACT, only when the model actually finished. A turn that halted for a
+  // confirmation or ran out of rounds is not a session - attaching one per round would put
+  // eight near-identical files on the issue.
+  if (loop.endedBy === "finish") {
+    const r = await workspace.attachSessionArtifact({
+      issueKey: key,
+      name: `coder-session-${Math.min(999999, record.turns)}.md`,
+      content: renderSessionMarkdown(record),
+    });
+    workspaceResults.push({ what: "artifact", ...r });
+  }
+
   const out = {
     success: loop.outcome !== "failed",
     threadId: thread,
@@ -472,6 +523,9 @@ const runCoderTurnClaimed = async ({
     rounds: loop.rounds,
     compacted: compacted.compacted,
     logs,
+    // What the writer did, or refused to do. REPORTED, never acted on: a failed comment
+    // must not change what the turn says happened in the repository.
+    workspace: workspaceResults,
   };
   if (loop.error) out.error = loop.error;
   if (pendingTicket) {
@@ -506,6 +560,61 @@ const toModelMessage = (msg) => {
   if (Array.isArray(msg.tool_calls)) out.tool_calls = msg.tool_calls;
   if (msg.tool_call_id) out.tool_call_id = msg.tool_call_id;
   return out;
+};
+
+/** The model's last words of a turn, when it stopped without calling `finish`. */
+const lastAssistantText = (loop) => {
+  const msgs = (loop && Array.isArray(loop.messages)) ? loop.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const msg = msgs[i];
+    if (msg && msg.role === "assistant" && typeof msg.content === "string" && msg.content.trim()) return msg.content.trim();
+  }
+  return "";
+};
+
+/**
+ * The session artifact's body: the thread as PLAIN markdown. It is a transcript, so it
+ * carries model text - which is why the writer treats the whole thing as text and why this
+ * renderer never emits anything a reader could mistake for a CogniRunner statement. Tool
+ * payloads are deliberately NOT included: they are the largest and least readable part of a
+ * thread and an attachment is not a debugger.
+ */
+export const renderSessionMarkdown = (record) => {
+  const head = [
+    `# CogniRunner Coder session`,
+    ``,
+    `Issue: ${record.issueKey}`,
+    `Thread: ${record.threadId}`,
+    `Turns: ${record.turns}`,
+    `Written: ${nowIso()}`,
+    ``,
+  ];
+  const body = (record.messages || []).map((msg) => {
+    const who = msg.kind === "decision" ? "DECISION" : msg.kind === "compaction" ? "NOTE" : String(msg.role || "?").toUpperCase();
+    const text = typeof msg.content === "string" ? msg.content : "";
+    if (!text.trim()) return "";
+    return `## ${who}${msg.at ? ` - ${msg.at}` : ""}\n\n${text}\n`;
+  }).filter(Boolean);
+  return `${head.join("\n")}${body.join("\n")}`;
+};
+
+/**
+ * THE LINKS a confirmed step leaves behind. Derived from the ACTION and the executor's
+ * own result - never from anything the model wrote, so a model cannot put an arbitrary URL
+ * into the issue's link sidebar by naming it in an argument. `kind` is part of the
+ * `globalId`, which is what makes a repeated step update its link instead of adding one.
+ */
+export const stepLinksFromResult = (action, result) => {
+  const url = result && typeof result === "object" && typeof result.url === "string" ? result.url : "";
+  if (!/^https?:\/\//i.test(url)) return [];
+  const id = String(action || "");
+  const kind = /pullrequest|pull_request/i.test(id) ? "pr"
+    : /branch/i.test(id) ? "branch"
+      : /repo/i.test(id) ? "repo"
+        : /deploy/i.test(id) ? "deploy"
+          : /commit/i.test(id) ? "commit" : "link";
+  const title = result.title || result.name || `${kind}${result.number ? ` #${result.number}` : ""}`;
+  return [{ kind, url, title: String(title).slice(0, 250) }];
 };
 
 /* ───────────────────────────── the confirmation ───────────────────────────── */
@@ -590,6 +699,22 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
     console.warn(`[coder] decision row not written for ticket ${id}: ${e && e.message}`);
   }
 
+  // THE STEP COMMENT. One comment per CONFIRMED external write, and only for a write that
+  // actually happened - a skipped or failed step is recorded in the thread (and in the
+  // Coder log), never as a "step completed" comment on the issue. It goes through the ONE
+  // writer, which answers {ok:false,...} rather than throwing: the repository write has
+  // already landed and nothing here may undo or repeat it.
+  let stepComment = null;
+  if (verdict === "confirm" && executedOk) {
+    const workspace = deps.workspace || createCoderWorkspace({ simulation: ticket.simulation === true });
+    stepComment = await workspace.appendStepComment({
+      issueKey: ticket.issueKey,
+      step: { title: `${ticket.action} confirmed`, detail: JSON.stringify(ticket.argsPreview || {}).slice(0, 600) },
+      links: stepLinksFromResult(ticket.action, result),
+    });
+    if (stepComment && stepComment.ok === false) console.warn(`[coder] step comment for ticket ${id}: ${stepComment.error}`);
+  }
+
   try {
     await store.set(coderTicketKey(id), {
       ...ticket,
@@ -607,5 +732,6 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
     ...(verdict === "confirm" && !executedOk ? { error: String((result && result.error) || "The confirmed step failed.").slice(0, 300) } : {}),
     resume: true,
     resumeMessage: decisionText,
+    ...(stepComment ? { workspace: [{ what: "step", ...stepComment }] } : {}),
   };
 };

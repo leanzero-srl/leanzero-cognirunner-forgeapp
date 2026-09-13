@@ -118,6 +118,40 @@ const secLit = JSON.stringify(sections);
     "naming the sections the pin actually resolves to");
 }
 
+/* ---- section ids are UNIQUE ACROSS FILES of one source (F-438) ----
+   The id used to carry the source id and the per-DOCUMENT chunk index, which restarts at
+   0 for every document — so two files of one source that both open with `## Overview`
+   minted the same id, and nothing checked. */
+{
+  const fileA = "skills/jira-forge/16-resolver-patterns.md";
+  const fileB = "skills/jira-forge/24-production-patterns.md";
+  const doc = "## Overview\n\nSome prose about resolvers and patterns.\n";
+
+  const idsFor = (docPath) => bake.chunkMarkdown(doc, { title: "Doc" }).map((c, i) =>
+    bake.sectionIdFor({ pack: "forge-app-builder", sourceId: "jira-forge", path: docPath, title: c.title, index: i }));
+
+  const a = idsFor(fileA);
+  const b = idsFor(fileB);
+  ok(a.length === 1 && b.length === 1, "each fixture chunks to one section");
+  ok(a[0] !== b[0], `two files sharing a heading mint DIFFERENT ids (${a[0]} vs ${b[0]})`);
+  ok(a[0].startsWith("forge-app-builder/jira-forge/") && a[0].endsWith("/overview-1"),
+    `the id still reads pack/source/file/heading (${a[0]})`);
+  ok(idsFor(fileA)[0] === a[0], "the id is stable for the same file — ids ride into receipts");
+  // The file segment hashes the PATH, not the content: an edit must not rename the section.
+  const edited = bake.chunkMarkdown("## Overview\n\nDifferent prose entirely.\n", { title: "Doc" })
+    .map((c, i) => bake.sectionIdFor({ pack: "forge-app-builder", sourceId: "jira-forge", path: fileA, title: c.title, index: i }));
+  ok(edited[0] === a[0], "editing the document does not change its section id");
+}
+{
+  const uniq = [{ id: "p/s/h/a-1" }, { id: "p/s/h/b-1" }];
+  ok(bake.assertUniqueSectionIds(uniq) === 2, "unique ids pass the emit assertion");
+  const r = run(`B.assertUniqueSectionIds([{id:"p/s/h/a-1",provenance:{path:"one.md"}},{id:"p/s/h/a-1",provenance:{path:"two.md"}}]);`);
+  ok(r.status !== 0, `a duplicate id REFUSES the bake (exit ${r.status})`);
+  ok(/collision/.test(r.out) && /NOTHING was written/.test(r.out),
+    "and it names the collision and refuses before the emit");
+  ok(/one\.md/.test(r.out) && /two\.md/.test(r.out), "naming both source documents");
+}
+
 /* ---- the shipped allow-list is itself well-formed ---- */
 {
   const sourcesPath = path.join(repoRoot, "knowledge/sources.json");

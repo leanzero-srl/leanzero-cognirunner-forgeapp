@@ -377,6 +377,45 @@ export default KNOWLEDGE_INDEX;
  * ================================================================== */
 
 /**
+ * THE SECTION ID (F-438). `pack / source / file / heading-slug - chunk index`.
+ *
+ * The FILE segment is what the first version was missing: the id carried the source id and
+ * the per-DOCUMENT chunk index, and that index restarts at 0 for every document — so two
+ * files of one source that both open with `## Overview` minted the SAME id. Nothing
+ * de-duplicated at emit, `scoreSections` counted both in the idf denominator, the selector
+ * could spend the budget twice on near-duplicates, and a `sectionIds` entry in a
+ * generationMeta chip or a tick receipt named a section a reader could not resolve to one
+ * body. `KNOWLEDGE_CONTENT_VERSION` still hashed cleanly, so `--check` never noticed.
+ *
+ * The segment is a hash of the file PATH, not of its contents: an id must survive an edit
+ * to the document it names, because ids are recorded in receipts and generationMeta. It is
+ * short because it is a disambiguator, not a fingerprint — the content fingerprint is
+ * KNOWLEDGE_CONTENT_VERSION, and the provenance hash rides on the section itself.
+ */
+export const sectionIdFor = ({ pack, sourceId, path: docPath, title, index }) =>
+  `${pack}/${slug(sourceId)}/${sha(String(docPath)).slice(0, 8)}/${slug(title) || "section"}-${Number(index) + 1}`;
+
+/**
+ * Uniqueness, asserted AT EMIT. A generated id scheme is a claim, and a claim nothing
+ * checks is how F-438 shipped. Two sections with one id is a bug in the scheme, so this
+ * refuses the whole bake rather than de-duplicating and hiding it.
+ */
+export const assertUniqueSectionIds = (sections) => {
+  const seen = new Map();
+  const collisions = [];
+  for (const s of sections) {
+    const id = String(s.id);
+    if (seen.has(id)) collisions.push(`${id}  ←  ${seen.get(id)}  +  ${s.provenance?.path || "?"}`);
+    else seen.set(id, s.provenance?.path || "?");
+  }
+  if (collisions.length) {
+    die(`${collisions.length} section id collision(s) — the id scheme is broken. NOTHING was written:\n  `
+      + collisions.join("\n  "), 1);
+  }
+  return sections.length;
+};
+
+/**
  * THE PIN MAP, from the allow-list (F-429). `packs[].pinned` lists SECTION pins
  * (`pack#section-slug`, or a full section id) and `packs[].pinnedFor` lists the audiences
  * they are pinned for. One home: this is emitted into the index the runtime registers AND
@@ -529,7 +568,7 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
       const body = c.body.trim();
       const tags = [...new Set([...d.tags, ...titleTags(c.title), ...extractEntities(body)])];
       sections.push({
-        id: `${d.pack}/${slug(d.sourceId)}/${slug(c.title) || "section"}-${i + 1}`,
+        id: sectionIdFor({ pack: d.pack, sourceId: d.sourceId, path: d.path, title: c.title, index: i }),
         pack: d.pack,
         title: c.title || docTitle,
         tags,
@@ -540,6 +579,10 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
       });
     });
   }
+
+  // Ids are unique or the bake stops. Before the packs, before the index, before the
+  // MANIFEST — the check comes before the side effect (F-438).
+  assertUniqueSectionIds(sections);
 
   const oversized = sections.filter((s) => s.bytes > SECTION_MAX_BYTES);
   for (const s of oversized) console.log(`  oversized section (kept whole, single code block): ${s.id} · ${s.bytes} B`);

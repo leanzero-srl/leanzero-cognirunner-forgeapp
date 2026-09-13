@@ -102,8 +102,8 @@ export function permissionRefusalText(result, what = "this") {
 export function upgradeRequiredText(result) {
   const id = result && result.featureId;
   const feature = ADVANCED_FEATURES.find((f) => f.id === id);
-  const label = feature ? feature.label : "This feature";
-  return `${label} is part of the ${EDITIONS.advanced.label} edition — upgrade in Settings.`;
+  const label = feature ? feature.label : "this feature";
+  return `Upgrade in Settings to unlock ${label}.`;
 }
 
 export const UPGRADE_REQUIRED_HEADLINE = `This needs CogniRunner ${EDITIONS.advanced.label}.`;

@@ -133,10 +133,21 @@ async function phaseRepo() {
   };
   const existing = await raw("GET", `/repositories/${REPO}/pipelines_config/variables/?pagelen=100`);
   const have = new Map((existing.json && existing.json.values || []).map((v) => [v.key, v]));
+  /*
+   * F-530/F-531 — the UPSERT arm, and why it no longer skips.
+   *
+   * This loop used to `continue` on a key that already existed, so a second run proved
+   * nothing about the one thing `upsertPipelineVariable` exists for: Bitbucket answers a
+   * POST of an existing pipeline variable with HTTP 409, and the adapter must then PUT it
+   * by uuid rather than surface the conflict as a partial setup. Skipping meant the 409
+   * branch was never executed after the very first run. Every key is now written on every
+   * run, and `existed` records whether this call took the create path or the 409 path, so
+   * a re-run is the idempotence test rather than a no-op.
+   */
   for (const [k, spec] of Object.entries(want)) {
-    if (have.has(k)) { note("variable already present", { key: k, secured: have.get(k).secured }); continue; }
+    const existed = have.has(k);
     const r = spec.secured ? await bb.setSecret({ repo: REPO, name: k, value: spec.value }) : await bb.setVariable({ repo: REPO, name: k, value: spec.value });
-    check(`variable ${k} set`, !!r.name, { key: k, secured: r.secured });
+    check(`variable ${k} upserted${existed ? " (it already existed — the 409 branch)" : " (created)"}`, !!r.name, { key: k, secured: r.secured, existedBefore: existed });
   }
   const after = await raw("GET", `/repositories/${REPO}/pipelines_config/variables/?pagelen=100`);
   const rows = (after.json && after.json.values) || [];

@@ -85,6 +85,9 @@ import {
 } from "./va-ledger.js";
 import {
   isVaJob, vaOf, readScopeProjects, wrapScopedJql, inPostWindow,
+  // THE shadow predicate (F-474) — the same one the post gate reaches. This file used to
+  // carry its own, over wall-clock tick buckets, and the two disagreed.
+  isInShadow,
 } from "./virtual-admin.js";
 import {
   vaWizardKey, vaTickPrefix, vaEffectPrefix, VA_WIZARD_TTL, VA_CLAIM_TTL,
@@ -229,20 +232,11 @@ export const DEFAULT_ADMIN_DEPS = {
   saveJob: async (job, opts) => (await import("./scheduled-jobs.js")).saveJob(job, opts),
   nextRunOf: async (job) => (await import("./scheduled-jobs.js")).nextRunOf(job),
 
-  /**
-   * Which tick number is this, for shadow mode? THE SAME ARITHMETIC AS
-   * `DEFAULT_DEPS.tickIndex` in `virtual-admin.js` — five-minute buckets since the
-   * job's creation. It is repeated rather than imported because that one is a
-   * private entry of a frozen deps object; if a third caller ever needs it, it
-   * moves to `virtual-admin.js` as a named export and both read that. Written down
-   * so the next reader knows this is a KNOWN duplicate with a stated exit, not an
-   * unnoticed one.
-   */
-  tickIndex: (job, nowMs) => {
-    const created = Date.parse(String((job && job.createdAt) || ""));
-    if (!Number.isFinite(created)) return Number.MAX_SAFE_INTEGER;
-    return Math.floor(((nowMs == null ? Date.now() : nowMs) - created) / 300000);
-  },
+  /* NO `tickIndex` DEP ANY MORE (F-474). Shadow mode is not a wall-clock question: it is
+   * counted in the agent's OWN prepare receipts, and `isInShadow` reads that count from
+   * `va_health` — the same number the post gate reads. The exit the old comment here
+   * promised ("if a third caller needs it, move it to virtual-admin.js and both read
+   * that") has been taken; there is one predicate now and this file imports it. */
 
   /* — the queue. The SAME queue and body shape the planner pushes. — */
   pushTask: async (body) => {
@@ -435,20 +429,6 @@ export const listAgents = async (_args = {}, injected = {}) => {
     });
   }
   return okv({ agents, unconfigured, truncated: vaRows.length > VA_ADMIN_AGENTS_MAX });
-};
-
-/**
- * The shadow state, computed in ONE place so the tab and the status never disagree.
- *
- * NULL WHEN THE AGENT IS LIVE. That is what lets the tab's LIVE / SHADOW badge be a
- * truthiness test instead of a second copy of the comparison — and `gatePausedShadow`
- * stays the authority on the comparison itself.
- */
-const shadowOf = (va, tickIndex) => {
-  const until = Number(va && va.status && va.status.shadowUntilTick);
-  const idx = Number(tickIndex);
-  if (!Number.isFinite(until) || !Number.isFinite(idx) || idx >= until) return null;
-  return { until, tickIndex: idx, ticksLeft: Math.max(0, until - idx) };
 };
 
 /**
@@ -645,7 +625,7 @@ export const status = async ({ jobId } = {}, injected = {}) => {
     itemsByState: items.ok ? countStates(items.items) : null,
     nextTick,
     nextPostWindow: postWindowInstants(va, now),
-    shadow: shadowOf(va, deps.tickIndex(job, now)),
+    shadow: await isInShadow(job, { store: deps.store }),
     paused: va.status.paused === true,
     // `{ok, failedTicks, reason}` — the banner's contract. A health row that cannot be
     // READ is `ok:false` with a reason saying so: "I do not know whether this agent is
@@ -715,7 +695,7 @@ export const drafts = async ({ jobId } = {}, injected = {}) => {
     drafts: rows,
     // The tab renders approve/reject only while this is truthy. Returned rather than
     // re-derived in the UI, so the enable rule has one home.
-    shadow: shadowOf(va, deps.tickIndex(job, deps.now())),
+    shadow: await isInShadow(job, { store: deps.store }),
     scanned: items.items.length, total: items.total, truncated: items.truncated, unreadable: items.unreadable,
   });
 };
@@ -884,7 +864,7 @@ const decide = async (verdict, { jobId, itemKey, issueKey, stagedAt, reason, acc
   const key = String((itemKey != null ? itemKey : issueKey) == null ? "" : (itemKey != null ? itemKey : issueKey)).trim();
   if (!key) return fail("item_key_required");
 
-  const shadow = shadowOf(va, deps.tickIndex(job, deps.now()));
+  const shadow = await isInShadow(job, { store: deps.store });
   if (!shadow) {
     return fail("not_in_shadow", {
       detail: "Drafts are reviewed while the agent is in shadow mode. This agent is live, so it delivers its own drafts behind the post gates.",

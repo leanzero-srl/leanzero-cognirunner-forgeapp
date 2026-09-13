@@ -984,6 +984,59 @@ export const postFloorOk = ({ staged, currentTickId, minPostGapMinutes, now }) =
   return { ok: true };
 };
 
+/**
+ * THE SHADOW PREDICATE — ONE HOME (F-474).
+ *
+ * `shadowStateOf` is the comparison itself, and every surface reaches it: GATE 1 below
+ * returns `reason: "shadow"` from it, and the Agents tab reads it through `isInShadow`.
+ *
+ * It used to be TWO predicates. The post gate counted the agent's own prepare receipts
+ * (F-454); `src/va-admin.js` counted five-minute wall-clock buckets since the job was
+ * created. On any agent whose cadence is not five minutes they disagree, and they
+ * disagree in the direction that breaks the product: the tab says LIVE, refuses approve
+ * with `not_in_shadow` and hides the buttons, while the engine still holds every draft
+ * behind `gate.shadow`. The admin cannot approve a draft the engine will not send, and
+ * nothing on either screen says why.
+ *
+ * NULL MEANS LIVE, and that is what lets the tab's LIVE / SHADOW badge be a truthiness
+ * test rather than a second copy of the comparison.
+ */
+export const shadowStateOf = (va, watchedTicks) => {
+  const until = Number(va && va.status && va.status.shadowUntilTick);
+  const idx = Number(watchedTicks);
+  if (!Number.isFinite(until) || !Number.isFinite(idx) || idx >= until) return null;
+  return { until, tickIndex: idx, ticksLeft: Math.max(0, until - idx) };
+};
+
+/**
+ * …and the COUNT, from the one place that holds it.
+ *
+ * `receipts` is the number of prepare receipts, when the caller already has it (the post
+ * phase reads health for its banner anyway and passes the number straight in). Otherwise
+ * pass `store` and this reads `va_health` itself.
+ *
+ * A HEALTH READ THAT FAULTS COUNTS AS ZERO, i.e. keeps the agent IN shadow — the same
+ * restrictive reading the post phase has always taken. "I cannot tell how many times you
+ * have been watched" is not "enough times", and on the admin side it errs toward showing
+ * the review controls rather than toward refusing an approve the engine would honour.
+ */
+export const isInShadow = async (job, { receipts = null, store = null } = {}) => {
+  const va = isObj(job && job.va) ? job.va : null;
+  if (!va) return null;
+  // `receipts == null` is "I do not have the count", NOT zero — `Number(null)` is 0, and
+  // reading it as a count would silently answer "never watched" for every caller that
+  // passes only a store.
+  let watched = receipts == null ? NaN : Number(receipts);
+  if (!Number.isFinite(watched)) {
+    if (!store) return null;
+    // The agent id IS the job id, on both surfaces (`loadAgent` in va-admin.js and the
+    // post phase below both take it straight from the record).
+    const health = await readHealth(store, job.id);
+    watched = health.ok ? Number(health.prepareTicks) || 0 : 0;
+  }
+  return shadowStateOf(va, watched);
+};
+
 /** GATE 1 — paused, shadow mode, kill switch. Agent-level, checked once per post run. */
 export const gatePausedShadow = ({ va, tickIndex = 0, killSwitchActive = false } = {}) => {
   // `tickIndex` IS THE AGENT'S OWN PREPARE-TICK COUNT (F-454), read from `va_health` by
@@ -996,8 +1049,10 @@ export const gatePausedShadow = ({ va, tickIndex = 0, killSwitchActive = false }
   // has been watched for `shadowUntilTick` ticks. It is a gate and not a flag on the
   // prompt because the whole value of shadow mode is that it holds when the model is
   // wrong about whether it is in shadow mode.
-  const until = Number(status.shadowUntilTick);
-  if (Number.isFinite(until) && Number(tickIndex) < until) return { ok: false, reason: "shadow", shadowUntilTick: until, tickIndex: Number(tickIndex) };
+  // THE COMPARISON IS `shadowStateOf`'s, not a second copy of it (F-474) — the Agents
+  // tab reaches the same function through `isInShadow`.
+  const sh = shadowStateOf(va, tickIndex);
+  if (sh) return { ok: false, reason: "shadow", shadowUntilTick: sh.until, tickIndex: sh.tickIndex };
   return { ok: true };
 };
 

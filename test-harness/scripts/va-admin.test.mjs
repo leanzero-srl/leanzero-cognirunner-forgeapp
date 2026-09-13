@@ -138,16 +138,54 @@ let agentId = null;
   const first = await call("getVaStatus", { jobId: agentId });
   ok(first.success && first.shadow && first.shadow.ticksLeft > 0, `a new agent starts inside shadow (got ${JSON.stringify(first.shadow)})`);
 
-  // Age the job so its tick index has moved past the original shadow window.
+  // LEAVING SHADOW IS THE AGENT'S OWN PREPARE COUNT, NOT THE WALL CLOCK (F-454/F-474).
+  // Ageing `createdAt` used to be how this test moved the agent to LIVE, because the tab
+  // counted five-minute buckets since creation while the post gate counted prepare
+  // receipts. The two disagreed on every agent whose cadence is not five minutes — the
+  // tab said LIVE and refused approve with `not_in_shadow` while the engine still held
+  // every draft behind `gate.shadow`. Ageing therefore must NOT move it any more.
   const raw = await storage.get(`job:${agentId}`) || await storage.get(`sched_job:${agentId}`);
   ok(!!raw, "the stored job row is reachable for the ageing step");
   if (raw) {
-    raw.createdAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();   // an hour = 12 ticks
+    raw.createdAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();   // an hour = 12 wall-clock buckets
     raw.va.status.shadowUntilTick = 3;
     for (const k of ["job:", "sched_job:"]) { if (await storage.get(k + agentId)) await storage.set(k + agentId, raw); }
   }
+  const aged = await call("getVaStatus", { jobId: agentId });
+  ok(aged.success && aged.shadow && aged.shadow.ticksLeft === 3,
+    `ageing the job does NOT end shadow — it has still been watched 0 times (got ${JSON.stringify(aged.shadow)})`);
+
+  // THE BOUNDARY, on BOTH surfaces: shadowUntilTick 3, so 2 prepare receipts is shadow
+  // and 3 is live, and the tab and the post gate must say the same thing at each step.
+  const { gatePausedShadow, isInShadow } = await import("../../src/virtual-admin.js");
+  const setWatched = async (n) => storage.set(`va_health:${agentId}`, { consecutiveFailures: 0, prepareTicks: n });
+  const jobRow = await storage.get(`job:${agentId}`) || await storage.get(`sched_job:${agentId}`);
+  for (const [n, expectShadow] of [[0, true], [2, true], [3, false], [4, false]]) {
+    await setWatched(n);
+    const tab = await call("getVaStatus", { jobId: agentId });
+    const engine = gatePausedShadow({ va: jobRow.va, tickIndex: n, killSwitchActive: false });
+    const engineInShadow = engine.ok === false && engine.reason === "shadow";
+    ok(tab.success && Boolean(tab.shadow) === expectShadow,
+      `${n} prepare receipts → the tab says ${expectShadow ? "SHADOW" : "LIVE"} (got ${JSON.stringify(tab.shadow)})`);
+    ok(engineInShadow === expectShadow, `${n} prepare receipts → the post gate agrees`);
+    ok(Boolean(await isInShadow(jobRow, { receipts: n })) === expectShadow,
+      `${n} prepare receipts → isInShadow(receipts) agrees — ONE predicate, three callers`);
+  }
+  // An UNREADABLE count keeps the agent in shadow: "I cannot tell how many times you have
+  // been watched" is not "enough times", and it errs toward showing the review controls
+  // rather than refusing an approve the engine would honour.
+  ok(Boolean(await isInShadow(jobRow, { receipts: NaN, store: { get: async () => { throw new Error("kvs down"); } } })),
+    "an unreadable health row keeps the agent IN shadow");
+
+  await setWatched(12);
   const live = await call("getVaStatus", { jobId: agentId });
   ok(live.success && live.shadow === null, `an agent past its shadow ticks reads as LIVE (shadow null, got ${JSON.stringify(live.shadow)})`);
+  // …AND THE APPROVE DOOR READS THE SAME PREDICATE AS THE BADGE. This is the pairing
+  // F-474 is about: the tab hides approve when `shadow` is null, and `decide` refuses
+  // with `not_in_shadow` on exactly the same condition, counted the same way.
+  const outside = await call("approveVaDraft", { jobId: agentId, itemKey: "SUP-1" });
+  ok(outside.success === false && outside.reason === "not_in_shadow",
+    `the approve door agrees with the LIVE badge (got ${JSON.stringify(outside).slice(0, 200)})`);
 
   const edited = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Ada", voice: { register: "warm", maxSentences: 2 } } }) } });
   ok(edited.success === true, "the agent can be edited");

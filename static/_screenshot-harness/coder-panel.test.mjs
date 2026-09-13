@@ -257,6 +257,17 @@ try {
       ok(await page.locator(".coder-consent-action").innerText() === "open_pull_request", `${id} the action is named`);
       const args = await page.locator(".coder-consent-args").innerText();
       ok(args.includes("proj-42-retry-guard"), `${id} the argument preview is shown (got "${args}")`);
+      /* F-374 - the preview is an OBJECT and is rendered as KEY/VALUE ROWS. Every schema key
+         the engine put in it has a row, and a boolean is printed as a value: `draft false`
+         is the statement "this PR is not a draft", which a sentence would have swallowed. */
+      const rows = await page.locator(".coder-arg-row").evaluateAll((els) =>
+        els.map((el) => [el.querySelector(".coder-arg-k").innerText, el.querySelector(".coder-arg-v").innerText]));
+      const byKey = Object.fromEntries(rows);
+      ok(rows.length === 6, `${id} every preview key has a row (got ${rows.length}: ${rows.map((r) => r[0]).join(",")})`);
+      ok(byKey.repo === "acme/web" && byKey.sourceBranch === "proj-42-retry-guard" && byKey.targetBranch === "main",
+        `${id} the preview rows carry their values (got ${JSON.stringify(byKey)})`);
+      ok(byKey.draft === "false", `${id} a FALSE boolean is printed literally (got ${JSON.stringify(byKey.draft)})`);
+      ok(errors.length === 0, `${id} the object preview did not throw during render (${errors.join(" | ")})`);
       // Rule 3 — the ticket id is a capability handle, never copy. Asserted over the WHOLE
       // panel text and the DOM's attributes, because "not rendered" has to include a title=.
       const leak = await page.locator(".glance").evaluate((el) => {
@@ -308,6 +319,74 @@ try {
       ok(visible.ok, `${id} the newest message is scrolled into view (${visible.why})`);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-confirmed-${theme}.png`) });
+    });
+
+    /* ------------------------------------------- 4b. F-374: THE BLAST-RADIUS ARGUMENTS.
+       F-363 put the fields that change what an action DOES into the preview; F-374 is that
+       the screen could not render them. These two arms are the ones the finding names:
+       `create_repo` with `private:false` (public repository) and `trigger_deploy` with a
+       NESTED `inputs` (which environment). Both must be readable, key by key. */
+    for (const [action, must] of [
+      ["create_repo", { "private": "false", org: "acme", name: "acme-internal" }],
+      ["trigger_deploy", { "inputs.environment": "production", "inputs.canary": "false", "inputs.batch": "4", workflow: "deploy.yml" }],
+    ]) {
+      await withPanel({ __THEME__: theme, __CODER_TICKET__: action }, async (page, errors) => {
+        const id = `args/${action}/${theme}`;
+        await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+        await page.locator("textarea.coder-input").fill("Do it.");
+        await page.locator(".coder-composer .coder-btn-go").click();
+        await page.locator(".coder-consent").waitFor({ timeout: 20000 });
+        ok(await page.locator(".coder-consent-action").innerText() === action, `${id} the action is named`);
+        const rows = await page.locator(".coder-arg-row").evaluateAll((els) =>
+          Object.fromEntries(els.map((el) => [el.querySelector(".coder-arg-k").innerText, el.querySelector(".coder-arg-v").innerText])));
+        for (const [k, v] of Object.entries(must)) {
+          ok(rows[k] === v, `${id} ${k} reads "${v}" (got ${JSON.stringify(rows[k])})`);
+        }
+        // The three answers are still there: a preview that renders is worth nothing if the
+        // buttons under it went missing with it.
+        ok(await page.locator(".coder-consent-btns .coder-btn").count() === 3, `${id} the three answers are still offered`);
+        ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+        await designRules(page, id);
+        if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-args-${action}-${theme}.png`) });
+      });
+    }
+
+    /* --------------------------------- 4c. F-374: the ticket that OUTLIVED the page.
+       On a reload the thread record carries the ticket id and nothing else, so the panel
+       has no action and no preview. It must not render an empty preview (which would read
+       as "this action takes no arguments" over a live write) and it must still offer the
+       way out. */
+    await withPanel({ __THEME__: theme, __CODER_PENDING__: true }, async (page, errors) => {
+      const id = `pending/${theme}`;
+      await page.locator(".coder-consent").waitFor({ timeout: 15000 });
+      ok(await page.locator(".coder-arg-row").count() === 0, `${id} no invented preview rows`);
+      const text = await page.locator(".coder-consent-args").innerText();
+      ok(/not kept when the page reloaded/i.test(text) && /Nothing has run/i.test(text),
+        `${id} the panel says the details are unavailable (got "${text}")`);
+      ok(await page.locator(".coder-consent-btns .coder-btn").count() === 3, `${id} Confirm, Change and Skip are still offered`);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      await designRules(page, id);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-pending-${theme}.png`) });
+    });
+
+    /* ------------------------------------------- 4d. F-374: the ERROR BOUNDARY is real.
+       A render fault used to unmount the whole right rail to a blank iframe. The mock
+       forces one (a transcript row whose `content` throws when React reads it) and the
+       panel must come back as a NAMED failure in the app's solid red, with a Reload. */
+    await withPanel({ __THEME__: theme, __CODER_BOOM__: true }, async (page) => {
+      const id = `boundary/${theme}`;
+      await page.locator(".cr-boundary").waitFor({ timeout: 15000 });
+      const text = await page.locator(".cr-boundary").innerText();
+      ok(/couldn't be displayed/i.test(text), `${id} the failure is named (got "${text}")`);
+      ok(/Nothing was run/i.test(text), `${id} it says what it means for a pending write`);
+      const btn = page.locator(".cr-boundary-btn");
+      ok(await btn.count() === 1 && (await btn.innerText()).trim() === "Reload", `${id} there is one way out, and it reloads`);
+      const bg = await page.locator(".cr-boundary").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(bg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `${id} the banner is the app's solid red (got ${bg})`);
+      // The rail is not blank: the app's own header survived the fault.
+      ok(await page.locator(".glance-head").count() === 1, `${id} the panel header is still on screen`);
+      await designRules(page, id);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-boundary-${theme}.png`) });
     });
 
     /* ------------------------------------------------------------------- 5. the SKIP path.

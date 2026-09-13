@@ -897,6 +897,18 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
                                  its veil are on screen long enough to be asserted.
      window.__CODER_DUPLICATE__- confirmCoderTicket answers { duplicate: true }.
      window.__CODER_NO_RESUME__- the decision is recorded but the follow-up did not enqueue.
+     window.__CODER_TICKET__   - F-374: WHICH action the consent ticket is for, so the
+                                 preview shapes `buildArgsPreview` really returns are on
+                                 screen: "create_repo" (a boolean `private:false` that
+                                 decides whether the repo is public) and "trigger_deploy"
+                                 (a NESTED `inputs` object carrying the environment).
+                                 Default: open_pull_request, whose preview is an OBJECT too.
+     window.__CODER_PENDING__  - F-374: the thread comes back with a pendingTicketId and
+                                 nothing else, the state a RELOAD leaves behind: the panel
+                                 has a ticket id, no action and `argsPreview:null`.
+     window.__CODER_BOOM__     - F-374: a transcript row whose `content` THROWS when React
+                                 reads it during render. The only honest way to force a
+                                 render fault from the mock, and the error boundary's test.
      window.__CODER_SIM_LOCKED__- F-371: the turn is REFUSED by the engine's F-360 arm,
                                  `reason:"simulation-locked"`, which arrives through the
                                  QUEUE (the resolver enqueues before the engine reads the
@@ -922,15 +934,52 @@ const coderThread = (threadId) => {
     const first = CODER_FIRST_THREAD === null;
     if (first) CODER_FIRST_THREAD = key;
     const seed = first ? CODER_SEED() : [];
-    CODER_THREADS.set(key, { messages: seed, turns: seed.length ? 1 : 0 });
+    /* F-374 - a row React cannot render. `content` is a getter that throws, so the fault
+       happens INSIDE the render pass (where an error boundary is the only thing that can
+       catch it) and not in the fetch, which is wrapped in a try/catch. */
+    if (first && typeof window !== "undefined" && window.__CODER_BOOM__) {
+      const row = { role: "assistant", at: "2026-09-13T08:01:00.000Z" };
+      Object.defineProperty(row, "content", { enumerable: true, get() { throw new Error("forced render fault (F-374 harness)"); } });
+      seed.push(row);
+    }
+    const row = { messages: seed, turns: seed.length ? 1 : 0 };
+    /* F-374 - the RELOAD state: the record keeps the ticket id and nothing else. */
+    if (first && typeof window !== "undefined" && window.__CODER_PENDING__) row.pendingTicketId = CODER_TICKET_ID;
+    CODER_THREADS.set(key, row);
   }
   return CODER_THREADS.get(key);
 };
-const CODER_TURN_TICKET = {
-  success: true, reply: "", actions: [{ name: "create_branch", args: { name: "proj-42-retry-guard" }, ok: true, ms: 640 }],
-  usage: { totalTokens: 8120 }, endedBy: "awaiting_confirmation", rounds: 2,
-  awaiting: "confirm",
-  ticket: { id: CODER_TICKET_ID, action: "open_pull_request", argsPreview: "acme/web: proj-42-retry-guard into main, titled \"Retry guard for the payment client\"" },
+/* F-374 - THE PREVIEW IS AN OBJECT, because that is what `buildArgsPreview` returns: the
+   action's own schema keys, already clamped, with booleans and numbers left as values and
+   `inputs` left NESTED. The fixture used to be a hand-written sentence, which is exactly
+   why the harness never saw the panel throw on the real shape. */
+const CODER_TICKET_ARGS = {
+  open_pull_request: {
+    repo: "acme/web",
+    title: "Retry guard for the payment client",
+    body: "Adds a bounded retry around the provider call in sendPayment.",
+    sourceBranch: "proj-42-retry-guard",
+    targetBranch: "main",
+    draft: false,
+  },
+  // F-363's whole point: `private:false` is the difference between an internal repo and a
+  // public one, and it is a value the user must SEE, not an absence.
+  create_repo: { name: "acme-internal", org: "acme", private: false, description: "Internal tooling" },
+  // ... and a NESTED object: the environment a deploy lands in.
+  trigger_deploy: { repo: "acme/web", workflow: "deploy.yml", ref: "main", inputs: { environment: "production", canary: false, batch: 4 } },
+};
+const CODER_TICKET_ACTION = () => {
+  const want = (typeof window !== "undefined" && window.__CODER_TICKET__) || "open_pull_request";
+  return CODER_TICKET_ARGS[want] ? want : "open_pull_request";
+};
+const CODER_TURN_TICKET = () => {
+  const action = CODER_TICKET_ACTION();
+  return {
+    success: true, reply: "", actions: [{ name: "create_branch", args: { name: "proj-42-retry-guard" }, ok: true, ms: 640 }],
+    usage: { totalTokens: 8120 }, endedBy: "awaiting_confirmation", rounds: 2,
+    awaiting: "confirm",
+    ticket: { id: CODER_TICKET_ID, action, argsPreview: { ...CODER_TICKET_ARGS[action] } },
+  };
 };
 const CODER_TURN_PLAIN = {
   success: true, reply: "The retry guard is in and the branch is pushed.\n\nI did not open a pull request, because you have not asked for one yet.",
@@ -1000,7 +1049,7 @@ function coderInvoke(name, payload) {
       }
       const first = payload && payload.taskId === "coder_turn_1";
       const result = first
-        ? (scenario === "plain" ? CODER_TURN_PLAIN : CODER_TURN_TICKET)
+        ? (scenario === "plain" ? CODER_TURN_PLAIN : CODER_TURN_TICKET())
         : CODER_TURN_AFTER(CODER_LAST_DECISION);
       if (result.awaiting === "confirm") t.pendingTicketId = result.ticket.id;
       else if (result.reply) t.messages.push({ role: "assistant", content: result.reply, at: new Date().toISOString() });

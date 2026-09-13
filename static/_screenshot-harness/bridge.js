@@ -1325,6 +1325,13 @@ const VA_STATUS = {
       { at: "2026-09-13T07:30:00.000Z", phase: "prepare", ok: true, swept: 12, worked: 0, skipped: [], compacted: { before: 7268, after: 3942 } },
       /* F-511 - the BACKOFF row: no gate, deliberately, so this tick is not a failure. */
       { at: "2026-09-13T07:25:00.000Z", phase: "prepare", ok: true, swept: 11, worked: 0, skipped: [{ gate: "compaction:compaction-backoff", itemKey: "(memory)", reason: "compaction:compaction-backoff" }] },
+      /* F-518 - the ids the copy map did NOT know. The brake that could not be written
+         (a gated row, so it is red), a reason carrying a COUNT, a reason carrying a raw
+         exception message, and an id no release of the tab has ever heard of. */
+      { at: "2026-09-13T07:20:00.000Z", phase: "prepare", ok: false, swept: 9, worked: 0, skipped: [{ gate: "compaction", itemKey: "(memory)", reason: "compaction-backoff-write-failed", detail: "compact_backoff_write_failed" }] },
+      { at: "2026-09-13T07:15:00.000Z", phase: "prepare", ok: true, swept: 9, worked: 0, skipped: [{ itemKey: "(memory)", reason: "compaction:pinned_dropped:2" }] },
+      { at: "2026-09-13T07:10:00.000Z", phase: "prepare", ok: true, swept: 8, worked: 0, skipped: [{ itemKey: "(memory)", reason: "compaction:compaction_failed:TypeError: Cannot read properties of undefined (reading 'text')" }] },
+      { at: "2026-09-13T07:08:00.000Z", phase: "prepare", ok: true, swept: 8, worked: 0, skipped: [{ itemKey: "(memory)", reason: "compaction:memory_conveyor_jammed:sprocket-7" }] },
     ],
   },
   /* Live, and BROKEN: three failed ticks is the banner's own threshold (VA_LIMITS). */

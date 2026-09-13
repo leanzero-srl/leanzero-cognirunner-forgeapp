@@ -28,6 +28,10 @@
  *   A13 the three memory-compaction shapes (F-511): a clean compaction as a solid teal
  *       chip, a fallback and a non-converging gate as solid red states, and the backoff as
  *       a solid slate one - both themes, computed colours, no rail, no em-dash.
+ *   A14 the compaction copy map covers EVERY reason id `src/virtual-admin.js` pushes
+ *       (asserted by reading the engine source, F-518), and the ids that carry a `:detail`
+ *       suffix or that the map has never heard of never leak an id or an exception message
+ *       into the admin's copy.
  *
  * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
  */
@@ -498,6 +502,80 @@ try {
       ok(Number(b.w) >= 600 && Number(b.w) <= 700, `A13 ${theme} 600-700 weight on the failed state, got ${b.w}`);
       await shot(page, `agents-compaction-bad-${theme}`);
       ok(env.errors.length === 0, `A13 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  /* ---------- A14 every engine reason id has copy, and no id ever leaks (F-518) ---------- */
+  {
+    console.log("A14 compaction copy covers the engine");
+    /* THE SOURCE ASSERTION. The engine's reason ids are read out of `src/virtual-admin.js`
+       itself, not typed here, so a new id added to `runVaCompaction` fails THIS test rather
+       than reaching an admin as a raw string. Comments are stripped first: the docblocks
+       quote ids that are not reasons (`compact_backoff_write_failed` is a backoff-write
+       detail, never a compaction reason). */
+    const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const engineSrc = fs.readFileSync(path.join(__dirname, "../../src/virtual-admin.js"), "utf8");
+    const afterFn = engineSrc.slice(engineSrc.indexOf("export const runVaCompaction"));
+    const fnBody = afterFn.slice(0, afterFn.indexOf("\n};") + 3);
+    const tickBody = engineSrc.slice(engineSrc.indexOf("const compaction = await runVaCompaction"), engineSrc.indexOf("const compactionGated"));
+    ok(fnBody.length > 500 && tickBody.length > 200, "A14 both compaction push sites were located in the engine source");
+    /* The BASE id is what the map is keyed on: the `compaction:` namespace off the front,
+       and the `:detail` the engine appends off the back. */
+    const baseId = (raw) => String(raw).replace(/^compaction:/, "").split(/[:$]/)[0].trim();
+    const engineIds = new Set();
+    for (const chunk of [strip(fnBody), strip(tickBody)]) {
+      for (const m of chunk.matchAll(/reason:\s*(?:\([^)]*\)\s*\|\|\s*)?([`"])([^`"]+)\1/g)) { const b = baseId(m[2]); if (b) engineIds.add(b); }
+      for (const m of chunk.matchAll(/\breason\s*=\s*[^;]+;/g)) for (const l of m[0].matchAll(/([`"])([^`"]+)\1/g)) { const b = baseId(l[2]); if (b) engineIds.add(b); }
+    }
+    ok(engineIds.size >= 8, `A14 the engine's reason ids were extracted, got ${[...engineIds].sort().join(", ")}`);
+    const tabSrc = fs.readFileSync(path.join(__dirname, "../admin-panel/src/components/AgentsTab.jsx"), "utf8");
+    const mapBody = tabSrc.slice(tabSrc.indexOf("const COMPACTION_COPY = {"));
+    const mapText = mapBody.slice(0, mapBody.indexOf("\n};"));
+    const mapKeys = new Set([...mapText.matchAll(/^\s*"([^"]+)":/gm)].map((m) => m[1]));
+    for (const id of [...engineIds].sort()) ok(mapKeys.has(id), `A14 the copy map has a sentence for the engine id "${id}"`);
+    /* And no sentence carries an em-dash or an engine id inside it. */
+    const sentences = [...mapText.matchAll(/^\s*"[^"]+":\s*"([^"]+)"/gm)].map((m) => m[1]);
+    ok(sentences.length === mapKeys.size, "A14 every map key carries a sentence");
+    ok(sentences.every((t) => !/[—–]/.test(t)), "A14 no em-dash or en-dash in the compaction copy");
+    ok(sentences.every((t) => ![...engineIds].some((id) => t.includes(id))), "A14 no sentence prints an engine id");
+  }
+  for (const [theme, red] of [["light", "rgb(220, 38, 38)"], ["dark", "rgb(239, 68, 68)"]]) {
+    console.log(`A14 unknown and detailed ids (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      await page.locator(".va-agent").first().locator(".rule-expand-btn").click();
+      await page.locator(".va-pane-btn", { hasText: "Ticks" }).click();
+      await page.locator(".va-receipt-compact").first().waitFor({ timeout: 8000 });
+      const texts = (await page.locator(".va-receipt-compact").allInnerTexts()).map((t) => t.trim());
+      const all = texts.join("\n");
+
+      /* The three shapes that used to print the engine at the admin. */
+      ok(/pause could not be recorded/.test(all), `A14 ${theme} the backoff-write failure says the pause was not recorded`);
+      ok(/lost a pinned instruction/.test(all), `A14 ${theme} pinned_dropped:2 reads as a sentence`);
+      ok(/stopped on an unexpected error/.test(all), `A14 ${theme} compaction_failed reads as a sentence`);
+      /* And the id nothing has copy for says so, and says NOTHING else. */
+      ok(texts.some((t) => /Memory compaction reported an unrecognised result\./.test(t)), `A14 ${theme} an unknown id renders the neutral sentence`);
+
+      /* NOTHING from the engine reaches the screen: not the id, not the count, not the
+         exception text the `compaction_failed:` slice carries. */
+      for (const leak of ["pinned_dropped", "compaction_failed", "compaction-backoff-write-failed", "compact_backoff_write_failed", "memory_conveyor_jammed", "sprocket-7", "TypeError", "Cannot read properties", "undefined", "compaction:"]) {
+        ok(!all.includes(leak), `A14 ${theme} "${leak}" never appears in the admin's copy`);
+      }
+      ok(!/[—–→]/.test(all), `A14 ${theme} no em-dash, en-dash or arrow`);
+
+      /* The un-armed brake is a GATED row, so it is solid red with white ink and no rail. */
+      const brake = page.locator(".va-receipt-compact-bad", { hasText: "pause could not be recorded" }).first();
+      await brake.waitFor({ timeout: 8000 });
+      const css = await brake.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: getComputedStyle(el.querySelector(".va-receipt-compact-title")).fontWeight };
+      });
+      ok(css.bg === red, `A14 ${theme} solid red fill on the un-armed brake, got ${css.bg}`);
+      ok(css.fg === "rgb(255, 255, 255)", `A14 ${theme} white ink, got ${css.fg}`);
+      ok(css.bl === "0px", `A14 ${theme} no left rail, got ${css.bl}`);
+      ok(Number(css.w) >= 600 && Number(css.w) <= 700, `A14 ${theme} 600-700 weight, got ${css.w}`);
+      await shot(page, `agents-compaction-unknown-${theme}`);
+      ok(env.errors.length === 0, `A14 ${theme} no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
   }
 } finally {

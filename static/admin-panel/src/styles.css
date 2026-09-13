@@ -2922,6 +2922,69 @@ html[data-color-mode="dark"] .code-repo, html[data-color-mode="dark"] .code-cons
 html[data-color-mode="dark"] .code-repo-none { color: #f59e0b; }
 html[data-color-mode="dark"] .code-kind-github { background: #334155; }
 html[data-color-mode="dark"] .code-kind-bitbucket { background: #2684ff; }
+/* F-460 / F-461 - per-repo webhook + deploy pipeline. Solid fills, white text on
+   every chip, no rails and no tints, and a dark override for every hue below. */
+.code-conn-repos { flex-direction: column; align-items: stretch; gap: 10px; }
+.code-repo-row { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+.code-repo-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.code-repo-actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.code-hook { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; }
+.code-hook.set { background: #16a34a; }
+.code-hook.unset { background: #475569; }
+.code-hook-hint { margin: 0; }
+.code-hook-note { padding: 10px 12px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; font-size: 12px; font-weight: 600; line-height: 1.45; }
+.code-pipe { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+.code-pipe-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.code-pipe-title { font-size: 13px; font-weight: 700; }
+.code-pipe-deploy { margin-left: auto; }
+.code-pipe-status { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; background: #475569; }
+.code-pipe-queued { background: #475569; }
+.code-pipe-running { background: #2563eb; }
+.code-pipe-installed { background: #16a34a; }
+.code-pipe-partial { background: #d97706; }
+.code-pipe-live { margin: 0; }
+.code-steps { display: flex; flex-direction: column; gap: 4px; }
+.code-step { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.code-step-state { min-width: 62px; padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-align: center; background: #475569; }
+.code-step-running .code-step-state { background: #2563eb; }
+.code-step-done .code-step-state { background: #16a34a; }
+.code-step-failed .code-step-state { background: #dc2626; }
+.code-step-name { font-weight: 700; }
+.code-step-err { flex-basis: 100%; color: #dc2626; font-weight: 600; line-height: 1.45; }
+.code-lock { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.code-lock-title { font-size: 10px; font-weight: 800; letter-spacing: 0.05em; color: var(--text-muted); text-transform: uppercase; }
+.code-lock-diff { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.code-diff { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }
+.code-diff-add { background: #16a34a; }
+.code-diff-rem { background: #dc2626; }
+.code-diff-lock { background: #a21caf; }
+.code-pipe-err { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
+.code-pipe-warn { display: flex; flex-direction: column; gap: 4px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; }
+.code-pipe-err-title { flex-basis: 100%; font-size: 12px; font-weight: 800; }
+.code-pipe-err-text { flex-basis: 100%; font-size: 12px; font-weight: 500; line-height: 1.45; }
+.code-pipe-goto { padding: 6px 12px; border: 0; border-radius: var(--r-md, 8px); background: #fff; color: #0f172a; font-size: 12px; font-weight: 700; cursor: pointer; }
+.code-run { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.code-run-title { font-size: 10px; font-weight: 800; letter-spacing: 0.05em; color: var(--text-muted); text-transform: uppercase; }
+.code-run-state { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }
+.code-run-running, .code-run-pending { background: #2563eb; }
+.code-run-success { background: #16a34a; }
+.code-run-failed { background: #dc2626; }
+.code-run-link { color: #2563eb; font-weight: 700; text-decoration: none; }
+.code-run-link:hover { text-decoration: underline; }
+.code-run-note { flex-basis: 100%; color: var(--text-secondary); line-height: 1.45; }
+.code-pipe-form { display: flex; flex-direction: column; gap: 10px; }
+.code-pipe-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.code-pipe-fields .form-group { flex: 1 1 220px; }
+.code-textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; line-height: 1.5; resize: vertical; }
+html[data-color-mode="dark"] .code-hook.set, html[data-color-mode="dark"] .code-pipe-installed, html[data-color-mode="dark"] .code-step-done .code-step-state, html[data-color-mode="dark"] .code-diff-add, html[data-color-mode="dark"] .code-run-success { background: #22c55e; }
+html[data-color-mode="dark"] .code-hook.unset, html[data-color-mode="dark"] .code-pipe-status, html[data-color-mode="dark"] .code-pipe-queued, html[data-color-mode="dark"] .code-step-state, html[data-color-mode="dark"] .code-diff, html[data-color-mode="dark"] .code-run-state { background: #64748b; }
+html[data-color-mode="dark"] .code-hook-note, html[data-color-mode="dark"] .code-pipe-partial, html[data-color-mode="dark"] .code-pipe-warn { background: #f59e0b; }
+html[data-color-mode="dark"] .code-pipe-running, html[data-color-mode="dark"] .code-step-running .code-step-state, html[data-color-mode="dark"] .code-run-running, html[data-color-mode="dark"] .code-run-pending { background: #3b82f6; }
+html[data-color-mode="dark"] .code-pipe-err, html[data-color-mode="dark"] .code-step-failed .code-step-state, html[data-color-mode="dark"] .code-diff-rem, html[data-color-mode="dark"] .code-run-failed { background: #ef4444; }
+html[data-color-mode="dark"] .code-diff-lock { background: #c026d3; }
+html[data-color-mode="dark"] .code-step-err { color: #ef4444; }
+html[data-color-mode="dark"] .code-run-link { color: #3b82f6; }
+html[data-color-mode="dark"] .code-pipe-goto { background: #f8fafc; color: #0f172a; }
 /* AgentConfig CODE column (the git namespace) */
 .agc-kind-code { background: #a21caf; }
 .agc-col-locked .agc-action { opacity: 0.55; }

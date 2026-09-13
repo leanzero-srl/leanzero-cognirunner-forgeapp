@@ -899,6 +899,38 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     ok(pushed && pushed.delay === 42 && pushed.body.params.budgetDeferrals === 1, "EXECUTED: …re-pushed past the boundary with the deferral counted");
   }
   {
+    // F-358 — THE DEFERRAL GOES BACK TO THE QUEUE IT ARRIVED ON. A `coder` turn is
+    // long-queue-only; re-pushing it to async-ai-queue got it REFUSED by the consumer
+    // check on delivery, and the user's turn died with a message about a producer bug.
+    let pushed = null;
+    const { RAN, deps } = regionDeps({
+      taskType: "coder", taskId: "C1", params: { issueKey: "LZPT-7", threadId: "t1" }, longQueue: true,
+      getProviderConfig: async () => ({ provider: "atlassian" }),
+      estimateTaskTokens: () => 16000,
+      aiBudgetGate: async () => ({ allow: false, delaySeconds: 30, used: 34000, reserved: 0, budget: 35000 }),
+      pushDeferred: async (body, delay, queueKey) => { pushed = { queueKey, delay }; return { jobId: "J" }; },
+      bumpAiBudgetBucket: async () => {},
+    });
+    await runRegion(deps);
+    ok(RAN.ran === false && pushed && pushed.queueKey === "long-queue",
+      `EXECUTED (F-358): a deferred coder turn is re-pushed to long-queue (saw ${pushed && pushed.queueKey})`);
+  }
+  {
+    // …and everything else still goes back to the short queue it came from.
+    let pushed = null;
+    const { deps } = regionDeps({
+      taskType: "codegen", taskId: "C2", params: { config: { ruleId: "r1" } },
+      getProviderConfig: async () => ({ provider: "atlassian" }),
+      estimateTaskTokens: () => 9000,
+      aiBudgetGate: async () => ({ allow: false, delaySeconds: 30, used: 34000, reserved: 0, budget: 35000 }),
+      pushDeferred: async (body, delay, queueKey) => { pushed = { queueKey, delay }; return { jobId: "J" }; },
+      bumpAiBudgetBucket: async () => {},
+    });
+    await runRegion(deps);
+    ok(pushed && pushed.queueKey === "async-ai-queue",
+      `EXECUTED (F-358): a deferred codegen goes back to async-ai-queue (saw ${pushed && pushed.queueKey})`);
+  }
+  {
     // F-324 — a deferral that HALF succeeds must never run inline. Order first: the
     // job row is written BEFORE the push (the old order wrote it after, and a KVS
     // fault there unwound into the fail-open catch and ran the task twice).
@@ -936,6 +968,20 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     ok(RAN.ran === false, "EXECUTED: …the task does NOT run inline — a double run is worse than a redelivery");
     ok(reset === 1, "EXECUTED: …and the job row's budgetWait is reset so the row does not claim a wait that never started");
   }
+}
+
+// F-358 — `handler` is the ONE place that answers "which queue did this arrive on", and
+// it answers it from the long consumer's own mark plus LONG_QUEUE_ONLY_TASKS. Source
+// assertions, because the mark is a module-private WeakSet with no seam.
+{
+  ok(/const longQueue = LONG_QUEUE_EVENTS\.has\(event\) \|\| LONG_QUEUE_ONLY_TASKS\.has\(taskType\);/.test(asyncSrc),
+    "F-358: handler derives the deferral queue from the long-queue mark AND the long-only set");
+  ok(/runGatedTask\(event, \{ ttl, jobRow, enqAt, budgetDeferrals, longQueue \}\)/.test(asyncSrc),
+    "F-358: …and passes it to the ONE gate");
+  ok(/const queue = new Queue\(\{ key: queueKey \}\);/.test(asyncSrc),
+    "F-358: the re-push builds its queue from the caller's key, never a hard-coded literal");
+  ok((asyncSrc.split('new Queue({ key: "async-ai-queue" })').length - 1) === 0,
+    "F-358: no hard-coded async-ai-queue producer is left in the deferral path");
 }
 
 // =====================================================================================

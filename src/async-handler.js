@@ -1463,9 +1463,26 @@ const GATE_DEPS = {
   getListener, getJob, getProviderConfig, estimateTaskTokens, getLearnedRuleCost,
   aiBudgetGate, bumpAiBudgetBucket, updateAsyncJob, refuseQueuedRunWithoutProvider,
   JOB_TTL_ACTIVE,
-  pushDeferred: async (body, delayInSeconds) => {
+  /**
+   * Re-push a deferred task TO THE QUEUE IT ARRIVED ON (F-358).
+   *
+   * This was hard-coded to `async-ai-queue`. `coder` spends tokens, so it IS gated — and
+   * a deferred coder turn was re-pushed to the SHORT queue, where the consumer check
+   * (LONG_QUEUE_ONLY_TASKS) immediately refused it and wrote the task row
+   * `status:"error"` with a message describing a producer bug the user never committed.
+   * Under load every deferred Coder turn died that way.
+   *
+   * The caller passes the queue key; `handler` derives it from the long-queue MARK the
+   * long consumer set on the event (and from LONG_QUEUE_ONLY_TASKS as the belt-and-braces
+   * half), so a deferral cannot land anywhere the delivery could not have come from.
+   *
+   * The `ai-budget` concurrency key is deliberately kept for both queues: it is what
+   * paces deferrals. The Coder's own per-issue guarantee is the `coder_exec` claim, not a
+   * queue concurrency key, so nothing is lost by re-pushing under the pacing key.
+   */
+  pushDeferred: async (body, delayInSeconds, queueKey = "async-ai-queue") => {
     const { Queue } = await import("@forge/events");
-    const queue = new Queue({ key: "async-ai-queue" });
+    const queue = new Queue({ key: queueKey });
     return queue.push({ body, delayInSeconds, concurrency: { key: "ai-budget", limit: 2 } });
   },
 };
@@ -1497,6 +1514,11 @@ export async function runGatedTask(event, deps = {}) {
   const d = { ...GATE_DEPS, ...deps };
   const { taskType, taskId, params } = (event && event.body) || {};
   const { ttl, jobRow = null, enqAt = null, budgetDeferrals = 0 } = d;
+  // WHICH QUEUE DID THIS ARRIVE ON (F-358). `handler` answers it (it can read the long
+  // consumer's mark off the event object); the fallback is the short queue, which is
+  // where everything except a long-queue-only task is produced. The region never reads a
+  // module-level set — it is executed against stubs by the offline suite.
+  const deferQueueKey = d.longQueue === true ? "long-queue" : "async-ai-queue";
   // F-323 — `params.ruleId` is how a gitreview names its rule; without it the learned
   // per-rule cost could never apply to the one task whose real cost varies most.
   const budgetRuleId = params?.config?.ruleId || params?.config?.id || params?.listenerId || params?.jobId || params?.ruleId || null;
@@ -1572,7 +1594,7 @@ export async function runGatedTask(event, deps = {}) {
         }, d.JOB_TTL_ACTIVE, { taskId, taskType, status: "queued", enqueuedAt: body.params.enqueuedAt });
         let pr;
         try {
-          pr = await d.pushDeferred(body, gate.delaySeconds);
+          pr = await d.pushDeferred(body, gate.delaySeconds, deferQueueKey);
         } catch (e) {
           try {
             await d.updateAsyncJob(taskId, { status: "queued", budgetWait: null, startedAt: null }, d.JOB_TTL_ACTIVE);
@@ -1584,7 +1606,7 @@ export async function runGatedTask(event, deps = {}) {
         if (pr && pr.jobId) {
           try { await d.updateAsyncJob(taskId, { jobId: pr.jobId }, d.JOB_TTL_ACTIVE); } catch { /* best-effort */ }
         }
-        console.log(`[budget] deferred ${taskType} (${taskId}) ${gate.delaySeconds}s — minute at ${gate.used + gate.reserved}/${gate.budget} tokens, needs ~${budgetEstimate} (${budgetProvider}, deferral ${budgetDeferrals + 1})`);
+        console.log(`[budget] deferred ${taskType} (${taskId}) to ${deferQueueKey} ${gate.delaySeconds}s — minute at ${gate.used + gate.reserved}/${gate.budget} tokens, needs ~${budgetEstimate} (${budgetProvider}, deferral ${budgetDeferrals + 1})`);
         return { run: false, deferred: true, budgetRuleId, budgetEstimate: 0, budgetProvider: null, budgetReserveMs: 0, ruleRow };
       }
       // Nothing is reserved for a run that is about to be refused (F-134).
@@ -1725,7 +1747,12 @@ export async function handler(event) {
   // is the ONLY place `aiBudgetGate` is called — asserted by
   // test-harness/scripts/git-manifest-egress.test.mjs. `handler` acts on its verdict;
   // `longHandler` reaches the same function by delegating to `handler`.
-  const gated = await runGatedTask(event, { ttl, jobRow, enqAt, budgetDeferrals });
+  // F-358 — the deferral must go back to the queue this delivery came in on. The mark is
+  // the long consumer's own (`longHandler` adds the event object to LONG_QUEUE_EVENTS);
+  // LONG_QUEUE_ONLY_TASKS is the second half, so a task that may ONLY run long is
+  // re-pushed long even if the mark were ever missed.
+  const longQueue = LONG_QUEUE_EVENTS.has(event) || LONG_QUEUE_ONLY_TASKS.has(taskType);
+  const gated = await runGatedTask(event, { ttl, jobRow, enqAt, budgetDeferrals, longQueue });
   if (!gated.run) return;
   const { budgetRuleId, budgetEstimate, budgetProvider, budgetReserveMs } = gated;
 

@@ -78,6 +78,8 @@ import * as J from "./scheduled-jobs.js";
 // The ONE home for every Virtual Administrator operation (1.5 commit 5b). The Agents
 // tab's resolvers are the other skin over this exact module.
 import * as VA from "./va-admin.js";
+// The recursive `va` patch merge lives with the record's shape, not with the door.
+import { mergeVaPatch } from "./shared/va-config.js";
 
 const idx = () => import("./index.js");
 
@@ -236,6 +238,13 @@ const merge = (existing, patch) => {
   for (const k of ["filters", "agent", "schedule", "scope"]) {
     if (patch[k] && typeof patch[k] === "object" && existing[k] && typeof existing[k] === "object") out[k] = { ...existing[k], ...patch[k] };
   }
+  // `va` IS DEEPER THAN THE FOUR ABOVE (F-477), so it gets the recursive merge that
+  // lives with the record's shape (`mergeVaPatch`, src/shared/va-config.js). A shallow
+  // spread here would carry `status` and `guardrails` forward but still rebuild
+  // `persona.voice` from the defaults on a rename. Without any merge at all the block
+  // was REPLACED, and `normalizeVa` then resumed a paused agent and re-widened every
+  // guardrail — from a request that only changed a name.
+  if (patch.va && typeof patch.va === "object" && existing.va && typeof existing.va === "object") out.va = mergeVaPatch(existing.va, patch.va);
   delete out.stats; delete out.createdAt; delete out.createdBy; delete out.lastCheckedAt;
   return out;
 };
@@ -486,8 +495,11 @@ const handleAgents = async ({ method, id, action, part, body, who, req }) => {
     if (method === "PUT") {
       existing = await loadVaJob();
       if (!existing) return json(404, { error: "agent not found" });
-      // The SAME merge the other collections use, so a PUT is a patch here too; `va`
-      // is a merged sub-object like `agent`/`schedule`/`scope` already are.
+      // The SAME merge the other collections use, so a PUT is a patch here too. `va`
+      // is merged RECURSIVELY (`mergeVaPatch`, F-477) rather than by the shallow spread
+      // the flat sub-objects get: a partial `va` that replaced the block rebuilt every
+      // absent part from the defaults, which resumed a paused agent and re-widened its
+      // guardrails.
       input = { ...merge(existing, body || {}), id, mode: "va" };
     } else {
       // `?id=` wins over a body id: a POST to a named agent is an UPSERT of that

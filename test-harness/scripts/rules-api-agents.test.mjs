@@ -147,6 +147,46 @@ let agentId = null;
   ok(!r.body.agent.va.scope.read.projects.includes("NOPE"), "…and the unknown project is gone from the stored record");
 }
 
+/* ═════ 1b. A PARTIAL `va` IS A PATCH, NOT A REPLACEMENT (F-477) ═════
+
+   The sharpest case: rename a PAUSED agent whose caps an admin tightened to one an
+   hour. Before the recursive merge, `{"va":{"persona":{"name":"Ada II"}}}` replaced the
+   whole block, `normalizeVa` rebuilt every absent part from the defaults, and the agent
+   came back RESUMED, out of shadow and with its guardrails re-widened — from a request
+   that changed a name. */
+{
+  const tightened = await rest("admin", {
+    method: "POST",
+    body: { mode: "va", va: vaRecord({ guardrails: { capsPerHour: 1, shadowTicks: 5 }, powers: { skillIds: ["sk1"], transition: true } }) },
+  });
+  ok(tightened.status === 201, `a tightened agent is created (got ${tightened.status} ${JSON.stringify(tightened.body).slice(0, 200)})`);
+  const patchId = tightened.body.agent.id;
+  const before = (await J.getJob(patchId)).va;
+
+  const paused = await rest("admin", { method: "POST", query: { id: patchId, action: "pause" }, body: { reason: "tuning" } });
+  ok(paused.status === 200 && paused.body.paused === true, "…and paused");
+
+  const renamed = await rest("admin", { method: "PUT", query: { id: patchId }, body: { va: { persona: { name: "Ada II" } } } });
+  ok(renamed.status === 200, `a partial va PUT is accepted (got ${renamed.status} ${JSON.stringify(renamed.body).slice(0, 200)})`);
+
+  const after = (await J.getJob(patchId)).va;
+  ok(after.persona.name === "Ada II", `…the rename landed (got ${after.persona.name})`);
+  ok(after.status.paused === true, "A RENAME DOES NOT RESUME A PAUSED AGENT");
+  ok(after.guardrails.capsPerHour === 1, `…and does not re-widen the hourly cap (got ${after.guardrails.capsPerHour})`);
+  ok(after.guardrails.shadowTicks === 5, `…nor the shadow watch (got ${after.guardrails.shadowTicks})`);
+  ok(JSON.stringify(after.scope) === JSON.stringify(before.scope), `…nor the scope (got ${JSON.stringify(after.scope)})`);
+  ok(after.powers.transition === true && after.powers.skillIds.includes("sk1"), `…nor the powers (got ${JSON.stringify(after.powers).slice(0, 160)})`);
+  // The sub-object the rename itself touched keeps its OTHER fields: a shallow merge of
+  // `va` alone would have rebuilt `persona.voice` from the defaults.
+  ok(after.persona.voice.maxSentences === before.persona.voice.maxSentences && after.persona.voice.register === before.persona.voice.register,
+    `…and the voice inside the patched sub-object survives (got ${JSON.stringify(after.persona.voice)})`);
+  // An allow-list sent explicitly still REPLACES: a patch must be able to remove.
+  const narrowed = await rest("admin", { method: "PUT", query: { id: patchId }, body: { va: { powers: { skillIds: [] } } } });
+  ok(narrowed.status === 200 && narrowed.body.agent.va.powers.skillIds.length === 0,
+    `an explicit empty allow-list still means "none" (got ${JSON.stringify(narrowed.body.agent && narrowed.body.agent.va.powers.skillIds)})`);
+  await J.deleteJob(patchId);
+}
+
 /* ═════ 2. THE ROLE FLOORS, in both directions ═════ */
 {
   const list = await rest("editor");

@@ -327,6 +327,36 @@ reset();
   eq(faulted.readFailed, true, "a caps read fault is reported");
   eq(L.capsAllow(faulted).allowed, false, "caps BLOCK on unknown counters — the brake on speech fails CLOSED");
   eq(L.capsAllow(faulted).reason, "caps_unknown", "…with the named reason");
+
+  // F-431 — THE BUMP FAILS CLOSED TOO. A read fault inside `bumpCaps` used to write
+  // `0 + 1` over a live counter, which does not lose one post, it resets the whole day.
+  // The refusal must write NOTHING: the counters below are checked before and after.
+  const before = await L.readCaps(kvs, AG, { now });
+  let gets = 0;
+  const oneFaultyGet = {
+    async get(k) { gets++; if (gets === 1) throw new Error("kvs read glitch"); return kvs.get(k); },
+    async set(k, v, o) { return kvs.set(k, v, o); },
+    async delete(k) { return kvs.delete(k); },
+  };
+  const refused = await L.bumpCaps(oneFaultyGet, AG, { now });
+  eq(refused.ok, false, "F-431 caps BLOCK: a read fault REFUSES the bump");
+  eq(refused.error, "caps-read-fault", "…with the named error the post gate treats as a BLOCK");
+  eq(refused.reason, "caps-read-fault", "…carried on `reason` too, so the receipt prints it");
+  eq(refused.bumped, false, "…and it says it did not bump");
+  const after = await L.readCaps(kvs, AG, { now });
+  eq(after.day, before.day, "F-431: the DAY counter is untouched by a refused bump — not reset to 1");
+  eq(after.hour, before.hour, "…and so is the hour counter");
+  eq(after.owedHour, before.owedHour, "…and the owed counter");
+  ok(before.day > 1, "…(and the day counter really was above 1, so an overwrite would have been visible)");
+  // The same, with a store whose get ALWAYS throws: still a refusal, still no write.
+  const writes = [];
+  const deadGet = {
+    async get() { throw new Error("kvs down"); },
+    async set(k, v, o) { writes.push(k); return kvs.set(k, v, o); },
+    async delete(k) { return kvs.delete(k); },
+  };
+  eq((await L.bumpCaps(deadGet, AG, { owed: true, now })).error, "caps-read-fault", "F-431: an owed bump refuses on a read fault as well");
+  eq(writes.length, 0, "F-431: a refused bump performs NO set at all");
 }
 
 /* ── 12. health is its own row (F-426) ────────────────────────────────────── */

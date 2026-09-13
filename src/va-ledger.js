@@ -606,9 +606,38 @@ export const capsAllow = (caps, { owed = false, capsPerHour = VA_LIMITS.capsPerH
   return { allowed: true };
 };
 
+/**
+ * Bump the counters after a post. F-431 — A READ FAULT REFUSES THE BUMP.
+ *
+ * The bump is read-then-write, so a faulted read hands it `count: 0` for every bucket and
+ * the write that follows would put `1` into a bucket that really held 39. That does not
+ * lose a count, it RESETS THE DAY: the next `capsAllow` reads a healthy `1`, sees nothing
+ * wrong, and the agent is free to post its daily allowance a second time. An overwrite
+ * derived from a value nobody could read is worse than no write at all.
+ *
+ * So the refusal is `{ok:false, error:"caps-read-fault"}` and NOTHING is written. The
+ * caller (post gate 6) must treat it as a BLOCK — the same fail-CLOSED direction
+ * `capsAllow` documents above, for the same reason: the thing being braked is speech to a
+ * human, and storage misbehaving is exactly when a runaway happens. This is the one place
+ * the VA differs from `lst_brake` (src/listeners.js:77), which fails open by design.
+ *
+ * Note the asymmetry that is NOT a bug: a failed WRITE still returns `caps_write_failed`
+ * with the projected counts, because there the counter was read correctly and only the
+ * note was lost. A failed READ cannot be projected from anything.
+ */
 export const bumpCaps = async (store, agent, { owed = false, now = Date.now() } = {}) => {
   const caps = await readCaps(store, agent, { now });
   const b = caps.buckets;
+  if (caps.readFailed) {
+    return {
+      ok: false,
+      error: "caps-read-fault",
+      reason: "caps-read-fault",
+      bumped: false,
+      owed: Boolean(owed),
+      buckets: b,
+    };
+  }
   const write = async (bucket, value) => {
     try { await store.set(vaCapsKey(agent, bucket), value, VA_CAPS_TTL); return true; }
     catch (e) { return false; }

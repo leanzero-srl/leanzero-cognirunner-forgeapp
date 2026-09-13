@@ -55,7 +55,7 @@ import {
 } from "./refusal";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 import { GIT_PROVIDER_KINDS, gitProviderKindMeta, parseRepoList, formatRepoList } from "../../../../src/shared/git-ids.js";
-import { SCAFFOLDS } from "../../../../src/shared/git-scaffolds.js";
+import { SCAFFOLDS, scaffoldVarError, SCAFFOLD_VAR_LABELS, scaffoldHasCustomUi } from "../../../../src/shared/git-scaffolds.js";
 
 const KIND_OPTIONS = GIT_PROVIDER_KINDS.map((k) => ({ value: k, label: gitProviderKindMeta(k).label }));
 
@@ -77,22 +77,50 @@ const PIPELINE_VAR_DEFAULTS = (SCAFFOLDS[PIPELINE_SCAFFOLD_ID] || {}).vars || {}
 const DEFAULT_APP_NAME = PIPELINE_VAR_DEFAULTS.APP_NAME || "";
 const DEFAULT_UI_DIR = PIPELINE_VAR_DEFAULTS.UI_DIR || "";
 
-/* The renderer's own character set (SAFE_VAR in src/shared/git-scaffolds.js). A value
-   this form lets through and the backend then throws on is a setup that dies mid-chain,
-   so the form refuses the same things, in words, before anything is queued. */
-const VAR_CHARS = /^[A-Za-z0-9 ._/-]+$/;
+/* =========================================================================
+ * F-548 - THE SCAFFOLD VALIDATOR IS IMPORTED, NOT RETYPED.
+ *
+ * This file used to carry its own copy of the renderer's character set and its own
+ * traversal check. F-541 gave that rule one home in src/shared/git-scaffolds.js and
+ * pointed the backend at it; this screen now calls the same `scaffoldVarError` with the
+ * same `SCAFFOLD_VAR_LABELS`, so a value the form accepts and the renderer then throws
+ * on cannot exist, and a wording change reaches both sides at once.
+ *
+ * THE TWO FORGE IDS ARE A DIFFERENT RULE. They are not scaffold variables; they are
+ * repository variables, and they are checked here against the shapes src/git-pipeline.js
+ * enforces (normalizeDeveloperSpaceId / normalizeForgeAppId). That module imports
+ * @forge/kvs and can never be pulled into a browser bundle, so the shapes are stated
+ * once here and the BACKEND stays the gate: anything this form lets through is still
+ * refused with `invalid_developer_space` / `invalid_app_id`, and those refusals are
+ * rendered on the field they belong to rather than as a nameless setup failure.
+ * ========================================================================= */
+const DEVELOPER_SPACE_RE = /^[0-9a-f-]{36}$/;
+const APP_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const APP_ID_ARI_PREFIX = "ari:cloud:ecosystem::app/";
 
-/** null when the value is usable, otherwise the sentence to show under the field. */
-function scaffoldVarError(raw, what) {
-  const v = String(raw == null ? "" : raw).trim();
-  if (!v) return `${what} cannot be empty.`;
-  if (v.length > 80) return `${what} must be 80 characters or fewer.`;
-  if (!VAR_CHARS.test(v)) return `${what} may only contain letters, numbers, spaces and . _ - /`;
-  /* Path traversal is refused on BOTH values, not only the folder: the renderer's
-     character set allows dots and slashes, so "does this climb out of the checkout"
-     is the question, and an app name has no business climbing either. */
-  if (v.split("/").some((seg) => seg === "..") || v.startsWith("/")) return `${what} cannot contain .. or start with /`;
+/** Both ids are OPTIONAL, so empty is usable. null when usable, else the sentence. */
+function developerSpaceError(raw) {
+  const v = String(raw == null ? "" : raw).trim().toLowerCase();
+  if (!v) return null;
+  if (!DEVELOPER_SPACE_RE.test(v)) return "A developer space id is 36 characters of hex and dashes.";
   return null;
+}
+
+function forgeAppIdError(raw) {
+  let v = String(raw == null ? "" : raw).trim().toLowerCase();
+  if (!v) return null;
+  if (v.startsWith(APP_ID_ARI_PREFIX)) v = v.slice(APP_ID_ARI_PREFIX.length);
+  if (!APP_ID_UUID_RE.test(v)) return "An app id is ari:cloud:ecosystem::app/ followed by a uuid, or the bare uuid.";
+  return null;
+}
+
+/** Which FIELD a backend refusal belongs to, told by its machine code and never by a
+ *  sentence match. `invalid_scaffold_var` names its own variable, so it is read. */
+const REFUSAL_FIELD = { invalid_developer_space: "developerSpaceId", invalid_app_id: "appId" };
+function refusalField(err) {
+  if (!err || !err.code) return null;
+  if (err.code === "invalid_scaffold_var") return err.variable || null;
+  return REFUSAL_FIELD[err.code] || null;
 }
 
 /** The app's name as the pasted manifest states it, or "" when it does not say.
@@ -230,6 +258,17 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
      form never shows a blank where the renderer would use a value. */
   const [appName, setAppName] = useState(DEFAULT_APP_NAME);
   const [uiDir, setUiDir] = useState(DEFAULT_UI_DIR);
+  /* F-548: the two OPTIONAL repository variables the headless bootstrap needs. Both
+     start empty, because empty is the honest default: no developer space means the
+     pipeline registers wherever the identity's default is, and no app id means the
+     pipeline registers the app itself on its first run. */
+  const [developerSpaceId, setDeveloperSpaceId] = useState("");
+  const [appId, setAppId] = useState("");
+  /* A refusal the BACKEND raised against one named field, so it can be shown under that
+     field instead of as a nameless "this setup was refused". Cleared the moment the
+     reader edits anything, because a stale refusal about a value that no longer exists
+     is worse than none. */
+  const [fieldRefusal, setFieldRefusal] = useState(null);
   /* Once the admin has typed a name, the manifest stops overwriting it. A prefill that
      keeps winning is a field the reader cannot correct. */
   const appNameTouched = useRef(false);
@@ -300,13 +339,21 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
     if (fromManifest) setAppName(fromManifest);
   };
 
-  const appNameErr = scaffoldVarError(appName, "The app name");
-  const uiDirErr = scaffoldVarError(uiDir, "The Custom UI folder");
-  const varsOk = !appNameErr && !uiDirErr;
+  /* F-541/F-548: the ONE validator, called with the scaffold's own variable names and
+     its own labels. Nothing about the rule is restated on this screen. */
+  const appNameErr = scaffoldVarError("APP_NAME", appName, SCAFFOLD_VAR_LABELS.APP_NAME);
+  const uiDirErr = scaffoldVarError("UI_DIR", uiDir, SCAFFOLD_VAR_LABELS.UI_DIR);
+  const spaceErr = developerSpaceError(developerSpaceId);
+  const appIdErr = forgeAppIdError(appId);
+  const varsOk = !appNameErr && !uiDirErr && !spaceErr && !appIdErr;
+  /* The backend's refusal, shown under the field it named, and only while that field
+     still holds the value it was raised about. */
+  const serverErrFor = (field) => (fieldRefusal && fieldRefusal.field === field ? fieldRefusal.message : null);
+  const hasCustomUi = scaffoldHasCustomUi({ UI_DIR: uiDir });
 
   const handleSetup = async () => {
     if (busy || !varsOk) return;
-    setBusy(true); setErr(null);
+    setBusy(true); setErr(null); setFieldRefusal(null);
     try {
       const r = await invoke("setupGitPipeline", {
         connectionId: conn.id, repo: repoId,
@@ -316,6 +363,11 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
            (src/shared/git-scaffolds.js), and the backend passes them straight to
            renderScaffold, which ignores any key the scaffold does not declare. */
         scaffoldVars: { APP_NAME: appName.trim(), UI_DIR: uiDir.trim() },
+        /* F-548: both are optional, and an EMPTY one is sent as absent rather than as
+           an empty string, because the backend reads "present and malformed" as a
+           refusal and "absent" as "do not write this repository variable at all". */
+        developerSpaceId: developerSpaceId.trim() || undefined,
+        appId: appId.trim() || undefined,
       });
       if (r && r.success) {
         setRow(r.status || null);
@@ -324,7 +376,9 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
       } else if (isPermissionRefusal(r) || isUpgradeRequired(r)) {
         setRefusal(r);
       } else {
-        setErr(r || { error: "The setup could not be started." });
+        const field = refusalField(r);
+        if (field) setFieldRefusal({ field, message: (r && r.error) || "That value was refused." });
+        else setErr(r || { error: "The setup could not be started." });
       }
     } catch (e) {
       setErr({ error: "Could not reach the app to start this setup." });
@@ -395,6 +449,15 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
         )}
         {row && row.branch && (
           <span className="code-fact"><span className="code-fact-k">Branch</span><span className="code-fact-v">{row.branch}</span></span>
+        )}
+        {/* F-548: what this pipeline was actually installed WITH, read from the row
+            (publicPipelineRow exposes both) and never from the form, which the reader
+            may have reopened and changed since. */}
+        {row && row.developerSpaceId && (
+          <span className="code-fact"><span className="code-fact-k">Developer space</span><span className="code-fact-v">{row.developerSpaceId}</span></span>
+        )}
+        {row && row.appId && (
+          <span className="code-fact"><span className="code-fact-k">App id</span><span className="code-fact-v">{row.appId}</span></span>
         )}
         {status === "installed" && (
           <button className="btn-primary btn-small code-pipe-deploy" disabled={deploying} onClick={handleDeploy}>
@@ -513,17 +576,40 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
                 /* No maxLength: a value silently clipped at 80 is a pipeline rendered
                    with a name its author did not write. The rule is said out loud. */
                 placeholder={DEFAULT_APP_NAME}
-                onChange={(e) => { appNameTouched.current = true; setAppName(e.target.value); }} />
+                onChange={(e) => { appNameTouched.current = true; setFieldRefusal(null); setAppName(e.target.value); }} />
               <p className="hint">The workflow registers the app under this name the first time it runs. It is filled in from the manifest you paste above when that manifest names the app.</p>
-              {appNameErr && <p className="code-field-err" role="alert">{appNameErr}</p>}
+              {(appNameErr || serverErrFor("APP_NAME")) && <p className="code-field-err" role="alert">{appNameErr || serverErrFor("APP_NAME")}</p>}
             </div>
             <div className="form-group">
               <label className="label" htmlFor={`pipe-uidir-${conn.id}-${repoId}`}>Custom UI folder</label>
               <input id={`pipe-uidir-${conn.id}-${repoId}`} className="code-input" type="text" value={uiDir}
                 placeholder={DEFAULT_UI_DIR}
-                onChange={(e) => setUiDir(e.target.value)} />
+                onChange={(e) => { setFieldRefusal(null); setUiDir(e.target.value); }} />
               <p className="hint">The folder that holds the Custom UI's package.json, relative to the repository root. Type "none" for a backend only app that has no Custom UI to build.</p>
-              {uiDirErr && <p className="code-field-err" role="alert">{uiDirErr}</p>}
+              {(uiDirErr || serverErrFor("UI_DIR")) && <p className="code-field-err" role="alert">{uiDirErr || serverErrFor("UI_DIR")}</p>}
+            </div>
+          </div>
+          {/* F-548: the two values the HEADLESS bootstrap needs. Without the first, the
+              very first run of a fresh pipeline stops at "forge register" asking a
+              question nobody can answer in CI; without the second, it registers again
+              every run. Both are optional and both are refused by the backend when they
+              are present and malformed, so a typo is caught here and there. */}
+          <div className="code-pipe-fields">
+            <div className="form-group">
+              <label className="label" htmlFor={`pipe-space-${conn.id}-${repoId}`}>Forge developer space id</label>
+              <input id={`pipe-space-${conn.id}-${repoId}`} className="code-input" type="text" value={developerSpaceId}
+                placeholder="optional"
+                onChange={(e) => { setFieldRefusal(null); setDeveloperSpaceId(e.target.value); }} />
+              <p className="hint">The developer space the pipeline registers the app in; find it in developer.atlassian.com.</p>
+              {(spaceErr || serverErrFor("developerSpaceId")) && <p className="code-field-err" role="alert">{spaceErr || serverErrFor("developerSpaceId")}</p>}
+            </div>
+            <div className="form-group">
+              <label className="label" htmlFor={`pipe-appid-${conn.id}-${repoId}`}>Forge app id</label>
+              <input id={`pipe-appid-${conn.id}-${repoId}`} className="code-input" type="text" value={appId}
+                placeholder="optional"
+                onChange={(e) => { setFieldRefusal(null); setAppId(e.target.value); }} />
+              <p className="hint">Paste the app id if the app is already registered; the pipeline then never registers.</p>
+              {(appIdErr || serverErrFor("appId")) && <p className="code-field-err" role="alert">{appIdErr || serverErrFor("appId")}</p>}
             </div>
           </div>
           {/* The REVIEW: the values as the committed workflow will carry them, read back
@@ -532,17 +618,22 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
           <div className="code-pipe-review">
             <span className="code-pipe-review-title">This pipeline will be written with</span>
             <span className="code-fact"><span className="code-fact-k">FORGE_APP_NAME</span><span className="code-fact-v code-pipe-review-v">{appName.trim() || DEFAULT_APP_NAME}</span></span>
-            <span className="code-fact"><span className="code-fact-k">working-directory</span><span className="code-fact-v code-pipe-review-v">{uiDir.trim() || DEFAULT_UI_DIR}</span></span>
+            <span className="code-fact"><span className="code-fact-k">working-directory</span><span className="code-fact-v code-pipe-review-v">{hasCustomUi ? (uiDir.trim() || DEFAULT_UI_DIR) : "no build step"}</span></span>
+            {/* F-548: the two repository variables, shown only when there is something
+                to show. A row of empty values reads as a value of empty string. */}
+            {developerSpaceId.trim() && (
+              <span className="code-fact"><span className="code-fact-k">FORGE_DEVELOPER_SPACE</span><span className="code-fact-v code-pipe-review-v">{developerSpaceId.trim().toLowerCase()}</span></span>
+            )}
+            {appId.trim() && (
+              <span className="code-fact"><span className="code-fact-k">FORGE_APP_ID</span><span className="code-fact-v code-pipe-review-v">{appId.trim().toLowerCase()}</span></span>
+            )}
           </div>
-          {uiDir.trim().toLowerCase() === "none" && (
-            /* Honest about the gap rather than quiet about it: the committed workflow
-               always carries the Custom UI build step, so a backend only app gets a step
-               pointed at a folder called "none". Removing the step needs a change to the
-               scaffold itself, which this screen does not own. */
-            <div className="code-pipe-warn" role="alert">
-              <span className="code-pipe-err-title">A backend only app still gets a Custom UI build step</span>
-              <span className="code-pipe-err-text">The deploy workflow this app commits always contains the Custom UI build, so it will point at a folder called "none" and fail there. Delete that step from the committed workflow, or point this at a folder that does hold a package.json.</span>
-            </div>
+          {!hasCustomUi && (
+            /* F-540 made the build step CONDITIONAL in the scaffold itself, so the old
+               warning here (that the step is always committed and will fail on a folder
+               called "none") stopped being true the moment that shipped. The predicate
+               is the scaffold's own, so this sentence cannot drift from what is written. */
+            <p className="hint code-pipe-ui-note">With "none" the deploy workflow omits the Custom UI build step, so nothing is built and nothing points at a folder that is not there.</p>
           )}
           <div className="code-form-actions">
             <button className="btn-primary btn-small" disabled={busy || !manifestYaml.trim() || !site.trim() || !varsOk} onClick={handleSetup}>

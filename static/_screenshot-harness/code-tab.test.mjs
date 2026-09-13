@@ -31,7 +31,10 @@ import { AGENT_ACTIONS, agentActionNamespace } from "../../src/shared/agent-acti
 import { agentCapabilityCopy } from "../../src/shared/edition.js";
 /* F-526: the scaffold's OWN defaults, so "the form did not just ship the default" is
    asserted against the value the renderer would really have used. */
-import { SCAFFOLDS } from "../../src/shared/git-scaffolds.js";
+import { SCAFFOLDS, scaffoldHasCustomUi } from "../../src/shared/git-scaffolds.js";
+/* F-548: the step chain the two optional Forge ids add is the BACKEND's list, read from
+   its one home rather than retyped, so a rename fails this run instead of the eye. */
+import { pipelineStepNames as PIPELINE_STEP_NAMES } from "../../src/shared/git-pipeline-steps.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = process.argv.includes("--shots");
@@ -543,10 +546,35 @@ try {
       await dirInput.fill("   ");
       ok(await row.locator(".code-field-err").count() === 1 && await setupBtn.isDisabled(), `C12b ${theme} an empty folder is refused too`);
 
-      // The values the workflow will carry, read back before the button.
+      // F-548 — THE TWO OPTIONAL FORGE IDS.
+      const spaceInput = row.locator("input[id^='pipe-space-']");
+      const appIdInput = row.locator("input[id^='pipe-appid-']");
+      ok(await spaceInput.count() === 1, `C12b ${theme} the form asks for the developer space id`);
+      ok(await appIdInput.count() === 1, `C12b ${theme} the form asks for the Forge app id`);
       await dirInput.fill("static/next-steps");
       ok(await row.locator(".code-field-err").count() === 0, `C12b ${theme} a real folder clears the refusal`);
+      // Both are OPTIONAL: empty must not refuse, or a backend-only admin cannot proceed.
+      ok(!(await setupBtn.isDisabled()), `C12b ${theme} both Forge ids are optional and empty arms the setup`);
+      const spaceHint = await spaceInput.evaluate((el) => el.closest(".form-group").innerText);
+      ok(/developer\.atlassian\.com/.test(spaceHint), `C12b ${theme} the space hint says where to find it`);
+      const appIdHint = await appIdInput.evaluate((el) => el.closest(".form-group").innerText);
+      ok(/never registers/.test(appIdHint), `C12b ${theme} the app id hint says the pipeline then never registers`);
+      // A malformed one is refused client-side, in words, before anything is queued.
+      await spaceInput.fill("not-a-space-id");
+      ok(await row.locator(".code-field-err").count() === 1, `C12b ${theme} a malformed space id is refused with a sentence`);
+      ok(await setupBtn.isDisabled(), `C12b ${theme} and the setup cannot be started while it is wrong`);
+      await appIdInput.fill("1234");
+      ok(await row.locator(".code-field-err").count() === 2, `C12b ${theme} a malformed app id is refused on its own field`);
+      await spaceInput.fill("d77c0cce-1b2a-4c3d-9e4f-5a6b7c8d9e0f");
+      await appIdInput.fill("8e6ab209-bb76-4a09-86cd-644f3f33960c");
+      ok(await row.locator(".code-field-err").count() === 0, `C12b ${theme} real ids clear both refusals`);
+
+      // The values the workflow will carry, read back before the button.
       const review = await row.locator(".code-pipe-review").innerText();
+      ok(/FORGE_DEVELOPER_SPACE/.test(review) && /d77c0cce-1b2a-4c3d-9e4f-5a6b7c8d9e0f/.test(review),
+        `C12b ${theme} the review shows the developer space the pipeline will be written with`);
+      ok(/FORGE_APP_ID/.test(review) && /8e6ab209-bb76-4a09-86cd-644f3f33960c/.test(review),
+        `C12b ${theme} the review shows the app id`);
       ok(/FORGE_APP_NAME/.test(review) && /Acme Deployer/.test(review), `C12b ${theme} the review shows the rendered app name`);
       // The chip key is upper-cased by CSS, so innerText carries it that way.
       ok(/working-directory/i.test(review) && /static\/next-steps/.test(review), `C12b ${theme} the review shows the rendered working directory`);
@@ -564,8 +592,119 @@ try {
       ok(!!(sent && sent.scaffoldVars), `C12b ${theme} the setup payload carries scaffoldVars at all (the finding)`);
       ok(sent && sent.scaffoldVars && sent.scaffoldVars.APP_NAME === "Acme Deployer", `C12b ${theme} APP_NAME is the typed name, not "${PIPE_VARS.APP_NAME}"`);
       ok(sent && sent.scaffoldVars && sent.scaffoldVars.UI_DIR === "static/next-steps", `C12b ${theme} UI_DIR is the typed folder, not "${PIPE_VARS.UI_DIR}"`);
+      // F-548: both ids ride the payload as their OWN fields, not inside scaffoldVars.
+      ok(sent && sent.developerSpaceId === "d77c0cce-1b2a-4c3d-9e4f-5a6b7c8d9e0f", `C12b ${theme} the payload carries developerSpaceId (got ${sent && sent.developerSpaceId})`);
+      ok(sent && sent.appId === "8e6ab209-bb76-4a09-86cd-644f3f33960c", `C12b ${theme} the payload carries appId (got ${sent && sent.appId})`);
+      ok(sent && sent.scaffoldVars && !("developerSpaceId" in sent.scaffoldVars), `C12b ${theme} and neither id is smuggled into scaffoldVars, which renderScaffold would drop`);
+      // The backend's step list is a function of the REQUEST, so asking for both ids
+      // adds their two steps, before commit-scaffold and nowhere else.
+      const stepNames = await row.locator(".code-step-name").allInnerTexts();
+      ok(stepNames.join("|") === PIPELINE_STEP_NAMES("github", { developerSpaceId: "x", appId: "y" }).join("|"),
+        `C12b ${theme} the step chain gains the two variable steps (got ${stepNames.join("|")})`);
+      ok(stepNames.indexOf("var:FORGE_DEVELOPER_SPACE") < stepNames.indexOf("commit-scaffold")
+        && stepNames.indexOf("var:FORGE_APP_ID") < stepNames.indexOf("commit-scaffold"),
+        `C12b ${theme} and both land before the scaffold commit`);
+      // The ROW, once installed, reads back what it was installed WITH.
+      await row.locator(".code-pipe-installed").waitFor({ timeout: 30000 });
+      const head = await row.locator(".code-pipe-head").innerText();
+      ok(/Developer space/i.test(head) && /d77c0cce-1b2a-4c3d-9e4f-5a6b7c8d9e0f/.test(head), `C12b ${theme} the installed row shows the developer space`);
+      ok(/App id/i.test(head) && /8e6ab209-bb76-4a09-86cd-644f3f33960c/.test(head), `C12b ${theme} the installed row shows the app id`);
       ok(env.errors.length === 0, `C12b ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C12b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C12c — F-548: a field refusal lands ON ITS FIELD -------------------
+     The backend is the gate for both Forge ids and for the scaffold variables, so a
+     value the browser's regex happens to accept is still refused server-side. Rendered
+     as the generic "this setup was refused" banner, the reader cannot tell WHICH of the
+     five boxes is wrong. The mapping is by machine code, and `invalid_scaffold_var`
+     carries the variable name, which is what proves the payload is read and not guessed. */
+  for (const [code, inputSel, needle] of [
+    ["invalid_developer_space", "input[id^='pipe-space-']", /developer space id/i],
+    ["invalid_app_id", "input[id^='pipe-appid-']", /app id/i],
+    ["invalid_scaffold_var", "input[id^='pipe-uidir-']", /Custom UI folder/i],
+  ]) {
+    console.log("C12c pipeline field refusal: " + code);
+    const env = await openAdmin(browser, "light", { __PIPE_REFUSE__: code });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-textarea").waitFor({ timeout: 8000 });
+      await row.locator(".code-textarea").fill("app:\n  name: Acme Deployer\npermissions:\n  scopes:\n    - read:jira-work\n");
+      await row.locator("input[placeholder='your-site.atlassian.net']").fill("acme.atlassian.net");
+      // Shapes the CLIENT accepts, so the refusal can only be the backend's.
+      await row.locator("input[id^='pipe-space-']").fill("d77c0cce-1b2a-4c3d-9e4f-5a6b7c8d9e0f");
+      await row.locator("input[id^='pipe-appid-']").fill("8e6ab209-bb76-4a09-86cd-644f3f33960c");
+      ok(await row.locator(".code-field-err").count() === 0, `C12c ${code} the client accepts these values`);
+      await row.locator("button", { hasText: "Set up pipeline" }).click();
+      await row.locator(".code-field-err").first().waitFor({ timeout: 8000 });
+      ok(await row.locator(".code-field-err").count() === 1, `C12c ${code} exactly one field carries the refusal`);
+      ok(needle.test(await row.locator(".code-field-err").innerText()), `C12c ${code} and it is the backend's own sentence`);
+      // ON the field: the error paragraph is inside the same form-group as the input.
+      const onField = await page.locator(inputSel).first().evaluate((el) => !!el.closest(".form-group").querySelector(".code-field-err"));
+      ok(onField, `C12c ${code} the refusal renders under the field it is about, not as a banner`);
+      ok(await row.locator(".code-pipe-err").count() === 0, `C12c ${code} and NOT as the nameless setup-refused banner`);
+      ok(await row.locator(".code-pipe-queued").count() === 0, `C12c ${code} a refused setup is never shown as queued`);
+      // Editing clears it: a refusal about a value that no longer exists is a lie.
+      await page.locator(inputSel).first().fill("x");
+      ok(await row.locator(".code-field-err").count() <= 1, `C12c ${code} editing drops the backend's refusal`);
+      ok(!/That value was refused/.test(await row.locator(".code-pipe-form").innerText()), `C12c ${code} no placeholder wording survives the edit`);
+      await shot(page, `C12c-field-refusal-${code}`);
+      ok(env.errors.length === 0, `C12c ${code} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C12c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C12d — F-540/F-548: "none" tells the TRUTH about the build step ----
+     The scaffold made the Custom UI build step conditional; this screen went on warning
+     that it is always committed and will fail on a folder called "none". A screen that
+     states a falsehood about what it is about to write to someone's repository is worse
+     than one that says nothing, so the sentence is now the predicate's. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C12d "none" omits the Custom UI build step (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-textarea").waitFor({ timeout: 8000 });
+      /* Armed FIRST, so "the setup is not blocked" can only be about the folder. A
+         disabled button proves nothing when the manifest and the site are still empty. */
+      await row.locator(".code-textarea").fill("app:\n  name: Acme Deployer\npermissions:\n  scopes:\n    - read:jira-work\n");
+      await row.locator("input[placeholder='your-site.atlassian.net']").fill("acme.atlassian.net");
+      const dirInput = row.locator("input[id^='pipe-uidir-']");
+      // A real folder: no note at all, because there is nothing to say.
+      ok(scaffoldHasCustomUi({ UI_DIR: "static/app" }), "C12d the predicate agrees a real folder has a UI");
+      ok(await row.locator(".code-pipe-ui-note").count() === 0, `C12d ${theme} a real folder shows no note`);
+      await dirInput.fill("none");
+      ok(!scaffoldHasCustomUi({ UI_DIR: "none" }), "C12d the predicate agrees \"none\" has no UI");
+      await row.locator(".code-pipe-ui-note").waitFor({ timeout: 5000 });
+      const note = await row.locator(".code-pipe-ui-note").innerText();
+      ok(/omits the Custom UI build step/i.test(note), `C12d ${theme} the note says the step is OMITTED (got: ${note})`);
+      ok(!/always/i.test(note) && !/fail there/i.test(note), `C12d ${theme} the old falsehood is gone`);
+      ok(!/—/.test(note), `C12d ${theme} no em-dash in the copy`);
+      // It is a NOTE, not an alert: nothing is wrong and nothing is blocked.
+      ok(await row.locator(".code-pipe-ui-note[role='alert']").count() === 0, `C12d ${theme} it is not raised as an alert`);
+      ok(!(await row.locator("button", { hasText: "Set up pipeline" }).isDisabled()), `C12d ${theme} and "none" does not block the setup`);
+      // The review agrees with the note rather than naming a folder that is not built.
+      const review = await row.locator(".code-pipe-review").innerText();
+      ok(/no build step/i.test(review), `C12d ${theme} the review says there is no build step (got ${review})`);
+      // The owner's standing rules, on the one element this journey adds.
+      const noteEl = row.locator(".code-pipe-ui-note");
+      ok(await noteEl.evaluate((el) => getComputedStyle(el).borderLeftWidth) === await noteEl.evaluate((el) => getComputedStyle(el).borderRightWidth),
+        `C12d ${theme} the note has no left accent rail`);
+      const noteBg = await noteEl.evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(noteBg), `C12d ${theme} and no tinted fill behind it (got ${noteBg})`);
+      ok(await page.locator("select").count() === 0, `C12d ${theme} no native control was added`);
+      await shot(page, `C12d-none-note-${theme}`);
+      ok(env.errors.length === 0, `C12d ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C12d threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 

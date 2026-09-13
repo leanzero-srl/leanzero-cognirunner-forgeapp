@@ -26,7 +26,7 @@ import { redosRisk } from "./regex-safety.js";
 // The param types this module knows how to prompt for and validate. The offline
 // test asserts every "available" catalog rule uses only these — so an unhandled
 // param type fails CI instead of silently under-handling a rule.
-export const KNOWN_PARAM_TYPES = ["field", "opValue", "regex", "allowed", "value", "lengthBounds", "dateRel", "picker", "text", "git"];
+export const KNOWN_PARAM_TYPES = ["field", "opValue", "regex", "allowed", "value", "lengthBounds", "dateRel", "picker", "text", "git", "confluence"];
 
 // One compact prompt line per AVAILABLE rule (the unavailable ones — e.g.
 // user-in-role — are filtered out so the AI can never pick them).
@@ -44,6 +44,7 @@ export const buildCatalogPromptBlock = (mode) => {
     if (p.dateRel) hints.push('"mode" ("future" or "within"), "days" (positive integer, only when "within")');
     if (p.picker) hints.push(`"${p.picker.key}" (a name from the provided ${p.picker.source} list)`);
     if (p.text) hints.push(`"${p.text.key}" (text)`);
+    if (p.confluence) hints.push('"spaceKey" (a key from the provided confluencespaces list), "mode" ("cql" or "semantic"), "cqlTemplate" (a CQL fragment; {issueKey}, {summary} and {field:<id>} are substituted already quoted), "prompt" (semantic mode only), "strict" (true/false)');
     if (p.git) hints.push('"connectionId" (an id from the provided gitconnections list), "repo" ("owner/name", from the provided gitrepos list), "prMatch" ("property", "branch" or "both"), "strict" (true/false)');
     const params = hints.length ? hints.join("; ") : "no params";
     return `- ${r.key}: ${r.label} — ${r.help} PARAMS: ${params}`;
@@ -142,6 +143,29 @@ export const validateBuiltRule = (mode, aiOutput, ctx = {}) => {
     built.prMatch = raw.prMatch === "property" || raw.prMatch === "branch" ? raw.prMatch : "both";
     // Strict defaults to FALSE — the wizard must not silently arm the
     // fail-CLOSED behaviour on somebody's transition.
+    built.strict = raw.strict === true || raw.strict === "true";
+  }
+
+  if (p.confluence) {
+    // Same trust model as the git group: model output is never trusted, so the SPACE
+    // must be a value the CALLER supplied (the allow-list the picker uses) and the mode
+    // is clamped to its fixed vocabulary AFTER parsing. The CQL template and the prompt
+    // are free text the human will review — clamped, and left `unresolved` when empty so
+    // the wizard cannot hand over a rule that would BLOCK every transition as
+    // misconfigured (the F-416 misconfig row is a BLOCK in both strict columns).
+    const spaces = Array.isArray(lists.confluencespaces) ? lists.confluencespaces : [];
+    const wantSpace = clampStr(raw.spaceKey ?? raw.space, 120).toLowerCase();
+    const space = spaces.find((o) => String(o && o.value).toLowerCase() === wantSpace && wantSpace);
+    if (space) built.spaceKey = space.value; else unresolved.push("spaceKey");
+    built.mode = raw.mode === "semantic" ? "semantic" : "cql";
+    const tpl = clampStr(raw.cqlTemplate ?? raw.cql, 2000);
+    if (tpl) built.cqlTemplate = tpl; else unresolved.push("cqlTemplate");
+    if (built.mode === "semantic") {
+      const prompt = clampStr(raw.prompt, 2000);
+      if (prompt) built.prompt = prompt; else unresolved.push("prompt");
+    }
+    // Strict defaults to FALSE — the wizard must not silently arm the fail-CLOSED
+    // behaviour on somebody's transition.
     built.strict = raw.strict === true || raw.strict === "true";
   }
 

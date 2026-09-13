@@ -102,7 +102,10 @@ import {
 } from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
-import { executePremadeRule } from "./premade-rules.js";
+import { executePremadeRule, writeConfluenceIssueProperty } from "./premade-rules.js";
+// THE Confluence client (1.5 commit 6). Every Confluence call in this file goes through
+// it — one error-code table, one timeout, one version-checked update.
+import { createConfluenceClient, ConfluenceError } from "./confluence-client.js";
 // Listeners (Jira product events) + Scheduled Jobs (cron) + the Rules REST API.
 // Thin resolvers below delegate to these modules; they lazily import index.js back
 // (no top-level cycle) for the shared sandbox / AI / log / permission internals
@@ -3368,6 +3371,36 @@ resolver.define("getFields", async ({ context }) => {
  * never an exception. (Group/role lists are intentionally omitted — only the
  * acting-user rules need them, and those are unavailable in app conditions.)
  */
+/**
+ * The Confluence SPACE picker's options (1.5 commit 7). Never throws: this feeds ONE
+ * dropdown inside a list call that also serves six Jira pickers, and a site without
+ * Confluence — which is the normal state of a Jira app — must get an empty dropdown
+ * and the install message, not a failed form.
+ *
+ * It also warms the 5-minute install memo on the way past, so the admin card and the
+ * post-functions do not re-probe a fact this call just established.
+ */
+const listConfluenceSpacesForPicker = async () => {
+  try {
+    if (peekConfluenceInstalled() === false) return [];
+    const spaces = await createConfluenceClient().listSpaces({});
+    _cachedConfluenceInstall = { installed: true, code: null, message: null };
+    _cachedConfluenceInstallAt = Date.now();
+    return spaces.map((s) => ({ value: s.key, label: s.name === s.key ? s.key : `${s.name} (${s.key})` }));
+  } catch (e) {
+    // A fault here says nothing about whether a SPACE exists — only that we could not
+    // ask. Record the negative in the memo only when the client itself says the product
+    // is unavailable; an auth or network blip must not make the picker empty for five
+    // minutes on a site that does have Confluence.
+    if (e instanceof ConfluenceError && e.code === "confluence_unavailable") {
+      _cachedConfluenceInstall = { installed: false, code: e.code, message: e.message, status: e.status };
+      _cachedConfluenceInstallAt = Date.now();
+    }
+    console.warn("[confluence] space picker list unavailable:", e && e.message);
+    return [];
+  }
+};
+
 resolver.define("getRuleLists", async ({ context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
     return needRole("editor");
@@ -3435,6 +3468,13 @@ resolver.define("getRuleLists", async ({ context }) => {
         // call, so it degrades to an empty picker.
         gitconnections: gitLists.connections,
         gitrepos: gitLists.repos,
+        // Confluence rule pickers (1.5 commit 7). The SPACE is picked, never typed: a
+        // mistyped space key is misconfiguration, and misconfiguration BLOCKS the
+        // transition in both strict columns (the F-416 table). Every call goes through
+        // `createConfluenceClient`; a site with no Confluence — the common case, the app
+        // is a Jira app — degrades to an EMPTY list, never an error, and the rule form
+        // shows the install message instead of a dropdown.
+        confluencespaces: await listConfluenceSpacesForPicker(),
       },
     };
   } catch (error) {
@@ -13275,6 +13315,47 @@ const getProviderConfig = async () => {
   }
 };
 
+/* ═══════════ THE CONFLUENCE INSTALL PROBE — ONE MEMO (1.5 commit 7) ═══════════
+ *
+ * Deliberately beside the provider memo, and deliberately the ONLY memo of this fact.
+ * "Is CogniRunner installed on Confluence too?" is a per-SITE fact that changes when an
+ * admin runs `forge install -p Confluence` — roughly never — while every Confluence rule
+ * would otherwise ask it again on every transition, every post-function and every admin
+ * panel open. 5 minutes rather than the provider memo's 30 s: a provider switch must take
+ * effect while an admin watches, an install does not, and 5 minutes is short enough that
+ * the admin card shows the truth a minute after they install.
+ *
+ * TWO ACCESSORS, ONE MEMO, and the difference matters:
+ *   getConfluenceInstallState() — probes when the memo is cold. Callers that are ABOUT to
+ *     do Confluence work and want to fail fast (the post-functions, the admin card).
+ *   peekConfluenceInstalled()   — memo ONLY, never a call. Returns null for "unknown".
+ *     The VALIDATOR uses this: it is inside a transition's 8 s budget, and a probe there
+ *     would double the latency of the very check it precedes. A cold memo means the
+ *     validator simply runs its search, which answers the same question anyway.
+ *
+ * Every call goes through `createConfluenceClient` (LAW 1 — one client, one error-code
+ * table, one timeout). `probeInstalled` never throws; a fault is "not installed", which
+ * is the fail-OPEN direction for every validator that reads it.
+ */
+const CONFLUENCE_PROBE_TTL_MS = 5 * 60 * 1000;
+let _cachedConfluenceInstall = null;
+let _cachedConfluenceInstallAt = 0;
+
+const peekConfluenceInstalled = () =>
+  (_cachedConfluenceInstall && Date.now() - _cachedConfluenceInstallAt < CONFLUENCE_PROBE_TTL_MS)
+    ? _cachedConfluenceInstall.installed === true
+    : null;
+
+const getConfluenceInstallState = async ({ fresh = false } = {}) => {
+  if (!fresh && _cachedConfluenceInstall && Date.now() - _cachedConfluenceInstallAt < CONFLUENCE_PROBE_TTL_MS) {
+    return { ..._cachedConfluenceInstall, cached: true };
+  }
+  const state = await createConfluenceClient().probeInstalled();
+  _cachedConfluenceInstall = state;
+  _cachedConfluenceInstallAt = Date.now();
+  return { ...state, cached: false };
+};
+
 // ===== SEAT SNAPSHOT (drives the Forge LLM monthly allowance) =====
 // The allowance is clamp(seats x $2, $40, $800)/month, so we need a seat count.
 // There is no seat API, so we count active Atlassian-account users and stop at
@@ -16211,7 +16292,22 @@ export const validate = async (args) => {
     // BY this file, so importing it there would be a cycle — and the 8 s ceiling
     // the git validators need must be the SAME deadline helper every other
     // bounded call in this file uses (LAW 1).
-    const out = await executePremadeRule(configuration, args, invocationType, { raceDeadline });
+    // `judge` and `installedHint` are the CONFLUENCE validator's two injections (1.5
+    // commit 7), given the same way and for the same reason as `raceDeadline`:
+    //   judge        — the EXISTING validator engine (callOpenAI), so the semantic mode
+    //                  grows no second prompt and no second parse. premade-rules.js never
+    //                  makes an AI call of its own.
+    //   installedHint— the 5-minute install memo, READ ONLY (peek, never probe): inside a
+    //                  transition a probe would double the latency of the check it
+    //                  precedes. `null` means "unknown", and the rule just runs.
+    const out = await executePremadeRule(configuration, args, invocationType, {
+      raceDeadline,
+      installedHint: peekConfluenceInstalled(),
+      judge: async ({ content, prompt }) => {
+        const r = await callOpenAI(content, prompt, undefined, undefined, undefined);
+        return { isValid: r?.isValid === true, reason: r?.reason || "", transientError: r?.transientError === true };
+      },
+    });
     // Slim execution log (metadata only — never field VALUES) so premade runs
     // still appear in the admin panel's execution history alongside AI rules.
     try {
@@ -16230,7 +16326,12 @@ export const validate = async (args) => {
               ? "Allowed — the git connection's credential is dead (failed OPEN; turn Strict on to block instead)"
               : out?.banner === "git_unavailable"
                 ? "Allowed — the git provider could not be reached (failed OPEN; turn Strict on to block instead)"
-                : "Passed",
+                : out?.banner === "confluence_unavailable"
+                  // F-416's non-strict column, in the log row. WHICH fault it was rides
+                  // `confluenceReason` (unavailable / auth / unreachable / timeout /
+                  // judge-unavailable) — the banner is one id so config-view has one row.
+                  ? `Allowed — Confluence could not be checked (${out?.confluenceReason || "unavailable"}); failed OPEN, turn Strict on to block instead`
+                  : "Passed",
         executionTimeMs: Date.now() - premadeStart,
         mode: "premade",
         // Git validators may allow while telling the admin WHY (a dead token, an

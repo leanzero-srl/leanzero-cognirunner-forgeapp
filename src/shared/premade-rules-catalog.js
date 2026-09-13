@@ -83,6 +83,30 @@
  *                 means every sub-control, exactly as before. A renderer must read
  *                 `params.git === true || params.git.<sub> !== false`, never plain
  *                 truthiness, or it draws a control the executor ignores.
+ *   confluence  — the CONFLUENCE parameter group (1.5 commit 7). Writes:
+ *                   spaceKey     — the space key the rule searches / writes in
+ *                                  (REQUIRED; missing = misconfiguration, which
+ *                                  BLOCKS regardless of `strict` — see the F-416
+ *                                  degradation table beside runConfluenceValidator
+ *                                  in src/premade-rules.js)
+ *                   mode         — "cql" | "semantic" (validator only, default
+ *                                  "cql"): does a matching page merely have to
+ *                                  EXIST, or does a model judge its content?
+ *                   cqlTemplate  — a CQL fragment with {issueKey} / {summary} /
+ *                                  {field:<id>} placeholders, each substituted as a
+ *                                  ready-quoted literal by ONE escaper
+ *                                  (src/shared/confluence-rules.js cqlQuote)
+ *                   prompt       — semantic mode only: what the page must say
+ *                   parentId     — post-function only: optional parent page id
+ *                   titleTemplate— post-function only: the page title, same
+ *                                  placeholders as cqlTemplate (NOT CQL-quoted —
+ *                                  a title is not a query)
+ *                   commentTemplate — comment post-function only, same placeholders
+ *                   strict       — boolean, default false: what an UNREACHABLE
+ *                                  Confluence does. Misconfiguration ignores it.
+ *                 OBJECT FORM, like the git group: `confluence: { mode: false }` keeps
+ *                 the group and hides one sub-control. Read it with
+ *                 `confluenceSubEnabled(params, name)`, never plain truthiness (F-388).
  *   coderMode   — the CODER_PF_MODES picker (writes `mode`; see the mode table below)
  *   instructions— one optional multi-line text box (writes `instructions`), UNTRUSTED and
  *                 clamped to CODER_PF_INSTRUCTIONS_MAX CHARACTERS (code points, via
@@ -262,6 +286,21 @@ export const PREMADE_VALIDATORS = [
     category: "Git",
     network: true,
     params: { git: true },
+    availability: "available",
+  },
+  // --- CONFLUENCE validator (1.5 commit 7). `network:true` like the git rules above:
+  //     one outbound Confluence call inside the transition, bounded to
+  //     CONFLUENCE_VALIDATOR_BUDGET_MS (8 s) by src/premade-rules.js, verified LIVE.
+  //     The advisory cognirunner.confluence issue property is WRITTEN by this rule on a
+  //     pass and is never READ by it — the condition of the same family reads it. ---
+  {
+    key: "confluence-page-exists",
+    label: "Confluence: a page for this issue exists",
+    help: "Block unless a Confluence page in the space you pick matches the query you write — searched LIVE on every transition. In Semantic mode the top 3 matching pages are read and the AI judges them against your prompt. If Confluence cannot be reached the transition is ALLOWED (turn Strict on to block instead); a rule with no space or no query BLOCKS either way, because a check that cannot say what it is checking must not read as a pass.",
+    category: "Confluence",
+    network: true,
+    requiresProduct: "confluence",
+    params: { confluence: true },
     availability: "available",
   },
 ];
@@ -763,3 +802,39 @@ export const hasGitGroup = (params) => {
   const g = (params || {}).git;
   return g === true || (!!g && typeof g === "object");
 };
+
+/**
+ * The same two questions for the CONFLUENCE param group (1.5 commit 7), and for the
+ * same reason: `params.confluence` has a boolean shape and an object shape that names
+ * only the sub-controls it turns OFF, so every reader — the form that draws it, the
+ * server-side clamp that stores it, the summary that puts it into words — must ask
+ * HERE rather than read truthiness (F-388: a control drawn for a key the executor
+ * ignores).
+ */
+export const confluenceSubEnabled = (params, name) => {
+  const c = (params || {}).confluence;
+  if (c === true) return true;
+  if (!c || typeof c !== "object") return false;
+  return c[name] !== false;
+};
+
+export const hasConfluenceGroup = (params) => {
+  const c = (params || {}).confluence;
+  return c === true || (!!c && typeof c === "object");
+};
+
+/** The two validator modes. ONE home — the executor, the clamp and the form read it. */
+export const CONFLUENCE_VALIDATOR_MODES = [
+  {
+    value: "cql",
+    label: "A matching page must exist",
+    hint: "Pass as soon as the query finds a page. No AI, no token cost.",
+  },
+  {
+    value: "semantic",
+    label: "A matching page must SAY something",
+    hint: "Read the top 3 matching pages and let the AI judge them against your prompt. Costs one AI call per transition.",
+  },
+];
+export const CONFLUENCE_VALIDATOR_MODE_IDS = CONFLUENCE_VALIDATOR_MODES.map((m) => m.value);
+export const CONFLUENCE_VALIDATOR_MODE_DEFAULT = "cql";

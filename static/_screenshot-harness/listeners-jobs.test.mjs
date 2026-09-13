@@ -108,8 +108,14 @@ try {
       // event picker: search + pick
       ok(await page.locator(".evp-none").count() === 1, "L2 no events selected initially");
       await page.locator(".evp-search").fill("comment");
-      ok(await page.locator(".evp-row").count() === 3, "L2 search narrows the catalogue to the 3 comment events");
-      await page.locator(".evp-row", { hasText: "Comment added" }).locator("input").check();
+      // 5a (1.4): the git namespace adds "Pull request comment added" (and the PR review row
+      // whose description says "commented"), so "comment" now matches the 3 Jira comment
+      // events PLUS the git rows. Assert the Jira three are there and that a git row joined.
+      const commentRows = await page.locator(".evp-row").allInnerTexts();
+      ok(["Comment added", "User mentioned in comment", "Comment deleted"].every((l) => commentRows.some((t) => t.includes(l))),
+        "L2 search narrows the catalogue to the comment events (3 Jira rows present)");
+      ok(commentRows.some((t) => t.includes("Pull request comment added")), "L2 the git PR-comment event joins the comment search");
+      await page.locator(".evp-row", { hasText: "Comment added", hasNotText: "Pull request" }).locator("input").check();
       ok(await page.locator(".evp-selected .evp-chip", { hasText: "Comment added" }).count() === 1, "L2 picked event shows as a solid chip");
       await page.locator(".evp-search").fill("viewed");
       ok(await page.locator(".evp-row .evp-vol", { hasText: "HIGH VOLUME" }).count() === 1, "L2 high-volume warning on Issue viewed");
@@ -1415,7 +1421,7 @@ try {
         const t = (await note.innerText()).replace(/\s+/g, " ").trim();
         ok(/This needs CogniRunner Coder\./.test(t),
           `M6g ${theme} ${label}: the note names the EDITION (got: ${t})`);
-        ok(/upgrade in Settings/.test(t),
+        ok(/Upgrade in Settings to unlock/.test(t), // F-330 wording
           `M6g ${theme} ${label}: and names the remedy and where to do it`);
 
         ok(await page.locator(`${root} .load-error`).count() === 0,

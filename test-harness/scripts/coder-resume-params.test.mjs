@@ -998,7 +998,11 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   const pinFrom = (k) => storage.set(pinKey, {
     issueKey: ISSUE, threadId: T,
     skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
-    skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+    // F-631 — the engine pins BOTH lists (src/coder-engine.js): the applied receipt and
+    // the ids the turn asked for. This stand-in must too, or it models a pin the product
+    // no longer writes.
+    skillIds: k.skillIds || [], requestedSkillIds: k.requestedSkillIds || k.skillIds || [],
+    memoryCount: k.memoryCount || 0,
     memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch,
     at: new Date().toISOString(),
   });
@@ -1056,6 +1060,101 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
       `re-sending the same ids in another order keeps the pin (${JSON.stringify(k.pinInvalidated)})`);
     ok(k.skillsBlock === base.skillsBlock, "…and replays the pinned bytes exactly, so the prefix does not move");
     ok(!k.skillsExtraBlock, "…and fetches nothing extra for ids the prefix already carries");
+  }
+}
+
+/* ===== F-631 — THE COMPARE IS REQUESTED-vs-REQUESTED, NOT REQUESTED-vs-RENDERED =====
+ *
+ * F-630 set-compared the turn's REQUEST against `pinned.skillIds` — the APPLIED receipt
+ * `fetchSkillsBlock` returns, which silently drops a DISABLED skill, a 9th id, or one too
+ * large for the turn's budget. The picker keeps sending those ids, so `sameSkillSet` was
+ * false on every turn: the pin was dropped and rebuilt forever, the rebuild produced the
+ * identical applied set, and the whole prefix (field guide + skills + memories + the entire
+ * stored history) was re-billed at write price every turn — through the F-615 INFO path, so
+ * nothing ever warned.
+ *
+ * The pin now carries `requestedSkillIds` beside `skillIds` and the compare reads that one.
+ * Proven on the cases that decide it: the disabled id (kept, turn after turn), a real
+ * change (one rebuild, then kept), and a LEGACY pin with no requested list (at most one).
+ */
+{
+  const T = "t_f631";
+  const pinKey = coder.coderPinKey(ISSUE, T);
+  // A skill the picker still holds and the renderer refuses. Disabled BEFORE the pin is
+  // made, so the skill epoch (derived from the PINNED/applied ids) never moves and the only
+  // thing that could invalidate the pin is the compare under test.
+  await saveSkillInternal(
+    { id: "skill_off", name: "Retired rules", category: "Other", enabled: false },
+    { instructions: "This skill was disabled by an admin." },
+  );
+  const REQ = ["skill_house", "skill_off"];
+  const build = (extra) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: T, message: "go", ...extra,
+  });
+  // The engine's pin write, both lists — mirrors src/coder-engine.js.
+  const pinFrom = (k, over = {}) => storage.set(pinKey, {
+    issueKey: ISSUE, threadId: T,
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [],
+    requestedSkillIds: Array.isArray(k.requestedSkillIds) ? k.requestedSkillIds : (k.skillIds || []),
+    memoryCount: k.memoryCount || 0,
+    memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch,
+    at: new Date().toISOString(), ...over,
+  });
+
+  const t1 = await build({ skillIds: REQ, skillIdsExplicit: true });
+  ok(/### Skill: House style/.test(String(t1.skillsBlock || "")) && !/Retired rules/.test(String(t1.skillsBlock || "")),
+    "F-631: the disabled skill is not rendered — the applied set is smaller than the request");
+  ok(Array.isArray(t1.skillIds) && t1.skillIds.join(",") === "skill_house",
+    `…and the receipt names only what reached the model (${JSON.stringify(t1.skillIds)})`);
+  ok(Array.isArray(t1.requestedSkillIds) && t1.requestedSkillIds.join(",") === REQ.join(","),
+    `THE CUT: the turn also reports what it ASKED for, for the engine to pin (${JSON.stringify(t1.requestedSkillIds)})`);
+  await pinFrom(t1);
+
+  /* (a) the same request, turn after turn — the pin is KEPT even though applied != requested */
+  for (const n of [2, 3]) {
+    const k = await build({ skillIds: REQ, skillIdsExplicit: true });
+    ok(!k.pinInvalidated && k.repin !== true,
+      `THE FINDING: turn ${n} with an unrenderable id in the picker keeps the pin (${JSON.stringify(k.pinInvalidated)})`);
+    ok(k.skillsBlock === t1.skillsBlock, `…and replays the pinned bytes, so the prefix does not move (turn ${n})`);
+    ok(!k.skillsExtraBlock, `…and fetches nothing extra for an id that can never render (turn ${n})`);
+  }
+
+  /* (b) a REAL change still rebuilds — once — and then settles */
+  {
+    const k = await build({ skillIds: ["skill_house", "skill_off", "skill_adf"], skillIdsExplicit: true });
+    ok(k.repin === true && /skills changed by the turn: \[skill_house, skill_off\]→\[skill_house, skill_off, skill_adf\]/.test(String(k.pinInvalidated || "")),
+      `binding one more skill is still a deliberate prefix move, named from the REQUESTED ids (${JSON.stringify(k.pinInvalidated)})`);
+    ok(/### Skill: ADF rules/.test(String(k.skillsBlock || "")), "…and the rebuilt prefix carries the new skill");
+    await pinFrom(k);
+    const after = await build({ skillIds: ["skill_house", "skill_off", "skill_adf"], skillIdsExplicit: true });
+    ok(!after.pinInvalidated && after.repin !== true,
+      `…and the very next turn is stable again — one rebuild, not a loop (${JSON.stringify(after.pinInvalidated)})`);
+  }
+
+  /* (c) a LEGACY pin, written before this finding, costs AT MOST ONE rebuild */
+  {
+    await pinFrom(t1);
+    const raw = await storage.get(pinKey);
+    delete raw.requestedSkillIds;
+    await storage.set(pinKey, raw);
+    const first = await build({ skillIds: REQ, skillIdsExplicit: true });
+    ok(first.repin === true, "a pin with no requested list falls back to the applied one, so this turn rebuilds (the old behaviour, once)");
+    ok(Array.isArray(first.requestedSkillIds) && first.requestedSkillIds.join(",") === REQ.join(","),
+      `…and the rebuild reports the REQUEST, which is what the engine pins (${JSON.stringify(first.requestedSkillIds)})`);
+    await pinFrom(first);
+    const second = await build({ skillIds: REQ, skillIdsExplicit: true });
+    ok(!second.pinInvalidated && second.repin !== true,
+      `…after which the thread is stable for good (${JSON.stringify(second.pinInvalidated)})`);
+  }
+
+  /* (d) an inheriting turn still inherits, and the pin's REQUEST is what it inherits */
+  {
+    const k = await build({});
+    ok(!k.pinInvalidated && /### Skill: House style/.test(String(k.skillsBlock || "")),
+      "a turn with no selection replays the pin untouched (F-610/F-594 intact)");
+    ok(Array.isArray(k.requestedSkillIds) && k.requestedSkillIds.join(",") === REQ.join(","),
+      `…and carries the pin's request forward, so a refresh cannot narrow it (${JSON.stringify(k.requestedSkillIds)})`);
   }
 }
 

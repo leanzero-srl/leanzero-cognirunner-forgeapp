@@ -974,6 +974,22 @@ await check("F-574: the thread pins the skills and memory BYTES once, on its own
   assert.equal(pin1.memoryBlock, MEM, "…and the rendered memory block");
   assert.deepEqual(pin1.skillIds, ["skill_house"], "…with the receipt's ids");
   assert.equal(pin1.memoryCount, 1, "…and its count");
+  // F-631 — and the ids the TURN ASKED FOR, beside the ones that rendered. The next turn's
+  // "did the picker change?" compare reads this list; without it, an id that can never
+  // render (disabled, 9th, over budget) made every turn look like a change and re-pinned
+  // the thread forever. Absent on the knowledge object, it falls back to the applied ids.
+  assert.deepEqual(pin1.requestedSkillIds, ["skill_house"],
+    "…and the requested ids, defaulting to the applied ones when the builder named none");
+  // …and when the builder DOES name a wider request, THAT is what the pin carries.
+  const wReq = setupWorld({ rounds: [reply([finish()])] });
+  await startTurn(wReq, { threadId: "t_req", knowledge: {
+    skillsBlock: SKILLS, memoryBlock: MEM, memoryCount: 1,
+    skillIds: ["skill_house"], requestedSkillIds: ["skill_house", "skill_disabled"],
+  } });
+  const pinReq = await store.get(coderPinKey("LZPT-7", "t_req"));
+  assert.deepEqual(pinReq.skillIds, ["skill_house"], "the applied receipt stays the applied receipt");
+  assert.deepEqual(pinReq.requestedSkillIds, ["skill_house", "skill_disabled"],
+    "F-631: the request the turn made is pinned beside it, unrenderable ids and all");
   // F-487 stands: the TRANSCRIPT still carries ids and counts only, so the pin cannot be
   // "fixed" by moving it onto the thread row.
   const stored = JSON.stringify(await store.get(coderThreadKey("LZPT-7", "t1")));

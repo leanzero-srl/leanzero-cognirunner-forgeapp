@@ -1433,6 +1433,10 @@ const buildCoderKnowledge = async (p) => {
   try { row = await getCoderThread(issueKey, threadId); } catch (e) { row = null; }
   let pinned = null;
   try { pinned = await getCoderPinnedKnowledge(issueKey, threadId); } catch (e) { pinned = null; }
+  // F-631 — WHAT THE PIN'S THREAD LAST *ASKED* FOR, which is not what it RENDERED. See the
+  // verdict block below; declared here so the stamp at the end of the builder can hand the
+  // engine the requested list back when the pin is replayed unchanged.
+  let pinnedRequestedIds = [];
 
   /*
    * F-598 — THIS PROJECT'S MEMORY BLOCK, RENDERED AT MOST ONCE PER TURN.
@@ -1493,7 +1497,10 @@ const buildCoderKnowledge = async (p) => {
    * delete/edit/injection switch and NOT on an add) and `skillEpochFor()` (src/skills.js,
    * derived from the index rows of the pinned ids). The pin records both at creation; while
    * both still match, the bytes replay exactly as before and an ADDED memory or a newly
-   * bound skill still costs only its own extra block. When either has moved, the pin is
+   * bound skill still costs only its own extra block WHEN THE TURN DID NOT ASK FOR IT — an
+   * EXPLICIT binding change is a deliberate prefix move and rebuilds instead (F-630/F-631),
+   * so the extra-block path below is the inheriting turn's, not the picker's. When either
+   * epoch has moved, the pin is
    * dropped, the blocks are rebuilt live — which is also what keeps a rebuilt extra block
    * from repeating a line the prefix already carries, because there is no prefix left to
    * repeat — and `repin` asks the engine to re-pin today's bytes.
@@ -1536,13 +1543,37 @@ const buildCoderKnowledge = async (p) => {
      * cost a prefix. A NON-explicit turn still inherits the pin's ids (F-610/F-594) — an
      * absent selection is a second browser, not an instruction.
      */
+    /*
+     * F-631 — COMPARE LIKE WITH LIKE: WHAT WAS ASKED FOR, NOT WHAT WAS RENDERED.
+     *
+     * `pinned.skillIds` is the APPLIED list — `fetchSkillsBlock`'s receipt. It silently
+     * drops an id that is DISABLED (`rec.enabled === false`), beyond the `ids.slice(0, 8)`
+     * fetch, or too large for the turn's skills budget. The picker keeps sending those ids
+     * on every turn, so comparing the turn's REQUEST against the pin's RENDER made
+     * `sameSkillSet` false forever: one disabled skill in a thread's selection re-pinned
+     * that thread on EVERY turn, re-billing the whole prefix (field guide + history) at
+     * write price, and travelling the F-615 INFO path so no DEFECT warning ever fired.
+     *
+     * So the pin carries BOTH lists: `skillIds` (applied — what the bytes are, what the
+     * epoch arm is derived from, what the receipt reports) and `requestedSkillIds` (what
+     * the turn that wrote it asked for). The compare is requested-vs-requested and settles
+     * after one rebuild, because the rebuild stores the same request it just compared.
+     *
+     * A pin written before this finding has no `requestedSkillIds`: it falls back to the
+     * applied list ONCE — the old behaviour, so a genuinely changed request is still caught
+     * — and the rebuild it may cause stores both, after which the thread is stable.
+     */
     const heldIds = Array.isArray(pinned.skillIds) ? pinned.skillIds.map((x) => String(x)) : [];
+    const heldRequested = Array.isArray(pinned.requestedSkillIds)
+      ? pinned.requestedSkillIds.map((x) => String(x))
+      : heldIds;
+    pinnedRequestedIds = heldRequested;
     const wantedIds = ids.map((x) => String(x));
-    const heldSet = new Set(heldIds);
+    const heldSet = new Set(heldRequested);
     const wantedSet = new Set(wantedIds);
     const sameSkillSet = heldSet.size === wantedSet.size && [...heldSet].every((id) => wantedSet.has(id));
     const explicitSkillChange = skillIdsExplicit && !sameSkillSet
-      ? `skills changed by the turn: [${heldIds.join(", ")}]→[${wantedIds.join(", ")}]`
+      ? `skills changed by the turn: [${heldRequested.join(", ")}]→[${wantedIds.join(", ")}]`
       : null;
     let verdict = explicitSkillChange;
     try {
@@ -1636,9 +1667,12 @@ const buildCoderKnowledge = async (p) => {
        *
        * So the pin's ids are the fallback, and the only way DOWN is an explicit one.
        */
-      if (heldIds.length && !ids.length && !skillIdsExplicit) {
-        ids = heldIds;
-        console.log(`[coder] re-pin: this turn carried no skill selection, so the pin's ${heldIds.length} skill(s) are kept and re-rendered (${heldIds.join(", ")})`);
+      // F-631 — the fallback is the pin's REQUEST (its applied list on a legacy pin): what
+      // the thread asked for is the binding, and re-rendering it is how a skill that has
+      // since been re-enabled comes back instead of being lost to a rebuild.
+      if (heldRequested.length && !ids.length && !skillIdsExplicit) {
+        ids = heldRequested;
+        console.log(`[coder] re-pin: this turn carried no skill selection, so the pin's ${heldRequested.length} skill(s) are kept and re-rendered (${heldRequested.join(", ")})`);
       }
       // F-630 — when the turn WAS explicit there is no fallback at all: `ids` is already
       // exactly what it asked for (possibly none), the pin is dropped just below, and the
@@ -1826,6 +1860,17 @@ const buildCoderKnowledge = async (p) => {
    * nothing has ever deleted from is a real reading and is stamped like any other.
    */
   if (liveMemoryEpoch !== null) out.memoryEpoch = liveMemoryEpoch;
+  /*
+   * F-631 — THE REQUESTED IDS TRAVEL WITH THE APPLIED ONES. The engine pins this list
+   * beside `skillIds`, and the verdict block above compares the next turn's request
+   * against it. On a rebuilt or first pin that is what this turn asked for (`ids`, after
+   * F-594's inheritance fallback); on a replayed pin it is what the pin already recorded,
+   * so a refresh cannot quietly narrow it to the rendered subset.
+   */
+  {
+    const requested = pinned ? (pinnedRequestedIds.length ? pinnedRequestedIds : (Array.isArray(out.skillIds) ? out.skillIds : [])) : ids;
+    out.requestedSkillIds = [...new Set(requested.map((x) => String(x)))].slice(0, 40);
+  }
   try {
     const { skillEpochFor } = await import("./skills.js");
     const stamp = await skillEpochFor(Array.isArray(out.skillIds) ? out.skillIds : []);

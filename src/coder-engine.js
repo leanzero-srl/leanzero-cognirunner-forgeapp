@@ -1027,6 +1027,15 @@ const runCoderTurnClaimed = async ({
             // The receipt's ids and counts, so a replayed turn reports what it injected
             // without re-reading either store.
             skillIds: Array.isArray(knowledge.skillIds) ? knowledge.skillIds.map((x) => String(x)).slice(0, 40) : [],
+            // F-631 — and what the turn ASKED for, which is not the same list: a disabled,
+            // 9th, or over-budget id never reaches `skillIds` (the applied receipt). The
+            // next turn's "did the picker change?" compare reads THIS one, so a thread
+            // holding one unrenderable id no longer re-pins — and re-bills its whole
+            // prefix — on every single turn. Absent on pins written before the finding;
+            // `buildCoderKnowledge` falls back to `skillIds` for exactly one rebuild.
+            requestedSkillIds: Array.isArray(knowledge.requestedSkillIds)
+              ? knowledge.requestedSkillIds.map((x) => String(x)).slice(0, 40)
+              : (Array.isArray(knowledge.skillIds) ? knowledge.skillIds.map((x) => String(x)).slice(0, 40) : []),
             memoryCount: Number(knowledge.memoryCount) || 0,
             // F-578 — the state of the two stores these bytes were rendered from, decided by
             // the builder (which read them BEFORE it rendered them). A later turn replays

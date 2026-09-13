@@ -4733,6 +4733,46 @@ const injectCopiedComponentStyles = () => {
       color: var(--text-color);
     }
 
+    /* Namespace group in the API reference (api.confluence.*). The members are
+       grouped by a full hairline box plus a SOLID Confluence-hue chip with white
+       text - never a left accent rail, never a low-alpha tint. The hue is the same
+       #1d4ed8 the run-log Confluence banners use, one shade lighter in dark. */
+    .api-ref-ns {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+    }
+
+    .api-ref-ns-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .api-ref-ns-chip {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      background: #1d4ed8;
+      color: #ffffff;
+    }
+
+    .api-ref-ns-count {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .api-ref-ns-members { padding-left: 10px; }
+
+    html[data-color-mode="dark"] .api-ref-ns-chip { background: #3b82f6; color: #ffffff; }
+
     /* Test panel */
     .test-panel {
       margin-top: 10px;

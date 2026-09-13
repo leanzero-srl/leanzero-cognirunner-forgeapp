@@ -2198,6 +2198,79 @@ const injectStyles = () => {
       white-space: nowrap;
     }
 
+    /* ---- F-189: store byte stats, the capacity wall, and bulk delete ---------------- */
+
+    /* The size line. Neutral slate while under the guard — it is a statistic, not an
+       accent, and colouring a healthy store would spend the alarm before it is needed.
+       Over the guard it turns solid red TEXT (700), because that is the moment it stops
+       describing the store and starts explaining why nothing is being learned. */
+    .memories-admin-stats {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      letter-spacing: 0.01em;
+    }
+    .memories-admin-stats-over { color: #dc2626; font-weight: 700; }
+    html[data-color-mode="dark"] .memories-admin-stats-over { color: #ef4444; }
+    /* The over-PLATFORM clause. It inherits the red and the weight from the over-guard
+       state it can only ever appear inside, so it adds no hue of its own to keep a dark
+       override in sync for — it is the same alarm, said at more length. */
+    .memories-admin-stats-note { font-weight: 700; }
+
+    /* The capacity wall. Same hard-stop grammar as .memory-full-banner (F-167): solid
+       #dc2626, white text, full border radius, NO left rail and NO tint. Dark is one
+       shade lighter (#ef4444), matching the memory-full banner it sits beside. */
+    .memories-admin-capwall {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: #dc2626;
+      color: #ffffff;
+      border-radius: 4px;
+      padding: 9px 12px;
+      margin-bottom: 10px;
+    }
+    html[data-color-mode="dark"] .memories-admin-capwall { background: #ef4444; color: #ffffff; }
+    .memories-admin-capwall-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+    .memories-admin-capwall-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+
+    /* Row select column — sized so the checkbox column never steals width from the
+       memory text, which is the only column whose content actually needs the room. */
+    .memories-admin-selcell { width: 32px; text-align: center; }
+    .memories-admin-select { cursor: pointer; margin: 0; }
+
+    .memories-admin-bulkbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .memories-admin-bulkcount {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    /* Solid saturated red with white text at 700 — this is the only irreversible control
+       on the tab and it should read as one. Not .btn-danger: that is the per-row size and
+       weight, and the bulk action must not look like a fifth row button. */
+    .memories-admin-bulkdelete {
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      background: #dc2626;
+      color: #ffffff;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    html[data-color-mode="dark"] .memories-admin-bulkdelete { background: #ef4444; color: #ffffff; }
+    .memories-admin-bulkdelete:hover:not(:disabled) { opacity: 0.85; }
+    .memories-admin-bulkdelete:disabled { opacity: 0.5; cursor: default; }
+
     .memories-admin-edit-input {
       width: 100%;
       padding: 6px 8px;

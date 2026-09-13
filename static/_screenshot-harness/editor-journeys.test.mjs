@@ -1263,7 +1263,70 @@ try {
         const color = await b.locator(".memory-not-kept").first().evaluate((el) => getComputedStyle(el).color);
         ok(color === (theme === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)"),
           `F-158 ${T} the note is slate for this theme (got: ${color})`);
+        // F-190 — the TOAST is the surface the author is actually looking at while the step
+        // is busy; the inline note is below the fold of their attention. It must carry the
+        // resolver's own sentence too, not a second one retyped here.
+        const capToast = await page.locator(".mls-toast").first().innerText();
+        ok(capToast.includes(memoryCapRefusalMessage("cap")),
+          `F-190 ${T} the cap TOAST carries the resolver's refusal verbatim (got: ${capToast})`);
+        ok(!/Nothing was learned from it/.test(capToast),
+          `F-190 ${T} the cap toast never reports an outcome with no cause`);
       } catch (e) { fail++; console.log(`  ✗ F-158 cap ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-190 — the OTHER refusal reason: the byte guard (`reason: "bytes"`) --------------
+     * F-181 gave the inline note the backend's words and left the toast branching on
+     * `reason === "cap"` alone. A byte-guard refusal therefore fell to the else and said
+     * "Fix verified. Nothing was learned from it." — an outcome with no cause, and the one
+     * refusal a user cannot diagnose from anywhere else in the app: the Memories tab shows
+     * a row count nowhere near 200, so a causeless toast reads as the AI deciding the
+     * lesson was not worth keeping. Both surfaces now read `memRes.error`. */
+    {
+      console.log(`F-190 a BYTE-guard refusal names its cause on both surfaces (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+        __MEMORY_BYTES__: true,
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".memory-not-kept").first().waitFor({ timeout: 15000 });
+
+        const bytesMsg = memoryCapRefusalMessage("bytes");
+        // The two refusal sentences must actually DIFFER, or this test proves nothing:
+        // a component that hardcoded the cap wording would pass a comparison against
+        // whichever sentence it happened to have typed.
+        ok(bytesMsg !== memoryCapRefusalMessage("cap"),
+          `F-190 ${T} the byte and row refusals are genuinely different sentences`);
+
+        const note = await b.locator(".memory-not-kept").first().innerText();
+        ok(note.includes(bytesMsg), `F-190 ${T} the note carries the BYTE refusal verbatim (got: ${note})`);
+        ok(!note.includes(memoryCapRefusalMessage("cap")),
+          `F-190 ${T} the note does not show row-cap wording for a byte refusal`);
+        ok(/size limit/i.test(note), `F-190 ${T} the note names a SIZE limit, not a count`);
+
+        // THE defect: this toast used to read "Fix verified. Nothing was learned from it."
+        const toast = await page.locator(".mls-toast").first().innerText();
+        ok(/Fix verified/.test(toast), `F-190 ${T} the toast still confirms the fix itself worked (got: ${toast})`);
+        ok(toast.includes(bytesMsg),
+          `F-190 ${T} the toast names the BYTE cause, from the resolver's own sentence (got: ${toast})`);
+        ok(!/Nothing was learned from it/.test(toast),
+          `F-190 ${T} the toast is never a causeless "Nothing was learned from it."`);
+        ok(!/memory store is full/i.test(toast),
+          `F-190 ${T} the toast does not mislabel a byte refusal as a full store`);
+
+        // Still not a memory: no badge, no veto. The F-158 contract is unchanged.
+        ok(await b.locator(".memory-saved-badge").count() === 0, `F-190 ${T} no badge — nothing was stored`);
+        // And it is a SUCCESS toast: the fix landed, only the lesson did not.
+        ok(await page.locator(".mls-toast-error").count() === 0,
+          `F-190 ${T} a refused memory is not an error toast — the fix itself verified`);
+      } catch (e) { fail++; console.log(`  ✗ F-190 bytes ${T} threw: ` + e.message.split("\n")[0]); }
       await closeEditor(env);
     }
 

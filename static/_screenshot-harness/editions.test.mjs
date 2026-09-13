@@ -160,11 +160,34 @@ async function pickForgeLlm(page) {
        assertion above would still pass because the copy would be identical ON THE DAY IT
        WAS TYPED. So: scan the harness sources and allow the phrase ONLY on a line that
        imports it. Checked against the source text, not the running module. */
-    // The needle is CUT FROM the real sentence (everything before the "(N max)" clause),
-    // never typed — otherwise this very line would be its own first offender, and a
-    // reworded refusal would silently stop being guarded.
-    const NEEDLE = expected.slice(0, expected.indexOf("(")).trim();
-    ok(NEEDLE.length > 20, `E0 the retype needle was cut from the real sentence (got "${NEEDLE}")`);
+    // The needle is CUT FROM the real sentence, never typed — otherwise this very line
+    // would be its own first offender, and a reworded refusal would silently stop being
+    // guarded.
+    //
+    // F-195 — it used to be cut from the HEAD: everything before the "(N max)" clause.
+    // The F-179 rewording made that head exactly "Memory store is full" — 20 characters,
+    // which failed the `> 20` floor, and worse, a phrase the app uses somewhere else
+    // entirely. It is the TITLE of MemoryFullBanner (memoryStoreFullCopy, a different
+    // one-home sentence with a different owner), so the scan reported three legitimate
+    // banner assertions as retype offenders. A needle that matches a DIFFERENT sentence
+    // is not a weak gate, it is a wrong one: it fails honest code and teaches the next
+    // person to delete it.
+    //
+    // Cut from the DISTINCTIVE tail instead — the clause after the first em-dash, which
+    // carries the eviction policy and the remedy and belongs to this sentence alone.
+    // Asserted explicitly rather than defaulted, so a rewording that drops the em-dash
+    // fails loudly here instead of quietly producing a needle that guards nothing.
+    const emDash = expected.indexOf("—");
+    ok(emDash > 0, `E0 the cap refusal still has the em-dash clause the needle is cut from (got "${expected}")`);
+    const NEEDLE = expected.slice(emDash + 1).trim();
+    // The floor is well above 20 now. A short needle is what made F-195 possible: a
+    // 20-character phrase is a phrase several sentences in this app can legitimately
+    // share, and a gate that matches more than the thing it guards flags honest code.
+    ok(NEEDLE.length > 40, `E0 the retype needle is long enough to be unique (${NEEDLE.length} chars: "${NEEDLE}")`);
+    // And it must be specific to THIS refusal — the byte-guard variant is a different
+    // sentence with the same owner, so a needle matching both guards neither precisely.
+    ok(!memoryCapRefusalMessage("bytes").includes(NEEDLE),
+      "E0 the needle is unique to the row-cap refusal — it must not also match the byte-guard one");
     const files = fs.readdirSync(__dirname)
       .filter((f) => f === "bridge.js" || f.endsWith(".test.mjs"));
     const offenders = [];

@@ -19,6 +19,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
+/* F-189 - the byte guard, the platform ceiling and the over-platform refusal sentence come
+   from the ONE home for them, so a test cannot assert a limit or a sentence the app does
+   not actually use. */
+import { MEMORY_MAX_SERIALIZED_BYTES, MEMORY_PLATFORM_MAX_SERIALIZED_BYTES, memoryPlatformCapMessage } from "../../src/shared/registry-limits.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC = path.resolve(__dirname, "..");
@@ -614,6 +618,187 @@ try {
 
       await shot(page, `m2-memories-full-${theme}`);
     } catch (e) { fail++; console.log(`  ✗ M2 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M3 — F-189: store byte stats, the platform-cap wall, bulk delete ----------------
+   * The memory store has TWO ceilings: a row cap (200) and a byte guard on the single
+   * `pf_memories` KVS value, under a hard ~240KiB platform limit. Only the first was ever
+   * visible. A byte-capped store therefore refused every write while the tab cheerfully
+   * showed 40-odd rows — no number on screen could explain it, and the only remedy
+   * (deleting) was a per-row confirm dialog nobody would run forty times.
+   *
+   * __MEMORY_OVERCAP__ models the whole shape: counts carry { bytes, guardBytes,
+   * platformBytes }, every write answers { reason: "platform-cap", bytesOver }. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M3 memories byte stats + platform-cap + bulk delete — ${theme}`);
+    const env = await openAdmin(browser, theme, { __MEMORY_OVERCAP__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+
+      /* ---- (3) the stats line: the size of the store, in the unit the guard uses ---- */
+      const stats = page.locator(".memories-admin-stats").first();
+      await stats.waitFor({ timeout: 8000 });
+      const stxt = await stats.innerText();
+      // Derived, not typed — 230000 -> 225 KB, 245760 -> 240 KB. If the shared constants
+      // move, this expectation moves with them instead of photographing a stale limit.
+      const kb = (n) => `${Math.round(n / 1024)} KB`;
+      ok(stxt.includes(`of ${kb(MEMORY_MAX_SERIALIZED_BYTES)} guard`),
+        `M3 ${theme} stats name the byte GUARD from the shared constant (got: ${stxt})`);
+      ok(stxt.includes(`platform limit ${kb(MEMORY_PLATFORM_MAX_SERIALIZED_BYTES)}`),
+        `M3 ${theme} stats name the PLATFORM limit from the shared constant (got: ${stxt})`);
+      ok(/^Store: \d+ KB of \d+ KB guard \(platform limit \d+ KB\)/.test(stxt.trim()),
+        `M3 ${theme} stats lead with the plain size sentence (got: ${stxt})`);
+      // Over the guard it is red — the moment it stops being a statistic.
+      ok((await stats.getAttribute("class")).includes("memories-admin-stats-over"),
+        `M3 ${theme} stats carry the over-guard class when the backend says overGuard`);
+      // Past the PLATFORM ceiling it says the stronger thing: nothing can be saved at all,
+      // and one-at-a-time deleting is not a route out. This is a DIFFERENT state from
+      // "over the guard" and the line has to distinguish them or the admin cannot act.
+      const note = page.locator(".memories-admin-stats-note").first();
+      await note.waitFor({ timeout: 5000 });
+      const ntxt = await note.innerText();
+      ok(/over Jira's storage limit/i.test(ntxt),
+        `M3 ${theme} the over-platform clause names Jira's storage limit (got: ${ntxt})`);
+      ok(/deleted together/i.test(ntxt),
+        `M3 ${theme} the over-platform clause says memories must go TOGETHER (got: ${ntxt})`);
+      const sc = await stats.evaluate((el) => getComputedStyle(el).color);
+      const srgb = sc.match(/\d+/g).map(Number);
+      ok(srgb[0] > 180 && srgb[1] < 90 && srgb[2] < 90, `M3 ${theme} over-guard stats are solid red — got ${sc}`);
+      ok(Number(await stats.evaluate((el) => getComputedStyle(el).fontWeight)) >= 700,
+        `M3 ${theme} over-guard stats are 700 weight`);
+
+      /* ---- (2) a platform-cap refusal is a solid red wall that names bytesOver ---- */
+      ok(await page.locator(".memories-admin-capwall").count() === 0,
+        `M3 ${theme} no capacity wall before a write is attempted`);
+      await page.locator(".memories-admin-add input").fill("A memory this store cannot fit.");
+      await page.locator(".btn-add-memory").click();
+      const wall = page.locator(".memories-admin-capwall").first();
+      await wall.waitFor({ timeout: 8000 });
+      const wtxt = await wall.innerText();
+      ok(/over Jira's storage limit/i.test(wtxt), `M3 ${theme} the wall names the PLATFORM limit, not the row cap`);
+      // THE point of this refusal: it must say BY HOW MUCH. "Delete some" is useless advice
+      // when the admin cannot tell whether that means one row or forty. The sentence is the
+      // backend's own (memoryPlatformCapMessage), asserted against that same import so this
+      // proves the words travelled end to end rather than two surfaces happening to agree.
+      ok(wtxt.includes(memoryPlatformCapMessage(6544)),
+        `M3 ${theme} the wall carries the resolver's platform-cap sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/\b6544 bytes\b/.test(wtxt),
+        `M3 ${theme} the wall names the deficit as a real quantity (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/Delete selected/.test(wtxt), `M3 ${theme} the wall points at the control that recovers capacity`);
+      ok(/Archiving does not free capacity/i.test(wtxt),
+        `M3 ${theme} the wall forecloses the wrong instinct (archive frees nothing — F-176/F-182)`);
+      ok(/one at a time will not work/i.test(wtxt),
+        `M3 ${theme} the wall says single-row deletes cannot repair this state`);
+      const wst = await wall.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      const wrgb = wst.bg.match(/\d+/g).map(Number);
+      ok(wrgb[0] > 180 && wrgb[1] < 90 && wrgb[2] < 90, `M3 ${theme} wall is a SOLID red fill, not a tint — got ${wst.bg}`);
+      ok((wst.bg.match(/[\d.]+/g) || []).length < 4 || Number(wst.bg.match(/[\d.]+/g)[3]) === 1,
+        `M3 ${theme} wall fill is fully opaque — got ${wst.bg}`);
+      ok(/255,\s*255,\s*255/.test(wst.fg), `M3 ${theme} wall has white text — got ${wst.fg}`);
+      ok(wst.bl === wst.bt, `M3 ${theme} wall has NO left accent rail`);
+      await shot(page, `m3-memories-capwall-${theme}`);
+
+      /* ---- (1) checkbox multi-select + bulk delete through the app's OWN dialog ---- */
+      ok(await page.locator("select").count() === 0, `M3 ${theme} no native <select> on this tab`);
+      const boxes = page.locator(".memories-admin-select");
+      ok(await boxes.count() === 6, `M3 ${theme} every memory row carries a select checkbox`);
+      ok(await page.locator(".memories-admin-bulkbar").count() === 0,
+        `M3 ${theme} the bulk bar is absent while nothing is ticked (no dead "Delete selected (0)")`);
+      await boxes.nth(0).check();
+      await boxes.nth(2).check();
+      const bulkBtn = page.locator(".memories-admin-bulkdelete").first();
+      await bulkBtn.waitFor({ timeout: 5000 });
+      ok((await bulkBtn.innerText()).trim() === "Delete selected (2)",
+        `M3 ${theme} the button carries the live count (got: ${(await bulkBtn.innerText()).trim()})`);
+      const bst = await bulkBtn.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, w: c.fontWeight, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      const brgb = bst.bg.match(/\d+/g).map(Number);
+      ok(brgb[0] > 180 && brgb[1] < 90 && brgb[2] < 90, `M3 ${theme} Delete selected is solid red — got ${bst.bg}`);
+      ok(/255,\s*255,\s*255/.test(bst.fg), `M3 ${theme} Delete selected has white text — got ${bst.fg}`);
+      ok(Number(bst.w) >= 700, `M3 ${theme} Delete selected is 700 weight`);
+      ok(bst.bl === bst.bt, `M3 ${theme} Delete selected has no left rail`);
+
+      // Clear selection puts the bar away without deleting anything.
+      await page.locator(".memories-admin-bulkbar .btn-small", { hasText: "Clear selection" }).click();
+      ok(await page.locator(".memories-admin-bulkbar").count() === 0, `M3 ${theme} Clear selection retracts the bar`);
+      ok(await page.evaluate(() => (window.__DELETE_MEMORY_CALLS__ || []).length) === 0,
+        `M3 ${theme} Clear selection deleted nothing`);
+
+      await boxes.nth(0).check();
+      await boxes.nth(2).check();
+      await page.locator(".memories-admin-bulkdelete").first().click();
+      // NEVER window.confirm — the app's own dialog primitive, every time.
+      const dlg = page.locator(".cr-confirm").first();
+      await dlg.waitFor({ timeout: 5000 });
+      const dtxt = await dlg.innerText();
+      ok(/Delete 2 selected memories\?/.test(dtxt), `M3 ${theme} the custom confirm names the count in its title`);
+      ok(/cannot be undone/i.test(dtxt), `M3 ${theme} the confirm says the delete is irreversible`);
+
+      // Cancel is a real cancel.
+      await page.locator(".cr-confirm .btn-small", { hasText: "Cancel" }).click();
+      await page.waitForTimeout(200);
+      ok(await page.evaluate(() => (window.__DELETE_MEMORY_CALLS__ || []).length) === 0,
+        `M3 ${theme} cancelling the dialog issues no delete`);
+      ok(await page.locator(".memories-admin-bulkdelete").count() === 1,
+        `M3 ${theme} the selection survives a cancel`);
+
+      await page.locator(".memories-admin-bulkdelete").first().click();
+      await page.locator(".cr-confirm").first().waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-danger").click();
+      await page.locator(".mls-toast").first().waitFor({ timeout: 8000 });
+      ok(/2 memories deleted/.test(await page.locator(".mls-toast").first().innerText()),
+        `M3 ${theme} the toast reports how many went`);
+      // ONE call carrying `ids`, not two carrying `id`: `pf_memories` is a single KVS value,
+      // so a UI that loops single deletes races itself and looks identical on screen.
+      const calls = await page.evaluate(() => window.__DELETE_MEMORY_CALLS__ || []);
+      ok(calls.length === 1, `M3 ${theme} bulk delete is ONE invoke, not N (got ${calls.length})`);
+      ok(Array.isArray(calls[0] && calls[0].ids) && calls[0].ids.length === 2,
+        `M3 ${theme} it sends { ids: [...] } (got: ${JSON.stringify(calls[0])})`);
+      await page.waitForTimeout(400);
+      ok(await page.locator(".memories-admin-select").count() === 4,
+        `M3 ${theme} the deleted rows are gone from the table`);
+      ok(await page.locator(".memories-admin-bulkbar").count() === 0,
+        `M3 ${theme} the selection is cleared after the delete — the (n) cannot strand`);
+      await shot(page, `m3-memories-bulkdelete-${theme}`);
+      ok(env.errors.length === 0, `M3 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ M3 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M4 — F-189: a HEALTHY store states its size in slate, not red ----------------
+   * The other half of the stats line, and the half that must not cry wolf: under the guard
+   * this is a statistic. If it rendered red always, the red that means "nothing is being
+   * learned" would be worth nothing by the time it mattered. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M4 memories byte stats under the guard — ${theme}`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      const stats = page.locator(".memories-admin-stats").first();
+      await stats.waitFor({ timeout: 10000 });
+      ok(!(await stats.getAttribute("class")).includes("memories-admin-stats-over"),
+        `M4 ${theme} a healthy store does NOT wear the over-guard class`);
+      const c = await stats.evaluate((el) => getComputedStyle(el).color);
+      const rgb = c.match(/\d+/g).map(Number);
+      ok(!(rgb[0] > 180 && rgb[1] < 90 && rgb[2] < 90), `M4 ${theme} a healthy store is not red — got ${c}`);
+      ok(/^rgba?\(/.test(c) && !/rgba\(0,\s*0,\s*0,\s*0\)/.test(c), `M4 ${theme} the stats line resolves a real colour (got ${c})`);
+      // And no capacity wall / no bulk bar in the resting state.
+      ok(await page.locator(".memories-admin-stats-note").count() === 0,
+        `M4 ${theme} no over-platform clause on a healthy store`);
+      ok(await page.locator(".memories-admin-capwall").count() === 0, `M4 ${theme} no capacity wall on a healthy store`);
+      ok(await page.locator(".memories-admin-bulkbar").count() === 0, `M4 ${theme} no bulk bar until something is ticked`);
+      ok(env.errors.length === 0, `M4 ${theme} no page errors: ` + env.errors.join(" | "));
+      await shot(page, `m4-memories-stats-healthy-${theme}`);
+    } catch (e) { fail++; console.log(`  ✗ M4 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 

@@ -41,7 +41,11 @@ import { emptyState, monthKey, allowanceUsdForSeats, forgeLlmAllowanceStatus } f
    slot and still counts toward the cap. Archiving takes a memory out of prompts; it does
    not reclaim capacity, and DELETING is the only thing that does. The sentence this mock
    now serves is imported, not quoted, so it cannot drift from that policy again. */
-import { MAX_MEMORIES, memoryCapRefusalMessage } from "../../src/shared/registry-limits.js";
+/* F-189: the byte guard, the PLATFORM ceiling and the over-platform refusal sentence come
+   from the same one home as the cap sentence above. memoryPlatformCapMessage() interpolates
+   the deficit AND the platform number, so a hand-typed copy here would photograph a limit
+   no tenant has — the exact defect the import above exists to prevent. */
+import { MAX_MEMORIES, memoryCapRefusalMessage, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_PLATFORM_MAX_SERIALIZED_BYTES, memoryPlatformCapMessage } from "../../src/shared/registry-limits.js";
 
 const ACCT = "557058:11111111-1111-1111-1111-111111111111";
 const SITE = "https://your-site.atlassian.net";
@@ -687,6 +691,53 @@ function mktInvoke(name, payload) {
  * MemoriesTab / MemoriesAdminTab read) AND getMemorySettings / getKnowledgeCounts,
  * matching the backend. Null unless window.__MEMORY_FULL__ is set by a test. */
 const MEMORY_STORE_FULL = { at: "2026-09-09T11:20:00.000Z", reason: "cap" };
+
+/* F-189 - the WORST memory-store state, and the one the app previously could not repair:
+ * the store is already OVER Jira's ~240KiB platform ceiling. `pf_memories` is a single KVS
+ * value, so at that size NO write lands — not even deleting one memory, because a one-row
+ * delete still rewrites the whole oversized array. The row count is irrelevant and can read
+ * "40 of 200" throughout, which is what made the state unreadable from the UI.
+ *
+ * window.__MEMORY_OVERCAP__ = true models it end to end: getMemoryStoreStats reports the
+ * size and both verdicts, and every write answers
+ * { success:false, reason:"platform-cap", bytesOver, error }.
+ *
+ * DERIVED from the shared constants, never typed. The +6544 overshoot is the only literal;
+ * it puts the store past the PLATFORM number, not merely past the guard, because that is
+ * what `reason: "platform-cap"` means — a fixture sitting between the two ceilings would
+ * photograph a state the refusal does not describe. */
+const MEMORY_OVERCAP_OVER = 6544;
+const MEMORY_OVERCAP_BYTES = MEMORY_PLATFORM_MAX_SERIALIZED_BYTES + MEMORY_OVERCAP_OVER;
+const isMemoryOvercap = () => typeof window !== "undefined" && !!window.__MEMORY_OVERCAP__;
+/* F-189 - deleted ids actually STAY deleted for the life of the page. Without this the
+ * bulk-delete journey is fiction: getMemories would keep returning the rows the admin
+ * just removed, the table would never shrink, and the "(n)" would never fall back to
+ * zero — so a component that failed to clear its selection, or failed to reload, would
+ * photograph identically to one that worked. */
+const DELETED_MEMORY_IDS = new Set();
+const MEMORY_PLATFORM_REFUSAL = () => ({
+  success: false,
+  reason: "platform-cap",
+  stored: false,
+  bytesOver: MEMORY_OVERCAP_OVER,
+  // The BACKEND's sentence, imported. It interpolates both the deficit and the platform
+  // number, so this fixture cannot drift from the words a tenant actually reads.
+  error: memoryPlatformCapMessage(MEMORY_OVERCAP_OVER),
+});
+/* F-189 - hoisted so the delete fixture can filter it. Same rows as before. */
+const MEMORY_ROWS = [
+      { id: "m1", content: "This instance stores the team in customfield_10003 (Team), not Components.", source: "learned", createdAt: "2026-06-14T10:00:00Z" },
+      { id: "m2", content: "Release Notes is customfield_10042 and accepts plain text.", source: "learned", createdAt: "2026-06-12T09:00:00Z" },
+      { id: "m3", content: "Transitions to Done require a non-empty resolution.", source: "user", createdAt: "2026-06-10T08:00:00Z" },
+      { id: "m4", content: "The Risk Level field options are Low, Medium, High, Critical.", source: "learned", createdAt: "2026-06-09T08:00:00Z" },
+      { id: "m5", content: "Bugs use the 'Software Simplified Workflow'.", source: "user", createdAt: "2026-06-08T08:00:00Z" },
+      /* F-182 — one ARCHIVED row. The admin tab has rendered archived memories (muted row,
+         "Archived" divider, Restore button) since F-176 and no scenario ever produced one,
+         so that whole branch was unphotographed and unasserted. It is also the only way to
+         see the hint that archiving does not free capacity, which is the point of F-182. */
+      { id: "m6", content: "The old Severity field was retired in March; do not write to it.", source: "learned", createdAt: "2026-05-02T08:00:00Z", disabled: true },
+];
+
 const MEMORY_SETTINGS = () => ({
   autoCapture: true,
   injection: true,
@@ -924,6 +975,25 @@ function invoke(name, payload) {
       typeof window !== "undefined" && window.__MEMORY_FULL__
         ? { success: true, docs: 4, skills: 6, memories: MAX_MEMORIES, memoryCap: MAX_MEMORIES, storeFull: MEMORY_STORE_FULL }
         : { success: true, docs: 4, skills: 6, memories: 12 });
+    /* F-189 - what the store WEIGHS. Its own resolver, mirroring memoryStoreStats(): the
+     * two verdict booleans are computed from the same comparisons the backend uses
+     * (overGuard is >=, overPlatform is >), never hand-set, so a fixture cannot claim a
+     * state the real rule would not produce. Answered on BOTH branches because the stats
+     * line has two states — slate under the guard, red over it — and both are real. */
+    case "getMemoryStoreStats": {
+      const bytes = isMemoryOvercap() ? MEMORY_OVERCAP_BYTES : 49152;
+      return Promise.resolve({
+        success: true,
+        rows: isMemoryOvercap() ? 40 : MEMORY_ROWS.filter((m) => !DELETED_MEMORY_IDS.has(m.id)).length,
+        bytes,
+        guardBytes: MEMORY_MAX_SERIALIZED_BYTES,
+        platformBytes: MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+        overGuard: bytes >= MEMORY_MAX_SERIALIZED_BYTES,
+        overPlatform: bytes > MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+        bytesOverPlatform: Math.max(0, bytes - MEMORY_PLATFORM_MAX_SERIALIZED_BYTES),
+        storeFull: (typeof window !== "undefined" && window.__MEMORY_FULL__) ? MEMORY_STORE_FULL : null,
+      });
+    }
     case "getMemorySettings": return Promise.resolve({ success: true, settings: MEMORY_SETTINGS() });
     case "getSkills": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, skills: [] }); return Promise.resolve({ success: true, skills: [
       { id: "sk1", name: "Create a linked issue", category: "Jira API", builtin: true, description: "Create and link a sub-task or related issue via the REST API." },
@@ -933,18 +1003,7 @@ function invoke(name, payload) {
       { id: "sk5", name: "Post to an external webhook", category: "External / Webhooks", builtin: false, description: "Notify an external service on a transition." },
       { id: "sk6", name: "Summarize a description", category: "Other", builtin: false, description: "Condense a long description into a short, structured summary." },
     ] });
-    case "getMemories": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [], settings: MEMORY_SETTINGS() }); return Promise.resolve({ success: true, settings: MEMORY_SETTINGS(), memories: [
-      { id: "m1", content: "This instance stores the team in customfield_10003 (Team), not Components.", source: "learned", createdAt: "2026-06-14T10:00:00Z" },
-      { id: "m2", content: "Release Notes is customfield_10042 and accepts plain text.", source: "learned", createdAt: "2026-06-12T09:00:00Z" },
-      { id: "m3", content: "Transitions to Done require a non-empty resolution.", source: "user", createdAt: "2026-06-10T08:00:00Z" },
-      { id: "m4", content: "The Risk Level field options are Low, Medium, High, Critical.", source: "learned", createdAt: "2026-06-09T08:00:00Z" },
-      { id: "m5", content: "Bugs use the 'Software Simplified Workflow'.", source: "user", createdAt: "2026-06-08T08:00:00Z" },
-      /* F-182 — one ARCHIVED row. The admin tab has rendered archived memories (muted row,
-         "Archived" divider, Restore button) since F-176 and no scenario ever produced one,
-         so that whole branch was unphotographed and unasserted. It is also the only way to
-         see the hint that archiving does not free capacity, which is the point of F-182. */
-      { id: "m6", content: "The old Severity field was retired in March; do not write to it.", source: "learned", createdAt: "2026-05-02T08:00:00Z", disabled: true },
-    ] });
+    case "getMemories": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [], settings: MEMORY_SETTINGS() }); return Promise.resolve({ success: true, settings: MEMORY_SETTINGS(), memories: MEMORY_ROWS.filter((m) => !DELETED_MEMORY_IDS.has(m.id)) });
     /* listeners + scheduled jobs + API tokens (admin) */
     case "getListeners": return Promise.resolve({ success: true, listeners: LISTENER_ROWS });
     case "getListener": return Promise.resolve(LISTENER_FULL[payload && payload.id] ? { success: true, listener: LISTENER_FULL[payload.id] } : { success: false, error: "Listener not found" });
@@ -991,15 +1050,43 @@ function invoke(name, payload) {
     // `error` at all (the Memories tabs render that field, so the inline refusal had
     // nothing to say), and __MEMORY_FULL__ carried a hand-typed near-miss of the sentence.
     // The two branches differ only in what ELSE the scenario sets up, never in the words.
+    // F-189 — a FOURTH shape: the row cap is fine and the BYTE guard is not. Distinct
+    // `reason` ("platform-cap") and a `bytesOver` the UI must name, because "it is full"
+    // with no magnitude is a refusal nobody can size a response to.
+    // F-190 — window.__MEMORY_BYTES__ is the BYTE-guard refusal: `reason: "bytes"`, the
+    // other half of memoryCapRefusalMessage and the shape no scenario ever produced. It is
+    // exactly what FunctionBlock's toast used to swallow — it branched on `reason === "cap"`
+    // alone, so this landed in the else and announced "Nothing was learned from it.", an
+    // outcome with no cause on the one surface the author is looking at.
     case "addMemory": return Promise.resolve(
-      typeof window !== "undefined" && window.__MEMORY_CAP__
+      isMemoryOvercap()
+        ? MEMORY_PLATFORM_REFUSAL()
+        : typeof window !== "undefined" && window.__MEMORY_BYTES__
+        ? { success: false, reason: "bytes", stored: false, error: memoryCapRefusalMessage("bytes") }
+        : typeof window !== "undefined" && window.__MEMORY_CAP__
         ? { success: false, reason: "cap", stored: false, error: memoryCapRefusalMessage("cap") }
         : typeof window !== "undefined" && window.__MEMORY_FULL__
         ? { success: false, reason: "cap", stored: false, error: memoryCapRefusalMessage("cap") }
         : typeof window !== "undefined" && window.__MEMORY_MERGED__
         ? { success: true, id: "mem_existing_7", merged: true, stored: true, evicted: [] }
         : { success: true, id: "mem_fix_1", merged: false, stored: true, evicted: [] });
-    case "deleteMemory": return Promise.resolve({ success: true });
+    // F-189 — an edit is a write too, and lands on the same wall.
+    case "updateMemory": return Promise.resolve(isMemoryOvercap() ? MEMORY_PLATFORM_REFUSAL() : { success: true });
+    // F-189 — deleteMemory takes `{ id }` (one row) OR `{ ids: [...] }` (bulk). The bulk
+    // answer reports how many actually went, which is what the toast counts.
+    case "deleteMemory": {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : (payload && payload.id ? [payload.id] : []);
+      // Recorded unconditionally so a test can assert the SHAPE of the call: bulk delete
+      // must be ONE `{ ids: [...] }` invoke, not N `{ id }` ones. `pf_memories` is a single
+      // KVS value, so N calls are N read-modify-writes racing each other — a UI that loops
+      // deletes looks identical on screen and is wrong on the wire.
+      if (typeof window !== "undefined") {
+        window.__DELETE_MEMORY_CALLS__ = window.__DELETE_MEMORY_CALLS__ || [];
+        window.__DELETE_MEMORY_CALLS__.push(payload);
+      }
+      ids.forEach((i) => DELETED_MEMORY_IDS.add(i));
+      return Promise.resolve(Array.isArray(payload && payload.ids) ? { success: true, deleted: ids.length } : { success: true });
+    }
     case "reviewConfig": return Promise.resolve({ success: true, review: { verdict: "has_issues", summary: "The steps are sound; two improvements suggested.", items: [{ type: "warning", message: "Step 2 posts a comment without checking the issue is still open." }, { type: "suggestion", message: "Reuse the JQL result from step 1 instead of re-querying." }] }, tokens: 1240 });
     case "searchIssues": return Promise.resolve({ success: true, issues: [{ key: "PROJ-481", fields: { summary: "Checkout latency spike on mobile", status: { name: "In Progress" }, issuetype: { name: "Bug" } } }] });
     case "validateIssue": return Promise.resolve({ success: true, valid: true, summary: "Checkout latency spike on mobile", status: "In Progress", type: "Bug" });

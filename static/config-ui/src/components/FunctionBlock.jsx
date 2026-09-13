@@ -731,17 +731,34 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               // row-cap wording. The literal below is now only the fallback for a resolver
               // that answered `stored: false` with no `error` to show.
               if (memRes && (memRes.stored === false || memRes.reason === "cap")) {
+                // F-190 — ONE refusal sentence, TWO surfaces. F-181 gave the inline note the
+                // backend's own words and left the TOAST branching on `reason === "cap"`
+                // alone, so every other refusal shape fell to the else and announced
+                // "Nothing was learned from it." — an outcome with no cause. The byte guard
+                // is a real, reachable refusal (`reason: "bytes"`, what addMemory answers
+                // when the store is under its row cap but over MEMORY_MAX_SERIALIZED_BYTES),
+                // and it is precisely the one a user cannot diagnose from the UI: the
+                // Memories tab shows a row count nowhere near 200, so a causeless toast
+                // reads as "the AI decided this was not worth keeping".
+                //
+                // `memRes.error` is the resolver's single-home refusal
+                // (memoryCapRefusalMessage, src/shared/registry-limits.js) and names the real
+                // limit for EVERY reason, including ones added after this line was written —
+                // which is the whole point of reading it instead of re-deriving it here.
+                // The fallback is deliberately reason-NEUTRAL: with no sentence from the
+                // resolver we do not know WHICH ceiling was hit, and naming the wrong one is
+                // worse than naming none. It is only reachable from a resolver that answered
+                // `stored: false` with no `error` at all.
+                const refusal = memRes.error || "Nothing was kept — the memory store is full.";
                 setMemoryNotKept(
                   // Joined with a full stop, not a dash: the backend sentence carries its own
                   // em-dashes, and chaining a third made one unreadable run-on. This keeps the
                   // resolver's words VERBATIM, which is the point of a single-home sentence.
                   memRes.error
                     ? `Nothing was kept. ${memRes.error}`
-                    : memRes.reason === "cap"
-                      ? "Nothing was kept — the memory store is full. Delete memories in the Memories tab to resume learning."
-                      : "Nothing was kept — this fix's lesson was not stored.",
+                    : `${refusal} Delete memories in the Memories tab to resume learning.`,
                 );
-                showToast(memRes.reason === "cap" ? "Fix verified. Nothing was learned — the memory store is full." : "Fix verified. Nothing was learned from it.");
+                showToast(`Fix verified. ${refusal}`);
               } else if (memRes && memRes.success && memRes.id) {
                 // F-155 — carry `merged` with the badge. On a dedup hit the resolver
                 // returns the id of the PRE-EXISTING memory it reinforced, which may be a

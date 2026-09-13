@@ -35,6 +35,23 @@ const SOURCE_CLASS = {
   fix: "memories-admin-src-fix",
 };
 
+/**
+ * F-189 — the memory store has a BYTE ceiling as well as a row cap, and until now
+ * nothing in the UI could see it. `pf_memories` is a single KVS value against a hard
+ * ~240KiB platform limit, with the app's own guard sitting below it; a store of 40
+ * long memories can refuse a write while the row count reads "40 of 200", which from
+ * the admin's chair looks like the app silently deciding not to learn.
+ *
+ * Rounded to whole KB because that is the unit the limits are expressed in and the
+ * only unit an admin can act on — nobody deletes a memory to recover 300 bytes. Under
+ * 1 KB we print bytes rather than "0 KB", which would make a real refusal read as no
+ * overshoot at all (the shape that hides a bug rather than reporting one).
+ */
+function fmtBytes(n) {
+  if (typeof n !== "number" || !isFinite(n) || n < 0) return null;
+  return n < 1024 ? `${Math.round(n)} bytes` : `${Math.round(n / 1024)} KB`;
+}
+
 export default function MemoriesAdminTab({ invoke, isAdmin }) {
   const [memories, setMemories] = useState([]);
   const [settings, setSettings] = useState(null);
@@ -52,14 +69,43 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
   // clicked row button and disables the rest while the call is in flight.
   const [working, setWorking] = useState(null);
   const [error, setError] = useState(null);
+  // F-189 — a `platform-cap` refusal is NOT the same outcome as `error`, so it does not
+  // share that state. `error` is a muted line ("couldn't save that"); this is a capacity
+  // wall that stays until the admin frees room, names how far over the store is, and
+  // points at the only control that fixes it. Holds the whole refusal ({ bytesOver, error }).
+  const [capRefusal, setCapRefusal] = useState(null);
+  // F-189 — what the store WEIGHS, from the dedicated `getMemoryStoreStats` resolver:
+  // { rows, bytes, guardBytes, platformBytes, overGuard, overPlatform, storeFull }.
+  // Its own call, not a field on getKnowledgeCounts: the counts resolver answers the
+  // knowledge CHIP (docs/skills/memories totals) and is called from surfaces that have
+  // no business measuring the store. Null until loaded, and null-tolerant forever after —
+  // a backend that cannot answer must render the tab exactly as before, never
+  // "Store: undefined". The booleans are the BACKEND'S verdict, deliberately: comparing
+  // bytes to guardBytes here would be a second copy of the threshold rule.
+  const [stats, setStats] = useState(null);
+  // F-189 — ids ticked for bulk delete. A Set, not an array: rows toggle one at a time
+  // and the row renderer asks "am I selected?" once per row on every keystroke elsewhere.
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const hasLoadedRef = useRef(false);
 
   const loadMemories = useCallback(async () => {
     try {
       const result = await invoke("getMemories");
       if (result.success) {
-        setMemories(result.memories || []);
+        const rows = result.memories || [];
+        setMemories(rows);
         setSettings(result.settings || null);
+        // F-189 — drop ticks for rows that are no longer there. Without this a bulk
+        // delete leaves its own ids selected, so the button keeps offering to delete
+        // memories that are already gone and the (n) never returns to zero.
+        setSelected((prev) => {
+          if (prev.size === 0) return prev;
+          const live = new Set(rows.map((m) => m.id));
+          const next = new Set();
+          prev.forEach((id) => { if (live.has(id)) next.add(id); });
+          return next.size === prev.size ? prev : next;
+        });
         setLoadError(false);
         hasLoadedRef.current = true;
       } else if (!hasLoadedRef.current) {
@@ -68,6 +114,16 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
     } catch (e) {
       console.error("Failed to load memories:", e);
       if (!hasLoadedRef.current) setLoadError(true);
+    }
+    // F-189 — byte stats are a SEPARATE, best-effort call, deliberately not awaited
+    // inside the try above: an older backend with no getMemoryStoreStats resolver (or a
+    // failing one) must never turn the memories table into a load error. The table is
+    // the point of the tab; the size line is an extra.
+    try {
+      const st = await invoke("getMemoryStoreStats");
+      setStats(st && st.success ? st : null);
+    } catch (e) {
+      /* stats are an extra, never a gate on the tab rendering */
     }
     setLoading(false);
   }, [invoke]);
@@ -103,6 +159,27 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
     setSavingSettingKey(null);
   };
 
+  /**
+   * F-189 — ONE home for the `platform-cap` refusal, because the backend can answer it
+   * on ANY write (add, edit, and anything added later), not just the add form. Routing
+   * it through each caller's `setError` would have buried a capacity wall in the same
+   * muted grey line used for "that text is too long", on a tab where the remedy — bulk
+   * delete — is three inches away and invisible unless something points at it.
+   *
+   * Returns true when it consumed the result, so callers stop and do not ALSO set the
+   * generic error. Deliberately keyed on `reason`, not on a substring of `error`: the
+   * sentence is the backend's to change, the reason code is the contract.
+   */
+  const consumeCapRefusal = (result) => {
+    if (!result || result.reason !== "platform-cap") return false;
+    setCapRefusal(result);
+    setError(null);
+    // Refresh the size line with it — the numbers that explain the refusal are the ones
+    // an admin needs on screen at exactly this moment.
+    invoke("getMemoryStoreStats").then((st) => setStats(st && st.success ? st : null)).catch(() => {});
+    return true;
+  };
+
   const handleAdd = async () => {
     const content = newContent.trim();
     if (!content || adding) return;
@@ -112,9 +189,10 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
       const result = await invoke("addMemory", { content, source: "user" });
       if (result.success) {
         setNewContent("");
+        setCapRefusal(null);
         await loadMemories();
         showToast("Memory added");
-      } else {
+      } else if (!consumeCapRefusal(result)) {
         setError(result.error || "Failed to add memory.");
       }
     } catch (e) {
@@ -136,7 +214,9 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
     try {
       const result = await invoke("updateMemory", { id: editingId, content });
       if (result.success === false) {
-        setError(result.error || "Failed to update memory.");
+        // F-189 — an EDIT can push the store over the byte guard just as an add can
+        // (a 40-char memory rewritten to 400), and it lands here, not in handleAdd.
+        if (!consumeCapRefusal(result)) setError(result.error || "Failed to update memory.");
       } else {
         setEditingId(null);
         setEditContent("");
@@ -185,13 +265,74 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
     setWorking(null);
   };
 
+  const toggleSelected = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  /**
+   * F-189 — bulk delete. Deleting is the ONLY way out of a full store (the app evicts
+   * nothing an admin wrote, and archiving frees no capacity — F-176/F-182), so clearing
+   * a byte-capped store one confirm dialog at a time was the difference between a
+   * recoverable state and an abandoned one.
+   *
+   * Sends ONE `deleteMemory({ ids })` call rather than N single-id calls: `pf_memories`
+   * is a single KVS value, so N calls are N read-modify-writes racing each other, and a
+   * partial failure halfway through leaves the admin unable to tell what went.
+   */
+  const handleDeleteSelected = async () => {
+    const ids = Array.from(selected);
+    if (!ids.length || bulkDeleting || working) return;
+    const n = ids.length;
+    if (!(await confirmDialog(
+      `This permanently deletes ${n} ${n === 1 ? "memory" : "memories"} and cannot be undone.`,
+      { title: `Delete ${n} selected ${n === 1 ? "memory" : "memories"}?`, confirmLabel: "Delete" },
+    ))) return;
+    setBulkDeleting(true);
+    setError(null);
+    try {
+      const result = await invoke("deleteMemory", { ids });
+      if (result && result.success === false) {
+        showToast(result.error || "Failed to delete memories", "error");
+      } else {
+        // A successful delete is the one thing that can clear a capacity wall, so drop
+        // it here rather than waiting for the admin's next write to discover it is gone.
+        setCapRefusal(null);
+        setSelected(new Set());
+        await loadMemories();
+        const removed = result && typeof result.deleted === "number" ? result.deleted : n;
+        showToast(`${removed} ${removed === 1 ? "memory" : "memories"} deleted`);
+      }
+    } catch (e) {
+      showToast("Failed to delete memories: " + e.message, "error");
+    }
+    setBulkDeleting(false);
+  };
+
   const byNewest = (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
   const active = memories.filter((m) => !m.disabled).sort(byNewest);
   const archived = memories.filter((m) => m.disabled).sort(byNewest);
-  const colCount = 5;
+  // F-189 — the select column only exists for admins (they are the only ones with any
+  // row actions), so the archived divider's colSpan has to move with it.
+  const colCount = isAdmin ? 6 : 5;
 
   const renderRow = (mem) => (
     <tr key={mem.id} className={mem.disabled ? "memories-admin-archived-row" : undefined}>
+      {isAdmin && (
+        <td className="memories-admin-selcell">
+          <input
+            type="checkbox"
+            className="memories-admin-select"
+            checked={selected.has(mem.id)}
+            disabled={bulkDeleting}
+            onChange={() => toggleSelected(mem.id)}
+            aria-label={`Select memory: ${mem.content}`}
+          />
+        </td>
+      )}
       <td style={{ wordBreak: "break-word" }}>
         {editingId === mem.id ? (
           <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
@@ -280,6 +421,69 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
       </div>
 
       {settings && settings.storeFull && <MemoryFullBanner storeFull={settings.storeFull} />}
+
+      {/* F-189 — the SIZE of the store, in the unit the guard is actually expressed in.
+          The row count has always been visible and the byte total never was, which made a
+          byte-guard refusal unreadable: "40 of 200 memories" next to a store that will not
+          accept another word. Rendered only when the backend sends the numbers, so an older
+          backend keeps the old tab exactly; red once past the guard, because at that point
+          it has stopped being a statistic and become the reason nothing is being learned. */}
+      {(() => {
+        const b = stats && typeof stats.bytes === "number" ? stats.bytes : null;
+        const guard = stats && typeof stats.guardBytes === "number" ? stats.guardBytes : null;
+        const plat = stats && typeof stats.platformBytes === "number" ? stats.platformBytes : null;
+        if (b === null || guard === null) return null;
+        // The BACKEND'S verdicts, never a threshold recomputed here — `>=` vs `>` differ
+        // between the two ceilings (memoryStoreStats), and a second copy of that rule is
+        // exactly the N-disagreeing-copies defect this repo keeps paying for.
+        const over = !!stats.overGuard;
+        const overPlat = !!stats.overPlatform;
+        return (
+          <div
+            className={`memories-admin-stats${over ? " memories-admin-stats-over" : ""}`}
+            role="status"
+          >
+            Store: {fmtBytes(b)} of {fmtBytes(guard)} guard
+            {plat !== null ? ` (platform limit ${fmtBytes(plat)})` : ""}
+            {/* Past the PLATFORM ceiling the store cannot take any write at all — not even
+                a single-row delete, which still rewrites the whole oversized array. That is
+                a different and worse state than "over the guard", and saying so here is the
+                only way an admin understands why one-at-a-time deleting does nothing. */}
+            {overPlat && (
+              <span className="memories-admin-stats-note">
+                {" "}— over Jira's storage limit: nothing can be saved until enough memories
+                are deleted together.
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* F-189 — a `platform-cap` refusal. Solid red, white text, full border, no rail and
+          no tint (owner design law), dark override in injectStyles().
+          The sentence is the BACKEND'S, verbatim — memoryPlatformCapMessage(bytesOver) in
+          src/shared/registry-limits.js, the same one-home rule F-181/F-190 established for
+          the other two refusals. It already names the deficit in bytes and says the store
+          cannot take even a one-row delete, which is the whole reason this state needs its
+          own wording. Retyping it here would put the number in two places and let them
+          disagree, which is this repo's signature defect.
+          The second line is OURS to add, because it is about THIS SCREEN's controls: the
+          resolver cannot know the tab has a "Delete selected" button. */}
+      {capRefusal && (
+        <div className="memories-admin-capwall" role="alert">
+          <span className="memories-admin-capwall-title">Memory store is over Jira's storage limit</span>
+          <span className="memories-admin-capwall-text">
+            {capRefusal.error
+              || (fmtBytes(capRefusal.bytesOver)
+                ? `The store is ${fmtBytes(capRefusal.bytesOver)} over the limit, so no change to it can be saved.`
+                : "The store is over the limit, so no change to it can be saved.")}
+          </span>
+          <span className="memories-admin-capwall-text">
+            Tick the memories you no longer need and use “Delete selected” to remove them in one
+            go. Archiving does not free capacity, and deleting them one at a time will not work.
+          </span>
+        </div>
+      )}
 
       {error && (
         <div style={{ color: "var(--error-color)", fontSize: "12px", fontWeight: 600, marginBottom: "10px" }}>
@@ -393,6 +597,33 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
         </button>
       </div>
 
+      {/* F-189 — the bulk-delete bar. Only rendered once something is ticked: an always-on
+          "Delete selected (0)" is a dead control that trains the eye to ignore the row the
+          real one will appear in. The count is IN the label because this button is the one
+          irreversible action on the tab and the confirm dialog should never be the first
+          place the admin learns how many rows they picked. */}
+      {isAdmin && selected.size > 0 && (
+        <div className="memories-admin-bulkbar">
+          <span className="memories-admin-bulkcount">
+            {selected.size} selected
+          </span>
+          <button
+            className={`memories-admin-bulkdelete${bulkDeleting ? " is-busy busy-solid" : ""}`}
+            onClick={handleDeleteSelected}
+            disabled={bulkDeleting || !!working}
+          >
+            Delete selected ({selected.size})
+          </button>
+          <button
+            className="btn-small"
+            onClick={() => setSelected(new Set())}
+            disabled={bulkDeleting}
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
       <div className="card">
         {loading ? (
           <div style={{ padding: "14px" }}>
@@ -422,6 +653,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
           <table className="table">
             <thead>
               <tr>
+                {isAdmin && <th className="memories-admin-selcell"></th>}
                 <th>Memory</th>
                 <th>Source</th>
                 <th>Project</th>

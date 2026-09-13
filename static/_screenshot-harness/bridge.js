@@ -2095,11 +2095,21 @@ function invoke(name, payload) {
          than a third and fourth agent card - which every other assertion here counts - the
          broken agent's stored reason is swapped by a window flag, the same idiom
          `window.__STANDARD__` and `window.__MEMORY_FULL__` already use. */
+      /* F-554 - the STATUS READ's own two non-answers, which no UI action can provoke:
+         a fetch that has not landed yet (the window the LIVE badge used to lie in), and a
+         read that failed outright. `__VA_STATUS_DELAY_MS__` holds the answer back so the
+         card can be read mid-flight; `__VA_STATUS_FAIL__` makes it resolve as a backend
+         "no". Both are the same window-flag idiom `__VA_HEALTH_REASON__` already uses. */
+      if (typeof window !== "undefined" && window.__VA_STATUS_FAIL__) {
+        return Promise.resolve({ success: false, error: "The status could not be read." });
+      }
+      const delay = (typeof window !== "undefined" && Number(window.__VA_STATUS_DELAY_MS__)) || 0;
       const override = (typeof window !== "undefined" && window.__VA_HEALTH_REASON__) || null;
       const out = st && override && st.health && st.health.ok === false
         ? { ...st, health: { ...st.health, reason: override } }
         : st;
-      return Promise.resolve(out ? { success: true, ...out, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." });
+      const answer = out ? { success: true, ...out, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." };
+      return delay > 0 ? new Promise((r) => setTimeout(() => r(answer), delay)) : Promise.resolve(answer);
     }
     case "listVaDrafts": return Promise.resolve({ success: true, drafts: (VA_DRAFTS[(payload && payload.jobId) || ""] || []).filter((d) => !VA_DECIDED.has(`${payload.jobId}:${d.itemKey}`)) });
     case "approveVaDraft": case "rejectVaDraft": {

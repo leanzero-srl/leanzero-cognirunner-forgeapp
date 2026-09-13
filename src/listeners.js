@@ -373,6 +373,10 @@ export const buildAgentKnowledge = async (agent, { projectKey = null, audience =
       const { fetchSkillsBlock } = await import("./skills.js");
       const b = await fetchSkillsBlock(ids, { capBytes: budget.skills });
       if (b.text) out.skillsBlock = b.text;
+      // THE BUILDER STAMPS THE RECEIPT (F-487): only it knows which of the requested
+      // skills actually FIT the byte budget, so the ids travel with the block instead of
+      // being re-derived by parsing it downstream. Ids only — never the instructions.
+      if (b.applied && b.applied.length) { out.skillIds = b.applied.map((x) => x.id); out.skillCount = b.applied.length; }
       // A skill that did not fit is SAID, not swallowed — the author is otherwise left
       // wondering why the skill they bound has no effect (this is the `break`-vs-`continue`
       // defect's other half: the silence, not just the suppression).
@@ -384,6 +388,7 @@ export const buildAgentKnowledge = async (agent, { projectKey = null, audience =
       const { buildMemoryBlock } = await import("./memories.js");
       const b = await buildMemoryBlock({ projectKey: projectKey || null, capBytes: budget.memories });
       if (b.text) out.memoryBlock = b.text;
+      if (b.text) out.memoryCount = Number(b.count) || 0;
     } catch (e) { console.warn("[knowledge] memory block skipped:", e && e.message); }
   }
   return out;

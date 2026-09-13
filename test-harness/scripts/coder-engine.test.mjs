@@ -806,5 +806,81 @@ await check("F-404: a turn with no knowledge sends no fenced blocks (a pre-13b t
   assert.ok(!/<<<SKILLS|<<<LEARNED_MEMORIES/.test(sent), "nothing is conjured when the caller passes none");
 });
 
+/* ═════════ F-487: the Coder's knowledge leaves a TRACE ═════════
+ *
+ * Before this, the Coder was the one agent whose injected knowledge was invisible at
+ * run time: no `Knowledge injected` line, nothing on the thread row, nothing on the
+ * task result. A live turn with skills and a live turn without them were byte-identical
+ * from outside, so a regression that dropped `skillIds` on the way to the engine looked
+ * exactly like a healthy run. These assert the receipt, in all three places, and assert
+ * that it is IDS AND COUNTS ONLY — the skill's text must never enter a stored record.
+ */
+await check("F-487: a coder turn LOGS the injection and stamps the receipt on the turn record", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  const r = await startTurn(world, {
+    knowledge: {
+      skillsBlock: "### Skill: House style\nTwo-space indent.",
+      skillIds: ["builtin_skill_agile_fields", "sk_house"],
+      skillCount: 2,
+      memoryBlock: "- [fix] The build script lives in tools/, not scripts/.",
+      memoryCount: 1,
+    },
+  });
+  assert.ok((r.logs || []).some((l) => /^Knowledge injected: skills \+ memories$/.test(l)),
+    `the run log records the injection (got: ${JSON.stringify(r.logs)})`);
+  assert.deepEqual(r.knowledge.skillIds, ["builtin_skill_agile_fields", "sk_house"],
+    "the RESULT carries the skill ids the caller passed to the turn");
+  assert.equal(r.knowledge.skillCount, 2);
+  assert.equal(r.knowledge.memoryCount, 1);
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  const userRow = (row.messages || []).find((mm) => mm.role === "user" && mm.knowledge);
+  assert.ok(userRow, "the turn's own record on the thread carries the receipt");
+  assert.deepEqual(userRow.knowledge.skillIds, ["builtin_skill_agile_fields", "sk_house"]);
+  // IDS AND COUNTS ONLY. A skill is an admin's writing and a memory is derived from
+  // issue content; neither belongs in a 90-day thread row (and `seededCount` keeps the
+  // block itself out of the transcript, which this re-proves from the stored side).
+  const stored = JSON.stringify(row);
+  assert.ok(!/Two-space indent/.test(stored), "the skill's TEXT is not stored on the thread");
+  assert.ok(!/build script lives in tools/.test(stored), "the memory's TEXT is not stored either");
+  assert.ok(!/<<<SKILLS|<<<LEARNED_MEMORIES/.test(stored), "and neither fence is in the transcript");
+});
+
+await check("F-487: ids are not required — a block with no ids still reports honest counts", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  const r = await startTurn(world, { knowledge: { skillsBlock: "### Skill: X\nY." } });
+  assert.ok((r.logs || []).some((l) => l === "Knowledge injected: skills"), "the line names skills only");
+  assert.deepEqual(r.knowledge.skillIds, [], "no ids were supplied, so none are invented");
+  assert.equal(r.knowledge.skillCount, 1, "…but a block WAS injected, and the count says so");
+  assert.equal(r.knowledge.memoryCount, 0);
+});
+
+await check("F-487: a turn with no knowledge logs nothing and stamps nothing", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  const r = await startTurn(world);
+  assert.ok(!(r.logs || []).some((l) => /Knowledge injected/.test(l)), "no line when nothing was injected");
+  assert.equal(r.knowledge, undefined, "and no receipt on the result");
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.ok(!(row.messages || []).some((mm) => mm.knowledge), "…nor on the thread row");
+});
+
+await check("F-487: the receipt is built by ONE function, shared with the listener/job runner", async () => {
+  const { summarizeKnowledge, logKnowledgeInjection } = await import("../../src/agent-runner.js");
+  assert.equal(summarizeKnowledge(null), null, "nothing injected ⇒ no receipt");
+  assert.equal(summarizeKnowledge({ skillsBlock: "   " }), null, "a blank block is not an injection");
+  // The runner accepts both shapes fetchSkillsBlock/buildMemoryBlock return.
+  const s = summarizeKnowledge({ skillsBlock: { text: "### Skill: a\nb" }, skillIds: ["sk_1"], memoryBlock: { text: "- m" }, memoryCount: 3 });
+  assert.deepEqual(s, { skillIds: ["sk_1"], skillCount: 1, memoryCount: 3 });
+  const lines = [];
+  const again = logKnowledgeInjection({ memoryBlock: "- m", memoryCount: 2 }, (l) => lines.push(l));
+  assert.deepEqual(lines, ["Knowledge injected: memories"], "the wording the live drivers grep for");
+  assert.equal(again.memoryCount, 2);
+  assert.equal(logKnowledgeInjection({}, (l) => lines.push(l)), null, "…and nothing is logged for an empty object");
+  assert.equal(lines.length, 1);
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

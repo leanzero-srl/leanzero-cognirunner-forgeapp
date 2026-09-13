@@ -1336,6 +1336,10 @@ const buildCoderKnowledge = async (p) => {
       const { fetchSkillsBlock } = await import("./skills.js");
       const b = await fetchSkillsBlock(ids, { capBytes: budget.skills });
       if (b.text) out.skillsBlock = b.text;
+      // Same receipt stamp as `buildAgentKnowledge` (src/listeners.js) — F-487. The ids
+      // the model actually received travel with the block so `summarizeKnowledge`
+      // (src/agent-runner.js) can record them on the Coder's turn without re-parsing it.
+      if (b.applied && b.applied.length) { out.skillIds = b.applied.map((x) => x.id); out.skillCount = b.applied.length; }
       if (b.skipped && b.skipped.length) console.warn(`[coder] skill(s) too large for the turn's ${budget.skills}-byte budget, not injected: ${b.skipped.map((x) => x.name || x.id).join(", ")}`);
     } catch (e) { console.warn("[coder] skills block skipped:", e && e.message); }
   }
@@ -1346,6 +1350,7 @@ const buildCoderKnowledge = async (p) => {
       const projectKey = String((p && p.issueKey) || "").split("-")[0] || null;
       const b = await buildMemoryBlock({ projectKey, capBytes: budget.memories });
       if (b.text) out.memoryBlock = b.text;
+      if (b.text) out.memoryCount = Number(b.count) || 0;
     }
   } catch (e) { console.warn("[coder] memory block skipped:", e && e.message); }
   return out;

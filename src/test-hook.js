@@ -422,10 +422,64 @@ export async function testStateTrigger(req) {
         // either: a plantable ticket is a plantable CONSENT, which is the fact the whole
         // confirm flow depends on. (`?what=kvs` still READS those rows — a read behind
         // HARNESS_SECRET is how a tester confirms the thread landed.)
+        // F-387 — the CAPABILITY READ joins them. `getAgentCapability` answers "may the
+        // Coder run on this instance, and if not why" from the same facts the gate uses.
+        // It is a pure READ (no write, no model call, no token spend), the same class as
+        // `getProvider`/`getAgentModel` above, and it was absent by omission rather than by
+        // the policy stated in the paragraph above: with it closed, the refusal a Standard
+        // tenant actually emits could only ever be DERIVED, never observed.
+        "getAgentCapability",
+        // F-387 — the two WRITE doors, admitted ONLY through the forced-simulation wrapper
+        // below. The paragraph above still holds and is not relaxed: what changed is that
+        // the harness can no longer ask for a LIVE turn at all. `startCoderTurn` is rewritten
+        // to `simulation:true` whatever the payload says, and `confirmCoderTicket` is refused
+        // unless the ticket it answers belongs to a thread that is itself simulated — so no
+        // write to a customer's repository can be planted through this hook, which is the
+        // property the original exclusion was protecting. A frontier model's tokens are still
+        // spent by a simulated turn; that is a COST, not a write, and it is bounded by the
+        // same HARNESS_SECRET gate as everything else here.
+        "startCoderTurn", "confirmCoderTicket",
         "getCoderThread"]);
       const functionKey = body.functionKey || body.name;
       if (!ALLOWED_KEYS.has(functionKey)) {
         return json(400, { error: `functionKey not allowlisted: ${functionKey}` });
+      }
+      /* ── F-387 — THE FORCED-SIMULATION WRAPPER. ───────────────────────────────────────
+       * The hook may drive the Coder, but it may never drive it LIVE.
+       *   startCoderTurn      → `simulation` is OVERWRITTEN with true. The payload cannot
+       *                         ask for a live turn; the engine fixes the mode from the
+       *                         thread's FIRST turn (F-360), so the whole thread is
+       *                         simulated from here on.
+       *   confirmCoderTicket  → the payload has no say in the mode at all (F-360 again:
+       *                         the thread row is the authority), so the check is on the
+       *                         ROW: the ticket must be simulated, and so must the thread
+       *                         it belongs to. Anything else is refused here, before the
+       *                         resolver, with the reason named.
+       * A refusal is a 400 with `harnessRefusal`, never a silent pass — a harness that
+       * quietly does something other than what it was asked is worse than one that stops. */
+      let hookPayload = body.payload || {};
+      if (functionKey === "startCoderTurn") {
+        hookPayload = { ...hookPayload, simulation: true };
+      } else if (functionKey === "confirmCoderTicket") {
+        const { coderTicketKey, coderThreadKey } = await import("./coder-engine.js");
+        const ticketId = String(hookPayload.ticketId || "");
+        let ticket = null;
+        try { ticket = await storage.get(coderTicketKey(ticketId)); } catch (e) { ticket = null; }
+        if (!ticket || typeof ticket !== "object") {
+          return json(400, { error: "harnessRefusal: no such Coder ticket — the hook will not answer a ticket it cannot read", harnessRefusal: "ticket-unreadable" });
+        }
+        let thread = null;
+        try { thread = await storage.get(coderThreadKey(ticket.issueKey, ticket.threadId)); } catch (e) { thread = null; }
+        // BOTH rows must say simulated. A missing thread row is NOT a licence: unknown is
+        // refused, the same direction every other gate in this app fails.
+        if (ticket.simulation !== true || !thread || thread.simulation !== true) {
+          return json(400, {
+            error: "harnessRefusal: the hook only answers a ticket on a SIMULATED thread — a live confirm writes to a customer's repository",
+            harnessRefusal: "not-simulated",
+            ticketSimulation: ticket.simulation === true,
+            threadSimulation: thread ? thread.simulation === true : null,
+          });
+        }
       }
       try {
         const { handler } = await import("./index.js");
@@ -435,7 +489,7 @@ export async function testStateTrigger(req) {
         let hookLicense;
         try { const { getAppContext } = await import("@forge/api"); hookLicense = getAppContext()?.license; } catch (e) { hookLicense = undefined; }
         const r = await handler(
-          { call: { functionKey, payload: body.payload || {} }, context: {} },
+          { call: { functionKey, payload: hookPayload }, context: {} },
           { principal: body.accountId ? { accountId: body.accountId } : undefined, license: hookLicense },
         );
         return json(200, r);

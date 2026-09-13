@@ -301,6 +301,52 @@ export const setJobEnabled = async (id, enabled) => {
   return { ...full, stats: { ...(stats || emptyStats()), nextRunAt: nextRunOf(full) } };
 };
 
+/**
+ * `patchJobStatus` — THE EMERGENCY STOP IS A STATUS WRITE, NOT A RE-SAVE (F-536).
+ *
+ * A Virtual Administrator's pause button used to go through `saveJob`, which re-runs
+ * `normalizeJob` over the WHOLE record. `normalizeJob` re-gates `agent.allowedActions`,
+ * and the pause path carried no `gate`, so the check ran against the RESTRICTIVE
+ * default. An agent legitimately holding a capability- or product-gated action — armed
+ * by the save door on an instance where that capability IS on — threw
+ * `action-not-allowed`, the caller turned that into `job_write_failed`,
+ * `va.status.paused` was NEVER WRITTEN, and the agent carried on sweeping, staging and
+ * posting. Fail-closed on the save is fail OPEN on the safety control, and the safety
+ * control is the one that must not fail.
+ *
+ * The cure is a NARROWING: a status flip is not a configuration change and must not be
+ * routed through the door that validates one. This writes `va.status.paused` and nothing
+ * else. `agent`, `schedule`, `functions` and the rest of the `va` block are carried
+ * through untouched — the row was gated WHEN IT WAS ARMED, and re-gating it at the
+ * moment somebody tries to stop it is the whole defect.
+ *
+ * IT STILL GOES THROUGH THE NORMAL WRITERS. `toIndexRow` + `writeJobIndex` + the record
+ * key, in the order `setJobEnabled` uses, so the list and the record cannot disagree
+ * about `updatedAt`. What it does NOT do is call `touchSched`: `planTick` advances
+ * `lastCheckedAt` for every indexed row on every tick, paused or not, so a resumed agent
+ * has no backlog of minutes to replay and there is nothing to suppress.
+ *
+ * Refuses a row that is not a Virtual Administrator rather than minting a `va` block on
+ * a script or agent job — a status this engine would then read as a configured agent.
+ */
+export const patchJobStatus = async (id, { paused } = {}) => {
+  const full = (await storage.get(JOB_PREFIX + safeKeyPart(id))) || null;
+  if (!full) throw new Error("Scheduled job not found");
+  if (!full.va || typeof full.va !== "object") throw new Error("This scheduled job is not a Virtual Administrator, so it has no pause state");
+  const next = {
+    ...full,
+    va: { ...full.va, status: { ...(full.va.status || {}), paused: paused === true } },
+    updatedAt: nowIso(),
+  };
+  delete next.stats;
+  const rows = await readJobIndex();
+  const at = rows.findIndex((r) => r.id === next.id);
+  if (at >= 0) rows[at] = toIndexRow(next); else rows.push(toIndexRow(next));
+  await writeJobIndex(rows);
+  await storage.set(JOB_PREFIX + safeKeyPart(next.id), next);
+  return next;
+};
+
 // ── Queue ────────────────────────────────────────────────────────────────────
 
 export const enqueueJobRun = async ({ job, scheduledFor, missed = 0, manual = false, accountId = null }) => {

@@ -1267,5 +1267,81 @@ let agentId = null;
   ok(/updatedAt/.test(body), "F-499: the one measurer counts `updatedAt` — the field the deleted copy left out");
 }
 
+/* ═════ F-536 — THE EMERGENCY STOP IS A STATUS WRITE, NOT A RE-SAVE ═════
+ *
+ * Pause and resume used to re-save the WHOLE job row through `saveJob`, with no `gate`.
+ * `normalizeJob` therefore re-ran `assertAllowedActions(ids, undefined)` against the
+ * RESTRICTIVE default, so an agent holding a capability-gated action — a `git` action
+ * armed by the save door on an instance where the capability IS on — could not be paused
+ * AT ALL: `action-not-allowed` -> `job_write_failed`, the tab showed a failure,
+ * `va.status.paused` was never written, and the agent kept sweeping, staging and
+ * POSTING. Fail-closed on the save is fail-OPEN on the safety control, and the safety
+ * control is the one that must not fail.
+ *
+ * The row below is one nobody can save today and everybody can be left holding: it was
+ * armed by an admin while the git capability was on, and the capability is off now.
+ * That is the precondition, and it is arranged directly on the stored row because the
+ * save door would (correctly) refuse to mint it in this context.
+ */
+{
+  const ARMER = "acct-armer";
+  const rowKey = `job:${agentId}`;
+  const before = await storage.get(rowKey);
+  ok(before && before.mode === "va", "F-536 arrange: the VA row is where the test can reach it");
+  const armed = {
+    ...before,
+    agent: { ...(before.agent || {}), allowedActions: ["get_pull_request"] },
+    savedByRole: "admin",
+    createdBy: ARMER,
+    firstCreatedBy: ARMER,
+    va: { ...before.va, status: { ...before.va.status, paused: false } },
+  };
+  await storage.set(rowKey, armed);
+
+  // F-536 — THE PAUSE LANDS.
+  const paused = await call("pauseVa", { jobId: agentId, reason: "posting nonsense" }, ADMIN);
+  ok(paused.success === true && paused.paused === true,
+    `F-536: an agent holding a capability-gated action CAN be paused (got ${JSON.stringify(paused).slice(0, 240)})`);
+  const afterPause = await storage.get(rowKey);
+  ok(afterPause && afterPause.va.status.paused === true,
+    "F-536: …and `va.status.paused` is true on the JOB ROW, where gate 1 reads it");
+  ok(afterPause && Array.isArray(afterPause.agent.allowedActions)
+    && afterPause.agent.allowedActions.includes("get_pull_request"),
+    `F-536: …with the gated action still on the row — a status flip never re-gates actions (got ${JSON.stringify(afterPause && afterPause.agent.allowedActions)})`);
+
+  // The pause is still a RECEIPT, not a silent write.
+  const stTab = await call("getVaStatus", { jobId: agentId });
+  ok(stTab.success && stTab.paused === true, "F-536: …and the Agents tab reads it back as paused");
+  ok(stTab.success && (stTab.receipts || []).some((x) => (x.skipped || []).some((s) => /paused by/.test(String(s.reason)))),
+    "F-536: …with the pause recorded in the tick timeline");
+
+  // AND THE SAME IS TRUE OF RESUME. A one-way fix would leave the agent stopped forever.
+  const resumed = await call("resumeVa", { jobId: agentId, reason: "wording fixed" }, ADMIN);
+  ok(resumed.success === true && resumed.paused === false,
+    `F-536: resume works on the same row (got ${JSON.stringify(resumed).slice(0, 240)})`);
+  const afterResume = await storage.get(rowKey);
+  ok(afterResume && afterResume.va.status.paused === false, "F-536: …and the row is live again");
+  ok(afterResume && Array.isArray(afterResume.agent.allowedActions)
+    && afterResume.agent.allowedActions.includes("get_pull_request"),
+    "F-536: …and the gated action survived the resume too");
+
+  /*
+   * THE REAL SAVE DOOR IS UNCHANGED — the fix narrows the STATUS FLIP, never the gate.
+   *
+   * `confluence_search` is product-gated and this scripted site has no Confluence, so a
+   * CONFIGURATION save holding it is refused here whatever the git capability happens to
+   * be. That pair is what makes the finding legible: F-277's save-time refusal is alive
+   * and loud on the door that changes what the agent MAY DO, and absent from the button
+   * that only stops it.
+   */
+  const realSave = await call("saveScheduledJob", {
+    job: { id: agentId, mode: "va", agent: { allowedActions: ["confluence_search"] }, va: vaRecord({ guardrails: { shadowTicks: 3 } }) },
+  });
+  ok(realSave.success === false,
+    `F-536: a REAL save holding a product-gated action is still refused (got ${JSON.stringify(realSave).slice(0, 240)})`);
+  ok(/confluence/i.test(String(realSave.error || "")),
+    `F-536: …naming the CAUSE, as F-302 requires (got ${JSON.stringify(realSave.error)})`);
+}
+
 console.log(`\nva-admin.test.mjs: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

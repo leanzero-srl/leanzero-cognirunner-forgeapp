@@ -252,6 +252,9 @@ export const DEFAULT_ADMIN_DEPS = {
   getJob: async (id) => (await import("./scheduled-jobs.js")).getJob(id),
   listJobs: async () => (await import("./scheduled-jobs.js")).listJobs(),
   saveJob: async (job, opts) => (await import("./scheduled-jobs.js")).saveJob(job, opts),
+  // THE STATUS-ONLY WRITER (F-536/F-537). `saveJob` re-normalises and re-arms the whole
+  // record; the pause button must do neither. See the long note on `patchJobStatus`.
+  patchJobStatus: async (id, patch) => (await import("./scheduled-jobs.js")).patchJobStatus(id, patch),
   nextRunOf: async (job) => (await import("./scheduled-jobs.js")).nextRunOf(job),
 
   /* NO `tickIndex` DEP ANY MORE (F-474). Shadow mode is not a wall-clock question: it is
@@ -1090,12 +1093,16 @@ const setPaused = async (paused, { jobId, accountId, reason } = {}, injected = {
     return okv({ id: job.id, paused, unchanged: true });
   }
 
+  /*
+   * A STATUS-ONLY WRITE (F-536). This used to be `deps.saveJob({...job, va})`, which
+   * re-ran the whole record through `normalizeJob` and so re-gated `allowedActions`
+   * against the restrictive default — an agent holding a capability-gated action COULD
+   * NOT BE STOPPED AT ALL. `patchJobStatus` writes `va.status.paused` and nothing else,
+   * through the same index and record writers. The long note is in scheduled-jobs.js.
+   */
   let savedJob = null;
   try {
-    savedJob = await deps.saveJob({
-      ...job,
-      va: { ...va, status: { ...va.status, paused } },
-    }, { accountId: accountId || null });
+    savedJob = await deps.patchJobStatus(job.id, { paused });
   } catch (e) {
     return fail("job_write_failed", { detail: String((e && e.message) || e) });
   }

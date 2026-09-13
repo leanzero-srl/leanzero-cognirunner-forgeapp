@@ -184,10 +184,11 @@ if (atCap.stored) {
 }
 
 
-// === F-173: an ARCHIVED row is the FIRST eviction candidate, whatever its source ===
-// An all-user store at the cap with ONE archived row: an auto (fix) candidate is stored and
-// the archived row is what gives way — archived rows are filtered out of every prompt block,
-// so nothing live is lost, and "Archive" becomes a real way to free capacity.
+// === F-176/F-177: an ARCHIVED row is NEVER evicted (the F-173 policy, REVERSED) ===
+// Archive is this app's NON-destructive action (it has a Restore twin; only Delete warns
+// "cannot be undone"). Under F-173 a background auto-capture permanently destroyed a
+// deliberately archived hand-authored memory, silently. Now archived rows keep their slot
+// and count toward the cap: the fix candidate is REFUSED and the store is byte-identical.
 {
   const seed = [];
   for (let i = 0; i < MAX_MEMORIES; i++) {
@@ -198,12 +199,30 @@ if (atCap.stored) {
     });
   }
   reset(seed);
+  const beforeArch = JSON.stringify(load());
   const r = await saveMemoryCandidate({ content: "a novel lesson learned while fixing generated code", source: "fix", confidence: 0.2 });
-  ok(r.stored === true && r.id, `F-173: the fix candidate is STORED at an all-user cap holding one archived row (got ${JSON.stringify({ stored: r.stored, reason: r.reason })})`);
-  ok(JSON.stringify(r.evicted) === JSON.stringify(["u42"]), `F-173: the ARCHIVED row is the one evicted (got ${JSON.stringify(r.evicted)})`);
-  const after = load();
-  ok(after.length === MAX_MEMORIES && !after.some((m) => m.id === "u42"), "the archived row is gone and the cap holds");
-  ok(after.filter((m) => m.source === "user").length === MAX_MEMORIES - 1, "no LIVE hand-authored memory was touched");
+  ok(r.stored === false && r.id === null && r.reason === "cap",
+    `F-176: the fix candidate is REFUSED at an all-user cap holding one archived row (got ${JSON.stringify({ stored: r.stored, reason: r.reason })})`);
+  ok(JSON.stringify(r.evicted) === "[]", `F-176: nothing is evicted (got ${JSON.stringify(r.evicted)})`);
+  const afterArch = load();
+  ok(JSON.stringify(afterArch) === beforeArch, "F-176: the store is BYTE-IDENTICAL after the refusal");
+  ok(afterArch.some((m) => m.id === "u42" && m.disabled === true), "F-176/F-177: the ARCHIVED hand-authored memory SURVIVES — archiving never risks a memory");
+}
+
+// --- an ARCHIVED AUTO row is not evictable either (archived is archived, whatever the source),
+// while a LIVE auto row in the same store is the victim. This is the whole pool rule in one fixture.
+{
+  const seed = [];
+  for (let i = 0; i < MAX_MEMORIES - 2; i++) {
+    seed.push({ id: `u${i}`, content: `a curated user lesson number ${i} distinct`, source: "user", confidence: 1.0, reinforcements: 5, disabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" });
+  }
+  seed.push({ id: "autoArchived", content: "an archived auto lesson about webhook retry", source: "fix", confidence: 0.01, reinforcements: 0, disabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" });
+  seed.push({ id: "autoLive", content: "a live auto lesson about sprint mapping", source: "test", confidence: 0.9, reinforcements: 5, disabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" });
+  reset(seed);
+  const r = await saveMemoryCandidate({ content: "a totally novel lesson about attachment uploads", source: "fix", confidence: 0.2 });
+  ok(r.stored === true && JSON.stringify(r.evicted) === JSON.stringify(["autoLive"]),
+    `the victim is the LIVE auto row, never the archived one (got ${JSON.stringify(r.evicted)})`);
+  ok(load().some((m) => m.id === "autoArchived"), "the ARCHIVED auto row survives (a lower score than the victim, but not evictable)");
 }
 
 console.log(`\nmemory-dedup: ${pass} passed, ${fail} failed`);

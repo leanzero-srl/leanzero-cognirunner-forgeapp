@@ -169,7 +169,7 @@ const markMemoryStoreFull = async (reason, source) => {
  * to answer that is to ask the admission rule itself: build a hypothetical AUTO-sourced
  * newcomer of the maximum allowed length and run the real `pruneForSave` dry-run over
  * `[newcomer, ...arr]`. It stays raised iff that newcomer could not be kept — i.e. there
- * is no evictable row (archived first, then auto — see pruneOne) AND either the item cap
+ * is no evictable row (non-archived AUTO rows only — see pruneOne) AND either the item cap
  * or the serialized-byte guard is hit.
  *
  * This replaces two PROXIES that disagreed with the rule that raises the marker:
@@ -232,21 +232,31 @@ const pruneScore = (m) => (Number(m.confidence) || 0) + 0.1 * Math.min(Number(m.
 /**
  * Choose ONE victim.
  *
- * POLICY, ONE HOME (F-160 + F-164): **a HAND-AUTHORED memory is never evicted by
- * the app.** Only auto-captured rows (source "test"/"fix" — anything that is not
- * "user") are ever eligible as a victim, whoever the newcomer is.
+ * THE EVICTION POLICY, ONE HOME (F-160 + F-164 + F-176/F-177):
+ * **the app evicts only AUTO-captured (source "test"/"fix") rows that are NOT
+ * archived. A hand-authored memory is never evicted, and an ARCHIVED memory is
+ * never evicted either — archived rows keep their slot and count toward the cap.**
+ * With no such row available there is NO victim and the caller is told (`blocked`);
+ * for a new candidate that means refused with reason "cap"/"bytes" and a store left
+ * byte-identical, and the human prunes in the Memories tab (memoryCapRefusalMessage
+ * says exactly that). The ONE exception is the byte guard with nothing left but the
+ * protected newcomer itself — it is then dropped (never a stored row).
  *
- * F-160 fixed half of it: an AUTO candidate may not evict a USER row (measured: a
- * 1.0-confidence, 5-reinforcement user row evicted by a 0.2-confidence fix row). The
- * USER arm stayed, so a user add at a full all-user store still silently destroyed
- * the lowest-scoring hand-written memory — permanently, with no tombstone and no undo,
- * behind a "Memory saved" toast (F-164). A curated store is exactly the state the
- * feature asks admins to build; it must not eat itself.
- *
- * So: with no auto row available there is NO victim and the caller is told (`blocked`).
- * For a new candidate that means refused with reason "cap" and a store left byte-identical;
- * the human prunes in the Memories tab. The ONE exception is the byte guard with nothing
- * left but the protected newcomer itself — it is then dropped (never a stored row).
+ * Why each half exists:
+ * - F-160: an AUTO candidate may not evict a USER row (measured: a 1.0-confidence,
+ *   5-reinforcement user row evicted by a 0.2-confidence fix row).
+ * - F-164: nor may a USER add — at a full all-user store it silently destroyed the
+ *   lowest-scoring hand-written memory, permanently, behind a "Memory saved" toast.
+ *   A curated store is exactly the state the feature asks admins to build; it must
+ *   not eat itself.
+ * - F-176/F-177 REVERSE F-173, which had made archived rows the first eviction pool
+ *   so that "Archive" would free capacity. Archive is this app's NON-DESTRUCTIVE
+ *   action: it has a "Restore" twin, its toast is "Memory archived", and only Delete
+ *   carries a "cannot be undone" confirm. Under F-173, background auto-capture
+ *   permanently destroyed a deliberately archived hand-authored memory with no
+ *   tombstone, no log and no undo — and the docblock above still promised the
+ *   opposite. Archiving is now honest: it silences a memory, it never risks it, and
+ *   it does not free a slot. Delete is the one way to make room.
  *
  * @returns {{ out: Array, victim: Object|null, blocked?: boolean }}
  */
@@ -256,15 +266,10 @@ const pruneOne = (arr, protectId = null) => {
   // by its own save, while saveMemoryCandidate still reported an id, so addMemory
   // answered success for a row that no longer existed.
   const eligible = protectId ? arr.filter((m) => m.id !== protectId) : arr;
-  // F-173: ARCHIVED rows (disabled:true) are the FIRST candidates for ANY newcomer,
-  // whatever their source — an archived memory is filtered out of every prompt block,
-  // so evicting it loses nothing live, and it is the one disposal an admin has already
-  // asked for. This is also what makes "Archive" actually free capacity, so the tab's
-  // store-full banner and the cap chip agree with what the store will accept.
-  // F-164: after the archive, the pool is the AUTO rows. Full stop — no fallback to
-  // LIVE user rows; a hand-authored, enabled memory is never evicted by the app.
-  const archived = eligible.filter((m) => m.disabled === true);
-  const pool = archived.length > 0 ? archived : eligible.filter((m) => m.source !== "user");
+  // F-164 + F-176/F-177: the victim pool is the NON-ARCHIVED AUTO rows. Full stop —
+  // no hand-authored row (whatever its state) and no archived row (whatever its
+  // source) is ever evicted by the app.
+  const pool = eligible.filter((m) => m.source !== "user" && m.disabled !== true);
   let victim = null;
   for (const m of pool) {
     if (!victim
@@ -275,7 +280,7 @@ const pruneOne = (arr, protectId = null) => {
     }
   }
   if (!victim) {
-    // Every remaining row is hand-authored AND live → nothing may be evicted. The caller
+    // Every remaining row is hand-authored or archived → nothing may be evicted. The caller
     // must reject the candidate and leave the store untouched.
     if (eligible.length > 0) return { out: arr, victim: null, blocked: true };
     // Nothing but the protected row is left: it is the only thing that can still go

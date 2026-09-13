@@ -232,9 +232,11 @@ export function registryPressure(input) {
  * backend/test imports from "./memories.js" keep working unchanged.
  *
  * Same storage reality as the registry: one KVS array value under
- * `pf_memories`, one hard ~240KiB platform ceiling, no automatic eviction of
- * live hand-authored rows — the cap is a REFUSAL with an escape valve
- * (archive/delete in the Memories tab).
+ * `pf_memories`, one hard ~240KiB platform ceiling, and no automatic eviction
+ * of anything a human wrote: the app evicts only NON-ARCHIVED auto-captured
+ * rows (F-176/F-177), so archiving — the non-destructive action — keeps its
+ * slot and still counts toward the cap. The cap is therefore a REFUSAL whose
+ * one escape valve is DELETING in the Memories tab.
  * ---------------------------------------------------------------------- */
 
 /** Hard row cap for the memory store. */
@@ -267,4 +269,4 @@ export const MEMORY_CONTENT_MAX = 400;
  */
 export const memoryCapRefusalMessage = (reason) => (reason === "bytes"
   ? "Memory store has reached its size limit — delete or shorten some memories in the Memories tab."
-  : `Memory store is full of your own memories (${MAX_MEMORIES} max) — no live memory is evicted automatically — archive or delete some in the Memories tab to make room.`);
+  : `Memory store is full (${MAX_MEMORIES} max) — no memory you wrote is ever evicted automatically, and archived memories still count toward the cap — delete some in the Memories tab to make room.`);

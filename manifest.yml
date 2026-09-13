@@ -96,6 +96,40 @@ modules:
   #      exactly like the exprProp pattern above. Every SHAPE oddness is TRUE; only
   #      a type oddness is not, and closing that needs a type test the language
   #      does not have.
+  # ⚠️ THE CONFLUENCE BRANCH READS A FORGEABLE PROPERTY TOO, AND FOR THE SAME REASON.
+  # `cognirunner.confluence` is written by the Confluence VALIDATOR on a pass and by
+  # the Confluence page post-function, and it is ADVISORY: it names the last page this
+  # app SAW for the issue, and anyone who can edit the issue can write it. A Jira
+  # expression cannot make a network call, so this condition can never verify it — it
+  # is a HINT that shows a transition once a page has been linked, never a gate. The
+  # gate is the `confluence-page-exists` VALIDATOR (src/premade-rules.js
+  # runConfluenceValidator), which searches Confluence LIVE on the transition and does
+  # not read this property at all. Same design decision as the git branches; the rule's
+  # own help text says so. (1.5 commit 7c.)
+  #
+  # It follows the F-365 leading-guard pattern, with ONE simplification: there is no
+  # dynamic indexing here. The property is read at a FIXED key and the leaf is a fixed
+  # name, so the `config.repo`-shaped hazard does not exist and the guard only has to
+  # cover the property's own shape:
+  #   a. missing property, a property with no `version`, or any version other than 1
+  #      (a future version 2 SHOWS rather than guesses) → TRUE.
+  #   b. only then is `pageId` read, and `!= null` is the whole answer. MISSING → TRUE
+  #      is load-bearing: a missing property means "CogniRunner has never checked this
+  #      issue", never "there is no page", so an issue nobody has run the validator on
+  #      still shows the transition. The ONE state that hides is a version-1 property
+  #      that names no page — "we looked and there was none". That is the slot the
+  #      validator and the page post-function write into, and it is the only negative
+  #      this condition is allowed to act on.
+  #   c. RESIDUAL, stated because it is structural and identical to the git branches'
+  #      third note: Jira expressions have no type test and no try/catch. `version` is
+  #      written by ONE builder (confluencePropertyValue, src/shared/confluence-rules.js)
+  #      and is always the NUMBER 1, but a forged property whose `version` is the STRING
+  #      "1" is a cross-type compare — an evaluation ERROR, i.e. FALSE, i.e. HIDDEN.
+  #      Every SHAPE oddness is TRUE; only a TYPE oddness is not, and closing that needs
+  #      a type test the language does not have. The blast radius is bounded the same way
+  #      it is for git: the worst an issue-editor achieves is HIDING a transition on
+  #      their own issue — this condition can never grant one. The offline suite drives
+  #      these shapes so the claim is checked rather than asserted.
   jira:workflowCondition:
     - key: ai-text-field-condition
       name: CogniRunner Field Condition
@@ -152,6 +186,12 @@ modules:
         config.ruleType == "git-build-passed" ?
           (issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.build == null ? true :
            issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr.build.toLowerCase().match("^(failure|failed|timed_out|cancelled|canceled|action_required|startup_failure|stale|stopped)$") == null) :
+        config.ruleType == "confluence-page-linked"
+          && (issue.properties?.["cognirunner.confluence"] == null
+              || issue.properties?.["cognirunner.confluence"].version == null
+              || issue.properties?.["cognirunner.confluence"].version != 1) ? true :
+        config.ruleType == "confluence-page-linked" ?
+          (issue.properties?.["cognirunner.confluence"]?.pageId != null) :
         true
       create:
         resource: config-ui-resource

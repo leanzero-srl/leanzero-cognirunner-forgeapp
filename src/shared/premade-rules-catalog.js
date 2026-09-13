@@ -336,6 +336,12 @@ export const EXPRESSION_BACKED_CONDITIONS = [
   "git-pr-merged",
   "git-pr-approved",
   "git-build-passed",
+  // Confluence condition (1.5 commit 7c). One more null-guarded branch on the SAME
+  // expression, over the advisory cognirunner.confluence property: a missing property,
+  // a version other than 1, or a missing pageId all evaluate TRUE. It hides a
+  // transition on exactly one state — our own property saying "we looked and there is
+  // no page".
+  "confluence-page-linked",
 ];
 
 /**
@@ -576,6 +582,21 @@ export const PREMADE_CONDITIONS = [
     help: "Hide this transition only when the last build CogniRunner saw for the chosen repository FAILED (failed, cancelled, timed out, stopped\u2026). A build still running, or none at all, shows the transition. A condition hides the transition only on a known-negative state; it never blocks on a missing property. Use the Git VALIDATOR to require a passing build.",
     category: "Git",
     params: { picker: { key: "repo", label: "Repository", source: "gitrepos", ph: "Choose a repository\u2026" } },
+    availability: "available",
+  },
+  // --- CONFLUENCE condition (1.5 commit 7c). Jira evaluates this ITSELF, as one more
+  //     branch of the ONE manifest expression, reading the ADVISORY
+  //     cognirunner.confluence property \u2014 no Confluence call, no scope, no cost. It
+  //     takes NO parameters: the property is per-issue and names one page, so there is
+  //     nothing to pick. The VALIDATOR of the same family is the thing that verifies
+  //     live; this only decides what a screen shows. ---
+  {
+    key: "confluence-page-linked",
+    label: "Confluence: a page is linked to this issue",
+    help: "Only show this transition once CogniRunner has recorded a Confluence page for the issue \u2014 written by the Confluence validator when it passes, and by the Confluence page post-function. A condition hides the transition only on a known-negative state; it never blocks on a missing property, so an issue CogniRunner has never checked still shows the transition. The property is advisory and anyone who can edit the issue can forge it; use the Confluence VALIDATOR to actually require a page \u2014 that one searches Confluence live.",
+    category: "Confluence",
+    requiresProduct: "confluence",
+    params: {},
     availability: "available",
   },
 ];

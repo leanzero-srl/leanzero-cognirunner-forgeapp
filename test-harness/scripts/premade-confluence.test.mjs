@@ -364,6 +364,76 @@ eq(confluencePropertyValue(null), null, "…and neither does no page at all");
 }
 eq((await writeConfluenceIssueProperty("LZPT-1", {}, {})).written, false, "no page id → nothing is written");
 
+/* ══════════ 5. THE CONDITION BRANCH OF THE ONE EXPRESSION ═══════════════════ */
+
+const manifest = readFileSync(resolve(root, "manifest.yml"), "utf8");
+{
+  const block = manifest.split("jira:workflowCondition:")[1];
+  const exprStart = block.indexOf("expression: >-");
+  const lines = block.slice(exprStart).split("\n").slice(1);
+  const body = [];
+  for (const line of lines) {
+    if (!line.trim()) break;
+    if (/^ {6}\S/.test(line)) break;
+    body.push(line.trim());
+  }
+  const expr = body.join(" ");
+  ok(expr.includes('config.ruleType == "confluence-page-linked"'), "the ONE expression has a confluence-page-linked branch");
+  ok(EXPRESSION_BACKED_CONDITIONS.includes("confluence-page-linked"), "…and it is listed in EXPRESSION_BACKED_CONDITIONS");
+  const row = PREMADE_CONDITIONS.find((r) => r.key === "confluence-page-linked");
+  ok(!!row && row.availability === "available", "…and the catalogue offers it");
+  ok(!!row && /never blocks on a missing property/.test(row.help), "…and its help carries the missing-property sentence");
+  ok(!/jira:workflowCondition:[\s\S]*?expression: >-[\s\S]*?expression: >-/.test(manifest),
+    "there is still exactly ONE condition expression, not a second module");
+
+  // eslint-disable-next-line no-new-func
+  const evaluate = new Function("config", "issue", "user", `return (${expr});`);
+  const show = (prop) => evaluate({ ruleType: "confluence-page-linked", conditionKind: "deterministic" },
+    { properties: prop === undefined ? {} : { "cognirunner.confluence": prop } }, null);
+  const GOOD = confluencePropertyValue({ id: "77", title: "T", url: "/77" });
+
+  eq(show(undefined), true, "no cognirunner.confluence property at all -> SHOW (missing means nothing seen)");
+  eq(show(null), true, "an explicitly null property -> SHOW");
+  eq(show(GOOD), true, "a page id is present -> SHOW");
+  // The ONE known-negative: our own writer's shape, version 1, with no page id.
+  eq(show({ version: 1, pageId: null, checkedAt: "x" }), false, "version 1 with a NULL pageId -> HIDE (the known negative)");
+  // F-365 — every odd SHAPE can only evaluate TRUE. The property is forgeable and
+  // dynamic-shaped, so a shape we did not write must never hide a transition.
+  eq(show({ ...GOOD, version: 2 }), true, "a FUTURE property version -> SHOW (never guess)");
+  eq(show({ ...GOOD, version: null }), true, "no version -> SHOW");
+  eq(show({ pageId: "77" }), true, "a pageId with no version at all -> SHOW");
+  // The known negative has two spellings and both must mean the same thing: an explicit
+  // null pageId and an absent pageId are equally "version 1, and we named no page".
+  eq(show({ version: 1 }), false, "version 1 with no pageId KEY -> HIDE (same known negative as pageId:null)");
+  // THE TYPE RESIDUAL, asserted rather than claimed. `version: "1"` is a cross-type
+  // compare: an evaluation ERROR in Jira = FALSE = hidden, and loose-`!=` here agrees.
+  // Every SHAPE oddness is TRUE; a TYPE oddness is not, exactly as the git branches
+  // document. Bounded: the worst an issue-editor gets is HIDING a transition on their
+  // own issue — this condition can never grant one.
+  eq(show({ version: "1", pageId: null }), false, "a STRING version is the documented TYPE residual -> HIDE, never a granted transition");
+  eq(show(""), true, "an empty-string property -> SHOW");
+  eq(show(0), true, "a numeric property -> SHOW");
+  eq(show([]), true, "an array property -> SHOW");
+  // …and the guard is not a bypass of the real negative.
+  eq(show({ version: 1, pageId: null }), false, "the REAL known-negative still HIDES");
+  // The other condition types are untouched.
+  eq(evaluate(null, { properties: {} }, null), true, "config == null -> SHOW (unchanged)");
+  eq(evaluate({ ruleType: "confluence-page-linked", conditionKind: "deterministic", disabled: true },
+    { properties: { "cognirunner.confluence": { version: 1, pageId: null } } }, null), true,
+    "a DISABLED confluence condition -> SHOW");
+  eq(evaluate({ ruleType: "confluence-page-linked" }, { properties: { "cognirunner.confluence": { version: 1, pageId: null } } }, null), true,
+    "a config that is not conditionKind:'deterministic' is not ours -> SHOW");
+  eq(evaluate({ ruleType: "issue-is-resolved", conditionKind: "deterministic" }, { properties: {}, resolution: null }, null), false,
+    "a pre-existing condition type still blocks (no regression)");
+  eq(evaluate({ ruleType: "git-pr-merged", conditionKind: "deterministic", repo: "a/b" },
+    { properties: { "cognirunner.git": { version: 1, repos: { "a/b": { pr: { merged: false } } } } } }, null), false,
+    "the GIT branches still hide on their known-negative (no regression)");
+}
+// The belt-and-suspenders executor path (validate() is never called for a condition,
+// but if it ever is, it must SHOW).
+eq((await executePremadeRule({ ruleKind: "premade", ruleType: "confluence-page-linked" }, ARGS, "condition", {})).result, true,
+  "the executor's condition path fails OPEN for confluence-page-linked");
+
 /* ══════════ 5. CATALOGUE + EXECUTOR PARITY ═════════════════════════════════ */
 
 const executorSrc = readFileSync(resolve(root, "src", "premade-rules.js"), "utf8");

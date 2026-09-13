@@ -434,6 +434,12 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
     case "git-pr-merged":
     case "git-pr-approved":
     case "git-build-passed":
+    // …and the same for the Confluence condition (1.5 commit 7c): Jira evaluates it as
+    // a branch of the manifest expression over the advisory cognirunner.confluence
+    // property. This branch exists only so the belt-and-suspenders path SHOWS the
+    // transition instead of logging an "unrecognized rule type" warning. The VALIDATOR
+    // with the neighbouring key (`confluence-page-exists`) is the one that verifies live.
+    case "confluence-page-linked":
       return true;
     case "user-in-group": {
       if (cfg.groupName == null || !actingUser) return true;

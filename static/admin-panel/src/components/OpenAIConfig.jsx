@@ -202,6 +202,10 @@ export default function OpenAIConfig({ invoke }) {
   // Mount-load failure: render an explicit error + Retry instead of pretending
   // the useState defaults (provider=openai, "No API key configured") are real.
   const [loadError, setLoadError] = useState(null);
+  /* F-603 - set when a key read for the viewed provider failed. The card stays usable (the
+     admin can retry, switch provider, or paste a key) but says plainly that the status below
+     could not be read, so a cleared flag is never mistaken for a measured "no key". */
+  const [loadFailed, setLoadFailed] = useState(false);
   // Post-save re-fetch in progress — drives the frosted veil over the card.
   const [refreshing, setRefreshing] = useState(false);
   // Active-provider connection HealthChip — a user-initiated live probe (reuses the checkProviderHealth
@@ -334,6 +338,18 @@ export default function OpenAIConfig({ invoke }) {
   // admin browse/edit ANY provider's stored config (key status, models, saved model, URL/region)
   // WITHOUT activating it. Guarded by providerRef so a fast switch isn't clobbered by a slow
   // in-flight load.
+  /* F-603 - the key-status triple (+ the LM Studio token flag) is derived state: it is only
+     ever true because a getOpenAIKey call SAID so for the provider now on screen. Whenever a
+     read fails there is no such statement, so the flags go back to their "nothing known"
+     defaults rather than describing whatever provider was loaded last. */
+  const clearKeyStatus = () => {
+    setHasKey(false);
+    setNoKeyNeeded(false);
+    setIsByok(false);
+    setHasToken(false);
+    setPingResult(null);
+  };
+
   const loadProviderConfig = async (target, { asRefresh = false } = {}) => {
     if (!invoke) return;
     providerRef.current = target;
@@ -348,6 +364,7 @@ export default function OpenAIConfig({ invoke }) {
       if (providerRef.current !== target) return;
 
       if (keyResult.success) {
+        setLoadFailed(false);
         setHasKey(keyResult.hasKey);
         setNoKeyNeeded(keyResult.noKeyNeeded === true);
         setIsByok(keyResult.isByok);
@@ -369,6 +386,18 @@ export default function OpenAIConfig({ invoke }) {
         } else {
           setPingResult(null);
         }
+      } else {
+        /* F-603 - a FAILED key read must never leave the PREVIOUS provider's key status
+           standing. F-591 moved the key form's gate from the `isManaged` literal (recomputed
+           from `provider` every render, so it could not go stale) onto `noKeyNeeded` state
+           written only inside this success branch. A `{success:false}` body - the real catch
+           arm of `getOpenAIKey` - then left a BYOK provider wearing the managed engine's
+           "ready, no key needed" green dot with NO key input rendered, i.e. a failure
+           reported as readiness. Clearing is the only safe direction: the worst it can do
+           is offer a key input to a provider that needs none, which the next successful
+           load undoes. */
+        clearKeyStatus();
+        setLoadFailed(true);
       }
       if (modelsResult.success) {
         setModels(modelsResult.models || []);
@@ -408,6 +437,13 @@ export default function OpenAIConfig({ invoke }) {
       setCustomModelInput("");
     } catch (e) {
       console.error("Failed to load provider config:", e);
+      /* F-603 - same reasoning as the `{success:false}` arm above, for the THROWN case.
+         A provider switch loads with `asRefresh: true`, which only toasts, so without this
+         the panel kept every key-status flag from the provider the admin just left. */
+      if (providerRef.current === target) {
+        clearKeyStatus();
+        setLoadFailed(true);
+      }
       if (asRefresh) showToast("Failed to load provider config: " + (e.message || e), "error");
       else setLoadError(e.message || String(e));
     } finally {
@@ -1801,7 +1837,11 @@ export default function OpenAIConfig({ invoke }) {
                 lmStatusBody = "Inference and field data stay on your machine. Pick a model below.";
               }
             }
-            const statusTitle = isLmStudio
+            /* F-603 - "No key configured" is a MEASUREMENT. When the read failed we have no
+               measurement, only cleared flags, so the card says what actually happened. */
+            const statusTitle = loadFailed
+              ? "Couldn\u2019t read key status"
+              : isLmStudio
               ? lmStatusTitle
               : isAtlassian
                 ? "Atlassian-hosted — ready, no key needed"
@@ -1828,7 +1868,9 @@ export default function OpenAIConfig({ invoke }) {
                     <strong style={{ fontSize: "13px" }}>{statusTitle}</strong>
                   </div>
                   <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
-                    {isLmStudio
+                    {loadFailed
+                      ? `CogniRunner couldn\u2019t read the stored key status for ${providerLabel}. Nothing has changed \u2014 retry, or paste a key below to configure this provider now.`
+                      : isLmStudio
                       ? lmStatusBody
                       : isAtlassian
                       ? "Claude served inside the Atlassian platform — no key, no egress."
@@ -1839,6 +1881,25 @@ export default function OpenAIConfig({ invoke }) {
                         : `No API key configured. Provide your ${providerLabel} API key to get started.`
                     }
                   </p>
+                  {/* F-603 - a solid, saturated failure chip. The dot above is already red;
+                      this names the cause so the cleared flags are never read as a finding. */}
+                  {loadFailed && (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        marginTop: "8px",
+                        padding: "3px 8px",
+                        borderRadius: "4px",
+                        background: "var(--error-color)",
+                        color: "#ffffff",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        letterSpacing: "0.02em",
+                      }}
+                    >
+                      STATUS UNREAD
+                    </span>
+                  )}
                   {isAtlassian && (
                     <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--text-secondary)" }}>
                       {isAdvanced ? (
@@ -1873,7 +1934,7 @@ export default function OpenAIConfig({ invoke }) {
               (Forge LLM and the managed engine today). F-591: gated on the SAME `noKeyNeeded`
               the status block above reads, not on a provider literal, so the two can never
               again disagree on one screen. */}
-          {!isAtlassian && !noKeyNeeded && (
+          {!isAtlassian && (!noKeyNeeded || loadFailed) && (
           <div style={{ marginBottom: "16px" }}>
             <label style={{ display: "flex", alignItems: "center", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
               {pHelp.keyLabel}

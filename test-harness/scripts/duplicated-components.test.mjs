@@ -244,6 +244,41 @@ for (const rel of targets) {
     : "no file under static/*/src names knowledge-index.js");
 }
 
+/* F-607 — ONE TITLE RESOLVER, ON THE CHIP. The chip prints the titles; config-view's
+   `hasProvenance` decides whether to print the GENERATED WITH row at all. While those were
+   two implementations they could agree on today's corpus (they did — that is why nothing
+   caught it) and disagree after any re-bake that emitted the titles map and the index
+   unevenly: the predicate opens the row for a section the chip then declines to name, and
+   the reviewer reads GENERATED WITH followed by empty space. The gate is therefore not
+   "the chip is byte-identical" (already checked above) but "nobody else builds a second
+   id→title map in a frontend". */
+{
+  const chip = readFileSync(path.join(ROOT, "static/config-ui/src/components/FieldGuideChip.jsx"), "utf8");
+  ok(/export function resolvableFieldGuideTitles\(/.test(chip),
+    "FieldGuideChip.jsx exports resolvableFieldGuideTitles — the one field-guide title resolver");
+
+  const second = [];
+  for (const app of readdirSync(path.join(ROOT, "static"), { withFileTypes: true })) {
+    if (!app.isDirectory()) continue;
+    const src = path.join(ROOT, "static", app.name, "src");
+    if (!existsSync(src)) continue;
+    const walk = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== "node_modules") walk(full); continue; }
+        if (!/\.(js|jsx|mjs)$/.test(e.name)) continue;
+        if (e.name === "FieldGuideChip.jsx") continue; // the one home
+        if (/["'][^"']*knowledge-titles\.js["']/.test(readFileSync(full, "utf8"))) second.push(path.relative(ROOT, full));
+      }
+    };
+    walk(src);
+  }
+  ok(second.length === 0, second.length
+    ? `A SECOND FRONTEND TITLE MAP — ${second.join(", ")} imports knowledge-titles.js. Import `
+      + `{ resolvableFieldGuideTitles } from FieldGuideChip.jsx instead, so the predicate and the chip cannot drift.`
+    : "only FieldGuideChip.jsx reads knowledge-titles.js in any app");
+}
+
 ok(drifted.length === 0,
   drifted.length
     ? `DUPLICATED COMPONENTS HAVE DRIFTED — first: ${drifted[0]}${drifted.length > 1 ? ` (and ${drifted.length - 1} more: ${drifted.slice(1).map((d) => d.split(" — ")[0]).join(", ")})` : ""}. Copy config-ui → admin-panel and rebuild BOTH apps.`

@@ -1953,6 +1953,16 @@ function invoke(name, payload) {
          __MANAGED__ flag is involved. Without this arm the mock answered the generic admin
          body (hasKey:true) and the panel looked correct for the wrong reason. */
       if (payload && payload.provider === MANAGED_PROVIDER_ID) return Promise.resolve({ success: true, provider: MANAGED_PROVIDER_ID, baseUrl: "", hasKey: false, isByok: false, managed: true, noKeyNeeded: true });
+      /* F-603: window.__KEYREAD_FAIL__ = "<provider>" makes the key read for THAT provider
+         answer the real refusal body (`{success:false}` — src/index.js getOpenAIKey's catch
+         arm). Placed AFTER the managed arms on purpose: the journey needs the managed load to
+         succeed first, so the panel is genuinely holding `noKeyNeeded:true` when the failing
+         provider is selected. That is the only way to prove the flags are cleared rather than
+         never set. */
+      if (typeof window !== "undefined" && window.__KEYREAD_FAIL__
+        && payload && payload.provider === window.__KEYREAD_FAIL__) {
+        return Promise.resolve({ success: false, error: "Failed to read key" });
+      }
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, provider: "lmstudio", baseUrl: LM_URL, hasKey: false, hasToken: true, isByok: true });
       return Promise.resolve(isAdmin ? { success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", hasKey: true, isByok: true } : { success: true, isByok: false });
     case "getOpenAIModels":

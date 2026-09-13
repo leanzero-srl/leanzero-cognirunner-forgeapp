@@ -23,42 +23,19 @@ import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/s
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
 import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
 import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
-import FieldGuideChip from "./components/FieldGuideChip.jsx";
-import { KNOWLEDGE_TITLES } from "../../../src/shared/knowledge-titles.js";
-
-/**
- * F-587 — ONE ANSWER for "can this step's field guide be named?".
+/* F-587/F-607 — ONE ANSWER for "can this step's field guide be named?".
  *
  * `hasProvenance` used to test the presence of stored IDS while `FieldGuideChip` tests the
  * presence of resolvable TITLES, and the two disagree in exactly the case the chip was
  * written for: a config saved before a re-bake, whose chunk ids carry a content hash and no
  * longer exist. With no docs, no skills and memory injection off — the stated default — the
  * row rendered the words GENERATED WITH and then nothing, which asserts provenance and names
- * none. So the predicate and the chip now read the SAME titles source, resolved the SAME way
- * (resolve first then de-duplicate BY TITLE, because the bake splits one document into
- * numbered chunks that all carry the document's title).
- *
- * ⚠️ THIS BELONGS ON THE CHIP MODULE, NOT HERE. FieldGuideChip.jsx is a byte-identical file
- * across four apps and exports only its component, so exporting a helper from it would have
- * to land in all four homes at once. F-582 is already rewriting that import (the 136 KB
- * index -> the 25 KB titles map) in all four copies: MOVE THIS FUNCTION ONTO THE CHIP'S
- * PUBLIC SURFACE IN THAT CUT and have App.js import it, so there is one implementation
- * rather than two that happen to agree today.
+ * none. F-587 fixed that with a copy of the chip's resolver living here; F-607 deleted the
+ * copy. The predicate and the chip now share ONE implementation, on the chip's own public
+ * surface, so they cannot drift apart at the next re-bake — and App.js no longer needs a
+ * titles module of its own.
  */
-let FIELD_GUIDE_TITLES = null;
-export const resolvableFieldGuideTitles = (sections) => {
-  if (!Array.isArray(sections) || !sections.length) return [];
-  if (!FIELD_GUIDE_TITLES) {
-    // F-582: the slim generated titles module (id -> title), never the 136 KB index.
-    FIELD_GUIDE_TITLES = new Map(Object.entries(KNOWLEDGE_TITLES));
-  }
-  const titles = [];
-  for (const id of sections) {
-    const t = FIELD_GUIDE_TITLES.get(id) || null;
-    if (t && !titles.includes(t)) titles.push(t);
-  }
-  return titles;
-};
+import FieldGuideChip, { resolvableFieldGuideTitles } from "./components/FieldGuideChip.jsx";
 
 // Inject styles directly
 const injectStyles = () => {

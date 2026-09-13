@@ -44,6 +44,12 @@
  * label. It also never claims a COUNT it cannot name: the number on the chip is the number
  * of sections it could actually resolve, so the chip and its expanded list can never
  * disagree.
+ *
+ * F-607 — `resolvableFieldGuideTitles` is exported from HERE because config-view's
+ * `hasProvenance` predicate has to answer the same question the chip answers, and while it
+ * had its own copy the two could agree today and diverge at the next re-bake: the predicate
+ * would open the GENERATED WITH row for a section the chip then declined to name, printing
+ * the words and nothing after them. One resolver, one `titleFor`, one fallback, four homes.
  */
 
 import React, { useState } from "react";
@@ -59,21 +65,33 @@ const titleFor = (id) => {
 };
 
 /**
+ * The section ids a reader can actually be shown, as TITLES.
+ *
+ * Resolve first, THEN count. De-duplicated by title, because the bake splits one long
+ * document into numbered chunks that all carry the document's title: three chunks of
+ * "Core Forge concepts" is one thing a reader recognises, listed three times.
+ *
+ * This is also the honest answer to "does this record HAVE field-guide provenance?" — the
+ * question config-view asks before it renders the GENERATED WITH row. Stored ids are not
+ * that answer: a config saved before a re-bake still carries ids, and none of them resolve.
+ *
  * @param sections  the section ids from the record. Anything not an array, and any id the
  *                  titles map cannot name, is dropped rather than printed.
+ * @returns {string[]} de-duplicated titles, in the order the ids first named them.
  */
-export default function FieldGuideChip({ sections }) {
-  const [open, setOpen] = useState(false);
-  if (!Array.isArray(sections) || !sections.length) return null;
-
-  /* Resolve first, THEN count. De-duplicated by title, because the bake splits one long
-     document into numbered chunks that all carry the document's title: three chunks of
-     "Core Forge concepts" is one thing a reader recognises, listed three times. */
+export function resolvableFieldGuideTitles(sections) {
+  if (!Array.isArray(sections) || !sections.length) return [];
   const titles = [];
   for (const id of sections) {
     const t = titleFor(id);
     if (t && !titles.includes(t)) titles.push(t);
   }
+  return titles;
+}
+
+export default function FieldGuideChip({ sections }) {
+  const [open, setOpen] = useState(false);
+  const titles = resolvableFieldGuideTitles(sections);
   if (!titles.length) return null;
 
   return (

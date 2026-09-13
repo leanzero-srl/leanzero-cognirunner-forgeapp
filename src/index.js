@@ -675,9 +675,19 @@ const rowGateVerdict = (perms, accountId, row, { minRole = "editor", destructive
   return verdictFromPerms(perms, accountId, row, minRole, { destructive });
 };
 
-const gateExistingRow = async (accountId, row, { what, minRole = "editor", destructive = false, notFound }) => {
+const gateExistingRow = async (accountId, row, { what, minRole = "editor", destructive = false, notFound, perms = null }) => {
   // ONE permissions read for all three questions (role, existence, ownership).
-  const verdict = rowGateVerdict(await getUserPermissions(accountId), accountId, row, { minRole, destructive });
+  //
+  // F-503 — `perms` LETS A CALLER SUPPLY THE PRINCIPAL'S EFFECTIVE PERMISSIONS.
+  // A click's principal IS the account, so every resolver omits it and the account is
+  // read here. A REST TOKEN's principal is not: an editor token acts as an EDITOR with
+  // scope "own" whatever its minter's live role is (and only an app admin can mint one,
+  // so re-deriving from the account made `seesEverything` true for every token and the
+  // ownership arm unreachable). src/rules-api.js therefore resolves `{role, scope}` for
+  // the token — role = min(token stamp, minter's LIVE role) — and passes it in.
+  // What it does NOT pass is a verdict: the ownership comparison stays in
+  // `ownershipAllows`/`rowGateVerdict` below, one home, never duplicated at a door.
+  const verdict = rowGateVerdict(perms || await getUserPermissions(accountId), accountId, row, { minRole, destructive });
   if (verdict.allowed) return null;
   if (verdict.kind === "not-found") return { success: false, error: notFound || "Not found" };
   return configRefusal(verdict, what);
@@ -11762,6 +11772,9 @@ export {
   // F-471 — the ONE ownership home. src/rules-api.js applies THIS gate to an editor
   // token (acting as the account that minted it) so a REST caller and a click resolve
   // ownership through the same predicate. Never write a second ownership check there.
+  // F-503: that door passes `{perms}` (the token's effective role+scope) because a
+  // token's principal is not simply its minting account; `getUserPermissions` is
+  // exported for the same reason and is the ONE reader of a live role.
   gateExistingRow,
   // F-485 — the ONE reader of the instance's agent-gate facts (provider, edition,
   // agent model, allowance level). src/rules-api.js, src/va-admin.js and

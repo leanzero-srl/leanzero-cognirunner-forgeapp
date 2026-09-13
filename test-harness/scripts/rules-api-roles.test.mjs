@@ -136,9 +136,15 @@ for (const [label, resource, opts, floor] of ROUTES) {
     const allowed = ROLE_RANK[role] >= RANK[floor];
     const r = await rest(role, resource, opts);
     if (allowed) {
-      // ALLOW means "not refused by the floor" — a 404/400/409 from the resource
-      // itself is still an allowed call; only 403 no-permission is a refusal.
-      ok(!(r.status === 403 && r.body.reason === "no-permission"),
+      // ALLOW means "not refused by the FLOOR" — a 404/400/409 from the resource itself
+      // is still an allowed call. F-503: nor is an OWNERSHIP refusal, which this matrix
+      // does not speak to. The seed rows belong to the ADMIN token, and since F-503 the
+      // "editor" token (minted by `admin-1`, an app admin) is a scope-"own" principal,
+      // so a write on one of those rows is legitimately 403 `hint:"not-owner"`. The two
+      // refusals are told apart by `hint`, which is the whole point of F-241/F-260:
+      // "ask-app-admin" = a role would help, "not-owner" = it would not. The ownership
+      // ANSWER for that same token is asserted in the F-503 block below.
+      ok(!(r.status === 403 && r.body.reason === "no-permission" && r.body.hint === "ask-app-admin"),
         `ALLOW ${role} → ${label} (floor ${floor}) — got ${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
     } else {
       ok(r.status === 403 && r.body.reason === "no-permission" && r.body.needsRole === floor && r.body.hint === "ask-app-admin",
@@ -247,6 +253,108 @@ for (const [label, resource, opts, floor] of ROUTES) {
     const orphaned = await rest("orphan", kind, { method: "PUT", query: { id: seed2.id }, body: { name: "y" } });
     ok(orphaned.status === 403 && orphaned.body.reason === "no-permission",
       `an editor token with no createdBy is REFUSED on an existing ${noun}, not waved through`);
+  }
+}
+
+/* ═════ F-503 — AN EDITOR TOKEN MINTED BY AN ADMIN IS STILL AN EDITOR ═════
+ *
+ * The F-471 cases above all use `acc-own`, an account whose STORED scope is already
+ * "own" — so they proved the plumbing and hid the defect. Minting is `requireAdmin`,
+ * so on a real instance the minter of every token is an APP ADMIN, and `ownerGate`
+ * passed the ACCOUNT to `gateExistingRow`, which short-circuits on `seesEverything`
+ * for an admin. Result: F-471's ownership arm could not fire through any token on a
+ * healthy tenant. Live, a foreign-row PUT with an editor token returned 200 and the
+ * F-490 upsert silently TRANSFERRED ownership of the row.
+ *
+ * `tokens.editor` is exactly that token: role "editor", minted by `admin-1`, an app
+ * admin with scope "all". Everything below is asserted with it, both directions.
+ */
+{
+  const notOwner = (r) => r.status === 403 && r.body.reason === "no-permission"
+    && r.body.hint === "not-owner" && r.body.needsRole === undefined;
+
+  for (const [kind, noun, mk] of [["listeners", "listener", listenerBody], ["jobs", "job", jobBody]]) {
+    // FOREIGN: written by the ADMIN token, so it is stamped `api:<tokenId>` and belongs
+    // to no account at all.
+    const foreign = (await rest("admin", kind, { method: "POST", body: mk("f503-foreign") })).body[noun];
+    ok(foreign && foreign.id, `F-503 precondition: a foreign ${noun} exists`);
+
+    // OWN: the editor token stamps the ACCOUNT that minted it, admin-1.
+    const mine = (await rest("editor", kind, { method: "POST", body: mk("f503-mine") })).body[noun];
+    ok(mine && mine.createdBy === "admin-1",
+      `F-503 precondition: the admin-minted editor token stamps its minter's account (got ${mine && mine.createdBy})`);
+
+    // THE DEFECT, stated as sharply as it can be.
+    const stolen = await rest("editor", kind, { method: "PUT", query: { id: foreign.id }, body: { name: "f503-stolen" } });
+    ok(notOwner(stolen),
+      `F-503.BLOCK — an editor token minted by an ADMIN cannot PUT a foreign ${noun} (got ${stolen.status} ${JSON.stringify(stolen.body).slice(0, 140)})`);
+    ok(((await rest("admin", kind, { query: { id: foreign.id } })).body[noun] || {}).name === "f503-foreign",
+      `F-503 — …and the foreign ${noun} is untouched`);
+    ok(notOwner(await rest("editor", kind, { method: "POST", query: { id: foreign.id, action: "disable" } })),
+      `F-503.BLOCK — …nor disable it`);
+    ok(notOwner(await rest("editor", kind, { method: "DELETE", query: { id: foreign.id } })),
+      `F-503.BLOCK — …nor delete it`);
+
+    // F-490's path: a POST that NAMES an existing foreign id is an edit, and it was the
+    // ownership TRANSFER — `normalizeListener` keeps `existing.createdBy`, so the row
+    // kept running under its owner while carrying the caller's body.
+    ok(notOwner(await rest("editor", kind, { method: "POST", body: { ...mk("f503-hijack"), id: foreign.id } })),
+      `F-503.BLOCK — an editor token minted by an admin cannot UPSERT onto a foreign ${noun} (F-490 path)`);
+    ok(((await rest("admin", kind, { query: { id: foreign.id } })).body[noun] || {}).name === "f503-foreign",
+      `F-503 — …and that upsert transferred nothing`);
+
+    // THE POSITIVE CONTROL. Without it a BLOCK above could pass because the token lost
+    // the power entirely, which would be a different (and also wrong) outcome.
+    const own = await rest("editor", kind, { method: "PUT", query: { id: mine.id }, body: { name: "f503-renamed" } });
+    ok(own.status === 200 && own.body[noun].name === "f503-renamed",
+      `F-503.ALLOW — the same token PUTs its OWN ${noun} (got ${own.status})`);
+    const upOwn = await rest("editor", kind, { method: "POST", body: { ...mk("f503-own-upsert"), id: mine.id } });
+    ok(upOwn.status === 200 || upOwn.status === 201, `F-503.ALLOW — …and upserts onto its OWN ${noun} (got ${upOwn.status})`);
+    ok(((await rest("admin", kind, { query: { id: mine.id } })).body[noun] || {}).name === "f503-own-upsert",
+      `F-503.ALLOW — …and that upsert took`);
+
+    // AN ADMIN TOKEN IS UNCHANGED: scope "all", the deliberate residual.
+    ok((await rest("admin", kind, { method: "PUT", query: { id: foreign.id }, body: { name: "f503-admin-edit" } })).status === 200,
+      `F-503 — an ADMIN token still edits any ${noun} (scope "all" untouched)`);
+    ok((await rest("legacy", kind, { method: "PUT", query: { id: foreign.id }, body: { name: "f503-legacy-edit" } })).status === 200,
+      `F-503 — …and so does a legacy roleless token`);
+  }
+
+  /* THE MINTER'S LIVE ROLE IS STILL THE CEILING (F-493's rule, on the EXISTING-row
+   * routes). The token's stamp is a ceiling the admin chose; the live role is the
+   * ceiling the product still grants. A demoted minter drags the token down. Uses its
+   * OWN admin account so nothing above depends on the demotion. */
+  await storage.set("app_admins", [
+    { accountId: "admin-1", displayName: "Admin", role: "admin", scope: "all" },
+    { accountId: "acc-own", displayName: "Own-scope editor", role: "editor", scope: "own" },
+    { accountId: "acc-adm2", displayName: "Second admin", role: "admin", scope: "all" },
+  ]);
+  tokens.minted2 = (await createApiTokenInternal({ name: "minted2", accountId: "acc-adm2", role: "editor" })).token;
+
+  for (const [kind, noun, mk] of [["listeners", "listener", listenerBody], ["jobs", "job", jobBody]]) {
+    const row = (await rest("minted2", kind, { method: "POST", body: mk("f503-adm2") })).body[noun];
+    ok(row && row.createdBy === "acc-adm2", `F-503 precondition: acc-adm2's editor token owns its ${noun}`);
+    ok((await rest("minted2", kind, { method: "PUT", query: { id: row.id }, body: { name: "f503-adm2-renamed" } })).status === 200,
+      `F-503.ALLOW — before demotion, acc-adm2's editor token edits its own ${noun}`);
+
+    await storage.set("app_admins", [
+      { accountId: "admin-1", displayName: "Admin", role: "admin", scope: "all" },
+      { accountId: "acc-own", displayName: "Own-scope editor", role: "editor", scope: "own" },
+      { accountId: "acc-adm2", displayName: "Demoted second admin", role: "viewer", scope: "all" },
+    ]);
+    const after = await rest("minted2", kind, { method: "PUT", query: { id: row.id }, body: { name: "f503-after" } });
+    ok(after.status === 403 && after.body.reason === "no-permission" && after.body.needsRole === "editor"
+      && after.body.hint === "ask-app-admin",
+      `F-503.BLOCK — a DEMOTED minter's editor token may no longer edit even its OWN ${noun} (got ${after.status} ${JSON.stringify(after.body).slice(0, 160)})`);
+    ok(((await rest("admin", kind, { query: { id: row.id } })).body[noun] || {}).name === "f503-adm2-renamed",
+      `F-503 — …and nothing was written`);
+
+    // Restore for the next iteration / the F-493 block below.
+    await storage.set("app_admins", [
+      { accountId: "admin-1", displayName: "Admin", role: "admin", scope: "all" },
+      { accountId: "acc-own", displayName: "Own-scope editor", role: "editor", scope: "own" },
+      { accountId: "acc-adm2", displayName: "Second admin", role: "admin", scope: "all" },
+    ]);
   }
 }
 

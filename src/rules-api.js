@@ -380,12 +380,64 @@ const creatorGate = async (who, what) => {
   });
 };
 
+/*
+ * F-503 — THE TOKEN'S EFFECTIVE PERMISSIONS, NOT ITS MINTER'S.
+ *
+ * `ownerGate` handed `gateExistingRow` an ACCOUNT ID and let it re-derive the verdict
+ * from that account's live role. But `createApiToken` is `requireAdmin`, so the minter
+ * of EVERY token is an app admin — and `rowGateVerdict` short-circuits on
+ * `seesEverything` for an admin. F-471's ownership arm was therefore unreachable
+ * through any token on a healthy instance: an editor token edited, disabled and
+ * deleted foreign rows (live: a foreign-row PUT returned 200, and F-490's upsert
+ * became a silent ownership TRANSFER), and only a post-hoc demotion of the minter
+ * made the gate bite at all.
+ *
+ * THE TWO FACTS AN EDITOR TOKEN RESOLVES TO:
+ *   role  = min(the token's stamped role, the minter's LIVE role). The stamp is the
+ *           ceiling the admin chose at mint; the live role is the ceiling the product
+ *           still grants that human. A demoted minter drags the token down with it
+ *           (F-493's rule, now on the existing-row routes too); a minter who is an
+ *           admin does NOT drag an editor token up, which is the whole finding.
+ *   scope = "own". Not the minter's stored scope: the token is the narrower principal,
+ *           and "own" is what the role the admin picked is worth. "Own rows" are rows
+ *           stamped with the minter's account — which is exactly what this surface
+ *           stamps for an editor token (`actor`, below).
+ * ADMIN TOKENS RETURN EARLY and keep scope "all", unchanged and deliberate (see the
+ * F-471 and F-493 blocks): narrowing them would revoke a power from every live
+ * integration on upgrade.
+ *
+ * THE COMPARISON IS STILL THEIRS. We pass `{role, scope}` — two facts — and never a
+ * verdict. `ownershipAllows` in src/index.js remains the only code that compares a
+ * `createdBy` to a principal, so the F-261 existence-leak rule (an unknown id and a
+ * foreign row are one refusal for a scope-"own" caller) keeps applying for free.
+ *
+ * FAILS CLOSED: a role read that throws, or an account with no role, leaves `role`
+ * null, which `rowGateVerdict` answers "no-role" — the same 403 a role-less clicker
+ * gets. `min` is spelled with `tokenRoleAtLeast`, the surface's ONE role comparison;
+ * do not add a second rank table here.
+ */
+const effectiveTokenPerms = async (who, accountId) => {
+  const { getUserPermissions } = await idx();
+  let live = null;
+  try {
+    const p = await getUserPermissions(accountId);
+    live = p && p.role ? String(p.role) : null;
+  } catch (e) { live = null; }
+  const stamped = tokenRole(who);
+  return {
+    role: live && tokenRoleAtLeast({ role: live }, stamped) ? stamped : live,
+    scope: "own", // an admin token never reaches here — it returns early in `ownerGate`
+    accountId,
+  };
+};
+
 const ownerGate = async (who, row, { what, minRole = "editor", destructive = false, notFound }) => {
   if (tokenRole(who) === "admin") return null; // scope "all" — the pre-F-466 behaviour
   const accountId = who && who.createdBy;
   if (!accountId) return noPrincipal(what);
   const { gateExistingRow } = await idx();
-  const refusal = await gateExistingRow(accountId, row, { what, minRole, destructive, notFound });
+  const perms = await effectiveTokenPerms(who, accountId);
+  const refusal = await gateExistingRow(accountId, row, { what, minRole, destructive, notFound, perms });
   if (!refusal) return null;
   // The resolver's refusal object, unchanged, as an HTTP answer: `reason:"no-permission"`
   // is a 403 (role floor or ownership, with `needsRole`/`hint` intact); anything else is

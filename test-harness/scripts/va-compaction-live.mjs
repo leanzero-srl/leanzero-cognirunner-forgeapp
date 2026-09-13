@@ -397,7 +397,34 @@ async function main() {
   }
 
   /* ── STEP 5 — the QUIET one ──────────────────────────────────────────────── */
+  /*
+   * RE-SEED FIRST, AND THIS IS NOT A CONVENIENCE. The FALLBACK clamp wrote 6142 bytes —
+   * two bytes under the 6144 threshold, by construction — so the tick after the failure
+   * answers `under_threshold` and never consults the backoff at all. A run without this
+   * re-seed reports "no compaction-backoff row" and the reader cannot tell that from the
+   * brake being broken. Pushing the notes back over the threshold is the only way to ask
+   * the question the backoff exists to answer. `saveVaMemory` calls no model, so it still
+   * works with the dead credential planted.
+   */
   console.log("\nSTEP 5 — the next tick must NOT buy the same dead call again");
+  const seeded3 = await withAgentsTab(async ({ card }) => {
+    await openPane(card, "Memory");
+    const ta = card.locator("textarea.va-memory");
+    await ta.waitFor({ state: "visible", timeout: 30000 });
+    await ta.fill(SEED);
+    const btn = card.locator("button", { hasText: /^(Save memory|Saving…)$/ });
+    if (await btn.isDisabled()) return { error: "the Save memory button is disabled" };
+    await btn.click();
+    await sleep(4000);
+    return { ok: true };
+  }).catch((e) => ({ error: String((e && e.message) || e).slice(0, 200) }));
+  const re3 = await invoke("getVaMemory", { jobId });
+  const re3Bytes = new TextEncoder().encode((re3.body && re3.body.memory) || "").length;
+  if (seeded3.error || re3Bytes <= COMPACT_BYTES) {
+    FAIL(`the notes could not be pushed back over the threshold before the backoff tick (${seeded3.error || re3Bytes + " bytes"}) — the backoff arm cannot be judged`);
+    return;
+  }
+  PASS(`the notes are over the threshold again (${re3Bytes} bytes), so this tick HAS something to compact — the only way the backoff can be the reason it does not`);
   const t3 = await tickOnce(jobId, "backoff tick", { freshBucket: true });
   const r3 = t3 && t3.receipt;
   info(`receipt: ${JSON.stringify(r3).slice(0, 700)}`);

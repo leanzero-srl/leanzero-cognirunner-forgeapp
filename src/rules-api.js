@@ -217,9 +217,15 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   // ONE validation-error body. A refusal that carries a machine-readable reason
   // (today: agent.allowedActions, `reason:"action-not-allowed"` + `refused[]`) keeps
   // it here; everything else stays the bare `{ error }` the admin UI already renders.
+  // F-331 — the REST refusal is the SAME shape the resolvers return, or the admin UI
+  // and an API client disagree about why a save was refused. `needsRole` names the role
+  // the caller would need and `hint` names the remedy the UI renders ("ask-app-admin",
+  // "not-owner"); dropping them left a REST client with prose it had to parse.
   const errBody = (e) => ({
     error: e && e.message ? String(e.message).slice(0, 500) : "invalid",
     ...(e && e.reason ? { reason: e.reason } : {}),
+    ...(e && e.needsRole ? { needsRole: e.needsRole } : {}),
+    ...(e && e.hint ? { hint: e.hint } : {}),
     ...(e && Array.isArray(e.refused) ? { refused: e.refused } : {}),
   });
   if (method === "PUT") {

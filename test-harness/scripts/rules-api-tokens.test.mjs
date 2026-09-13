@@ -137,5 +137,19 @@ await check("a KVS fault inside a collection still answers the JSON error contra
   assert.equal(logged.filter((l) => l.includes("[rules-api] error:")).length, 3, "every fault is logged");
 });
 
+// F-331 — a REST refusal carries the SAME fields a resolver refusal does. The admin UI
+// renders `needsRole` + `hint`; a client that got only prose had to parse a sentence.
+await check("a validation refusal forwards reason, needsRole, hint and refused[]", async () => {
+  const src = await import("node:fs").then((fs) => fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8"));
+  const body = src.match(/const errBody = \(e\) => \(\{[\s\S]*?\}\);/)[0];
+  const expr = body.replace("const errBody = (e) =>", "").replace(/;\s*$/, "");
+  const errBody = new Function("e", `return (e => ${expr})(e);`);
+  const e = Object.assign(new Error("nope"), { reason: "action-not-allowed", needsRole: "admin", hint: "ask-app-admin", refused: [{ id: "commit_files", reason: "needs-admin" }] });
+  const out = errBody(e);
+  assert.deepEqual(out, { error: "nope", reason: "action-not-allowed", needsRole: "admin", hint: "ask-app-admin", refused: [{ id: "commit_files", reason: "needs-admin" }] });
+  assert.deepEqual(errBody(new Error("plain")), { error: "plain" }, "a plain error still carries only the message — no invented fields");
+  assert.deepEqual(errBody(null), { error: "invalid" }, "…and a thrown non-error is still an { error }");
+});
+
 console.log(`rules-api tokens: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

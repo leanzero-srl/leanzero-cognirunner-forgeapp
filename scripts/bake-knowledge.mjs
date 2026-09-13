@@ -411,7 +411,7 @@ export const indexMetaFingerprint = (sections, packs, pins = {}) => sha(JSON.str
  * selector reads the second. They disagreed on a shipped build. Asserted at bake time,
  * before the emit, because the check comes before the side effect.
  */
-export const assertPinsAgree = (packs, byAudience = {}) => {
+export const assertPinsAgree = (packs, byAudience = {}, { warnOnly = false } = {}) => {
   const declared = new Map(packs.map((p) => [p.id, new Set(p.pinned || [])]));
   const problems = [];
   const seen = new Set();
@@ -432,6 +432,10 @@ export const assertPinsAgree = (packs, byAudience = {}) => {
     }
   }
   if (problems.length) {
+    if (warnOnly) {
+      console.log(`  WARNING — the two pin emitters disagree (tier subset, nothing will be written):\n  ${problems.join("\n  ")}`);
+      return false;
+    }
     die(`the two pin emitters disagree — NOTHING was written:\n  ${problems.join("\n  ")}`, 1);
   }
   return true;
@@ -456,7 +460,7 @@ export const assertPinsAgree = (packs, byAudience = {}) => {
  * The query is empty on purpose: with no query the scorer selects nothing, so `chosen` is
  * the pinned pass and nothing else, which is the question being asked.
  */
-export const assertPinnedSectionsFitShare = (sections, byAudience = {}) => {
+export const assertPinnedSectionsFitShare = (sections, byAudience = {}, { warnOnly = false } = {}) => {
   const problems = [];
   for (const [audience, pins] of Object.entries(byAudience)) {
     if (!pins.length) continue;
@@ -472,6 +476,11 @@ export const assertPinnedSectionsFitShare = (sections, byAudience = {}) => {
       + `(${headroom} B headroom, ${picked.sectionIds.length} section(s))`);
   }
   if (problems.length) {
+    if (warnOnly) {
+      console.log("  WARNING — a pinned section does not fit its share (tier subset, nothing will be written):\n  "
+        + problems.join("\n  "));
+      return false;
+    }
     die("a pinned section no longer fits its audience's share — it would fall through to the\n"
       + "  scorer and go missing on any query that does not favour it (F-576). NOTHING was written:\n  "
       + problems.join("\n  "), 1);
@@ -699,7 +708,83 @@ export const checkTitlesCurrent = (expectedText) => {
   return { checked: true };
 };
 
-export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
+/**
+ * THE FINGERPRINT OF THE TEXT THAT ACTUALLY REACHES A MODEL (F-584).
+ *
+ * `KNOWLEDGE_CONTENT_VERSION` hashes the section bodies as the CORPUS holds them, and
+ * `KNOWLEDGE_INDEX_META_VERSION` hashes what the index says about them. Neither is
+ * recomputed from the nine files under src/shared/knowledge-packs/, which is where the
+ * bodies are actually read from at runtime — so this hashes the emitted pack MODULES,
+ * byte for byte, exactly as they would be written.
+ */
+export const emittedPacksFingerprint = (texts) => sha(
+  [...texts.keys()].sort().map((pack) => `${pack}:${sha(texts.get(pack))}`).join("\n"),
+).slice(0, 16);
+
+/**
+ * THE DRIFT PROBE FOR THE PACK BODIES (F-584).
+ *
+ * Until this existed, `--check` compared the index and the titles module and NOTHING
+ * else: the nine pack modules were written by the bake and read back by no gate, so a
+ * hand edit to a sentence inside a section body — model-facing instruction inside a
+ * trusted fence, injected into every codegen, validator and VA prompt — passed
+ * `npm run bake:check` green. The content version is computed from `knowledge/`, never
+ * from the emitted files, so it agreed with itself while the shipped text differed.
+ *
+ * Same mechanism as `checkIndexCurrent`: re-emit from the corpus and compare the bytes
+ * on disk. `emitPack` is pure, so this costs nothing but the comparison. A pack file on
+ * disk that the bake would NOT write (a rename left behind, a stray module) is a failure
+ * too — it is still statically importable and still ships.
+ */
+export const checkPacksCurrent = (expectedTexts) => {
+  const fingerprint = emittedPacksFingerprint(expectedTexts);
+  if (!existsSync(P.packs)) {
+    die("--check: NOT A PASS — no pack modules exist (src/shared/knowledge-packs/ is missing).\n"
+      + "  Run `npm run bake` and commit the generated packs; the index alone is not the corpus.", 1);
+    return { checked: false, fingerprint };
+  }
+  const onDisk = new Set(readdirSync(P.packs).filter((f) => f.endsWith(".js")));
+  const problems = [];
+  for (const pack of [...expectedTexts.keys()].sort()) {
+    const file = path.join(P.packs, `${pack}.js`);
+    onDisk.delete(`${pack}.js`);
+    if (!existsSync(file)) {
+      problems.push(`src/shared/knowledge-packs/${pack}.js is MISSING — the bake would write it`);
+      continue;
+    }
+    if (readFileSync(file, "utf8") !== expectedTexts.get(pack)) {
+      problems.push(`src/shared/knowledge-packs/${pack}.js is NOT what the bake would write`);
+    }
+  }
+  for (const stray of [...onDisk].sort()) {
+    problems.push(`src/shared/knowledge-packs/${stray} is not emitted by this corpus (stray or renamed pack)`);
+  }
+  if (problems.length) {
+    die("the emitted field-guide packs have drifted — these bodies go into every prompt (F-584):\n  "
+      + problems.join("\n  ")
+      + "\n  Edit the SOURCE under knowledge/ and re-bake; never the generated pack.", 1);
+    return { checked: false, fingerprint };
+  }
+  console.log(`bake-knowledge --check: ${expectedTexts.size} pack module(s) current (packs ${fingerprint}).`);
+  return { checked: true, fingerprint };
+};
+
+/**
+ * `--tier` IS A SUBSET, AND A SUBSET DOES NOT SHIP BY ACCIDENT (F-589).
+ *
+ * The tier filter used to turn BOTH pin gates off and leave the WRITE on: a re-authoring
+ * bake of `--tier A,B` could overwrite the index, the titles module and all nine packs
+ * with a partial corpus that no gate had looked at, and the resulting change is
+ * indistinguishable from a legitimate re-bake. "Not a way to ship a partial corpus" was a
+ * comment, which is a convention, not a mechanism.
+ *
+ * So: a tiered bake is a DRY RUN unless `--write` is passed explicitly, and the two pin
+ * gates now run on whatever was emitted whatever the tier — strictly when something is
+ * about to be written, in warn mode when nothing is (a partial corpus legitimately fails
+ * pins the full corpus satisfies, and refusing there would make `--tier` useless for the
+ * pipeline rehearsal it exists for).
+ */
+export const bake = ({ dryRun = false, check = false, tiers = null, write = false } = {}) => {
   const { denylist } = runPreflight();
   const cfg = readSources();
   const never = cfg.never || [];
@@ -715,6 +800,13 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
   // the whole thing).
   const selected = tiers ? cfg.sources.filter((s) => tiers.includes(s.tier)) : cfg.sources;
   if (tiers) console.log(`bake-knowledge: tier filter ${tiers.join(",")} — ${selected.length}/${cfg.sources.length} sources`);
+  // F-589: the side effect is decided HERE and nowhere else.
+  const effectiveDryRun = dryRun || (!!tiers && !write);
+  if (tiers && !write && !dryRun && !check) {
+    console.log("bake-knowledge: --tier implies a DRY RUN — the generated modules are NOT written.\n"
+      + "  A partial corpus overwriting the shipped packs is F-589; pass --write with --tier if that is\n"
+      + "  genuinely what you want, and both pin gates are then enforced on the subset.");
+  }
 
   for (const source of selected) {
     const hit = violatesNever(source.root || source.id, never);
@@ -827,10 +919,13 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
 
   // The tab's view and the selector's view of the SAME pinned list must agree, or the
   // Knowledge tab lies about what a pack pins (F-570). Before the emit, as ever.
-  if (!tiers) assertPinsAgree(packSummaries, pins.byAudience);
+  // F-589: run on WHATEVER is emitted, whatever the tier. Strict when bytes are about to
+  // land on disk (including a deliberate `--tier ... --write`), warn-only when they are not.
+  const pinGatesWarnOnly = !!tiers && effectiveDryRun;
+  assertPinsAgree(packSummaries, pins.byAudience, { warnOnly: pinGatesWarnOnly });
   // ...and every pin must actually fit the share it is meant to be paid out of (F-576).
   // `sections` here are the freshly chunked ones, so this measures what is about to ship.
-  if (!tiers) assertPinnedSectionsFitShare(sections, pins.byAudience);
+  assertPinnedSectionsFitShare(sections, pins.byAudience, { warnOnly: pinGatesWarnOnly });
 
   const contentVersion = sha(sections.map((s) => `${s.id}:${sha(s.body)}`).join("\n")).slice(0, 16);
   const metaVersion = indexMetaFingerprint(sections, packSummaries, pins.byAudience);
@@ -850,29 +945,42 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
       + "  The saving is the whole reason the module exists. NOTHING was written.", 1);
   }
 
+  // Emitted ONCE, then either compared (--check) or written (F-584): the bytes the gate
+  // reads and the bytes the bake writes must come from the same call, or the gate proves
+  // something about text nobody ships.
+  const packTexts = new Map([...byPack.entries()].map(([pack, list]) => [pack, emitPack(pack, list)]));
+
   /* ---- --check: the pinned hashes ------------------------------------ */
   if (check) {
     checkIndexCurrent(contentVersion, indexText);
     checkTitlesCurrent(titlesText);
-    return { sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins, checked: true };
+    const packsCheck = checkPacksCurrent(packTexts);
+    return {
+      sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins,
+      packsVersion: packsCheck.fingerprint, checked: true,
+    };
   }
 
   /* ---- stage 5: emit -------------------------------------------------- */
-  if (!dryRun) {
+  if (!effectiveDryRun) {
     mkdirSync(P.packs, { recursive: true });
-    for (const [pack, list] of byPack) {
-      writeFileSync(path.join(P.packs, `${pack}.js`), emitPack(pack, list));
+    for (const [pack, text] of packTexts) {
+      writeFileSync(path.join(P.packs, `${pack}.js`), text);
     }
     writeFileSync(P.index, indexText);
     writeFileSync(P.titles, titlesText);
     writeFileSync(P.manifest, renderManifest({ cfg, docs, sections, packSummaries, contentVersion, findings, pins }));
   }
 
-  console.log(`\nbake-knowledge: ${sections.length} sections across ${packSummaries.length} packs · content ${contentVersion}${dryRun ? " (dry run — nothing written)" : ""}`);
+  console.log(`\nbake-knowledge: ${sections.length} sections across ${packSummaries.length} packs · content ${contentVersion}`
+    + ` · packs ${emittedPacksFingerprint(packTexts)}${effectiveDryRun ? ` (dry run${tiers && !dryRun ? " — tier subset, --write not given" : ""} — nothing written)` : ""}`);
   for (const p of packSummaries) console.log(`  ${p.id.padEnd(30)} ${String(p.sections).padStart(4)} sections  ${(p.bytes / 1024).toFixed(1)} KB`);
   console.log(`  ${"(UI titles module)".padEnd(30)} ${String(sections.length).padStart(4)} titles    ${(titlesBytes / 1024).toFixed(1)} KB`
     + `  — ${((titlesBytes / indexBytes) * 100).toFixed(0)} % of the ${(indexBytes / 1024).toFixed(1)} KB index, which stays backend-only`);
-  return { sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins, findings };
+  return {
+    sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins, findings,
+    packsVersion: emittedPacksFingerprint(packTexts),
+  };
 };
 
 /** knowledge/MANIFEST.md — the artefact the owner reads BEFORE any pack is committed. */
@@ -950,5 +1058,10 @@ if (isMain) {
   const args = process.argv.slice(2);
   const tierArg = args.find((a) => a.startsWith("--tier"));
   const tiers = tierArg ? (tierArg.includes("=") ? tierArg.split("=")[1] : args[args.indexOf(tierArg) + 1] || "").split(",").map((t) => t.trim().toUpperCase()).filter(Boolean) : null;
-  bake({ dryRun: args.includes("--dry-run"), check: args.includes("--check"), tiers: tiers && tiers.length ? tiers : null });
+  bake({
+    dryRun: args.includes("--dry-run"),
+    check: args.includes("--check"),
+    tiers: tiers && tiers.length ? tiers : null,
+    write: args.includes("--write"),
+  });
 }

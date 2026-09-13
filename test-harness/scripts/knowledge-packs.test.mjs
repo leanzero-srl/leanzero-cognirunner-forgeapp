@@ -383,7 +383,7 @@ reset();
    the alternative, a line per consumer, is the N-copies-of-one-rule defect this repo keeps
    paying for. */
 {
-  const { reportPinnedShortfall } = await import("../../src/knowledge-packs.js");
+  const { reportPinnedShortfall, resetPinnedShortfallReports } = await import("../../src/knowledge-packs.js");
   const warned = [];
   const realWarn = console.warn;
   console.warn = (...a) => warned.push(a.join(" "));
@@ -413,6 +413,37 @@ reset();
     warned.length = 0;
     ok(reportPinnedShortfall(null, "va") === null && reportPinnedShortfall({}, "va") === null,
       "a missing or empty selection is not an error — the field guide is advisory");
+
+    /* ---- ONCE PER CONTAINER, not once per selection (F-588) ----
+       A shortfall is a property of the CORPUS: once a pin misses its share it misses it on
+       every selection, and this runs once per VA item (100 per tick) and once per validated
+       transition. Unbounded it writes the same two lines thousands of times a day. */
+    warned.length = 0;
+    resetPinnedShortfallReports();
+    const shortfall = { pinnedDropped: ["pack/x/y/pinned-core-1"], pinnedDemoted: [], pinnedBytes: 0, budget: 8192 };
+    const first = reportPinnedShortfall(shortfall, "va");
+    const second = reportPinnedShortfall(shortfall, "va");
+    ok(warned.length === 1, `two selections with the SAME shortfall log once (${warned.length} line(s))`);
+    ok(first.logged === true && second.logged === false, "and the caller can tell which call spoke");
+    ok(second.dropped.length === 1,
+      "the suppressed call still RETURNS the ids — the receipt carries the fact without the log line");
+    ok(/once per container/.test(warned[0]), "the line says the rate it is reported at");
+
+    // A SECOND pin falling out is news, and is not swallowed by the first.
+    reportPinnedShortfall({ ...shortfall, pinnedDropped: ["pack/x/y/pinned-core-1", "pack/x/y/other-core-1"] }, "va");
+    ok(warned.length === 2 && /other-core-1/.test(warned[1]) && !/pinned-core-1/.test(warned[1]),
+      "a second dropped section is announced, and only the new one");
+
+    // Keyed by audience too: the same section dropping for a different reader is a different fact.
+    reportPinnedShortfall(shortfall, "codegen");
+    ok(warned.length === 3 && /audience "codegen"/.test(warned[2]),
+      "the same section dropping for another audience is announced separately");
+
+    // Memory, on purpose: a Forge container is short-lived, so a persistent shortfall is
+    // re-announced on every cold start — visible, at a readable rate, with no KVS read.
+    resetPinnedShortfallReports();
+    reportPinnedShortfall(shortfall, "va");
+    ok(warned.length === 4, "and a fresh container announces it again");
   } finally {
     console.warn = realWarn;
   }

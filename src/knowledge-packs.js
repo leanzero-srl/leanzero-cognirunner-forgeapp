@@ -236,20 +236,53 @@ export const selectFieldGuide = async ({ audience = "review", text = "", operati
  * A DROP IS A WARNING, A DEMOTION IS A NOTICE. A dropped pin did nothing at all; a demoted
  * one is still in the prompt but is now competing on score, which is the warning shot for
  * the drop. Neither throws: a field guide is advisory and every path around it fails open.
+ *
+ * ONCE PER PROCESS PER (KIND, AUDIENCE, SECTION) — F-588. A shortfall is a property of the
+ * CORPUS, not of the call: once a pin misses its share it misses it on EVERY selection, and
+ * this sits on two hot paths — one selection per Virtual Administrator item (a 100-item tick
+ * every 5 minutes) and one per validated transition. Unbounded, one oversized pin writes the
+ * same two lines thousands of times a day and buries the exceptions the log is read for, and
+ * the operator still cannot tell one corpus problem from 2 880 occurrences of it.
+ *
+ * The memo is in MEMORY on purpose, and that is a feature rather than a compromise: Forge
+ * containers are short-lived and are recycled constantly, so a persistent shortfall is
+ * re-announced on every cold start — it stays visible, at a readable rate, without a KVS
+ * read on a path that must not cost one, and without a timer that would be wrong on a
+ * platform that freezes containers between invocations. The set is keyed by section, so a
+ * SECOND pin falling out is announced immediately rather than swallowed by the first.
+ *
+ * The numbers are on the return value and on `resolveFieldGuideBlock`'s result
+ * (`pinnedDropped` / `pinnedDemoted`), so a receipt carries the full state of the selection
+ * whether or not this call logged — a suppressed line never means a suppressed fact.
  */
+const REPORTED_SHORTFALLS = new Set();
+
+/** Test seam: forget what this process has already announced. */
+export const resetPinnedShortfallReports = () => { REPORTED_SHORTFALLS.clear(); };
+
 export const reportPinnedShortfall = (picked, audience) => {
   const dropped = Array.isArray(picked && picked.pinnedDropped) ? picked.pinnedDropped : [];
   const demoted = Array.isArray(picked && picked.pinnedDemoted) ? picked.pinnedDemoted : [];
   if (!dropped.length && !demoted.length) return null;
+  const unseen = (kind, ids) => ids.filter((id) => {
+    const key = `${kind}:${audience}:${id}`;
+    if (REPORTED_SHORTFALLS.has(key)) return false;
+    REPORTED_SHORTFALLS.add(key);
+    return true;
+  });
+  const freshDropped = unseen("drop", dropped);
+  const freshDemoted = unseen("demote", demoted);
   const where = `audience "${audience}" · pinned ${picked.pinnedBytes || 0} B of `
     + `${Math.floor((picked.budget || 0) * PINNED_BUDGET_SHARE)} B share (budget ${picked.budget || 0} B)`;
-  if (dropped.length) {
-    console.warn(`[knowledge] PINNED SECTION NOT IN THE PROMPT — ${where}: ${dropped.join(", ")}`);
+  if (freshDropped.length) {
+    console.warn(`[knowledge] PINNED SECTION NOT IN THE PROMPT — ${where}: ${freshDropped.join(", ")}`
+      + " (reported once per container for this audience and section)");
   }
-  if (demoted.length) {
-    console.warn(`[knowledge] pinned section missed its share and was rescued by the scorer — ${where}: ${demoted.join(", ")}`);
+  if (freshDemoted.length) {
+    console.warn(`[knowledge] pinned section missed its share and was rescued by the scorer — ${where}: ${freshDemoted.join(", ")}`
+      + " (reported once per container for this audience and section)");
   }
-  return { dropped, demoted };
+  return { dropped, demoted, logged: freshDropped.length + freshDemoted.length > 0, reportedDropped: freshDropped, reportedDemoted: freshDemoted };
 };
 
 /**

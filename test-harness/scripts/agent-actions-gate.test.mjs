@@ -29,10 +29,20 @@ for (const ns of ["jira", "git", "confluence", "web", "ledger"]) {
   ok(row && typeof row.label === "string", `namespace ${ns} exists`);
   ok("requiresCapability" in row && "requiresProduct" in row, `namespace ${ns} declares its flags`);
 }
-for (const ns of ["confluence", "web", "ledger"]) {
+for (const ns of ["confluence", "ledger"]) {
   ok(AGENT_ACTION_NAMESPACES[ns].reserved === true, `${ns} is reserved`);
   eq(AGENT_ACTIONS.filter((a) => agentActionNamespace(a) === ns).map((a) => a.id), [], `${ns} is still empty`);
 }
+// 1.4 commit 13a — `web` left the reserved set with exactly ONE action.
+ok(AGENT_ACTION_NAMESPACES.web.reserved === false, "web is no longer reserved");
+eq(AGENT_ACTIONS.filter((a) => agentActionNamespace(a) === "web").map((a) => a.id), ["web_search"], "web holds exactly one action");
+// Web is gated by the MCP TOGGLE, not by a Coder capability. A requiresCapability here
+// would make the gate refuse web_search on every BYOK tenant that never answered for it
+// (absent map key = refused, F-281), which is the opposite of the product intent.
+ok(AGENT_ACTION_NAMESPACES.web.requiresCapability === null, "web requires NO capability");
+ok(AGENT_ACTION_NAMESPACES.web.requiresMcp === "webSearch", "web names its MCP toggle instead");
+ok(getAgentAction("web_search").kind === "read", "web_search is a read action");
+for (const flag of ["confirm", "dangerous"]) ok(getAgentAction("web_search")[flag] === undefined, `web_search is not ${flag}`);
 
 // SNAPSHOT: the 13 Jira actions + finish. 1.4 must not renumber, rename or reorder them —
 // a saved rule stores these ids and the REST API validates against them.

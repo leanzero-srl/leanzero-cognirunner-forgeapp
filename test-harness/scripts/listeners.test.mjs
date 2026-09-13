@@ -16,10 +16,11 @@ import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
   BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
-  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets, summarizeEventForAi,
+  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, BRAKE_BUCKET_MS, takeAgentRunSlot, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets, summarizeEventForAi,
   GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES,
 } from "../../src/listeners.js";
-import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule } from "../../src/scheduled-jobs.js";
+import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule, toIndexRow as toJobIndexRow, MAX_SCOPE_ISSUES } from "../../src/scheduled-jobs.js";
+import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, AGENT_RUN_BRAKE_MAX_PER_BUCKET } from "../../src/shared/registry-limits.js";
 import { normalizeAllowedActions, toolDefinitionsFor } from "../../src/shared/agent-actions.js";
 
 let pass = 0; let fail = 0;
@@ -487,6 +488,95 @@ ok(JSON.stringify(normalizeAllowedActions(["finish", "get_issue", "get_issue", "
 const defs = toolDefinitionsFor(["add_comment"]);
 ok(defs.length === 2 && defs.map((d) => d.function.name).sort().join() === "add_comment,finish", "tool defs = allowed + finish");
 ok(defs.every((d) => d.type === "function" && d.function.parameters.type === "object"), "OpenAI tool shape");
+
+// ── 1.4 commit 13b: the knowledge binding, end to end through the savers ──────
+// The shape is unit-tested in agent-knowledge.test.mjs; what is asserted HERE is that
+// a real save keeps it, and that a binding to a skill nobody has is REFUSED rather
+// than silently stored (an author must never believe a rule has a voice it does not).
+{
+  storage.__reset();
+  storage.__seed("skill_repo_index", [{ id: "sk_real", name: "House voice", enabled: true }]);
+  const l = await saveListener({
+    name: "K", events: ["avi:jira:created:issue"], mode: "agent",
+    agent: { instructions: "do the thing", allowedActions: ["add_comment"], skillIds: ["sk_real", "sk_real", "  "], useMemories: true },
+  }, { accountId: "u" });
+  ok(JSON.stringify(l.agent.skillIds) === JSON.stringify(["sk_real"]) && l.agent.useMemories === true, "a listener stores its skill binding and the memories opt-in");
+  const back = await getListener(l.id);
+  ok(back.agent.skillIds[0] === "sk_real" && back.agent.useMemories === true, "…and reads them back off the record");
+
+  let refused = null;
+  try {
+    await saveListener({ name: "K2", events: ["avi:jira:created:issue"], mode: "agent", agent: { instructions: "x", allowedActions: [], skillIds: ["sk_ghost"] } }, { accountId: "u" });
+  } catch (e) { refused = e; }
+  ok(refused && /sk_ghost/.test(refused.message) && refused.reason === "unknown-skill", "a skill that does not exist is REFUSED at save, by name");
+
+  const j = await saveJob({
+    name: "KJ", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, mode: "agent",
+    agent: { instructions: "do it", allowedActions: ["add_comment"], skillIds: ["sk_real"], useMemories: false },
+  }, { accountId: "u" });
+  ok(j.agent.skillIds[0] === "sk_real" && j.agent.useMemories === false, "a scheduled job carries the SAME binding shape");
+  let jRefused = null;
+  try {
+    await saveJob({ name: "KJ2", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, mode: "agent", agent: { instructions: "x", allowedActions: [], skillIds: ["sk_ghost"] } }, { accountId: "u" });
+  } catch (e) { jRefused = e; }
+  ok(jRefused && jRefused.reason === "unknown-skill", "…and the SAME refusal, from the same home");
+
+  // An ABSENT index is a read that SUCCEEDED and said "no skills" — it is not the same
+  // negative as a read that failed, and it must refuse exactly like a missing id.
+  storage.__reset();
+  let emptyIdx = null;
+  try {
+    await saveListener({ name: "K3", events: ["avi:jira:created:issue"], mode: "agent", agent: { instructions: "x", allowedActions: [], skillIds: ["sk_real"] } }, { accountId: "u" });
+  } catch (e) { emptyIdx = e; }
+  ok(emptyIdx && emptyIdx.reason === "unknown-skill", "an empty skill index refuses too — nothing exists, so nothing can be bound");
+
+  // A rule with NO binding never touches the index at all (the pre-1.4 path).
+  const l4 = await saveListener({ name: "K4", events: ["avi:jira:created:issue"], functions: [{ code: "api.log(1)" }] }, { accountId: "u" });
+  ok(Array.isArray(l4.agent.skillIds) && l4.agent.skillIds.length === 0 && l4.agent.useMemories === false, "a rule with no binding saves unchanged, with memories OFF");
+}
+
+// ── 1.4 commit 13d: job brakes ───────────────────────────────────────────────
+// One BLOCK and one ALLOW per brake, which is the only way to know a brake works: a
+// brake asserted only on its refusal is indistinguishable from a function that always
+// refuses, and one asserted only on its pass is indistinguishable from a no-op.
+{
+  // (1) maxWritesPerRun — clamped in normalizeJob, from the ONE home.
+  const j = (over) => normalizeJob({ name: "B", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, functions: [{ code: "api.log(1)" }], ...over });
+  ok(j({}).maxWritesPerRun === JOB_DEFAULT_MAX_WRITES_PER_RUN, "a job with no opinion gets the default write brake");
+  ok(j({ maxWritesPerRun: 5 }).maxWritesPerRun === 5, "an author's value is kept");
+  ok(j({ maxWritesPerRun: 0 }).maxWritesPerRun === 0, "ZERO is meaningful (read and report, never change) — not treated as unset");
+  ok(j({ maxWritesPerRun: 999999 }).maxWritesPerRun === JOB_MAX_WRITES_PER_RUN, "clamped to the ceiling");
+  ok(j({ maxWritesPerRun: -5 }).maxWritesPerRun === 0, "clamped at the floor");
+  ok(j({ maxWritesPerRun: "" }).maxWritesPerRun === JOB_DEFAULT_MAX_WRITES_PER_RUN, "a blank field falls back to the default, never NaN");
+  ok(j({ maxWritesPerRun: "abc" }).maxWritesPerRun === JOB_DEFAULT_MAX_WRITES_PER_RUN, "…and so does nonsense");
+  ok(toJobIndexRow(j({ maxWritesPerRun: 7 })).maxWritesPerRun === 7, "the Jobs tab can render it off the INDEX row");
+  // THE CROSS-CHECK the default is derived from: a job may hold MAX_SCOPE_ISSUES issues,
+  // and a sweep that writes twice per issue is ordinary use, not abuse. If either number
+  // moves without the other, this fails instead of a customer's escalation job stopping
+  // half way through with no explanation.
+  ok(JOB_DEFAULT_MAX_WRITES_PER_RUN >= MAX_SCOPE_ISSUES * 2,
+    `the default write brake (${JOB_DEFAULT_MAX_WRITES_PER_RUN}) clears twice the biggest legal scope (${MAX_SCOPE_ISSUES})`);
+  ok(JOB_MAX_WRITES_PER_RUN > JOB_DEFAULT_MAX_WRITES_PER_RUN, "the ceiling is above the default");
+
+  // (2) the tenant-wide agent-run brake — same key shape and mechanism as lst_brake.
+  const bucketKey = `agent_brake:${Math.floor(Date.now() / BRAKE_BUCKET_MS)}`;
+  storage.__reset();
+  const allowed = await takeAgentRunSlot();
+  ok(allowed.braked === false, "ALLOW: an idle installation may start an agent run");
+  ok(Number(storage.__raw(bucketKey)) === 1, "…and taking the slot IS the accounting (the bucket is bumped)");
+  storage.__reset();
+  storage.__seed(bucketKey, AGENT_RUN_BRAKE_MAX_PER_BUCKET);
+  const blocked = await takeAgentRunSlot();
+  ok(blocked.braked === true, "BLOCK: at the cap the run is refused");
+  ok(/more than \d+ AI agent runs in 5 minutes/.test(blocked.reason), "…with a NAMED reason an operator can act on");
+  ok(blocked.max === AGENT_RUN_BRAKE_MAX_PER_BUCKET, "…that names the cap");
+  ok(Number(storage.__raw(bucketKey)) === AGENT_RUN_BRAKE_MAX_PER_BUCKET + 1, "…and the bucket keeps counting past the line, so the real pressure is visible");
+  storage.__reset();
+  storage.__seed(bucketKey, AGENT_RUN_BRAKE_MAX_PER_BUCKET - 1);
+  ok((await takeAgentRunSlot()).braked === false, "ALLOW: one below the cap still runs (the brake is >=, not >)");
+  // The bucket is the ONLY thing in the key: this brake counts EVERYTHING, by design.
+  ok(!/lst_brake|job|listener/.test(bucketKey) && /^agent_brake:\d+$/.test(bucketKey), "the key carries no rule and no issue — it is tenant-wide");
+}
 
 console.log(`LISTENERS: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

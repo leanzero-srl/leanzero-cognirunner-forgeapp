@@ -31,6 +31,7 @@ const P = (properties, required) => ({ type: "object", properties, required, add
 // Issue references are named tool arguments, not the sandbox's overloaded
 // positional arguments. Accept Jira keys (case preserved) or numeric ID strings.
 import { agentCapability } from "./edition.js";
+import { MAX_RULE_SKILL_IDS } from "./registry-limits.js";
 
 export const ISSUE_REFERENCE_SCHEMA = Object.freeze({ type: "string", pattern: "^(?:[A-Za-z][A-Za-z0-9_]*-[0-9]+|[0-9]+)$" });
 const KEY = { ...ISSUE_REFERENCE_SCHEMA, description: "Issue key, e.g. PROJ-123, or numeric issue ID as a string. Omit to use the current issue." };
@@ -126,7 +127,16 @@ export const AGENT_ACTION_NAMESPACES = Object.freeze({
   jira: Object.freeze({ label: "Jira", requiresCapability: null, requiresProduct: "jira", executor: "agent-runner", reserved: false }),
   git: Object.freeze({ label: "Git", requiresCapability: "git", requiresProduct: null, executor: "git-actions", reserved: false }),
   confluence: Object.freeze({ label: "Confluence", requiresCapability: null, requiresProduct: "confluence", executor: "confluence-actions", reserved: true }),
-  web: Object.freeze({ label: "Web", requiresCapability: "web", requiresProduct: null, executor: "web-search-tool", reserved: true }),
+  // WEB is NOT a Coder-only capability. It carries `requiresCapability: null` on
+  // purpose: nothing about the edition, the provider or the agent model decides whether
+  // an agent may read the public web. The ONE gate is the tenant's web-search MCP
+  // toggle (`requiresMcp`), which is a LIVE setting, so it is enforced where live
+  // settings belong — at RUN TIME, by the executor (src/web-search-tool.js) and by the
+  // dispatcher's "a namespace with no executor REFUSES" rule. `requiresMcp` here is the
+  // fact the admin checklist and the REST validator read to explain a refusal; it is
+  // deliberately NOT a save-time capability, because a rule saved while the MCP was on
+  // must not become unsavable the moment an admin flips the toggle off.
+  web: Object.freeze({ label: "Web", requiresCapability: null, requiresMcp: "webSearch", requiresProduct: null, executor: "web-search-tool", reserved: false }),
   ledger: Object.freeze({ label: "Agent ledger", requiresCapability: null, requiresProduct: null, executor: "va-ledger", reserved: true }),
 });
 export const AGENT_ACTION_NAMESPACE_IDS = Object.keys(AGENT_ACTION_NAMESPACES);
@@ -207,10 +217,56 @@ const GIT_AGENT_ACTIONS = [
   },
 ];
 
-export const AGENT_ACTIONS = [...JIRA_AGENT_ACTIONS, ...GIT_AGENT_ACTIONS];
+/**
+ * WEB namespace — ONE action. Executed by src/web-search-tool.js, which proxies the
+ * hosted web-search MCP through `callBridgeTool("webSearch", …)` so EVERY provider
+ * (Forge LLM included) reaches it the same way. No `requiresCapability`, no `confirm`,
+ * no `dangerous`: reading a public search engine writes nothing anywhere, so the only
+ * gate is the tenant's MCP toggle (see AGENT_ACTION_NAMESPACES.web).
+ */
+const WEB_AGENT_ACTIONS = [
+  {
+    id: "web_search", namespace: "web", kind: "read", label: "Search the web", requiresMcp: "webSearch",
+    description: "Search the public web and get back the top results (title, link, short snippet). Use it to CHECK a claim about a product, a version, an API or an error message that you cannot read from Jira. Never put an issue key, an account id, a site URL, an e-mail address or any other identifier from this instance into the query — the search is refused if you do. Results are pages, not answers: name the link for anything you take from them.",
+    parameters: P({
+      query: { type: "string", description: "The search query. Public terms only — no identifiers from this Jira instance." },
+      recency: { type: "string", enum: ["any", "year", "month", "week", "day"], description: "How recent the results must be. Default: any." },
+    }, ["query"]),
+  },
+];
+
+export const AGENT_ACTIONS = [...JIRA_AGENT_ACTIONS, ...GIT_AGENT_ACTIONS, ...WEB_AGENT_ACTIONS];
 
 /** The namespace an action belongs to. `finish` is control and belongs to none. */
 export const agentActionNamespace = (a) => (a && a.namespace) || (a && a.kind === "control" ? "control" : "jira");
+
+/**
+ * THE KNOWLEDGE BINDING on a rule's `agent` block (1.4 commit 13b) — ONE normalizer,
+ * called by `normalizeListener` and `normalizeJob`, so the two rule kinds cannot drift
+ * into two shapes for the same field.
+ *
+ * `skillIds`     — up to MAX_RULE_SKILL_IDS skills, in the author's order. CLAMPED here
+ *                  (shape, count, duplicates) and VALIDATED against the skill index by
+ *                  the async savers, which is the only place that can read it. A rule
+ *                  binds a VOICE, not a library: four is a choice, not a budget.
+ * `useMemories`  — opt-in, default OFF, exactly like the runtime memory injection the
+ *                  validators use. Memories cost tokens on every round of every run, so
+ *                  the rule's author says yes, not the app.
+ *
+ * Unknown-shaped input degrades to the empty binding rather than throwing: a rule with
+ * no knowledge is the pre-1.4 rule, and that has to stay saveable.
+ */
+export const normalizeAgentKnowledge = (a) => {
+  const src = a && typeof a === "object" ? a : {};
+  const ids = [];
+  for (const raw of Array.isArray(src.skillIds) ? src.skillIds : []) {
+    const id = String(raw == null ? "" : raw).trim();
+    if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id) || ids.includes(id)) continue;
+    ids.push(id);
+    if (ids.length >= MAX_RULE_SKILL_IDS) break;
+  }
+  return { skillIds: ids, useMemories: src.useMemories === true };
+};
 
 export const AGENT_ACTION_IDS = AGENT_ACTIONS.map((a) => a.id);
 const BY_ID = new Map(AGENT_ACTIONS.map((a) => [a.id, a]));

@@ -40,7 +40,8 @@ import {
   isKnownEvent, getEvent, eventLabel, extractEventContext, changedFieldsOf, commentTextOf,
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
-import { assertAllowedActions, buildAgentGateContext, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { knowledgeBudget, AGENT_RUN_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -74,9 +75,19 @@ const TRIGGER_BUDGET_MS = 18000;         // inside the 25s trigger cap
 const INDEX_CACHE_TTL_MS = 30000;
 // Loop brakes: per issue and per listener, fixed 5-minute buckets.
 const BRAKE_PREFIX = "lst_brake:";
-const BRAKE_BUCKET_MS = 300000;
+export const BRAKE_BUCKET_MS = 300000;
 export const BRAKE_MAX_PER_ISSUE = 30;
 export const BRAKE_MAX_PER_LISTENER = 120;
+/**
+ * THE TENANT-WIDE AGENT-RUN BRAKE (1.4 commit 13d). Same prefix shape, same bucket, same
+ * read/bump mechanism as `lst_brake` — this file is the ONE home for the mechanism, and
+ * scheduled-jobs.js imports it rather than growing a second copy.
+ *
+ * It answers a question no per-rule brake can: forty rules each behaving perfectly still
+ * add up to a bill. The key carries no rule and no issue, only the bucket, because the
+ * whole point is that it counts EVERYTHING.
+ */
+const AGENT_BRAKE_PREFIX = "agent_brake:";
 const SAMPLE_TTL = { ttl: { value: 7, unit: "DAYS" } };
 const SAMPLE_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -159,6 +170,8 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     // operator believing a gate they cannot see. `gate` omitted = restrictive default.
     allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, gate),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
+    // Knowledge binding — ONE normalizer, shared with scheduled jobs (1.4 commit 13b).
+    ...normalizeAgentKnowledge(a),
   };
   if (mode === "agent" && !agent.instructions.trim()) throw new Error("agent.instructions is required in agent mode");
   if (mode === "agent" && String(a.instructions || "").length > 6000) throw new Error("agent.instructions exceeds 6000 characters");
@@ -259,12 +272,85 @@ export const getListener = async (id) => {
   return full;
 };
 
+/**
+ * SKILL BINDING, VALIDATED AT SAVE TIME — ONE home, called by `saveListener` below and
+ * by `saveJob` (src/scheduled-jobs.js). Both rule kinds carry the same `agent.skillIds`
+ * field, so both must refuse the same way.
+ *
+ * `normalizeAgentKnowledge` can only clamp the SHAPE (it is pure and synchronous, and it
+ * also runs in the browser). Whether a skill EXISTS needs the index, which needs
+ * storage, which is why the existence check lives at the async saver. Refusing here is
+ * the point: a rule that silently binds nothing is a rule whose author believes it has a
+ * voice it does not have.
+ *
+ * TWO DIFFERENT NEGATIVES, and they are NOT the same answer:
+ *   · an index that READS and does not contain the id — the skill genuinely is not
+ *     there, including when the index is absent because nobody has ever made a skill.
+ *     REFUSE, by name. This is the case the check exists for.
+ *   · an index read that THROWS — we do not know, and "I could not check" must never be
+ *     spelled "it does not exist" (the proven-negative rule). `partitionKnownSkillIds`
+ *     reports everything as known there, so the save proceeds; a KVS hiccup must not
+ *     make rules unsaveable, and the run-time builder already treats a skill it cannot
+ *     load as "no block".
+ */
+export const assertKnownSkillIds = async (agent) => {
+  const ids = (agent && Array.isArray(agent.skillIds)) ? agent.skillIds : [];
+  if (!ids.length) return;
+  const { partitionKnownSkillIds } = await import("./skills.js");
+  const { unknown } = await partitionKnownSkillIds(ids);
+  if (unknown.length) {
+    const e = new Error(unknown.length === 1
+      ? `agent.skillIds names a skill that does not exist on this instance: ${unknown[0]}. Pick skills from the Skills tab.`
+      : `agent.skillIds names ${unknown.length} skills that do not exist on this instance: ${unknown.join(", ")}. Pick skills from the Skills tab.`);
+    e.reason = "unknown-skill";
+    throw e;
+  }
+};
+
+/**
+ * Build the TRUSTED-BUT-BOUNDED knowledge blocks for one agent run — ONE home, used by
+ * `runListener` below and by `runJob` (src/scheduled-jobs.js).
+ *
+ * FAIL-OPEN, deliberately and in both halves: knowledge makes an agent better, it does
+ * not make it correct. A skill record that will not load or a memory store having a bad
+ * minute must never turn into a listener that did not fire — the run proceeds with less
+ * context and the log says so.
+ *
+ * `audience` picks the byte budget (src/shared/registry-limits.js). An agent run is the
+ * tightest row because its prompt is re-sent every round.
+ */
+export const buildAgentKnowledge = async (agent, { projectKey = null, audience = "agentRun", log = null } = {}) => {
+  const out = {};
+  const budget = knowledgeBudget(audience);
+  const ids = (agent && Array.isArray(agent.skillIds)) ? agent.skillIds : [];
+  if (ids.length) {
+    try {
+      const { fetchSkillsBlock } = await import("./skills.js");
+      const b = await fetchSkillsBlock(ids, { capBytes: budget.skills });
+      if (b.text) out.skillsBlock = b.text;
+      // A skill that did not fit is SAID, not swallowed — the author is otherwise left
+      // wondering why the skill they bound has no effect (this is the `break`-vs-`continue`
+      // defect's other half: the silence, not just the suppression).
+      if (b.skipped && b.skipped.length && log) log(`Skill(s) too large for this run's ${budget.skills}-byte budget, not injected: ${b.skipped.map((s) => s.name || s.id).join(", ")}`);
+    } catch (e) { console.warn("[knowledge] skills block skipped:", e && e.message); }
+  }
+  if (agent && agent.useMemories === true) {
+    try {
+      const { buildMemoryBlock } = await import("./memories.js");
+      const b = await buildMemoryBlock({ projectKey: projectKey || null, capBytes: budget.memories });
+      if (b.text) out.memoryBlock = b.text;
+    } catch (e) { console.warn("[knowledge] memory block skipped:", e && e.message); }
+  }
+  return out;
+};
+
 export const saveListener = async (input, { accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
   const existing = input && input.id ? await getListener(input.id) : null;
   // The role belongs to THIS save, not to the row's history: an admin-armed rule that
   // an editor edits is re-recorded as editor and loses its verdict actions. That is the
   // intended direction — privilege can only be granted by someone who holds it.
   const full = normalizeListener(input, { existing, accountId, gate, savedByRole });
+  await assertKnownSkillIds(full.agent);
   delete full.stats; // stats live in LISTENER_STATS_KEY — never inside the record
   const rows = await readListenerIndex();
   const at = rows.findIndex((r) => r.id === full.id);
@@ -466,10 +552,39 @@ const resolveIssueById = async (issueId) => {
 
 // ── Brakes ───────────────────────────────────────────────────────────────────
 
-const readBrake = async (key) => {
+// EXPORTED (1.4 commit 13d): scheduled-jobs.js takes the tenant-wide agent brake through
+// THESE two functions. A brake read that FAILS is fail-open by construction
+// (`readFailed` suppresses the bump and reports 0) — a KVS hiccup must not stop every
+// rule on the site, and the platform's own limits are still underneath.
+export const readBrake = async (key) => {
   try { return { key, count: Number(await storage.get(key)) || 0 }; } catch { return { key, count: 0, readFailed: true }; }
 };
-const bumpBrake = async (b) => { if (b.readFailed) return; try { await storage.set(b.key, b.count + 1, { ttl: { value: 15, unit: "MINUTES" } }); } catch { /* best-effort */ } };
+export const bumpBrake = async (b) => { if (b.readFailed) return; try { await storage.set(b.key, b.count + 1, { ttl: { value: 15, unit: "MINUTES" } }); } catch { /* best-effort */ } };
+
+/**
+ * THE TENANT-WIDE AGENT-RUN BRAKE, in one call (1.4 commit 13d).
+ *
+ * Taken at the RUN site, not at the trigger: this brake is about AI COST, and cost is
+ * spent when the model runs, not when a task is queued. It counts every agent run the
+ * installation starts — listener, scheduled job, anything later — because that is the
+ * only level at which "forty rules each behaving" is visible.
+ *
+ * Returns `{ braked: false }` to proceed (the bucket has been bumped: taking the slot IS
+ * the accounting), or `{ braked: true, reason, max }` to skip, with the sentence from the
+ * ONE home in src/shared/registry-limits.js.
+ */
+export const takeAgentRunSlot = async ({ max = AGENT_RUN_BRAKE_MAX_PER_BUCKET } = {}) => {
+  const bucket = Math.floor(Date.now() / BRAKE_BUCKET_MS);
+  const b = await readBrake(`${AGENT_BRAKE_PREFIX}${bucket}`);
+  if (b.count >= max) {
+    // Bump past the line too, so the bucket records the real pressure rather than
+    // flat-lining at the cap — an operator needs to see HOW far over it went.
+    await bumpBrake(b);
+    return { braked: true, kind: "agent-runs", max, count: b.count, reason: brakeRefusalText("agent-runs", max) };
+  }
+  await bumpBrake(b);
+  return { braked: false, kind: "agent-runs", max, count: b.count + 1 };
+};
 /**
  * The per-OBJECT brake key (F-320).
  *
@@ -1114,10 +1229,13 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     const agentGate = gateFacts
       ? buildAgentGateContext({ ...gateFacts, triggerSource: "external", savedByRole: listener.savedByRole })
       : undefined;
+    // Knowledge is built by the CALLER (1.4 commit 13b): only here do we know the rule's
+    // binding and the run's project. Fail-open — see buildAgentKnowledge.
+    const knowledge = await buildAgentKnowledge(listener.agent, { projectKey: ctx.projectKey || (extraContext && extraContext.projectKey) || null, audience: "agentRun" });
     const r = await runAgentTask({
       instructions: listener.agent.instructions, allowedActions: listener.agent.allowedActions, maxRounds: listener.agent.maxRounds,
       issueKey: ctx.issueKey || null, config, contextTitle: "EVENT", contextText: summarizeEventForAi(eventType, event, ctx),
-      deadline, cancelToken, extraContext, gate: agentGate, executors,
+      deadline, cancelToken, extraContext, gate: agentGate, executors, knowledge,
     });
     return {
       skipped: false, result: r, gate, ...agentResultFields(r),

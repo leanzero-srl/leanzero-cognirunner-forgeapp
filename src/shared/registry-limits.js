@@ -306,3 +306,104 @@ export const memoryPlatformCapMessage = (bytesOver) => {
   const over = Math.max(1, Math.round(Number(bytesOver) || 0));
   return `Memory store is ${over} bytes over Jira's ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}-byte storage limit, so no change to it can be saved — not even deleting one memory. Freeing at least ${over} bytes means selecting several memories in the Memories tab and deleting them together.`;
 };
+
+/* ------------------------------------------------------------------------
+ * KNOWLEDGE-INJECTION budgets, PER AUDIENCE (1.4 commit 13b).
+ *
+ * Until 1.4 there was ONE number — `fetchSkillsBlock`'s `capBytes = 24576` default,
+ * written as a literal in src/skills.js — because there was ONE audience: the codegen
+ * and fix prompts, which are one-shot, have no tool transcript to grow into, and can
+ * afford 24 KB of instructions.
+ *
+ * 1.4 gives the same blocks to AGENTS, and an agent's prompt is not one-shot: it is
+ * re-sent every round, alongside a tool transcript that grows by up to
+ * TOOL_RESULT_MAX_CHARS per call. A 24 KB skills block on an 8-round agent is 24 KB
+ * paid eight times, and it crowds out the transcript the agent actually reasons over.
+ * So the budget becomes a function of WHO is reading, and the table lives HERE — one
+ * home, dependency-free, next to the other caps — rather than as a number retyped at
+ * each of the four call sites.
+ *
+ *   codegen   — the pre-1.4 numbers, DELIBERATELY UNCHANGED. Changing them would be a
+ *               silent quality change to a shipped feature.
+ *   agentRun  — a listener or scheduled-job agent run (8 KB of skills). Short
+ *               instructions, up to 8 rounds, the tightest transcript pressure.
+ *   coderTurn — the in-issue Coder (16 KB). Longer, code-shaped skills genuinely help,
+ *               and the 900 s consumer affords the tokens.
+ *   prReview  — a pull-request review (6 KB). The DIFF is the content; knowledge is
+ *               there to shape the voice and the house rules, not to compete with it.
+ *
+ * `memories` is smaller than `skills` in every row on purpose: a memory is one advisory
+ * line, and 4 KB is already ~40 of them — past that the block stops being a reminder
+ * and becomes a second instruction set.
+ */
+export const KNOWLEDGE_BUDGET_BYTES = Object.freeze({
+  codegen: Object.freeze({ skills: 24576, memories: 8192 }),
+  agentRun: Object.freeze({ skills: 8192, memories: 4096 }),
+  coderTurn: Object.freeze({ skills: 16384, memories: 8192 }),
+  prReview: Object.freeze({ skills: 6144, memories: 2048 }),
+});
+
+/**
+ * The budget for one audience. An UNKNOWN audience gets the SMALLEST row, not the
+ * largest: a caller that forgot to name itself must not be handed the codegen budget by
+ * accident, for the same reason the action gate's default context is the restrictive one.
+ */
+export const knowledgeBudget = (audience) => KNOWLEDGE_BUDGET_BYTES[audience] || KNOWLEDGE_BUDGET_BYTES.prReview;
+
+/** Skills a rule may bind. Small on purpose: a rule picks a VOICE, not a library. */
+export const MAX_RULE_SKILL_IDS = 4;
+
+/* ------------------------------------------------------------------------
+ * RUN BRAKES (1.4 commit 13d) — ONE home for the numbers.
+ *
+ * Listeners have had brakes since 1.2 (`lst_brake:*`: 30 runs per object and 120 per
+ * listener, per 5 minutes), because a listener whose own write re-fires its own event is
+ * the failure that surface fears most. SCHEDULED JOBS had none: a job is started by the
+ * app's own clock, so it cannot loop on itself — but it can still hold a 100-issue scope
+ * and an agent that writes on every one of them, and until now nothing counted that.
+ *
+ * Two different brakes, because they answer two different questions:
+ *
+ *   maxWritesPerRun — "how much may ONE run change?" Per job, author-set, clamped here.
+ *       Counted on the run's CHANGE LEDGER (`session.changes` in createSandboxSession),
+ *       which is the one write counter both execution modes and both rule kinds already
+ *       share. Counting anything else would be a second counter that drifts.
+ *   agent-run brake — "how much AI may the WHOLE INSTALLATION start in 5 minutes?"
+ *       Tenant-wide, fixed, in the same `<prefix>:<bucket>` shape as `lst_brake`. This is
+ *       the cost ceiling: a per-rule brake cannot see forty rules each behaving.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Writes ONE job run may make before it stops, when the job does not say otherwise.
+ *
+ * DERIVED, not guessed: the largest scope a job may hold is MAX_SCOPE_ISSUES (100,
+ * src/scheduled-jobs.js), and an escalation sweep that sets a field and adds a comment on
+ * every one of them is the ORDINARY use of this feature, not an abuse — so the default
+ * must clear twice the biggest legal scope. A brake that trips on correct work teaches
+ * every author to raise it, which is how a brake becomes a formality (and there is a
+ * cross-check in the scheduled-jobs suite so the two numbers cannot drift apart).
+ *
+ * It is still decisive for the case it exists for: a runaway agent looping on one issue
+ * has no scope at all and hits 200 in one run.
+ */
+export const JOB_DEFAULT_MAX_WRITES_PER_RUN = 200;
+/** The ceiling an author may raise it to. Above this, use several jobs with tighter scopes. */
+export const JOB_MAX_WRITES_PER_RUN = 1000;
+/** A job may also brake HARD at 0 writes — the value is meaningful, so 0 is not "unset". */
+export const JOB_MIN_WRITES_PER_RUN = 0;
+
+/**
+ * Tenant-wide AI agent runs per 5-minute bucket. Sized against the platform's own
+ * ceilings rather than a guess: the 120-per-listener brake times a handful of busy rules
+ * lands here, and past this the token budget (`src/shared/ai-budget.js`) would be
+ * deferring almost everything anyway — so this brake's job is to make the runaway VISIBLE
+ * and CHEAP rather than to be the first thing that notices it.
+ */
+export const AGENT_RUN_BRAKE_MAX_PER_BUCKET = 200;
+
+/** The refusal sentence for each brake. ONE home: the log, the job row and the REST answer share it. */
+export const brakeRefusalText = (kind, max) => {
+  if (kind === "job-writes") return `Write brake: this run reached its limit of ${max} change${max === 1 ? "" : "s"}. The remaining work was not done. Raise the job's "maximum writes per run", narrow its scope JQL, or split it into several jobs.`;
+  if (kind === "agent-runs") return `Agent brake: this installation started more than ${max} AI agent runs in 5 minutes, so this run was skipped. Something is firing far more often than intended — check the listeners and jobs that ran in the last few minutes.`;
+  return "Run brake tripped.";
+};

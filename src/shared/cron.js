@@ -314,6 +314,20 @@ export const SCHEDULE_PRESETS = [
   { id: "every15", label: "Every 15 minutes" },
   { id: "every30", label: "Every 30 minutes" },
   { id: "hourly", label: "Every hour" },
+  // MULTI-HOUR CADENCES (1.4 commit 13c). These cron shapes were always valid and
+  // always ran correctly — `*/2` in the hour field is ordinary Vixie syntax — but the
+  // editor could not NAME them, so a job on a two-hour cadence rendered as "Custom" and
+  // an admin who wanted one had to hand-write cron. The presets are the missing
+  // vocabulary, not new scheduling behaviour.
+  //
+  // FIXED HOURS, not a rolling interval: `*/4` fires at 00,04,08,12,16,20 local, so the
+  // last gap of the day is 4 h like every other one (24 % 4 === 0 for all four of these).
+  // A cadence that does not divide 24 would have a short gap at midnight and has
+  // deliberately not been added.
+  { id: "every2h", label: "Every 2 hours" },
+  { id: "every4h", label: "Every 4 hours" },
+  { id: "every6h", label: "Every 6 hours" },
+  { id: "every12h", label: "Every 12 hours" },
   { id: "daily", label: "Every day at…" },
   { id: "weekdays", label: "Weekdays at…" },
   { id: "weekly", label: "Weekly on…" },
@@ -347,6 +361,12 @@ export const presetToCron = (preset, opts = {}) => {
     case "every15": return "*/15 * * * *";
     case "every30": return "*/30 * * * *";
     case "hourly": return `${m} * * * *`;
+    // The MINUTE is honoured (an admin who wants the 4-hourly sweep at :15 gets it);
+    // the HOUR option is not, because the preset IS the hour field.
+    case "every2h": return `${m} */2 * * *`;
+    case "every4h": return `${m} */4 * * *`;
+    case "every6h": return `${m} */6 * * *`;
+    case "every12h": return `${m} */12 * * *`;
     case "daily": return `${m} ${h} * * *`;
     case "weekdays": return `${m} ${h} * * 1-5`;
     case "weekly": {
@@ -373,6 +393,10 @@ export const cronToPreset = (expr) => {
   if (text === "*/15 * * * *") return { preset: "every15" };
   if (text === "*/30 * * * *") return { preset: "every30" };
   if ((m = text.match(/^(\d{1,2}) \* \* \* \*$/))) return { preset: "hourly", minute: +m[1] };
+  // ONLY the four cadences the picker offers are named. `*/3` and `*/5` stay "Custom" on
+  // purpose: they do not divide 24, so their last gap of the day is short, and a label
+  // reading "Every 5 hours" next to a schedule that is sometimes 4 would be a lie.
+  if ((m = text.match(/^(\d{1,2}) \*\/(2|4|6|12) \* \* \*$/))) return { preset: `every${m[2]}h`, minute: +m[1] };
   if ((m = text.match(/^(\d{1,2}) (\d{1,2}) \* \* \*$/))) return { preset: "daily", minute: +m[1], hour: +m[2] };
   if ((m = text.match(/^(\d{1,2}) (\d{1,2}) \* \* 1-5$/))) return { preset: "weekdays", minute: +m[1], hour: +m[2] };
   if ((m = text.match(/^(\d{1,2}) (\d{1,2}) \* \* ([0-6](?:,[0-6])*)$/))) return { preset: "weekly", minute: +m[1], hour: +m[2], days: m[3].split(",").map(Number) };
@@ -393,6 +417,10 @@ export const describeCron = (expr) => {
     case "every15": return "Every 15 minutes";
     case "every30": return "Every 30 minutes";
     case "hourly": return p.minute === 0 ? "Every hour" : `Every hour at minute ${p.minute}`;
+    case "every2h": case "every4h": case "every6h": case "every12h": {
+      const hours = parseInt(p.preset.slice(5), 10);
+      return p.minute === 0 ? `Every ${hours} hours` : `Every ${hours} hours at minute ${p.minute}`;
+    }
     case "daily": return `Every day at ${at(p.hour, p.minute)}`;
     case "weekdays": return `Weekdays at ${at(p.hour, p.minute)}`;
     case "weekly": return `Every ${p.days.map((d) => DAY_NAMES[d]).join(", ")} at ${at(p.hour, p.minute)}`;

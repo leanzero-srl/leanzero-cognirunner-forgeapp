@@ -22,6 +22,12 @@
  *
  *   node --import ./lib/register-mocks.mjs scripts/premade-confluence.test.mjs
  */
+// Section 6 drives the post-function executors out of src/index.js, which imports
+// extensionless relative specifiers the Forge bundler accepts and node ESM does not.
+// This registers that resolve hook BEFORE the dynamic `import("../../src/index.js")`
+// below — the same shim validator-response-shape.test.mjs uses, and the reason that
+// import is dynamic rather than static.
+import "../lib/register-mocks-index.mjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -434,6 +440,213 @@ const manifest = readFileSync(resolve(root, "manifest.yml"), "utf8");
 eq((await executePremadeRule({ ruleKind: "premade", ruleType: "confluence-page-linked" }, ARGS, "condition", {})).result, true,
   "the executor's condition path fails OPEN for confluence-page-linked");
 
+/* ══════════ 6. THE TWO POST-FUNCTIONS ══════════════════════════════════════ */
+
+const { __confluencePfInternals: PF } = await import("../../src/index.js");
+ok(!!PF, "src/index.js exposes the confluence post-function internals for this suite");
+
+if (PF) {
+  const { executeConfluencePagePostFunction, executeConfluenceCommentPostFunction } = PF;
+
+  /** A client that records every write and can be told to conflict. */
+  const pfClient = (over = {}) => {
+    const seen = { created: null, updated: null, comment: null, searched: null, byTitle: 0 };
+    return {
+      seen,
+      client: {
+        async getPageByTitle({ spaceKey, title }) { seen.byTitle++; seen.searched = { spaceKey, title }; return over.existing || null; },
+        async createPage(a) { if (over.createThrows) throw over.createThrows; seen.created = a; return { id: "new1", title: a.title, version: 1, url: "/wiki/new1" }; },
+        async updatePage(a) { if (over.updateThrows) throw over.updateThrows; seen.updated = a; return { id: a.id, title: a.title, version: a.version + 1, url: `/wiki/${a.id}` }; },
+        async addComment(a) { if (over.commentThrows) throw over.commentThrows; seen.comment = a; return { id: "c1", pageId: a.pageId, version: 1 }; },
+        ...over.client,
+      },
+    };
+  };
+  const pfDeps = (client, extra = {}) => ({
+    confluenceClient: client,
+    generate: async () => ({ ok: true, title: "Generated", content: "# Body" }),
+    readIssue: async () => ({ key: "LZPT-1", fields: { summary: "Ship it" } }),
+    readFieldText: async () => "the description",
+    putProperty: async () => ({ ok: true, status: 200 }),
+    addRemoteLink: async () => ({ ok: true, status: 201 }),
+    readProperty: async () => null,
+    ...extra,
+  });
+  const PAGE_CFG = { ruleKind: "premade", ruleType: "postfunction-confluence-page", spaceKey: "DOCS", titleTemplate: "Design — {issueKey}" };
+
+  /* ── 6a. create ── */
+  {
+    const m = pfClient();
+    const links = [];
+    const r = await executeConfluencePagePostFunction("LZPT-1", PAGE_CFG, pfDeps(m.client, {
+      addRemoteLink: async (key, url, title, globalId) => { links.push({ key, url, title, globalId }); return { ok: true, status: 201 }; },
+    }));
+    eq(r.success, true, "the page post-function creates a page");
+    eq(m.seen.created.title, "Design — LZPT-1", "…with the rendered title template");
+    eq(m.seen.created.spaceKey, "DOCS", "…in the configured space");
+    eq(links.length, 1, "…and links back from the issue exactly once");
+    ok(/LZPT-1/.test(links[0].globalId) && /new1/.test(links[0].globalId),
+      "…with a globalId naming the issue and the page, so a re-run UPDATES the link instead of duplicating it");
+    ok(r.stepResults.every((s) => s.status === "ok"), "…and every step reports ok");
+  }
+
+  /* ── 6b. update, version-checked ── */
+  {
+    const m = pfClient({ existing: { id: "42", title: "Design — LZPT-1", version: 7, url: "/wiki/42" } });
+    const r = await executeConfluencePagePostFunction("LZPT-1", PAGE_CFG, pfDeps(m.client));
+    eq(r.success, true, "an existing page of the same title is UPDATED, not duplicated");
+    eq(m.seen.created, null, "…nothing is created");
+    eq(m.seen.updated.version, 7, "…and the update carries the version we READ (the lost-edit guard)");
+  }
+
+  /* ── 6c. THE UPDATE-CONFLICT PATH ── */
+  {
+    const m = pfClient({
+      existing: { id: "42", title: "Design — LZPT-1", version: 7, url: "/wiki/42" },
+      updateThrows: new ConfluenceError("conflict", "page 42 is at version 9"),
+    });
+    const r = await executeConfluencePagePostFunction("LZPT-1", PAGE_CFG, pfDeps(m.client));
+    eq(r.success, true, "a version conflict FAILS OPEN — a post-function runs after the transition and cannot block it");
+    const step = r.stepResults.find((s) => s.status !== "ok");
+    ok(!!step, "…and it is reported as a named step failure, not a silent success");
+    ok(/someone else edited|conflict|version/i.test(step.reason), "…whose reason says the page moved under us");
+    ok(/edited/i.test(r.reason) || /conflict/i.test(r.reason), "…and the log row's sentence says so too");
+    // A conflict is NEVER retried: re-reading and re-writing is the lost edit the
+    // version check exists to prevent.
+    eq(m.seen.updated, null, "…and NOTHING was written");
+  }
+
+  /* ── 6d. every other fault is open + named ── */
+  for (const [label, err] of [
+    ["confluence_unavailable", new ConfluenceError("confluence_unavailable", "not installed")],
+    ["auth", new ConfluenceError("auth", "403")],
+    ["not_found", new ConfluenceError("not_found", "no space DOCS")],
+    ["network", new ConfluenceError("network", "socket")],
+  ]) {
+    const m = pfClient({ createThrows: err });
+    const r = await executeConfluencePagePostFunction("LZPT-1", PAGE_CFG, pfDeps(m.client));
+    eq(r.success, true, `the page post-function fails OPEN on ${label}`);
+    const step = r.stepResults.find((s) => s.status !== "ok");
+    ok(!!step && typeof step.reason === "string" && step.reason.length > 0, `…with a NAMED reason in stepResults[] (${label})`);
+  }
+  {
+    // A misconfigured rule is an ERROR, not a skip: nothing about it will get better.
+    const m = pfClient();
+    const r = await executeConfluencePagePostFunction("LZPT-1", { ...PAGE_CFG, spaceKey: "" }, pfDeps(m.client));
+    eq(r.success, false, "a page post-function with no space is an ERROR, not a green skip");
+    eq(m.seen.created, null, "…and writes nothing");
+  }
+  {
+    // The doc generator failing is the AI being unavailable → open, named.
+    const m = pfClient();
+    const r = await executeConfluencePagePostFunction("LZPT-1", PAGE_CFG, pfDeps(m.client, { generate: async () => ({ ok: false, reason: "no key" }) }));
+    eq(r.success, true, "the doc generator failing fails OPEN");
+    eq(m.seen.created, null, "…and no empty page is created");
+  }
+  {
+    // Simulation intercepts the write.
+    const m = pfClient();
+    const r = await executeConfluencePagePostFunction("LZPT-1", { ...PAGE_CFG, simulationMode: true }, pfDeps(m.client));
+    eq(r.success, true, "simulation mode reports success");
+    eq(m.seen.created, null, "…and creates nothing");
+    eq(m.seen.updated, null, "…and updates nothing");
+    ok(r.simulated === true, "…and says it was a simulation");
+  }
+
+  /* ── 6e. the deterministic comment post-function ── */
+  const COMMENT_CFG = { ruleKind: "premade", ruleType: "postfunction-confluence-comment", commentTemplate: "{issueKey} moved. Summary: {summary}" };
+  {
+    const m = pfClient();
+    const r = await executeConfluenceCommentPostFunction("LZPT-1", COMMENT_CFG, pfDeps(m.client, {
+      readProperty: async () => ({ version: 1, pageId: "42", title: "T", url: "/42" }),
+    }));
+    eq(r.success, true, "the comment post-function comments on the linked page");
+    eq(m.seen.comment.pageId, "42", "…the page the advisory property names");
+    ok(/LZPT-1 moved\. Summary: Ship it/.test(m.seen.comment.body), "…with the template rendered from the issue");
+    ok(!/\{issueKey\}|\{summary\}/.test(m.seen.comment.body), "…and no placeholder left unrendered");
+  }
+  {
+    const m = pfClient();
+    const r = await executeConfluenceCommentPostFunction("LZPT-1", COMMENT_CFG, pfDeps(m.client, { readProperty: async () => null }));
+    eq(r.success, true, "no linked page is a SKIP, not a failure — nothing is wrong");
+    eq(m.seen.comment, null, "…and no comment is written");
+  }
+  {
+    const m = pfClient({ commentThrows: new ConfluenceError("auth", "403") });
+    const r = await executeConfluenceCommentPostFunction("LZPT-1", COMMENT_CFG, pfDeps(m.client, {
+      readProperty: async () => ({ version: 1, pageId: "42" }),
+    }));
+    eq(r.success, true, "the comment post-function fails OPEN");
+    const step = r.stepResults.find((s) => s.status !== "ok");
+    ok(!!step && /403|allowed|auth/i.test(step.reason), "…with a named reason in stepResults[]");
+  }
+  {
+    const m = pfClient();
+    const r = await executeConfluenceCommentPostFunction("LZPT-1", { ...COMMENT_CFG, commentTemplate: "" }, pfDeps(m.client, {
+      readProperty: async () => ({ version: 1, pageId: "42" }),
+    }));
+    eq(r.success, false, "a comment rule with no template is an ERROR");
+    eq(m.seen.comment, null, "…and writes nothing");
+  }
+  {
+    const m = pfClient();
+    const r = await executeConfluenceCommentPostFunction("LZPT-1", { ...COMMENT_CFG, simulationMode: true }, pfDeps(m.client, {
+      readProperty: async () => ({ version: 1, pageId: "42" }),
+    }));
+    eq(m.seen.comment, null, "simulation mode intercepts the comment write");
+    eq(r.success, true, "…and still reports success");
+  }
+}
+
+/* ══════════ 4b. MARKDOWN → STORAGE, AND THE TITLE/COMMENT TEMPLATES ════════ */
+{
+  const { markdownToStorage, storageEscape, renderTextTemplate, confluenceRemoteLinkGlobalId } =
+    await import("../../src/shared/confluence-rules.js");
+
+  // THE SECURITY PROPERTY: model-authored text is escaped BEFORE any markup is added, so
+  // nothing it writes can become markup. This is the ordering, asserted.
+  eq(storageEscape('<script>&"x"'), "&lt;script&gt;&amp;&quot;x&quot;", "storage escaping covers the five XML characters");
+  {
+    const out = markdownToStorage('# <script>alert(1)</script>\n\nplain <b>text</b>');
+    ok(out.includes("&lt;script&gt;"), "a heading containing a tag is escaped, not rendered");
+    ok(!out.includes("<script>"), "…no raw script tag survives");
+    ok(!out.includes("<b>"), "…and neither does a raw inline tag from the model");
+    ok(out.includes("<h1>"), "…while OUR markup is real markup");
+  }
+  {
+    const out = markdownToStorage("## H\n\n- one\n- two\n\n1. a\n2. b\n\npara `code` **bold**");
+    ok(out.includes("<h2>H</h2>"), "headings");
+    ok(out.includes("<ul>\n<li>one</li>"), "bullet lists");
+    ok(out.includes("<ol>\n<li>a</li>"), "numbered lists");
+    ok(out.includes("</ul>") && out.includes("</ol>"), "…both closed");
+    ok(out.includes("<code>code</code>") && out.includes("<strong>bold</strong>"), "inline code and bold");
+  }
+  {
+    const out = markdownToStorage("```\nconst x = '<y>';\n```");
+    ok(out.includes("<ac:plain-text-body><![CDATA["), "a fenced block becomes a code macro");
+    ok(out.includes("const x = '<y>';"), "…whose CDATA keeps the source verbatim");
+  }
+  ok(markdownToStorage("```\n]]>\n```").includes("]]&gt;"), "a CDATA terminator inside a code block cannot end the CDATA early");
+  eq(markdownToStorage(""), "", "empty markdown produces an empty body");
+  eq(markdownToStorage(null), "", "…and so does null");
+
+  // A TITLE IS NOT A QUERY: the placeholders substitute RAW here, because quoting would
+  // put stray quotes in a page title. Reusing cqlQuote for this would be the second
+  // escaper applied to the wrong grammar.
+  eq(renderTextTemplate("{issueKey} — {summary}", { issueKey: "LZPT-1", summary: 'Ship "it"' }),
+    'LZPT-1 — Ship "it"', "a title template substitutes without CQL quoting");
+  eq(renderTextTemplate("{field:cf}", { fields: { cf: "v" } }), "v", "…including {field:<id>}");
+  eq(renderTextTemplate("{issueKey}", {}), "", "…and an unknown value substitutes empty");
+  ok(renderTextTemplate("{summary}", { summary: "x".repeat(1000) }).length <= 200, "…clamped to the title cap");
+  eq(renderTextTemplate("a\n\n b", {}), "a b", "…and whitespace-flattened, since a title is one line");
+
+  // The remote link's globalId is deterministic on (issue, page) — that is what makes a
+  // re-run UPDATE the link instead of adding an eleventh one.
+  eq(confluenceRemoteLinkGlobalId("LZPT-1", "42"), confluenceRemoteLinkGlobalId("LZPT-1", "42"), "the globalId is stable");
+  ok(confluenceRemoteLinkGlobalId("LZPT-1", "42") !== confluenceRemoteLinkGlobalId("LZPT-2", "42"), "…and distinguishes issues");
+  ok(confluenceRemoteLinkGlobalId("LZPT-1", "42") !== confluenceRemoteLinkGlobalId("LZPT-1", "43"), "…and pages");
+}
+
 /* ══════════ 5. CATALOGUE + EXECUTOR PARITY ═════════════════════════════════ */
 
 const executorSrc = readFileSync(resolve(root, "src", "premade-rules.js"), "utf8");
@@ -453,6 +666,40 @@ const executorSrc = readFileSync(resolve(root, "src", "premade-rules.js"), "utf8
 ok(/ADVISORY/.test(readFileSync(resolve(root, "src", "shared", "confluence-rules.js"), "utf8")),
   "the shared module states that the property is advisory");
 ok(/ADVISORY/.test(executorSrc), "…and so does the executor, beside the writer");
+
+/* ── the two post-functions' catalogue rows and their index.js wiring ── */
+{
+  const indexSrc = readFileSync(resolve(root, "src", "index.js"), "utf8");
+  for (const key of ["postfunction-confluence-page", "postfunction-confluence-comment"]) {
+    const row = PREMADE_POSTFUNCTIONS.find((r) => r.key === key);
+    ok(!!row, `${key} is in the post-function catalogue`);
+    ok(!!row && row.requiresProduct === "confluence", `…${key} requires the confluence product`);
+    ok(new RegExp(`const [A-Z0-9_]+ = "${key}";`).test(indexSrc),
+      `…${key} is a NAMED constant in src/index.js, never a guessed substring`);
+  }
+  const page = PREMADE_POSTFUNCTIONS.find((r) => r.key === "postfunction-confluence-page");
+  const comment = PREMADE_POSTFUNCTIONS.find((r) => r.key === "postfunction-confluence-comment");
+  eq(page.execution, "queued", "the page post-function is QUEUED — an AI call plus four REST calls do not fit 25 s");
+  eq(comment.execution, "inline", "the comment post-function is INLINE — deterministic, one call, no AI");
+  // The substring trap this whole wiring exists to avoid: "postfunction-confluence-page"
+  // and "postfunction-confluence-comment" share a prefix, so a `.includes("confluence")`
+  // in isHeavyPf would queue the deterministic one too.
+  const heavy = (indexSrc.match(/const isHeavyPf = [\s\S]{0,1600}?;\n/) || [""])[0];
+  ok(heavy.includes("isConfluencePagePfType(pfType)"), "isHeavyPf names the PAGE rule explicitly");
+  ok(!heavy.includes("isConfluenceCommentPfType(pfType)"), "…and does NOT name the COMMENT rule");
+  ok(!/isHeavyPf[\s\S]{0,1600}includes\("confluence"\)/.test(indexSrc), "…and routes on neither by substring");
+  ok(/PREMADE_PF_TYPES\.has\(config\.ruleType\)/.test(indexSrc),
+    "resolvePfType derives its premade arm from the CATALOGUE, so a new premade PF cannot resolve to postfunction-static");
+  ok(/isConfluencePagePfType\(type\) \|\| isConfluenceCommentPfType\(type\)/.test(indexSrc),
+    "dispatchPostFunction has an EXPLICIT branch for both, before the substring chain");
+  // The conflict is never retried — asserted on the source, because "we did not retry"
+  // is invisible in a passing test that only had one chance to.
+  ok(/NEVER retried|never retried/.test(indexSrc), "the no-retry-on-conflict rule is stated where the write happens");
+  // ONE property writer, shared with the validator rather than copied.
+  ok(indexSrc.includes("writeConfluenceIssueProperty"), "the page post-function uses the validator's ONE property writer");
+  ok(!/route`\/rest\/api\/3\/issue\/\$\{issueKey\}\/properties\/\$\{CONFLUENCE_PROPERTY_KEY\}`[\s\S]{0,200}method: "PUT"/.test(indexSrc),
+    "…and index.js grows no second cognirunner.confluence PUT");
+}
 
 console.log(failures.length
   ? `✗ premade confluence: ${pass} passed, ${failures.length} FAILED\n  - ${failures.join("\n  - ")}`

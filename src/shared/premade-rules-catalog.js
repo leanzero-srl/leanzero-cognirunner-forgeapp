@@ -781,6 +781,33 @@ export const PREMADE_POSTFUNCTIONS = [
     network: true,
     requiresCapability: "git",
     params: { git: { prMatch: false }, coderMode: true, instructions: true },
+    execution: "queued",
+    availability: "available",
+  },
+  /* CONFLUENCE post-functions (1.5 commit 7d). `execution` is the ONE home of "does this
+   * run inside the 25 s transition or on the queue", and the parity lint reads it: a
+   * `queued` row must be named by `isHeavyPf` in src/index.js, an `inline` row must not.
+   * Before this field, that fact lived only in a regex in the lint. */
+  {
+    key: "postfunction-confluence-page",
+    label: "Confluence: create or update a page for this issue",
+    help: "Write a Confluence page for the issue in the space you pick — created the first time, UPDATED after that, never duplicated. The page body is authored by the AI from the issue, and the issue gets a link back to the page. It runs in the BACKGROUND: authoring plus two Confluence calls does not fit a transition, so the transition completes immediately and the page appears a few seconds later.",
+    category: "Confluence",
+    network: true,
+    requiresProduct: "confluence",
+    params: { confluence: { mode: false, commentTemplate: false }, instructions: true },
+    execution: "queued",
+    availability: "available",
+  },
+  {
+    key: "postfunction-confluence-comment",
+    label: "Confluence: comment on the linked page",
+    help: "Add a comment to the Confluence page CogniRunner has recorded for this issue. DETERMINISTIC — your text with {issueKey}, {summary} and {field:<id>} filled in, no AI and no token cost — so it runs inside the transition. If no page has been linked yet it does nothing and says so.",
+    category: "Confluence",
+    network: true,
+    requiresProduct: "confluence",
+    params: { confluence: { mode: false, cqlTemplate: false, titleTemplate: false, parentId: false, prompt: false } },
+    execution: "inline",
     availability: "available",
   },
 ];

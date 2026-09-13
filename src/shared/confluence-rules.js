@@ -157,3 +157,103 @@ export const buildPageExistsCql = (spaceKey, template, values) => {
 
 /** How many pages the SEMANTIC mode may read and put in front of a model (plan §3.12). */
 export const SEMANTIC_MAX_PAGES = 3;
+
+/* ── Plain-text templates (titles, comments) — NOT CQL ────────────────────── */
+
+/** A page title, and the comment body a deterministic post-function writes. */
+export const TITLE_MAX_CHARS = 200;
+export const COMMENT_TEMPLATE_MAX_CHARS = 2000;
+
+/**
+ * The SAME placeholders as a CQL template, substituted RAW.
+ *
+ * A title is not a query and a comment is not a query: there is no literal to close, so
+ * quoting them would put stray `"` in the page title. The quoting in `cqlQuote` is not
+ * "sanitisation we can reuse", it is CQL syntax — reusing it here would be the second
+ * escaper this file exists to prevent, applied to the wrong grammar.
+ *
+ * The escaping these values DO need is the one their own destination needs, and it is
+ * applied there: `storageEscape` before anything reaches a page body.
+ */
+export const renderTextTemplate = (template, values = {}, maxChars = TITLE_MAX_CHARS) => {
+  const src = String(template == null ? "" : template);
+  const fields = (values && values.fields) || {};
+  const out = src.replace(CQL_PLACEHOLDER_RE, (_m, name) => {
+    if (name === "issueKey") return String(values.issueKey || "");
+    if (name === "summary") return String(values.summary || "");
+    return String(fields[String(name).slice("field:".length)] || "");
+  });
+  return clampChars(out.replace(/\s+/g, " ").trim(), maxChars);
+};
+
+/* ── Markdown → Confluence storage ────────────────────────────────────────── */
+
+const STORAGE_ENTITIES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+/** Confluence storage format is XHTML. Everything model-authored is escaped first. */
+export const storageEscape = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => STORAGE_ENTITIES[c]);
+
+/**
+ * A DELIBERATELY SMALL Markdown → storage converter for the page post-function.
+ *
+ * The doc generator (src/index.js generateDocContent) authors GitHub-flavored Markdown,
+ * and Confluence's v2 page API takes XHTML "storage". Handing the markdown over raw
+ * produces a page of literal `##` and `-`, which is not a document.
+ *
+ * WHAT IT HANDLES: `#`..`######` headings, `-`/`*` bullets, `1.` numbered lists,
+ * fenced code blocks, blank-line-separated paragraphs, and inline `code`, `**bold**`
+ * and `*italic*`. WHAT IT DOES NOT: tables, images, links, nested lists — those pass
+ * through as escaped text rather than being half-rendered, because a half-parsed table
+ * is worse than a plain one.
+ *
+ * EVERY piece of model-authored text is `storageEscape`d BEFORE any markup is added, so
+ * a document that contains `<script>` or a Confluence macro tag becomes visible text and
+ * never becomes markup. That ordering is the whole security property of this function.
+ */
+export const markdownToStorage = (markdown) => {
+  const lines = String(markdown == null ? "" : markdown).split(/\r?\n/);
+  const out = [];
+  let para = [];
+  let list = null; // "ul" | "ol"
+  let code = null;
+  const inline = (s) => storageEscape(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
+  const flushList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (/^\s*```/.test(line)) {
+      if (code === null) { flushPara(); flushList(); code = []; }
+      else { out.push(`<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[${code.join("\n").replace(/\]\]>/g, "]]&gt;")}]]></ac:plain-text-body></ac:structured-macro>`); code = null; }
+      continue;
+    }
+    if (code !== null) { code.push(raw); continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { flushPara(); flushList(); const n = h[1].length; out.push(`<h${n}>${inline(h[2])}</h${n}>`); continue; }
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const want = ul ? "ul" : "ol";
+      if (list !== want) { flushList(); out.push(`<${want}>`); list = want; }
+      out.push(`<li>${inline((ul || ol)[1])}</li>`);
+      continue;
+    }
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    para.push(line.trim());
+  }
+  if (code !== null) out.push(`<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[${code.join("\n").replace(/\]\]>/g, "]]&gt;")}]]></ac:plain-text-body></ac:structured-macro>`);
+  flushPara();
+  flushList();
+  return out.join("\n");
+};
+
+/**
+ * The remote link's `globalId` (1.5 commit 7d). DETERMINISTIC on (issue, page), which is
+ * what makes the Jira remote-link API UPDATE the existing link instead of adding a
+ * second one every time the rule runs. Without it, a transition an issue takes ten times
+ * leaves ten identical links.
+ */
+export const confluenceRemoteLinkGlobalId = (issueKey, pageId) =>
+  `cognirunner-confluence:${String(issueKey || "")}:${String(pageId || "")}`;

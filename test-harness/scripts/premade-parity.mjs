@@ -144,13 +144,37 @@ for (const row of PREMADE_LISTENERS) {
     if (catalogKeys.has(row.key)) problems.push(`${where} collides with a workflow premade rule key`);
     if (getPremadePostFunction(row.key) !== row) problems.push(`${where} is not findable by key`);
     if (!row.label || !row.help) problems.push(`${where} has no label/help`);
-    // It must be named by name in all three homes §3.9 lists. A grep, not an inference.
-    if (!indexSrc.includes(`const CODER_PF_TYPE = "${row.key}"`)) {
-      problems.push(`${where} is not the constant src/index.js routes on (CODER_PF_TYPE)`);
+    // EVERY premade PF key must be a NAMED CONSTANT in src/index.js — a grep, not an
+    // inference. This used to assert the ONE string `const CODER_PF_TYPE = "<key>"`
+    // against every row, so the second premade post-function ever added would have
+    // failed it no matter how correctly it was wired. What the rule actually is: the
+    // key is spelled out once, in a constant, so routing can never be a substring guess.
+    if (!new RegExp(`const [A-Z0-9_]+ = "${row.key}";`).test(indexSrc)) {
+      problems.push(`${where} is not declared as a named constant in src/index.js — routing on it would be a substring guess`);
+    }
+    // EXECUTION IS A CATALOGUE FACT, and it must match the wiring. `queued` means the
+    // 25 s transition cannot hold it, so `isHeavyPf` has to name it; `inline` means it
+    // must NOT, or a deterministic one-call rule pays the platform's event-queue delay.
+    if (row.execution !== "queued" && row.execution !== "inline") {
+      problems.push(`${where} does not declare execution:"queued" or execution:"inline" — which side of the 25 s budget it runs on is not a guess`);
+    }
+    const heavyBlock = (indexSrc.match(/const isHeavyPf = [\s\S]{0,1600}?;\n/) || [""])[0];
+    const predicate = `is${row.key.split("-").map((p) => p[0].toUpperCase() + p.slice(1)).join("").replace(/^Postfunction/, "")}PfType(pfType)`;
+    const namedInHeavy = heavyBlock.includes(predicate);
+    if (row.execution === "queued" && !namedInHeavy) {
+      problems.push(`${where} is execution:"queued" but isHeavyPf does not name it (${predicate}) — it would run INLINE inside the 25 s transition budget`);
+    }
+    if (row.execution === "inline" && namedInHeavy) {
+      problems.push(`${where} is execution:"inline" but isHeavyPf names it — it would be queued and pay the event-queue delay for no reason`);
+    }
+    // …and it must have an EXPLICIT dispatch branch, never the substring chain.
+    if (!new RegExp(`is${row.key.split("-").map((p) => p[0].toUpperCase() + p.slice(1)).join("").replace(/^Postfunction/, "")}PfType\\(type\\)`).test(indexSrc)) {
+      problems.push(`${where} has no explicit branch in dispatchPostFunction — it would fall through to a type-guess executor`);
     }
   }
-  if (!/const isHeavyPf = [\s\S]{0,600}isCoderPfType\(pfType\)/.test(indexSrc)) {
-    problems.push("isHeavyPf does not name the coder post-function — it would run INLINE inside the 25 s transition budget");
+  // resolvePfType must DERIVE the premade arm from the catalogue, not name one rule.
+  if (!/PREMADE_PF_TYPES\.has\(config\.ruleType\)/.test(indexSrc)) {
+    problems.push("resolvePfType does not derive its premade arm from the catalogue — a new premade post-function would resolve to postfunction-static and run inline");
   }
   if (!/if \(isCoderPfType\(pfType\)\) \{\s*\n\s*await enqueueCoderPostFunction/.test(indexSrc)) {
     problems.push("executePostFunction has no explicit coder enqueue before the generic heavy path");

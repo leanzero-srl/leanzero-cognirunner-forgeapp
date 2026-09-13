@@ -340,6 +340,21 @@ ok(goodRot.ok === true && storage.__raw(conns.gitConnSecretKey(rotId)).token ===
 const unknownTarget = await conns.requestCredentialRotation({ kind: "nonsense" }, { token: "x" });
 ok(unknownTarget.ok === false, "an unknown rotation target is refused");
 
+// F-295 — the queued path enforces the SAME token cap as the resolver writes,
+// before the push. It used to push params.secret verbatim.
+const huge = "g".repeat(conns.TOKEN_MAX_CHARS + 1);
+const tooLong = await callScanned("rotateGitCredential", { target: { kind: "connection", id: rotId }, token: huge });
+ok(tooLong.success === false && /implausibly long/i.test(String(tooLong.error)),
+  `an implausibly long replacement is refused BEFORE the queue (got ${JSON.stringify(tooLong).slice(0, 160)})`);
+const emptyTok = await callScanned("rotateGitCredential", { target: { kind: "connection", id: rotId }, token: "   " });
+ok(emptyTok.success === false && /replacement token is required/i.test(String(emptyTok.error)),
+  `an empty replacement is refused (got ${JSON.stringify(emptyTok).slice(0, 160)})`);
+ok(storage.__raw(conns.gitConnSecretKey(rotId)).token === "ghp_GOOD", "and neither refusal touched the stored credential");
+// …and the consumer half caps too, so no path reaches a write unchecked.
+const applyHuge = await conns.applyCredentialRotation({ target: { kind: "connection", id: rotId }, secret: { token: huge } });
+ok(applyHuge.ok === false && /implausibly long/i.test(String(applyHuge.error)), "applyCredentialRotation caps before the side effect");
+ok(storage.__raw(conns.gitConnSecretKey(rotId)).token === "ghp_GOOD", "the oversized apply wrote nothing");
+
 /* ===================== 10. the security model is data, and it is asserted ===================== */
 ok(conns.PIPELINE_SETUP_IS_ADMIN_RESOLVER === true,
   "pipeline setup is an ADMIN RESOLVER — flipping this has to be a visible diff");

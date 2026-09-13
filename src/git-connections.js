@@ -374,12 +374,25 @@ export function capabilityFlags(kind, who) {
 
 /* ===== SAVE / DELETE ===== */
 
+/**
+ * F-295 — THE token-value check. ONE home for "a token is required" and the
+ * TOKEN_MAX_CHARS ceiling, because the rotation path (which is not a resolver)
+ * shipped without either while both resolver writes had them. Every path that
+ * accepts a credential from a human calls this, BEFORE the side effect.
+ * The "required" sentence varies by caller (save vs rotation), the cap does not.
+ */
+export function tokenValueError(token, requiredMessage = "A token is required") {
+  if (!token || !String(token).trim()) return requiredMessage;
+  if (String(token).length > TOKEN_MAX_CHARS) return "That token is implausibly long";
+  return null;
+}
+
 function validateSaveInput({ kind, label, token, email, repos }) {
   if (!GIT_PROVIDER_KINDS.includes(kind)) return `Unknown provider kind: ${String(kind)}`;
   if (!label || !String(label).trim()) return "A label is required";
   if (String(label).length > LABEL_MAX_CHARS) return `Label is longer than ${LABEL_MAX_CHARS} characters`;
-  if (!token || !String(token).trim()) return "A token is required";
-  if (String(token).length > TOKEN_MAX_CHARS) return "That token is implausibly long";
+  const tokenErr = tokenValueError(token);
+  if (tokenErr) return tokenErr;
   if (kind === "bitbucket" && (!email || !String(email).trim())) {
     return "Bitbucket needs the account email that owns the app password";
   }
@@ -680,8 +693,8 @@ export async function saveForgeIdentity({ email, token, consent, accountId } = {
     return { ok: false, error: "Explicit consent is required to store a deploy identity", code: "consent_required" };
   }
   if (!email || !String(email).trim()) return { ok: false, error: "An Atlassian account email is required", code: "invalid" };
-  if (!token || !String(token).trim()) return { ok: false, error: "An Atlassian API token is required", code: "invalid" };
-  if (String(token).length > TOKEN_MAX_CHARS) return { ok: false, error: "That token is implausibly long", code: "invalid" };
+  const tokenErr = tokenValueError(token, "An Atlassian API token is required");
+  if (tokenErr) return { ok: false, error: tokenErr, code: "invalid" };
 
   const prev = (await storage.get(FORGE_IDENTITY_KEY)) || null;
   const row = {
@@ -763,6 +776,12 @@ export async function requestCredentialRotation(target, secret, { accountId } = 
   if (target.kind === "connection" && !(await getConnection(target.id))) {
     return { ok: false, error: "Unknown git connection", code: "not_found" };
   }
+  // F-295 — the cap the resolver writes enforce, enforced here too and BEFORE
+  // the push. Without it a multi-megabyte token either bursts the Forge event
+  // size limit (surfaced as a bare transport message) or lands somewhere no
+  // refusal is possible any more.
+  const tokenErr = tokenValueError(secret && secret.token, "A replacement token is required");
+  if (tokenErr) return { ok: false, error: tokenErr, code: "invalid" };
   const taskId = randomId("rot_");
   const { Queue } = await import("@forge/events");
   const queue = new Queue({ key: "async-ai-queue" });
@@ -778,9 +797,11 @@ export async function requestCredentialRotation(target, secret, { accountId } = 
 
 /**
  * The consumer half of a rotation. The ONLY writer that replaces a stored secret
- * in place. Verifies the NEW credential before it replaces the old one — a
- * rotation to a dead token would lock the tenant out of their own connection,
- * so the check happens BEFORE the side effect, like every other cap in this app.
+ * in place.
+ *
+ * Verifies the NEW credential before it replaces the old one — a rotation to a
+ * dead token would lock the tenant out of their own connection, so the check
+ * happens BEFORE the side effect, like every other cap in this app.
  */
 export async function applyCredentialRotation(params, { fetchImpl } = {}) {
   const target = params && params.target;
@@ -790,7 +811,8 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
   if (target.kind === "forge-identity") {
     const prev = await storage.get(FORGE_IDENTITY_KEY);
     if (!prev) return { ok: false, error: "No Forge deploy identity is configured", code: "not_found" };
-    if (!secret.token) return { ok: false, error: "A replacement token is required", code: "invalid" };
+    const idTokenErr = tokenValueError(secret.token, "A replacement token is required");
+    if (idTokenErr) return { ok: false, error: idTokenErr, code: "invalid" };
     await storage.set(FORGE_IDENTITY_KEY, {
       ...prev,
       email: secret.email || prev.email,
@@ -802,7 +824,8 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
 
   const row = await getConnection(target.id);
   if (!row) return { ok: false, error: "Unknown git connection", code: "not_found" };
-  if (!secret.token) return { ok: false, error: "A replacement token is required", code: "invalid" };
+  const connTokenErr = tokenValueError(secret.token, "A replacement token is required");
+  if (connTokenErr) return { ok: false, error: connTokenErr, code: "invalid" };
   try {
     const probe = createGitProvider({
       kind: row.kind,

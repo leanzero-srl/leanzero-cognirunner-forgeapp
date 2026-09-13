@@ -37,6 +37,7 @@
  * Nothing secret is printed: not the secret, not the trigger URL.
  */
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 
 const env = loadEnv();
@@ -49,6 +50,8 @@ const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const NON_ADMIN = "712020:00000000-0000-0000-0000-000000000000"; // an account that is nobody here
 const CONN = arg("conn", "gc_f627harness");
 const REPO = arg("repo", "leanzero-srl/cognirunner-harness");
+// A repository whose Actions list this gh account can read — the witness for "no dispatch".
+const GH_REPO = arg("ghrepo", "");
 const KEEP = flag("keep");
 const OUT = new URL("../results/pipeline-outdated", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
@@ -139,6 +142,28 @@ async function main() {
 
     /* ── STEP 2 — F-611: the deploy resolver REFUSES ──────────────────────── */
     console.log("\nSTEP 2 - F-611: triggerGitDeploy refuses an outdated row instead of dispatching it");
+    /*
+     * THE NEGATIVE IS ASKED OF GITHUB, ON A REPOSITORY WHERE A DISPATCH WOULD SHOW.
+     * "No dispatch was sent" used to rest on the refusal CODE alone, and the default
+     * stand-in repo (`leanzero-srl/cognirunner-harness`) does not exist — GitHub answers
+     * 404 for it, so it could never have logged anything and the absence proved nothing.
+     * `--ghrepo` names a repository whose Actions list this account CAN read; the run
+     * list is read before and after, and the positive control is that the read returns
+     * workflow_dispatch runs at all. Skipped, loudly, when `gh` cannot see the repo.
+     */
+    const ghRuns = () => {
+      if (!GH_REPO) return null;
+      try {
+        const out = execFileSync("gh", ["api", `/repos/${GH_REPO}/actions/runs?per_page=20`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+        const j = JSON.parse(out);
+        return Array.isArray(j.workflow_runs) ? j.workflow_runs : null;
+      } catch { return null; }
+    };
+    const runsBefore = ghRuns();
+    if (runsBefore === null) NV(`GitHub's run list for ${GH_REPO || "(no --ghrepo given)"} could not be read, so "no dispatch was sent" rests on the refusal code alone`);
+    else if (!runsBefore.some((r) => r.event === "workflow_dispatch")) {
+      NV(`${GH_REPO} has no workflow_dispatch run in its recent history, so an absence after the refusal would prove nothing`, { runs: runsBefore.length });
+    } else PASS(`GitHub's run list for ${GH_REPO} is readable AND carries workflow_dispatch runs - an absence below is a measured absence`, { runs: runsBefore.length });
     const refused = await deploy();
     ev.deployOutdated = refused.json;
     const d = refused.json;
@@ -152,6 +177,12 @@ async function main() {
     if (d && typeof d.error === "string" && d.error.includes("Set up the pipeline again")) {
       PASS("…with the SAME remedy sentence the Code tab shows (PIPELINE_OUTDATED_REMEDY, one home)");
     } else FAIL("the refusal does not carry the shared remedy sentence", { error: d && String(d.error).slice(0, 160) });
+    const runsAfter = ghRuns();
+    if (runsBefore && runsAfter) {
+      const fresh = runsAfter.filter((r) => !runsBefore.some((b) => b.id === r.id));
+      if (fresh.length === 0) PASS(`…and GITHUB logged NO new run on ${GH_REPO} - the dispatch was never attempted, not merely rejected`, { seen: runsAfter.length });
+      else FAIL("GitHub logged a new run after a refusal that claims nothing was dispatched", { fresh: fresh.map((r) => ({ id: r.id, event: r.event, at: r.created_at })) });
+    }
 
     const asNobody = await deploy(NON_ADMIN);
     ev.deployNonAdmin = asNobody.json;

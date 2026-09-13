@@ -150,6 +150,13 @@ sibling so the refusal sentence has one home. `voiceLint(text, {register, maxSen
 `{ok, blocks:[{rule, detail}], warnings:[]}` — pure, no I/O, no regex over a user-supplied
 pattern (`src/shared/regex-safety.js` is the guard if one ever appears).
 
+**Folded design findings.** `owedUncapped` is **not a field** — `owedPerHour` (default 12)
+is, and anti-pile-up applies to owed items after N owed replies on one issue (F-412).
+`maxBulkTargets` is **not a field** — `maxWritesPerRun` is the one write vocabulary (F-425).
+Voice rules have ONE home: the `voice-rules` pack DATA tables; `voice-lint.js` **reads**
+them, and the persona prompt and the wizard sample are **rendered from the same tables**,
+never re-authored as prose (F-420). Test: `voice.one_home.ALLOW_render_matches_lint_table`.
+
 **Fail contract (Law 3).** `normalizeVa` fails **CLOSED**: an unparseable or over-cap field
 is a refused save with a named reason, never a silent clamp to the permissive end.
 `voiceLint` fails **CLOSED** on the post path (a lint that throws blocks the post) and
@@ -177,6 +184,24 @@ memory-store policy in the skill, and every `saveMemories` caller must read its 
 post**. `isKeyConflict` (`kvs-keys.js:23`) is the ONLY predicate allowed to read a conflict
 as "already claimed"; a 429 is an infrastructure fault, not a duplicate.
 
+**Row lifecycle (F-413).** `va_item` rows carry a **90-day TTL refreshed on touch** and a
+**per-agent row cap with LRU parking**; `attempts` is a first-class field (F-414).
+Tests: `ledger.ttl.REFRESH_on_touch` · `ledger.cap.PARK_lru_over_cap` ·
+`ledger.attempts.PARK_at_three`.
+
+**Health (F-426).** `va_health:{agent}` is its own row holding the consecutive-failed-tick
+counter; the red banner reads it. **Never reconstructed by `query()` over `va_tick:*`** —
+that scan is eventually consistent and TTL-bounded, which is exactly how a banner silently
+stops appearing. Tests: `health.BLOCK_banner_absent_on_two` · `health.ALLOW_banner_on_three`
+· `health.RESET_on_successful_tick`.
+
+**Memory (F-423).** `memory_note` content is **defanged and clamped at WRITE time**, not at
+injection. `va_memory` is injected inside an **ADVISORY fence** (the F-408 rule), never as
+operator knowledge. Compaction preserves a pinned `constraints[]` list **verbatim by code** —
+the summariser may rewrite prose, it may not touch the pinned list.
+Tests: `memory.write.CLAMP_and_defang` · `memory.inject.ADVISORY_fence` ·
+`memory.compact.PRESERVE_pinned_constraints_verbatim`.
+
 **Effects are written on read-back only** — the row is created after a second REST read
 confirms the comment id / property / field value, never after "a call that could mutate was
 made" (§3.14 law 6; Law 4's "verify the write through a second REST read").
@@ -190,6 +215,24 @@ keys preserved verbatim. It is a **queued** task so it inherits the gate.
 `mode ===` site), `src/async-handler.js` (three `TASK_HANDLERS` rows),
 `src/shared/ai-budget.js` (`va-tick` into `NON_AI_TASK_TYPES` — `va-item`/`va-post` already
 have rows).
+
+**The field guide is selected ONCE per agent/tick (F-417)**, from the agent's CONFIG text —
+never per item from the item's volatile text. That is what makes the cached prefix stable
+across rounds and across items; per-item volatile text stays last. A design that scores the
+guide against the volatile text trips its own "cache read was zero" defect detector.
+Tests: `prefix.ALLOW_stable_across_items` · `prefix.BLOCK_reselect_per_item`.
+
+**The post phase is its own task (F-421).** `va-post` is enqueued by the planner as a task
+with **its own tick receipt row** — it is not a side-errand of the prepare tick and it does
+not ride the prepare tick's receipt. The planner's scan for eligible staged rows is bounded
+and recorded like any other tick. Tests: `planner.postphase.ALLOW_receipt_written` ·
+`planner.postphase.BLOCK_unbounded_scan`.
+
+**The `va_exec` claim is taken by the CONSUMER (F-422)**, at the start of the item task,
+FAIL_IF_EXISTS + `failClosed`, and **released on throw before any side effect** — the same
+shape `git_delivery` settled on after F-335/F-367. The producer does not claim. Say which
+side owns it in a comment, because F-139 already paid for this exact ambiguity on
+`job_claim`. Tests: `claim.exec.BLOCK_second_consumer` · `claim.exec.ALLOW_retry_after_throw`.
 
 **Task types:** `va-tick` (sweep/diff/fan-out — **no model call**, so `NON_AI_TASK_TYPES`),
 `va-item` (8000, exists), `va-post` (200, exists). An item with Confluence/git/web powers is
@@ -218,6 +261,16 @@ its `maxWritesPerRun` is decorative).
 (schemes, workflows, permissions, roles, fields) are not in the surface, which is a code
 guarantee, not a prompt sentence (Law 2).
 
+**Write scope is a CODE gate in two places, one home (F-410/F-411).**
+`assertWriteScope(issueKey, writeScope)` lives in `src/shared/va-config.js` and is used by
+**the VA post phase, the coder headless PF and listener agent runs alike**.
+`normalizeAllowedActions` and `createAgentActionDispatcher` gain a `writeScope:{projects[]}`
+context, and **every write action resolves its target issue's project from a read** before
+acting — never from the model's argument. `mentionsOf` intake is bounded to the **read**
+scope and **can never widen the write scope**.
+Tests: `writescope.BLOCK_dispatcher_outside_scope` · `writescope.BLOCK_create_issue_foreign_project`
+· `writescope.BLOCK_mentions_widening_write` · `writescope.ALLOW_in_scope_transition`.
+
 **Scope-wrapped JQL:** the operator JQL is wrapped `(<jql>) AND project in (<read scope>)`.
 **This is the escape the breaker attacks first** — a trailing `ORDER BY`, an unbalanced
 quote, or a comment sequence can break the wrapper. The wrapper must be built from a
@@ -241,6 +294,13 @@ against real data before it lands** — projects from `/project/search`, desks a
 (`cron.js:312`). **Wizard JSON is untrusted model output**: parse with `parseAIJson`, clamp
 server-side after parsing, and never let a `field` name select a code path by string.
 
+**Two more validated fields (F-424).** `jql` is validated by a **dry `search` against the
+read scope, bounded to 1 result** — a JQL that cannot be executed never becomes standing
+intake. The persona name is **length- and charset-clamped** before it is rendered into any
+outward message. Tests: `wizard.jql.BLOCK_unexecutable` · `wizard.jql.BLOCK_outside_read_scope`
+· `wizard.persona.BLOCK_illegal_charset` · `wizard.persona.ALLOW_clamped_name`.
+The wizard renders `maxWritesPerRun`, not `maxBulkTargets` (F-425).
+
 **Fail contract.** The wizard fails **CLOSED** into the classic form: any state it cannot
 validate drops to `VaEditor.jsx` with what it had. Wizard state in `va_wizard:{accountId}`
 so a closed tab resumes. **Law 6 applies literally:** no native `<select>`, no
@@ -259,6 +319,19 @@ this, owner clicks the upgrade**).
 Confluence, plus `auth` / `not_found` mapping. Page bodies ≤ 60 KB, fenced and defanged.
 `updatePage` is **version-checked** (a blind update is a lost-edit bug). Simulation
 intercepts every write (`createApi`'s existing simulation ledger is the one home).
+
+**The validator degradation table (F-416) — write it as a table, not as prose:**
+
+| cause | non-strict | strict |
+|---|---|---|
+| `confluence_unavailable` | **OPEN**, reason in the log row + banner | **BLOCK**, message names the cause |
+| `auth` (scope/consent fault) | **OPEN**, banner | **BLOCK**, message names the cause |
+| network / timeout | **OPEN** | **BLOCK**, message names the cause |
+| **misconfig** (no space, no template, unparseable CQL) | **BLOCK** | **BLOCK** |
+
+Misconfiguration blocks **regardless of strict** — the F-362 class: a rule that cannot
+express what it is checking must not read as a pass. Tests: `confluence.degrade.<cause>.OPEN_non_strict`
+· `.BLOCK_strict` · `confluence.degrade.misconfig.BLOCK_both`.
 
 **Fail contract (Law 3, per surface).** Validator on an unavailable Confluence → fails
 **OPEN** with the reason in the log row and a banner in the UI. Listener AI condition that
@@ -307,7 +380,7 @@ quote the constants from `registry-limits.js`, never retype them.
 
 | # | Probe | Why it cannot be answered from the tree | Fallback that is itself a shipped feature |
 |---|---|---|---|
-| **P1** | **JSM public comment as the app user** (§4b row 24, ASSUMED) — does a comment posted by the app's user appear on the portal, and **what is the exact property shape**? The app's own spec says `sd.public.comment: {internal:true}` (`sandbox-api-spec.js:279`); the plan says `sd.public.comment=false`. | Nothing in `src/` posts a portal-public comment today; the JSM surface is three request-type events and the internal flag. | **Internal notes only.** `replyPublic` is offered but saves refused with "public portal replies are not available on this site" until proven. The VA is still useful: internal notes, assign, transition, approval inbox. Run it on JT with `npm run test:jsm-assets` as the bed. |
+| **P1** | **(F-415) JSM public comment as the app user** (§4b row 24, ASSUMED) — does a comment posted by the app's user appear on the portal, and **what is the exact property shape**? The app's own spec says `sd.public.comment: {internal:true}` (`sandbox-api-spec.js:279`); the plan says `sd.public.comment=false`. | Nothing in `src/` posts a portal-public comment today; the JSM surface is three request-type events and the internal flag. | **Internal notes only.** `replyPublic` is offered but saves refused with "public portal replies are not available on this site" until proven. The VA is still useful: internal notes, assign, transition, approval inbox. Run it on JT with `npm run test:jsm-assets` as the bed. |
 | **P2** | **Confluence not-installed error text** (§4b row 19 names this as the remaining half of probe d). | The tree only has the *success* path (`test-hook.js:147` → 200 after `forge install -p Confluence`). | Map **anything** that is not a recognised auth/not-found/2xx to `confluence_unavailable` and show the install link. Being over-broad fails OPEN, which is the correct direction for a validator; refine when the text is captured. |
 | **P3** | **`requestConfluence` from the CONSUMER** (probe d proved it from a **webtrigger**). A VA item and a queued Confluence post-function both run in the consumer. | Different runtime, different context; row 19's evidence does not cover it. | If it fails in the consumer, Confluence effects run **inline** in the post-function (deterministic comment PF already is) and the VA's Confluence powers are hidden with the reason. Cheap to settle: one line in the existing dev hook, driven from the consumer. |
 | **P4** | **`servicedeskapi` from the LONG consumer.** Probe (e) proved desks/queues/queue-issues `asApp()` — from the probe surface. | Same class as P3; the sweep runs in a consumer. | **JQL intake only** (§3.16 row (e)'s fallback, already the plan's): each queue carries its own `jql`, read once at save time by the wizard (a resolver, where the call IS proven) and stored on the record. This is strictly more robust than a live queue read and should arguably be the design regardless. |
@@ -338,13 +411,19 @@ is written to `history` with its reason; nothing is silently swallowed.**
 | 2 | **freshness** — re-read the thread; `latestHumanCommentId === staged.baseline.lastCommentId` | `gate.freshness.BLOCK_new_human_comment` (draft dropped, item re-queued — **not** discarded) | `gate.freshness.ALLOW_unchanged_thread` |
 | 3 | **other-writer quiet** — `now - lastNonUsWriteAt >= otherWriterQuietMinutes` | `gate.quiet.BLOCK_recent_other_writer` | `gate.quiet.ALLOW_past_quiet_window` |
 | 4 | **anti-pile-up** — `!(weSpokeLastWithin(antiPileUpDays) && item.state !== "owed")` | `gate.pileup.BLOCK_we_spoke_last` | `gate.pileup.ALLOW_owed_overrides` |
-| 5 | **audience** — public requires `powers.replyPublic && P1 && addresseeIsReporter`; otherwise internal note via the property shape from `sandbox-api-spec.js:279` | `gate.audience.BLOCK_public_without_power` · `gate.audience.BLOCK_public_to_non_reporter` | `gate.audience.ALLOW_internal_note` · `gate.audience.ALLOW_public_to_reporter` |
-| 6 | **caps** — `capsThisHour < capsPerHour && capsToday < capsPerDay`, **unless `item.state === "owed" && guardrails.owedUncapped`** | `gate.caps.BLOCK_hour_exceeded` · `gate.caps.BLOCK_day_exceeded` | `gate.caps.ALLOW_owed_uncapped` |
-| 7 | **scope** — `targetProjectKey ∈ scope.write.projects` | `gate.scope.BLOCK_outside_write_scope` · `gate.scope.BLOCK_site_wide_write` | `gate.scope.ALLOW_in_scope` |
-| 8 | **bulk** — `targets.length <= maxBulkTargets` | `gate.bulk.BLOCK_over_max_targets` | `gate.bulk.ALLOW_single_target` |
+| 5 | **audience (F-415)** — decided from the **request type + reporter BEFORE the post**, never inferred after. Public requires `powers.replyPublic && P1 && addresseeIsReporter`; the post goes through the **JSM comment API with `public:false` as the default**, `public:true` only when this gate says customer | `gate.audience.BLOCK_public_without_power` · `gate.audience.BLOCK_public_to_non_reporter` · `gate.audience.BLOCK_unknown_request_type` | `gate.audience.ALLOW_internal_default` · `gate.audience.ALLOW_public_to_reporter` |
+| 6 | **caps (F-412)** — `capsThisHour < capsPerHour && capsToday < capsPerDay`; an owed item uses its OWN cap `owedPerHour` (default 12). **`owedUncapped` does not exist as a config option.** | `gate.caps.BLOCK_hour_exceeded` · `gate.caps.BLOCK_day_exceeded` · `gate.caps.BLOCK_owed_hour_exceeded` | `gate.caps.ALLOW_owed_within_owed_cap` |
+| 7 | **write scope (F-410/F-411)** — `assertWriteScope(targetIssueKey, writeScope)`: the target issue's project is **resolved from a read**, never taken from the model's argument | `gate.scope.BLOCK_outside_write_scope` · `gate.scope.BLOCK_site_wide_write_refused_at_save` · `gate.scope.BLOCK_unresolvable_project` | `gate.scope.ALLOW_in_scope` |
+| 8 | **write budget (F-425)** — `writesThisRun < maxWritesPerRun`. **ONE vocabulary**: `maxBulkTargets` is dropped; the VA record and the wizard use `maxWritesPerRun`, the field `scheduled-jobs.js:357` already clamps | `gate.writes.BLOCK_run_budget_exhausted` | `gate.writes.ALLOW_within_run_budget` |
 | 9 | **voice lint** — `voiceLint(body, persona.voice).ok` | `gate.voice.BLOCK_bullet` · `BLOCK_em_dash` · `BLOCK_as_an_ai` · `BLOCK_banned_opener` · `BLOCK_method_leak` · `BLOCK_signoff` · `BLOCK_over_max_sentences` · `BLOCK_no_short_sentence` | `gate.voice.ALLOW_human_corpus_sample` |
 | 10 | **post claim** — `claimRuleExecution(va_post:{agent}:{key}:{stagedAt}, failClosed:true)` | `gate.claim.BLOCK_redelivery_second_post` · `gate.claim.BLOCK_storage_fault` | `gate.claim.ALLOW_first_delivery` |
-| 11 | **read-back** — comment id present AND the visibility property reads back as intended | `gate.readback.BLOCK_no_comment_id` (effects row **not** written; item stays `staged`) · `gate.readback.BLOCK_visibility_mismatch` | `gate.readback.ALLOW_verified` |
+| 11 | **read-back (F-415)** — comment id present AND `jsdPublic` equals what gate 5 decided. **A mismatch is not a log line:** the comment is immediately **edited to internal** and an **ERROR receipt** is written. Never a silent success | `gate.readback.BLOCK_no_comment_id` (no effects row; item stays `staged`) · `gate.readback.BLOCK_jsdPublic_mismatch_edits_to_internal` | `gate.readback.ALLOW_verified` |
+
+**Item-level gate, before any of these (F-414):** `item.attempts < 3`. A turn that stages
+nothing (`endedBy:"prose"`) or a draft the lint rejects increments `attempts`; at 3 the item
+**parks** with a receipt reason and stops consuming ticks.
+Tests: `item.attempts.BLOCK_parked_at_three` · `item.attempts.ALLOW_second_attempt` ·
+`item.attempts.INCREMENT_on_lint_reject` · `item.attempts.INCREMENT_on_staged_nothing`.
 
 Gates 1–9 run **before** the write; 10 immediately before; 11 after. **The claim must come
 after the cheap gates and before the write** — the gate-before-ticket lesson (F-359) is the
@@ -365,8 +444,8 @@ them. That is the guarantee (Law 2); a gate would imply a route.
 | 4. Fingerprints, not memory | `va_item.fingerprint` = `{updated, lastCommentId, lastCommentAuthor}` compared against a **fresh** read every sweep | `fingerprint-diff.test.mjs`: unchanged → skip, each field changed → candidate |
 | 5. Two-phase speech with a wall-clock floor | §6's double condition (`stagedTickId` + `minPostGapMinutes`) | the three `post.floor.*` tests |
 | 6. Effects recorded on read-back | `va_effect:{agent}:{invTs}` written **only** after gate 11 | gate 11 BLOCK test asserts **no** effects row |
-| 7. Memory compacted, not truncated | 6 KB trigger → summarisation task → 8 KB cap, decisions/keys/constraints verbatim; admin-editable in the Agents tab | a compaction fixture whose input carries a named constraint asserts it survives **verbatim** |
-| 8. Every quiet failure is loud | `va_tick` receipt with `skipped[]+reasons`, per-item `history[≤10]`, a solid red banner on `auth_dead` / model unreachable / 3 consecutive failed ticks, "last ran / next run" always rendered | a receipt test per skip reason; a UI case per banner |
+| 7. Memory compacted, not truncated | 6 KB trigger → summarisation task → 8 KB cap. **A pinned `constraints[]` list is preserved verbatim BY CODE, not by prompt (F-423)**; `memory_note` is defanged + clamped at write time and the memory is injected in an ADVISORY fence | `memory.compact.PRESERVE_pinned_constraints_verbatim` — the pinned list is compared byte-for-byte, so the property is enforced, not sampled |
+| 8. Every quiet failure is loud | `va_tick` **and** `va-post` receipts with `skipped[]+reasons` (F-421), `va_health:{agent}` as the banner's own counter (F-426), per-item `history[≤10]` + `attempts` (F-414), a solid red banner on `auth_dead` / model unreachable / 3 consecutive failed ticks, "last ran / next run" always rendered | a receipt test per skip reason; a UI case per banner |
 | 9. Kill switches at three levels | tenant cancel epoch (existing) · per-agent `status.paused` · `shadowUntilTick` | `gate.killswitch.BLOCK`, `gate.paused.BLOCK`, `gate.shadow.BLOCK` |
 | 10. Provider-agnostic long turns | `long-queue` / `long-consumer` (`manifest.yml:434-436`) via `LONG_QUEUE_ONLY_TASKS`; a turn where the model never calls a tool ends cleanly with the ledger written | a "model returns prose, no tool call" fixture ends `queued`, not `failed`, and writes a receipt |
 
@@ -416,6 +495,36 @@ licence attribution in the shipped bundle. File them against the bake, not again
 
 ---
 
+## 8b. Design findings (F-410..F-426) → mechanism → owning commit
+
+Filed by the 1.5 design breaker against the plan text, folded above as first-class
+mechanisms. Every row has a BLOCK/ALLOW test name in the section named.
+
+| F-id | Mechanism | Owning commit |
+|---|---|---|
+| F-410 | `scope.write` becomes gate 7, a code check; site-wide write refused at save; intake bounded to the read scope | 1 (`normalizeVa`) + 3 (gate) |
+| F-411 | `assertWriteScope` — ONE home in `va-config.js`, used by the VA, the coder headless PF and listener agent runs; `writeScope:{projects[]}` context on `normalizeAllowedActions` / `createAgentActionDispatcher`; every write resolves its target's project from a READ | 4 (with the dispatcher half sequenced to **cr-rules-surgeon**) |
+| F-412 | `owedUncapped` dropped; `owedPerHour` (default 12); anti-pile-up applies to owed items after N owed replies on one issue | 1 (shape) + 3 (gate 6) |
+| F-413 | `va_item` 90-day TTL refreshed on touch + per-agent row cap with LRU parking | 2 |
+| F-414 | `attempts` on every item (staged-nothing, lint-rejected); parks at 3 with a receipt reason | 2 (field) + 3 (the item-level gate) |
+| F-415 | Audience decided from request type + reporter BEFORE the post; JSM comment API with `public:false` default; read-back verifies `jsdPublic`; mismatch → edit to internal + ERROR receipt | 3 (gates 5 and 11); probe **P1** |
+| F-416 | Confluence validator degradation table (unavailable/auth/network → open unless strict; misconfig → block regardless) | 7 (table lives with the validator), client mapping in 6 |
+| F-417 | The field guide is selected **ONCE per agent/tick** from the agent's config text, not per item, so the cached prefix is stable across rounds and items; per-item volatile text stays last | 3 (the item turn's prompt assembly) |
+| F-418 | The bake **FAILS when `knowledge/denylist.local` is absent** | 1.4 commit 14 (the bake) — **not 1.5 code**, carried here so it is not lost |
+| F-419 | The scanner reuses the runtime leak table, extracted to `src/shared/identifier-leak.js` — ONE home, so bare 24-hex ids are covered in the bake and at runtime (closes F-406's class in both) | 1.4 commit 14 + the F-406 fix, cut together |
+| F-420 | Voice rules have ONE home: the `voice-rules` pack DATA tables. `voice-lint.js` reads them; the persona prompt and the wizard sample are RENDERED from them | 1 |
+| F-421 | The post phase is its own `va-post` task enqueued by the planner, with its own tick receipt | 3 |
+| F-422 | `va_exec` taken by the **CONSUMER** at the start of the item, FAIL_IF_EXISTS + failClosed, released on throw before side effects (the `git_delivery` shape after F-335/F-367) | 3 |
+| F-423 | `memory_note` defanged + clamped at write time; `va_memory` injected in an ADVISORY fence (F-408 rule); compaction preserves pinned `constraints[]` verbatim **by code** | 2 |
+| F-424 | Wizard validates `jql` by a dry `search` against the read scope bounded to 1 result; persona name length/charset clamped | 5 |
+| F-425 | `maxBulkTargets` dropped; the VA record and the wizard use `maxWritesPerRun` — one brake vocabulary | 1 (shape) + 3 (gate 8) + 5 (wizard) |
+| F-426 | `va_health:{agent}` is the banner's own counter row; never reconstructed by `query()` over TTL'd receipts | 2 (row) + 3 (writer) |
+
+**Two rows are not 1.5 code.** F-418 and F-419 belong to the knowledge bake (1.4 commit 14);
+they are listed so the bake's surgeon inherits them rather than rediscovering them.
+
+---
+
 ## 9. Confidence, by section
 
 - **§0 (what is true in the tree) — HIGH.** Every row grepped on `3db6638`. The two that
@@ -446,5 +555,11 @@ licence attribution in the shipped bundle. File them against the bake, not again
   code; a fixture test proves one case, not the property. This is the part of 1.5 I am least
   confident will behave as promised, and the honest mitigation is that the memory is
   admin-editable and capped, not that the compaction is correct.
+- **§8b (the seventeen design findings) — HIGH** that each is now a mechanism with a test
+  name rather than an invariant in prose. **MEDIUM on F-411's blast radius**: giving
+  `createAgentActionDispatcher` a `writeScope` context touches the coder headless PF and
+  listener agent runs as well as the VA, which is three callers and the arity trap
+  (GOTCHAS 3) all over again — grep every call site in the same cut, and make the context
+  required or default it to the most restrictive value, never the most permissive.
 - **§8 (breaker targets) — HIGH** on the ranking. Items 1, 2 and 3 are where an actual
   customer-visible incident lives; 4 is where a silent platform limit lives.

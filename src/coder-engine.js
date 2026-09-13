@@ -64,7 +64,7 @@ import {
 } from "./shared/agent-actions.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue, buildKnowledgeMessages } from "./agent-runner.js";
+import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue, buildKnowledgeMessages, logKnowledgeInjection } from "./agent-runner.js";
 import { createGitActionExecutor } from "./git-actions.js";
 import { createCoderWorkspace } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
@@ -778,6 +778,14 @@ const runCoderTurnClaimed = async ({
   // carries (1.4 commit 13b). `buildKnowledgeMessages` is the ONE builder the listener
   // and job agents use.
   const messages = [{ role: "system", content: system }, ...buildKnowledgeMessages(knowledge), ...history, userTurn];
+  // THE RECEIPT (F-487). The Coder was the one agent whose injected knowledge left no
+  // trace anywhere: no log line, nothing on the thread row, nothing in the task result —
+  // so a regression that dropped `skillIds` on the way here was indistinguishable from a
+  // healthy turn on a live instance. Same emitter as the listener/job runner
+  // (`logKnowledgeInjection`, src/agent-runner.js), same wording, and the summary it
+  // returns is IDS AND COUNTS ONLY — the block itself still never enters the thread,
+  // which is what `seededCount` below exists to guarantee.
+  const knowledgeReceipt = logKnowledgeInjection(knowledge, log);
   // What the LOOP added is everything past what was SEEDED. This used to be
   // `history.length + 2` — a hand-counted prefix that any new seeded message silently
   // breaks, storing the knowledge block into the thread as if the model had said it.
@@ -797,7 +805,10 @@ const runCoderTurnClaimed = async ({
   // grow by a full issue snapshot per message.
   const addedByLoop = loop.messages.slice(seededCount);
   const addedThisTurn = [
-    { role: "user", content: text, at: nowIso() },
+    // The user's row carries the turn's KNOWLEDGE RECEIPT (F-487): which skills were
+    // injected and how much memory, by id and count. `toModelMessage` drops every field
+    // it does not know, so this never travels back into a prompt.
+    { role: "user", content: text, at: nowIso(), ...(knowledgeReceipt ? { knowledge: knowledgeReceipt } : {}) },
     ...addedByLoop.map(storableMessage).filter(Boolean),
   ];
   // APPEND, DO NOT OVERWRITE (F-364). The row was read before the model ran; a consent
@@ -863,6 +874,9 @@ const runCoderTurnClaimed = async ({
     workspace: workspaceResults,
   };
   if (loop.error) out.error = loop.error;
+  // …and the same receipt on the RESULT, so `getAsyncTaskResult` and the panel can read
+  // it without loading the thread row.
+  if (knowledgeReceipt) out.knowledge = knowledgeReceipt;
   // WHY it halted, in words, for every caller. The panel already knows (it gets the
   // ticket); a headless caller has nothing else to write into its execution log, and
   // "the turn ended" with no reason is the silent success this commit exists to prevent.

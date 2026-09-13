@@ -652,13 +652,30 @@ export const PREMADE_LISTENERS = [
       // repo-per-hour ledger — instead of an agent turn that has none of them.
       agentlessTaskType: "gitreview",
       agent: {
-        // NO `add_pr_comment` (F-320/F-329). The engine posts the review itself, under
-        // its own brakes; an agent-mode comment write would be capped only by the
-        // listener brakes, which is how a self-triggering comment loop becomes 120 AI
-        // comments per 5 minutes on somebody's pull request. The agent may READ.
-        allowedActions: ["get_pull_request"],
+        // NO ACTIONS AT ALL (F-486). Two reasons, and the second one is the defect:
+        //  1. NO `add_pr_comment` (F-320/F-329) — the engine posts the review itself,
+        //     under its own brakes; an agent-mode comment write would be capped only by
+        //     the listener brakes, which is how a self-triggering comment loop becomes
+        //     120 AI comments per 5 minutes on somebody's pull request.
+        //  2. NO `get_pull_request` either. Every git action carries
+        //     `requiresCapability:"git"` and `assertAllowedActions` (src/shared/agent-
+        //     actions.js) fails CLOSED at SAVE time, so this seed made the premade
+        //     UNSAVEABLE on a Standard + Forge LLM instance — i.e. on exactly the
+        //     agentless instance `agentlessTaskType:"gitreview"` exists to serve
+        //     ("agent.allowedActions contains actions this rule may not use:
+        //     get_pull_request"). The action was dead weight anyway: `enqueueForListener`
+        //     (src/listeners.js) routes a `gitreview` row to the DETERMINISTIC engine
+        //     (src/git-review.js), which reads the pull request with its own git client
+        //     and never calls an agent action. RULE: an agentless seed carries NO
+        //     capability-gated action — premade-parity.mjs asserts it both ways.
+        allowedActions: [],
         maxRounds: 4,
-        instructions: "A pull request was opened or updated. Read it with get_pull_request and report what you find: correctness bugs, missing error handling, secrets or credentials in the diff, and anything that widens permissions. Be specific — name the file and the line. If the change looks fine, say so in one sentence. Never approve or request changes.",
+        // The text no longer names `get_pull_request`: the seed does not hold it, and an
+        // instruction that names a tool the rule may not call is a promise the gate
+        // breaks. An admin who clears `agentlessTaskType` to run this as a real agent
+        // turn ticks the git actions themselves, on an instance whose capability allows
+        // them — which is the same act that makes the action saveable.
+        instructions: "A pull request was opened or updated. Read it and report what you find: correctness bugs, missing error handling, secrets or credentials in the diff, and anything that widens permissions. Be specific — name the file and the line. If the change looks fine, say so in one sentence. Never approve or request changes.",
       },
     },
     agentlessTaskType: "gitreview",

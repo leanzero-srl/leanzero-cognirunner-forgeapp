@@ -131,6 +131,7 @@ export const VA_ADMIN_REFUSALS = Object.freeze({
   item_key_required: "No staged reply was named.",
   not_found: "That agent no longer exists.",
   not_a_virtual_administrator: "That scheduled job is not a Virtual Administrator.",
+  va_invalid: "That configuration was refused.",
   job_read_failed: "The agent could not be read.",
   job_index_read_failed: "The list of agents could not be read.",
   job_write_failed: "The change could not be saved.",
@@ -1175,6 +1176,97 @@ export const catalog = async (_args = {}, injected = {}) => {
   const built = await buildCatalogue(injected);
   return okv({ catalog: built.catalog, sources: built.sources });
 };
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * 6b. THE VA SAVE PATH — ONE normalisation, for BOTH doors (1.5 commit 8)
+ *
+ * This was the body of the `mode:"va"` branch inside `saveScheduledJob`. It moved
+ * here the moment a SECOND door (the Rules REST API's `?resource=agents`) had to
+ * perform the same save, because the alternative was two copies of the live
+ * catalogue check, the shadow re-arm and the cadence derivation — and the copy that
+ * drifts is always the one nobody is looking at. The resolver calls this, the REST
+ * resource calls this, and `rules-api-agents.test.mjs` asserts that the same body
+ * through both doors stores a byte-identical record.
+ *
+ * WHAT IT DOES, and none of it can be skipped by a caller:
+ *
+ * 1. THE LIVE CATALOGUE. `normalizeVa` validates project keys, service desks,
+ *    queues, time zones and skill ids against a `ctx` — and with no ctx it checks
+ *    SHAPE ONLY. `scheduled-jobs.js` calls it with no ctx because it is a storage
+ *    module with no business reaching Jira. This function, which can reach Jira,
+ *    builds the catalogue and runs `normalizeVa` against it FIRST. Without it an
+ *    admin could save an agent scoped to a project that does not exist and the
+ *    refusal would arrive as a dead sweep five minutes later instead of on the form.
+ *
+ * 2. THE SHADOW RE-ARM (§3.11). A configuration change re-arms shadow mode: the
+ *    agent somebody watched for three ticks is not the agent they have after
+ *    changing its voice, its scope or its powers, and the watching period exists to
+ *    catch exactly the surprises a change introduces. `rearmShadow` is a FLOOR
+ *    (`max(current, index + shadowTicks)`), so an edit can only ever lengthen a
+ *    watch, and `shadowTicks: 0` still means no shadow.
+ *
+ * 3. THE CADENCE *IS* THE SCHEDULE, so `schedule` and `name` are DERIVED from the VA
+ *    record rather than asked for twice. A caller-supplied schedule is IGNORED: two
+ *    answers to "how often does this agent run" means the one the scheduler reads is
+ *    not the one the wizard showed. `name` falls back to the persona name because
+ *    the agent's name is printed in every message it writes, and a job list that
+ *    called it something else would be a second name for one thing.
+ *
+ * WHAT DOES NOT HAPPEN HERE: a pause (`pause`/`resume` deliberately do not come
+ * through this path, so pausing never re-arms shadow), a permission decision (the
+ * caller's, in both doors), and the `saveJob` itself — this returns the INPUT the
+ * caller then saves, so the caller keeps ownership of the gate context it passes.
+ *
+ * `saveJob` normalises AGAIN, without the catalogue. Deliberate and safe:
+ * `normalizeVa` is pure and idempotent and the second pass re-clamps every number
+ * against the same ceilings. What it cannot do is UNDO the catalogue check — a key
+ * that passed here is a key that exists.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, injected = {}) => {
+  const deps = withAdminDeps(injected);
+  const { normalizeVa } = await import("./shared/va-config.js");
+  const { catalogToCtx } = await import("./shared/va-wizard.js");
+  const src = isObj(input) ? input : {};
+
+  const built = await buildCatalogue(injected);
+  let normalized = null;
+  try {
+    normalized = normalizeVa(src.va, {
+      ...catalogToCtx(built.catalog || {}),
+      existing: existing && existing.va,
+      savedByRole,
+    });
+  } catch (e) {
+    // A STRUCTURAL refusal (no persona name, a site-wide write scope, an unusable
+    // cadence). It surfaces as a refusal the form can render beside the field, not
+    // as a 500 — `refused[]` is the shape every other save path in this app uses.
+    const message = String((e && e.message) || e);
+    return fail("va_invalid", { message, refused: [{ field: "va", reason: message.slice(0, 300) }] });
+  }
+
+  let refused = asArray(normalized.refused);
+  // A catalogue source that FAILED is reported alongside the save rather than
+  // swallowed: `normalizeVa` treats an absent list as "shape only", so a save that
+  // silently skipped the project check must say it skipped it.
+  for (const [name, s] of Object.entries(built.sources || {})) {
+    if (s && s.ok === false) {
+      refused = [...refused, { field: `catalogue.${name}`, reason: `This site's ${name} could not be read, so that part of the configuration was accepted without being checked against live data.` }];
+    }
+  }
+
+  const va = rearmShadow(normalized.va, tickIndexFor(existing, now == null ? deps.now() : now));
+  return okv({
+    input: {
+      ...src,
+      va,
+      name: String(src.name || "").trim() || va.persona.name,
+      schedule: { cron: va.cadence.cron, timeZone: va.cadence.timeZone },
+    },
+    refused,
+  });
+};
+
 
 /* ══════════════════════════════════════════════════════════════════════════════
  * 7. F-424 — THE DRY SEARCH

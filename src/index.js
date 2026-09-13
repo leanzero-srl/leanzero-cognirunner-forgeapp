@@ -126,8 +126,6 @@ import * as jobsMod from "./scheduled-jobs.js";
 // the REST resource (commit 8) is the second skin over the SAME module. Nothing about
 // an operation is re-implemented here.
 import * as vaAdmin from "./va-admin.js";
-import { normalizeVa } from "./shared/va-config.js";
-import { catalogToCtx } from "./shared/va-wizard.js";
 import { createApiTokenInternal, listApiTokens, revokeApiTokenInternal, RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY } from "./rules-api.js";
 import { isKnownEvent, buildEventPromptBlock, GIT_EVENT_IDS } from "./shared/jira-events.js";
 // F-302: the ONE builder of the agent action gate's context. index.js reads the facts
@@ -10802,87 +10800,32 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
   const gate = buildAgentGateContext({ ...facts, triggerSource: null, savedByRole });
 
   /*
-   * THE VIRTUAL ADMINISTRATOR BRANCH (1.5 commit 5b). Two things happen here that
-   * `normalizeJob` cannot do, and one thing that deliberately does not.
+   * THE VIRTUAL ADMINISTRATOR BRANCH (1.5 commit 5b, rehomed in commit 8).
    *
-   * 1. THE LIVE CATALOGUE. `normalizeVa` validates project keys, service desks,
-   *    queues, time zones and skill ids against a `ctx` — and with no ctx it checks
-   *    SHAPE ONLY. `scheduled-jobs.js` calls it with no ctx because it is a storage
-   *    module with no business reaching Jira. So the resolver, which can, builds the
-   *    catalogue and runs `normalizeVa` against it HERE, first. Without this an admin
-   *    could save an agent scoped to a project that does not exist and the refusal
-   *    would arrive as a dead sweep five minutes later instead of on the form.
+   * The live catalogue check, the shadow re-arm and the cadence-derived
+   * schedule/name are `vaAdmin.prepareVaSave`'s — ONE home, because the Rules REST
+   * API's `?resource=agents` performs the same save and a second copy of this
+   * branch is a second answer to what a VA record means. This resolver keeps what
+   * is genuinely its own: the permission gate above, the `accountId` and the gate
+   * context it hands `saveJob`.
    *
-   * 2. THE SHADOW RE-ARM (§3.11). A configuration change re-arms shadow mode: the
-   *    agent somebody watched for three ticks is not the agent they have after
-   *    changing its voice, its scope or its powers, and the watching period exists to
-   *    catch exactly the surprises a change introduces. `normalizeVa`'s own docblock
-   *    says this belongs to a caller that knows the tick index, and this is it.
-   *    `rearmShadow` is a FLOOR (`max(current, index + shadowTicks)`), so an edit can
-   *    only ever lengthen a watch, and `shadowTicks: 0` still means no shadow.
-   *
-   * 3. WHAT DOES NOT HAPPEN: a pause. `pauseVa`/`resumeVa` write `status.paused`
-   *    through `va-admin.js` and do NOT come through here, precisely so that pausing
-   *    an agent does not re-arm three ticks of shadow on every resume.
-   *
-   * `saveJob` then normalises AGAIN, without the catalogue. That is deliberate and it
-   * is safe: `normalizeVa` is pure and idempotent, and the second pass re-clamps every
-   * number against the same ceilings. What it cannot do is UNDO the catalogue check —
-   * a key that passed here is a key that exists. Running the strict pass first and the
-   * storage module's pass second is what lets the catalogue live in the resolver
-   * without `scheduled-jobs.js` growing a Jira dependency.
+   * A structural refusal (no persona name, a site-wide write scope, an unusable
+   * cadence) comes back as `refused[]` and is rendered beside the field, never as a
+   * 500. Clamps and drops that were APPLIED ride `refused[]` on a SUCCESS, because
+   * a field silently narrowed is a field the operator still believes they set.
    */
   let vaRefused = [];
   if (input.mode === "va") {
-    const built = await vaAdmin.catalog({}, {});
-    let normalized = null;
-    try {
-      normalized = normalizeVa(input.va, {
-        ...catalogToCtx(built.ok ? built.catalog : {}),
-        existing: existing && existing.va,
-        savedByRole,
-      });
-    } catch (e) {
-      // A STRUCTURAL refusal (no persona name, a site-wide write scope, an unusable
-      // cadence). It surfaces as a refusal the form can render beside the field, not
-      // as a 500 — `refused[]` is the shape every other save path in this app uses.
+    const prepared = await vaAdmin.prepareVaSave({ input, existing, savedByRole });
+    if (!prepared.ok) {
       return {
         success: false,
-        error: String((e && e.message) || e),
-        refused: [{ field: "va", reason: String((e && e.message) || e).slice(0, 300) }],
+        error: prepared.message || vaAdmin.refusalSentence(prepared),
+        refused: prepared.refused || [{ field: "va", reason: "invalid" }],
       };
     }
-    vaRefused = Array.isArray(normalized.refused) ? normalized.refused : [];
-    const va = vaAdmin.rearmShadow(normalized.va, vaAdmin.tickIndexFor(existing, Date.now()));
-    /*
-     * THE CADENCE *IS* THE SCHEDULE, so the job's `schedule` and `name` are DERIVED
-     * from the VA record rather than asked for twice.
-     *
-     * `normalizeVa` has already resolved `cadence.preset` into a validated cron in the
-     * agent's own time zone (`cron.js` is the one home for that maths). Letting the
-     * caller send a second `schedule` alongside it would create two answers to "how
-     * often does this agent run" — and the one the scheduler reads is not the one the
-     * wizard showed. So for a VA the derived pair WINS; an explicitly supplied
-     * schedule is ignored, which is why `VaWizard`/`VaEditor` do not send one.
-     *
-     * `name` falls back to the persona name for the same reason: the agent's name is
-     * printed in every message it writes, and a job list that called it something else
-     * would be a second name for one thing.
-     */
-    input = {
-      ...input,
-      va,
-      name: String(input.name || "").trim() || va.persona.name,
-      schedule: { cron: va.cadence.cron, timeZone: va.cadence.timeZone },
-    };
-    // A catalogue source that FAILED is reported alongside the save rather than
-    // swallowed: `normalizeVa` treats an absent list as "shape only", so a save that
-    // silently skipped the project check must say it skipped it.
-    for (const [name, src] of Object.entries((built.ok && built.sources) || {})) {
-      if (src && src.ok === false) {
-        vaRefused = [...vaRefused, { field: `catalogue.${name}`, reason: `This site's ${name} could not be read, so that part of the configuration was accepted without being checked against live data.` }];
-      }
-    }
+    input = prepared.input;
+    vaRefused = prepared.refused || [];
   }
 
   return okOr(async () => ({

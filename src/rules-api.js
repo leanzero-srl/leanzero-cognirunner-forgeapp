@@ -43,6 +43,23 @@
  *   GET    ?resource=logs[&ruleId=]                  execution logs (newest first)
  *   GET    ?resource=samples&eventType=              last captured payload for an event
  *   GET    ?resource=whoami                          token identity
+ *   GET    ?resource=agents[&id=]                    Virtual Administrators: list / one
+ *                                                    (status, caps, health, receipts)
+ *   POST   ?resource=agents                          create a VA record   (admin)
+ *   PUT    ?resource=agents&id=                      merge-update a VA    (admin)
+ *   DELETE ?resource=agents&id=                      delete a VA          (admin)
+ *   GET    ?resource=agents&id=&part=drafts|effects|memory      (admin)
+ *   PUT    ?resource=agents&id=&part=memory                     (admin)
+ *   POST   ?resource=agents&id=&action=pause|resume|tick|post   (admin)
+ *   POST   ?resource=agents&id=&action=approve|reject           (admin; {itemKey, stagedAt})
+ *
+ * ROLES: a token carries an optional `role` (viewer|editor|admin). A token minted
+ * without one is ADMIN — that is what every token on this surface already was, and
+ * narrowing existing tokens on upgrade would break callers silently. The floors on
+ * ?resource=agents are the SAME floors the Agents tab's resolvers use, because a
+ * REST caller must not be able to do anything the tab cannot: editor for the
+ * overview (it carries no draft body, no instructions, no code), admin for every
+ * read of what the agent is about to SAY and for every write.
  */
 import { kvs as storage } from "@forge/kvs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -50,6 +67,9 @@ import { JIRA_EVENTS, EVENT_CATEGORIES } from "./shared/jira-events.js";
 import { AGENT_ACTIONS } from "./shared/agent-actions.js";
 import * as L from "./listeners.js";
 import * as J from "./scheduled-jobs.js";
+// The ONE home for every Virtual Administrator operation (1.5 commit 5b). The Agents
+// tab's resolvers are the other skin over this exact module.
+import * as VA from "./va-admin.js";
 
 const idx = () => import("./index.js");
 
@@ -70,7 +90,18 @@ const nowIso = () => new Date().toISOString();
 
 const sha256 = (s) => createHash("sha256").update(String(s)).digest("hex");
 const readTokens = async () => { const v = (await storage.get(API_TOKENS_KEY)) || []; return Array.isArray(v) ? v : []; };
-const publicRow = (t) => ({ id: t.id, name: t.name, prefix: t.prefix, createdAt: t.createdAt, createdBy: t.createdBy, lastUsedAt: t.lastUsedAt || null, revokedAt: t.revokedAt || null });
+const publicRow = (t) => ({ id: t.id, name: t.name, prefix: t.prefix, createdAt: t.createdAt, createdBy: t.createdBy, role: tokenRole(t), lastUsedAt: t.lastUsedAt || null, revokedAt: t.revokedAt || null });
+/*
+ * THE TOKEN'S ROLE. Only `?resource=agents` gates on it today (the Agents-tab floors,
+ * mirrored), and a row minted before this field existed reads as ADMIN — which is
+ * exactly what such a token could already do here (create jobs, delete them, run
+ * them). Defaulting a missing role to anything narrower would revoke capability from
+ * live integrations on upgrade, silently, which is the worse failure of the two.
+ */
+const TOKEN_ROLES = ["viewer", "editor", "admin"];
+const ROLE_RANK = Object.freeze({ viewer: 1, editor: 2, admin: 3 });
+const tokenRole = (t) => (t && TOKEN_ROLES.includes(String(t.role)) ? String(t.role) : "admin");
+const meetsFloor = (who, floor) => ROLE_RANK[tokenRole(who)] >= ROLE_RANK[floor];
 const tombstoneKey = (id) => REVOKED_TOKEN_PREFIX + String(id).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0, 120);
 const isRevoked = async (id) => Boolean(await storage.get(tombstoneKey(id)));
 
@@ -89,9 +120,9 @@ export const listApiTokens = async () => {
 };
 
 /** Mint a token; returns { token (plaintext, once), row }. */
-export const createApiTokenInternal = async ({ name, accountId }) => {
+export const createApiTokenInternal = async ({ name, accountId, role }) => {
   const token = `cgr_${randomBytes(24).toString("hex")}`;
-  const row = { id: `tok_${Date.now().toString(36)}${randomBytes(3).toString("hex")}`, name: String(name || "API token").slice(0, 80), hash: sha256(token), prefix: token.slice(0, 10), createdAt: nowIso(), createdBy: accountId || null, lastUsedAt: null, revokedAt: null };
+  const row = { id: `tok_${Date.now().toString(36)}${randomBytes(3).toString("hex")}`, name: String(name || "API token").slice(0, 80), hash: sha256(token), prefix: token.slice(0, 10), createdAt: nowIso(), createdBy: accountId || null, role: TOKEN_ROLES.includes(String(role)) ? String(role) : null, lastUsedAt: null, revokedAt: null };
   // Read IMMEDIATELY before the write (nothing awaited in between but the write
   // itself): a token minted or revoked while this request was hashing must not be
   // dropped by a stale snapshot. Two mints that overlap this narrow window can still
@@ -180,6 +211,24 @@ const merge = (existing, patch) => {
   return out;
 };
 
+// ONE validation-error body, for EVERY resource on this surface. A refusal that
+// carries a machine-readable reason (agent.allowedActions, `reason:"action-not-allowed"`
+// + `refused[]`; a brake; a byte cap) keeps it; everything else stays the bare
+// `{ error }` the admin UI already renders.
+// F-331 — the REST refusal is the SAME shape the resolvers return, or the admin UI
+// and an API client disagree about why a save was refused. `needsRole` names the role
+// the caller would need and `hint` names the remedy the UI renders ("ask-app-admin",
+// "not-owner"); dropping them left a REST client with prose it had to parse.
+// It sits at MODULE level (1.5 commit 8) because `?resource=agents` refuses through it
+// too, and a second copy is a second answer to "why was this refused".
+const errBody = (e) => ({
+  error: e && e.message ? String(e.message).slice(0, 500) : "invalid",
+  ...(e && e.reason ? { reason: e.reason } : {}),
+  ...(e && e.needsRole ? { needsRole: e.needsRole } : {}),
+  ...(e && e.hint ? { hint: e.hint } : {}),
+  ...(e && Array.isArray(e.refused) ? { refused: e.refused } : {}),
+});
+
 const eventCatalog = () => ({
   categories: EVENT_CATEGORIES,
   // `source` tells a client WHERE the event comes from ("jira" = a Forge product
@@ -214,20 +263,6 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const r = await remove(id);
     return json(r.removed ? 200 : 404, r.removed ? { deleted: id } : { error: `${noun} not found` });
   }
-  // ONE validation-error body. A refusal that carries a machine-readable reason
-  // (today: agent.allowedActions, `reason:"action-not-allowed"` + `refused[]`) keeps
-  // it here; everything else stays the bare `{ error }` the admin UI already renders.
-  // F-331 — the REST refusal is the SAME shape the resolvers return, or the admin UI
-  // and an API client disagree about why a save was refused. `needsRole` names the role
-  // the caller would need and `hint` names the remedy the UI renders ("ask-app-admin",
-  // "not-owner"); dropping them left a REST client with prose it had to parse.
-  const errBody = (e) => ({
-    error: e && e.message ? String(e.message).slice(0, 500) : "invalid",
-    ...(e && e.reason ? { reason: e.reason } : {}),
-    ...(e && e.needsRole ? { needsRole: e.needsRole } : {}),
-    ...(e && e.hint ? { hint: e.hint } : {}),
-    ...(e && Array.isArray(e.refused) ? { refused: e.refused } : {}),
-  });
   if (method === "PUT") {
     if (!id) return json(400, { error: "id required" });
     const existing = await get(id);
@@ -270,6 +305,165 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   return json(405, { error: `method ${method} not allowed` });
 };
 
+/* ── ?resource=agents — the Virtual Administrator, over REST ───────────────────
+ *
+ * THE SECOND SKIN OVER `src/va-admin.js`, and nothing else. The Agents tab's
+ * resolvers are the first. Every route below is one call into that module plus a
+ * role floor and an HTTP status; no route reads the ledger, shapes an answer or
+ * decides what a draft means, because a second implementation of "approve a draft"
+ * is how one rule grows two behaviours that disagree.
+ *
+ * A VA IS A JOB. This resource is a VIEW over `?resource=jobs` filtered to
+ * `mode:"va"` — not a second store. Delete goes through the job delete, the save
+ * goes through `saveJob`, and an id that names a non-VA job is a 404 here.
+ *
+ * NO NEW CAPABILITY. The floors are the resolvers' floors (`src/index.js`, the VA
+ * group): editor for the overview, admin for a staged draft, the memory, the
+ * effects and every write. A REST caller that could read a staged customer reply at
+ * the editor floor would be a power the product does not grant in its own UI.
+ *
+ * THE WIZARD IS NOT HERE, deliberately. `wizardStep`/`wizardReset` are an interview
+ * with server-held state keyed by an ACCOUNT; a token is not an account, and a
+ * half-finished interview reachable by two doors has no owner. The record the wizard
+ * produces is exactly what `POST ?resource=agents` takes, so nothing is unreachable.
+ *
+ * NEITHER `approve` NOR `reject` POSTS. They record a human verdict on the ledger
+ * row; the post phase is the only thing that delivers a draft, behind eleven gates.
+ * `tick` and `post` are a shortcut through the CLOCK and not through a gate: they
+ * take the same bucketed claim the planner takes, so a REST press cannot double-run
+ * an agent the scheduler is already running.
+ */
+const VA_STATUS_BY_REASON = Object.freeze({
+  job_id_required: 400, item_key_required: 400, va_invalid: 400,
+  not_found: 404, not_a_virtual_administrator: 404, no_such_item: 404,
+  // A CONFLICT, not a bad request: the caller asked for something legal that the
+  // agent's current state refuses. A client retries these after re-reading; it must
+  // not "fix" its body.
+  not_in_shadow: 409, no_staged_draft: 409, draft_changed: 409,
+  agent_disabled: 409, agent_paused: 409, already_running: 409,
+  // A FAULT, and it is reported as one. "I could not read the drafts" and "there are
+  // no drafts" must never reach a client as the same answer.
+  job_read_failed: 502, job_index_read_failed: 502, job_write_failed: 502,
+  index_read_failed: 502, item_read_failed: 502, scan_failed: 502,
+  scan_unavailable: 502, memory_read_failed: 502, memory_write_failed: 502,
+  claim_failed: 502, enqueue_failed: 502,
+});
+
+/** `{ok, ...}` from va-admin → an HTTP answer, in the ONE refusal shape. */
+const vaJson = (r, okStatus = 200) => {
+  if (r && r.ok === true) { const { ok, ...rest } = r; return json(okStatus, rest); }
+  const { ok, reason, message, ...rest } = (r && typeof r === "object") ? r : {};
+  return json(VA_STATUS_BY_REASON[reason] || 400, {
+    error: VA.refusalSentence(r) || "invalid",
+    reason: reason || null,
+    ...rest,
+  });
+};
+
+const handleAgents = async ({ method, id, action, part, body, who, req }) => {
+  const actor = `api:${who.id}`;
+  const floor = (level, what) => (meetsFloor(who, level)
+    ? null
+    : json(403, { error: `This token may not ${what}.`, reason: "no-permission", needsRole: level, hint: "ask-app-admin" }));
+
+  /* A REST save is recorded as `savedByRole:"editor"` exactly as a listener or job
+   * save is, and for the same reason: an admin-only power (a PR verdict action) is
+   * an admin's CLICK, never a token's. The role on the token gates the DOOR; it does
+   * not grant the row a power. */
+  const savedByRole = "editor";
+
+  const loadVaJob = async () => {
+    const row = await J.getJob(id);
+    return row && row.mode === "va" ? row : null;
+  };
+
+  if (method === "GET" && !id) {
+    const r = floor("editor", "list Virtual Administrators"); if (r) return r;
+    return vaJson(await VA.listAgents({}));
+  }
+  if (!id) {
+    if (method !== "POST" || action || part) return json(400, { error: "id required" });
+  }
+
+  if (part) {
+    const r = floor("admin", `read a Virtual Administrator's ${part}`); if (r) return r;
+    if (part === "drafts") { if (method !== "GET") return json(405, { error: `method ${method} not allowed` }); return vaJson(await VA.drafts({ jobId: id })); }
+    if (part === "effects") { if (method !== "GET") return json(405, { error: `method ${method} not allowed` }); return vaJson(await VA.effects({ jobId: id, limit: q(req, "limit") })); }
+    if (part === "memory") {
+      if (method === "GET") return vaJson(await VA.memory({ jobId: id }));
+      // PUT only. The clamp and the defang are `writeMemory`'s, at write time (F-423),
+      // and `clamped:true` comes back rather than being swallowed: an admin whose note
+      // was cut at the byte cap would otherwise believe the agent knows something it
+      // does not. A second clamp here would be a second authority on the cap.
+      if (method === "PUT") return vaJson(await VA.saveMemory({ jobId: id, memory: body && body.memory, constraints: body && body.constraints }));
+      return json(405, { error: `method ${method} not allowed` });
+    }
+    return json(400, { error: `unknown part "${part}" for agents`, parts: ["drafts", "effects", "memory"] });
+  }
+
+  if (method === "GET") {
+    const r = floor("editor", "view Virtual Administrators"); if (r) return r;
+    return vaJson(await VA.status({ jobId: id }));
+  }
+
+  if (method === "DELETE") {
+    const r = floor("admin", "delete a Virtual Administrator"); if (r) return r;
+    if (!(await loadVaJob())) return json(404, { error: "agent not found" });
+    const out = await J.deleteJob(id);          // the job delete; a VA has no second store
+    return json(out.removed ? 200 : 404, out.removed ? { deleted: id } : { error: "agent not found" });
+  }
+
+  if (method === "POST" && action) {
+    const r = floor("admin", `${action} a Virtual Administrator`); if (r) return r;
+    if (action === "pause") return vaJson(await VA.pause({ jobId: id, accountId: actor, reason: body && body.reason }));
+    if (action === "resume") return vaJson(await VA.resume({ jobId: id, accountId: actor, reason: body && body.reason }));
+    if (action === "tick") return vaJson(await VA.runTickNow({ jobId: id, accountId: actor }), 202);
+    if (action === "post") return vaJson(await VA.runPostNow({ jobId: id, accountId: actor }), 202);
+    if (action === "approve" || action === "reject") {
+      const args = { jobId: id, itemKey: body && (body.itemKey != null ? body.itemKey : body.issueKey), stagedAt: body && body.stagedAt, reason: body && body.reason, accountId: actor };
+      return vaJson(await (action === "approve" ? VA.approveDraft(args) : VA.rejectDraft(args)));
+    }
+    return json(400, { error: `unknown action "${action}" for agents`, actions: ["pause", "resume", "tick", "post", "approve", "reject"] });
+  }
+
+  if (method === "POST" || method === "PUT") {
+    const r = floor("admin", "create or change a Virtual Administrator"); if (r) return r;
+    let input;
+    let existing = null;
+    if (method === "PUT") {
+      existing = await loadVaJob();
+      if (!existing) return json(404, { error: "agent not found" });
+      // The SAME merge the other collections use, so a PUT is a patch here too; `va`
+      // is a merged sub-object like `agent`/`schedule`/`scope` already are.
+      input = { ...merge(existing, body || {}), id, mode: "va" };
+    } else {
+      // `?id=` wins over a body id: a POST to a named agent is an UPSERT of that
+      // agent, and a body that named a different one would edit a row the caller did
+      // not address.
+      input = { ...(body && typeof body === "object" ? body : {}), mode: "va", ...(id ? { id } : {}) };
+      if (input.id) {
+        existing = await J.getJob(input.id);
+        if (existing && existing.mode !== "va") return json(409, { error: "that id belongs to a scheduled job that is not a Virtual Administrator" });
+      }
+    }
+    // ONE normalisation, and it is the resolver's: the live catalogue check, the
+    // shadow re-arm and the cadence-derived schedule/name all live in
+    // `va-admin.prepareVaSave`. A second copy here would be a second answer to what a
+    // VA record means, and the copy nobody looks at is the one that drifts.
+    const prepared = await VA.prepareVaSave({ input, existing, savedByRole });
+    if (!prepared.ok) return vaJson(prepared);
+    try {
+      const job = await J.saveJob(prepared.input, { accountId: actor, savedByRole });
+      return json(method === "PUT" || input.id ? 200 : 201, { agent: job, ...(prepared.refused.length ? { refused: prepared.refused } : {}) });
+    // A byte cap, a brake or an action allow-list refusal from `saveJob` arrives in
+    // the ONE refusal shape (`errBody`, module-level since commit 8 so this resource
+    // and the collections cannot answer a refusal differently) — `reason`,
+    // `needsRole`, `hint` and `refused[]` included.
+    } catch (e) { return json(400, errBody(e)); }
+  }
+  return json(405, { error: `method ${method} not allowed` });
+};
+
 /** Web-trigger entry point (manifest: webtrigger rules-api → function rules-api-fn). */
 export async function rulesApiHandler(req) {
   const method = String((req && req.method) || "GET").toUpperCase();
@@ -279,6 +473,7 @@ export async function rulesApiHandler(req) {
   const resource = String(q(req, "resource") || "").toLowerCase();
   const id = q(req, "id") ? String(q(req, "id")).slice(0, 80) : null;
   const action = q(req, "action") ? String(q(req, "action")).toLowerCase() : null;
+  const part = q(req, "part") ? String(q(req, "part")).toLowerCase().slice(0, 40) : null;
   let body;
   try { body = method === "GET" || method === "DELETE" ? {} : parseBody(req); } catch (e) { return json(400, { error: e.message }); }
   try {
@@ -291,6 +486,7 @@ export async function rulesApiHandler(req) {
       // a platform error page instead of the `{ "error": … }` contract (and no log).
       case "listeners": return await handleCollection({ req, method, id, action, body, who, kind: "listeners" });
       case "jobs": return await handleCollection({ req, method, id, action, body, who, kind: "jobs" });
+      case "agents": return await handleAgents({ req, method, id, action, part, body, who });
       case "samples": {
         const s = await L.getEventSample(String(q(req, "eventType") || ""));
         return s ? json(200, s) : json(404, { error: "no sample captured yet for this event" });
@@ -307,7 +503,7 @@ export async function rulesApiHandler(req) {
         if (row.status === "done" || row.status === "error") { try { await storage.delete(`async_task:${id}`); } catch { /* ignore */ } }
         return json(200, { taskId: id, status: row.status, result: row.result, error: row.error, job: job || null });
       }
-      default: return json(404, { error: "unknown resource", resources: ["events", "actions", "listeners", "jobs", "tasks", "logs", "samples", "whoami"] });
+      default: return json(404, { error: "unknown resource", resources: ["events", "actions", "listeners", "jobs", "agents", "tasks", "logs", "samples", "whoami"] });
     }
   } catch (e) {
     console.error("[rules-api] error:", e);

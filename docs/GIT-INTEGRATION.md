@@ -362,13 +362,13 @@ no git action id maps to it). No UI calls the three resolvers yet; they are docu
 here for what they do.
 
 `setupGitPipeline` (admin) takes `{ connectionId, repo, manifestYaml, site, product?,
-branch?, scaffoldVars?, developerSpaceId? }`, validates everything before any side effect,
+branch?, scaffoldVars?, developerSpaceId?, appId? }`, validates everything before any side effect,
 takes a ten-minute claim, and queues a `gitpipeline` task on `async-ai-queue`. The refusals,
 each with a machine `code`: `not_found`, `auth_dead`, `not_allowed` (with
 `hint: "add-repo-to-allowlist"`), `identity_required` and `consent_required` (with
 `hint: "configure-forge-identity"`), `manifest_required`, `scope_not_allowed` (with the
 `scopes` refused), `lock_mismatch` (with `added` / `removed`), `invalid_developer_space`,
-`already_running`, `queue`.
+`invalid_app_id`, `already_running`, `queue`.
 
 **The developer space (F-527).** `forge register` asks for a Developer Space and `-y` does
 not answer that question, so a runner with no space id sits on a prompt it cannot render
@@ -422,13 +422,32 @@ Anything granting app or site administration, any act-as-user variant and any sc
 can mint or read credentials is deliberately absent; widening the list is a security
 decision.
 
+**The app id: who registers and who stores (F-528).** The runner token can never store
+`FORGE_APP_ID`. Repository variables are an `administration` resource, and `GITHUB_TOKEN`
+cannot hold it with or without `actions: write` — probed live 2026-09-13, HTTP 403
+"Resource not accessible by integration" on `POST /repos/:o/:r/actions/variables`, with a
+PAT accepting the identical call on the identical repository seconds later. The scaffold no
+longer pretends otherwise: `actions: write` and the `gh variable set` attempt are gone, the
+bootstrap step registers only when `FORGE_APP_ID` is absent **and** `FORGE_DEVELOPER_SPACE`
+is present, and on a successful register it prints
+`::notice::Registered app id <ari>. … set the repository variable FORGE_APP_ID …` — the
+product cannot read the runner's output, so a human has to carry the id across. The admin
+pastes it back into CogniRunner, which holds a credential that CAN write variables and
+stores it in the `var:FORGE_APP_ID` step; from then on the bootstrap step never runs. The
+id is accepted as `ari:cloud:ecosystem::app/<uuid>` or as the bare uuid and always stored
+as the full ARI, because `.cognirunner/inject-app-id.js` refuses anything else; a malformed
+one is refused as `invalid_app_id` before any side effect. **What is true, and what the
+scaffold comments now say:** until the variable exists, every run registers again — the
+bootstrap is not "at most once" by itself, it is "at most once once a human has stored the
+id".
+
 **The steps.** The consumer runs a fixed chain and records every step on the row before
 the next one starts, so a chain that dies reports `status: "partial"` with the step that
 failed, never "installed": on Bitbucket `enable-pipelines`, then `secret:FORGE_EMAIL`,
 `secret:FORGE_API_TOKEN`, `var:FORGE_SITE`, `var:FORGE_PRODUCT`, `var:FORGE_ENV`
 (`development`; installs are development-only and the rendered workflow enforces it),
-then the optional `var:FORGE_DEVELOPER_SPACE` when the request carried one, then
-`commit-scaffold`, which commits the `forge-pipeline` scaffold
+then the optional `var:FORGE_DEVELOPER_SPACE` and `var:FORGE_APP_ID` when the request
+carried them (in that order), then `commit-scaffold`, which commits the `forge-pipeline` scaffold
 (`.github/workflows/forge-deploy.yml`, `bitbucket-pipelines.yml`,
 `.cognirunner/inject-app-id.js`, `.cognirunner/check-permissions-lock.js`) plus the lock
 in one commit. The identity's token is read once, handed to `setSecret`, and never appears
@@ -459,10 +478,11 @@ skipped. Four defects were found and are open in the findings ledger:
   `-s "$FORGE_DEVELOPER_SPACE"` and no `--personal`, `setupGitPipeline` collects
   `developerSpaceId`, and an absent variable fails the step with a one-line instruction
   naming it. See "The developer space" above.
-- **F-528** — `GITHUB_TOKEN` with `actions: write` CANNOT create a repository variable
-  (HTTP 403, "Resource not accessible by integration"); repository variables are an
-  `administration` resource. The scaffold's fallback (`::error::` + `exit 1`) is correct, so
-  in practice the app id is stored once by a human or by CogniRunner, never by the runner.
+- **F-528** — FIXED. `GITHUB_TOKEN` with `actions: write` CANNOT create a repository
+  variable (HTTP 403, "Resource not accessible by integration"); repository variables are an
+  `administration` resource. The scaffold no longer attempts it or carries the permission:
+  it prints a `::notice::` naming the variable, and `setupGitPipeline` takes the optional
+  `appId` and stores it. See "The app id" above.
 - **F-529** — when the drift is a widened SCOPE, `forge deploy --non-interactive` refuses
   first with `MAJOR_VERSION_RULE`, so the job fails before the "deployed, NOT installed"
   warning can render. The lock's own verdict (`permission lock: DRIFT`, `locked=false`, the

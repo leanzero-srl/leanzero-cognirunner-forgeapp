@@ -75,6 +75,32 @@ for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
     kind + ": the workflow reads the repository variable into the job env");
 }
 
+/* ===================== F-528 — THE RUNNER DOES NOT PRETEND TO STORE THE APP ID =======
+ * Probed live, 2026-09-13: a workflow with exactly `contents: read, actions: write` and
+ * GH_TOKEN=github.token got HTTP 403 "Resource not accessible by integration" from
+ * POST /repos/:o/:r/actions/variables, while a PAT accepted the identical call on the
+ * identical repository seconds later. Repository variables are an `administration`
+ * resource and GITHUB_TOKEN can never hold it.
+ *
+ * So the scaffold must not claim it can, must not carry a permission it cannot use, and
+ * must tell the human (or CogniRunner, which holds the PAT) what to set. */
+for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
+  const gh = m.renderScaffold(kind, {}).find((f) => f.path === ".github/workflows/forge-deploy.yml").content;
+  assert.ok(!/gh variable set/.test(gh), kind + ": the runner never tries to write a repository variable");
+  assert.ok(!/actions: write/.test(gh), kind + ": ...and does not carry a permission that would not help");
+  assert.ok(!/GH_TOKEN/.test(gh), kind + ": ...and needs no token of its own");
+  assert.ok(/::notice::Registered app id \$APP_ID/.test(gh),
+    kind + ": a successful register PRINTS the id, because the product cannot read the runner's output");
+  assert.ok(/set the repository variable FORGE_APP_ID/.test(gh),
+    kind + ": ...and names the variable to set");
+  assert.ok(/if: env\.FORGE_APP_ID == ''/.test(gh),
+    kind + ": registration is gated on there being no app id");
+  assert.ok(/every run registers again/.test(gh),
+    kind + ": the copy says what really happens until the variable exists - not 'registers at most once'");
+}
+assert.ok(!/registers the app ONCE/.test(src) && !/registers at most once/.test(src),
+  "the module's own comments no longer promise a bootstrap that registers at most once automatically");
+
 /* ===================== render-scaffold PARITY =====================
  * The harness script that writes a scaffold to disk (and that the offshoot is checked
  * against) must emit exactly the line arrays in this module - otherwise "scaffold parity

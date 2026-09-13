@@ -252,6 +252,35 @@ export const normalizeDeveloperSpaceId = (value) => {
 };
 
 /**
+ * F-528 — THE APP ID, AND WHO IS ALLOWED TO STORE IT.
+ *
+ * The scaffold used to register the app and then `gh variable set FORGE_APP_ID`. That
+ * can never work: repository variables are an `administration` resource and GITHUB_TOKEN
+ * cannot hold it, with or without `actions: write` (live 2026-09-13 — HTTP 403
+ * "Resource not accessible by integration", while a PAT accepted the identical call on
+ * the identical repository seconds later). The credential that CAN write it is the
+ * connection's own token, which this app holds.
+ *
+ * So the honest division is: the RUNNER registers and prints the id; the PRODUCT stores
+ * it. `setupGitPipeline` takes the id the admin pastes back and writes it as the
+ * repository variable FORGE_APP_ID, after which the bootstrap step never runs again.
+ *
+ * Accepted in either form the admin is likely to have in the clipboard — the full ARI
+ * the CLI prints, or the bare uuid — and always STORED as the full ARI, because that is
+ * what `.cognirunner/inject-app-id.js` requires and it refuses anything else.
+ */
+const APP_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const APP_ID_ARI_PREFIX = "ari:cloud:ecosystem::app/";
+
+/** `null` when absent, the full ARI when valid, `false` when present and malformed. */
+export const normalizeForgeAppId = (value) => {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  let v = String(value).trim().toLowerCase();
+  if (v.startsWith(APP_ID_ARI_PREFIX)) v = v.slice(APP_ID_ARI_PREFIX.length);
+  return APP_ID_UUID_RE.test(v) ? APP_ID_ARI_PREFIX + v : false;
+};
+
+/**
  * Validate a setup request against everything that can refuse it, take the
  * concurrency claim and enqueue. Returns `{ok:true, taskId, queued:true, lockHash}`
  * or a refusal carrying a machine `code`.
@@ -269,6 +298,7 @@ export async function requestPipelineSetup({
   branch = null,
   scaffoldVars = null,
   developerSpaceId = null,
+  appId = null,
   accountId = null,
 } = {}) {
   // The security model is DATA, and this is the assertion that keeps it honest.
@@ -313,6 +343,15 @@ export async function requestPipelineSetup({
     return invalid(
       "That Forge developer space id is not a space id (expected 36 characters of hex and dashes)",
       "invalid_developer_space"
+    );
+  }
+  // F-528. Same rule: optional, but a malformed one is a refusal. A bad value here would
+  // be written as FORGE_APP_ID and then rejected by inject-app-id.js on every single run.
+  const forgeAppId = normalizeForgeAppId(appId);
+  if (forgeAppId === false) {
+    return invalid(
+      "That Forge app id is not an app id (expected ari:cloud:ecosystem::app/<uuid> or the bare uuid)",
+      "invalid_app_id"
     );
   }
   if (!manifestYaml || !String(manifestYaml).trim()) {
@@ -383,6 +422,7 @@ export async function requestPipelineSetup({
           branch: branch ? String(branch) : null,
           scaffoldVars: scaffoldVars && typeof scaffoldVars === "object" ? scaffoldVars : null,
           developerSpaceId: spaceId,
+          appId: forgeAppId,
           lock,
           lockHash,
           requestedBy: accountId || null,
@@ -405,8 +445,9 @@ export async function requestPipelineSetup({
     kind: conn.kind,
     scaffold: PIPELINE_SCAFFOLD,
     scaffoldVersion: SCAFFOLD_VERSION,
-    steps: freshSteps(conn.kind, { developerSpaceId: spaceId }),
+    steps: freshSteps(conn.kind, { developerSpaceId: spaceId, appId: forgeAppId }),
     developerSpaceId: spaceId,
+    appId: forgeAppId,
     lockHash,
     lockPermissions: lock.permissions.slice(0, 200),
     lockScopes: scopes,
@@ -486,7 +527,7 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
   }
 
   const kind = row.kind;
-  const steps = freshSteps(kind, { developerSpaceId: p.developerSpaceId });
+  const steps = freshSteps(kind, { developerSpaceId: p.developerSpaceId, appId: p.appId });
   let index = 0;
   const write = async (patch) => {
     row = { ...row, ...patch, steps, updatedAt: nowIso() };
@@ -544,6 +585,12 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
     if (p.developerSpaceId) {
       await step("var:FORGE_DEVELOPER_SPACE", () =>
         provider.setVariable({ repo: repoId, name: "FORGE_DEVELOPER_SPACE", value: p.developerSpaceId }));
+    }
+    // F-528 — the product stores the app id because the runner's token cannot. Once this
+    // variable exists the scaffold's bootstrap step never runs again.
+    if (p.appId) {
+      await step("var:FORGE_APP_ID", () =>
+        provider.setVariable({ repo: repoId, name: "FORGE_APP_ID", value: p.appId }));
     }
 
     let sha = null;
@@ -614,6 +661,9 @@ export function publicPipelineRow(row) {
     // F-527 — not a secret (it is a space identifier the admin typed), and the UI needs
     // it to say whether a bootstrap can run at all.
     developerSpaceId: row.developerSpaceId || null,
+    // F-528 — a public app identifier, not a credential. The UI needs it to tell the
+    // admin whether the pipeline still has to register on every run.
+    appId: row.appId || null,
   };
 }
 

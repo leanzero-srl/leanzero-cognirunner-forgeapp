@@ -178,6 +178,23 @@ const lastParams = () => pushedEvents[pushedEvents.length - 1].body.params;
   ok(pipe.pipelineStepNames("github", {}).slice(-1)[0] === "commit-scaffold",
     "commit-scaffold is always last - the scaffold commit is the last thing a setup does");
 
+  /* F-528 — the APP ID is accepted in either form an admin is likely to paste and stored
+   * as the full ARI, because inject-app-id.js refuses anything else. */
+  ok(pipe.normalizeForgeAppId(null) === null && pipe.normalizeForgeAppId(" ") === null,
+    "an absent app id is null, not a refusal - it is optional");
+  ok(pipe.normalizeForgeAppId("8e6ab209-bb76-4a09-86cd-644f3f33960c")
+    === "ari:cloud:ecosystem::app/8e6ab209-bb76-4a09-86cd-644f3f33960c",
+    "a bare uuid is normalised to the full ARI the injector requires");
+  ok(pipe.normalizeForgeAppId("ARI:cloud:ecosystem::app/8E6AB209-BB76-4A09-86CD-644F3F33960C")
+    === "ari:cloud:ecosystem::app/8e6ab209-bb76-4a09-86cd-644f3f33960c",
+    "an ARI is accepted and lower-cased");
+  for (const bad of ["ari:cloud:ecosystem::app/not-a-uuid", "8e6ab209", "$(whoami)", "ari:cloud:jira::site/x"]) {
+    ok(pipe.normalizeForgeAppId(bad) === false, `a malformed app id is refused (${bad})`);
+  }
+  ok(pipe.pipelineStepNames("github", { appId: "ari:cloud:ecosystem::app/x" }).join("|")
+    === "secret:FORGE_EMAIL|secret:FORGE_API_TOKEN|var:FORGE_SITE|var:FORGE_PRODUCT|var:FORGE_ENV|var:FORGE_APP_ID|commit-scaffold",
+    "an app id adds var:FORGE_APP_ID before the commit");
+
   /* F-527 — the developer space id is VALIDATED, never trusted: it is interpolated into a
    * shell word in the rendered workflow. */
   ok(pipe.normalizeDeveloperSpaceId(null) === null && pipe.normalizeDeveloperSpaceId("  ") === null,
@@ -455,6 +472,53 @@ reset();
   ok(plain.ok === true && plain.status.steps.length === 6 &&
      !plain.status.steps.some((x) => x.name === "var:FORGE_DEVELOPER_SPACE"),
     `no space id means no step for it (got ${plain.status.steps.map((x) => x.name).join("|")})`);
+}
+
+/* ===== 12. F-528 — the PRODUCT stores FORGE_APP_ID, because the runner cannot ===== */
+reset();
+{
+  const connId = await seedConnection();
+  const ARI = "ari:cloud:ecosystem::app/8e6ab209-bb76-4a09-86cd-644f3f33960c";
+
+  const bad = await pipe.requestPipelineSetup({
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    appId: "ari:cloud:ecosystem::app/nope", accountId: ADMIN,
+  });
+  ok(bad.ok === false && bad.code === "invalid_app_id",
+    `a malformed app id is refused by code (got ${JSON.stringify(bad)})`);
+  ok(fetchCalls.length === 0 && pushedEvents.length === 0, "...before any side effect");
+
+  const queued = await pipe.requestPipelineSetup({
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    appId: "8e6ab209-bb76-4a09-86cd-644f3f33960c", accountId: ADMIN,
+  });
+  ok(queued.ok === true && lastParams().appId === ARI,
+    `a bare uuid is accepted and queued as the full ARI (got ${lastParams().appId})`);
+
+  fetchQueue = githubSetupChain(4);
+  const out = await runQueued(lastParams());
+  ok(out.ok === true, `the chain completes (${JSON.stringify(out).slice(0, 200)})`);
+  const varCalls = fetchCalls.filter((c) => /actions\/variables/.test(c.url));
+  ok(varCalls.length === 4 && varCalls.some((c) => String(c.body).includes("FORGE_APP_ID") && String(c.body).includes(ARI)),
+    "FORGE_APP_ID is written by THIS app's credential, with the full ARI");
+  const row = storage.__raw(pipe.gitPipelineKey(connId, REPO));
+  ok(row.appId === ARI && pipe.publicPipelineRow(row).appId === ARI,
+    "the row records it and the public shape exposes it (an app id is not a credential)");
+
+  // both optional variables together, in the order the step list declares.
+  reset();
+  const connId2 = await seedConnection();
+  const both = await pipe.requestPipelineSetup({
+    connectionId: connId2, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    developerSpaceId: "d77c0cce-1111-4222-8333-444444444444", appId: ARI, accountId: ADMIN,
+  });
+  ok(both.ok === true && both.status.steps.map((x) => x.name).join("|")
+    === "secret:FORGE_EMAIL|secret:FORGE_API_TOKEN|var:FORGE_SITE|var:FORGE_PRODUCT|var:FORGE_ENV|var:FORGE_DEVELOPER_SPACE|var:FORGE_APP_ID|commit-scaffold",
+    `both optional steps appear, in order, before the commit (got ${both.status.steps.map((x) => x.name).join("|")})`);
+  fetchQueue = githubSetupChain(5);
+  const out2 = await runQueued(lastParams());
+  ok(out2.ok === true && storage.__raw(pipe.gitPipelineKey(connId2, REPO)).steps.every((x) => x.status === "done"),
+    `every step of the widest chain is recorded done (${JSON.stringify(out2).slice(0, 200)})`);
 }
 
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);

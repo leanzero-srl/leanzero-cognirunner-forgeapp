@@ -24,9 +24,20 @@ const PLACEHOLDER_APP_ID = "ari:cloud:ecosystem::app/PLACEHOLDER";
 // ---------------------------------------------------------------------------
 // Pipeline: GitHub Actions
 // ---------------------------------------------------------------------------
-// bootstrap registers the app ONCE (only while FORGE_APP_ID is empty) and stores
-// the id as a repository variable; every run injects the id into the working-copy
-// manifest, checks the permission lock, deploys, and installs on development only.
+// Every run injects the app id into the working-copy manifest, checks the permission
+// lock, deploys, and installs on development only. The bootstrap step registers the app
+// when there is no id yet -- see F-528 below for what "once" really means here.
+//
+// F-528 -- THE RUNNER CANNOT STORE THE APP ID, AND THE COPY NOW SAYS SO. The scaffold
+// used to claim the bootstrap registers AT MOST ONE TIME and then stores the id as a
+// repository variable by itself. It cannot: repository variables are an `administration` resource and
+// GITHUB_TOKEN can never hold it, with or without `actions: write` (probed live
+// 2026-09-13 -- HTTP 403 "Resource not accessible by integration" on
+// POST /repos/:o/:r/actions/variables, while a PAT accepted the identical call on the
+// identical repository seconds later). So the step no longer pretends: it registers,
+// exports the id for THIS run, and prints a ::notice:: naming the variable a human (or
+// CogniRunner, which holds a PAT) must set. Until that variable exists, every run
+// registers again -- which is why the product asks the admin to paste the id back.
 //
 // F-527 — THE BOOTSTRAP MUST NEVER NEED A TTY. `forge register` asks for a Developer
 // Space and `-y` does not answer that question, so the space id is passed explicitly
@@ -51,7 +62,6 @@ const FORGE_DEPLOY_YML = [
   "",
   "permissions:",
   "  contents: read",
-  "  actions: write",
   "",
   "concurrency:",
   "  group: forge-deploy",
@@ -82,10 +92,8 @@ const FORGE_DEPLOY_YML = [
   "        working-directory: {{UI_DIR}}",
   "      - name: Forge CLI",
   "        run: npm install --global @forge/cli@13 && forge settings set usage-analytics false",
-  "      - name: Bootstrap (register once)",
+  "      - name: Bootstrap (register when there is no app id yet)",
   "        if: env.FORGE_APP_ID == ''",
-  "        env:",
-  "          GH_TOKEN: ${{ github.token }}",
   "        run: |",
   "          set -euo pipefail",
   "          if [ -z \"${FORGE_DEVELOPER_SPACE:-}\" ]; then",
@@ -94,13 +102,7 @@ const FORGE_DEPLOY_YML = [
   "          fi",
   "          forge register -y -s \"$FORGE_DEVELOPER_SPACE\" \"$FORGE_APP_NAME\"",
   "          APP_ID=$(node -e \"const m=require('fs').readFileSync('manifest.yml','utf8');const r=m.match(/^\\s*id:\\s*(ari:cloud:ecosystem::app\\/[0-9a-f-]+)/m);if(!r){process.exit(2)};console.log(r[1])\")",
-  "          echo \"Registered app id: $APP_ID\"",
-  "          if gh variable set FORGE_APP_ID --body \"$APP_ID\"; then",
-  "            echo \"FORGE_APP_ID stored as a repository variable\"",
-  "          else",
-  "            echo \"::error::Could not store FORGE_APP_ID automatically. Set repository variable FORGE_APP_ID to $APP_ID and re-run.\"",
-  "            exit 1",
-  "          fi",
+  "          echo \"::notice::Registered app id $APP_ID. This runner's token cannot store it (repository variables are an administration resource), so set the repository variable FORGE_APP_ID to $APP_ID -- paste it into CogniRunner's Code tab and it will store it for you. Until then every run registers again.\"",
   "          echo \"FORGE_APP_ID=$APP_ID\" >> \"$GITHUB_ENV\"",
   "      - name: Inject app id",
   "        run: node .cognirunner/inject-app-id.js \"$FORGE_APP_ID\"",
@@ -149,7 +151,9 @@ const BITBUCKET_PIPELINES_YML = [
   "              forge register -y -s \"$FORGE_DEVELOPER_SPACE\" \"{{APP_NAME}}\"",
   "              APP_ID=$(node -e \"const m=require('fs').readFileSync('manifest.yml','utf8');const r=m.match(/^\\s*id:\\s*(ari:cloud:ecosystem::app\\/[0-9a-f-]+)/m);if(!r){process.exit(2)};console.log(r[1])\")",
   "              echo \"Registered app id: $APP_ID\"",
-  "              curl -sf -u \"x-bitbucket-api-token-auth:${BB_API_TOKEN}\" -X POST \"https://api.bitbucket.org/2.0/repositories/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}/pipelines_config/variables/\" -H 'Content-Type: application/json' -d \"{\\\"key\\\":\\\"FORGE_APP_ID\\\",\\\"value\\\":\\\"$APP_ID\\\",\\\"secured\\\":false}\" > /dev/null",
+  "              if ! curl -sf -u \"x-bitbucket-api-token-auth:${BB_API_TOKEN:-}\" -X POST \"https://api.bitbucket.org/2.0/repositories/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}/pipelines_config/variables/\" -H 'Content-Type: application/json' -d \"{\\\"key\\\":\\\"FORGE_APP_ID\\\",\\\"value\\\":\\\"$APP_ID\\\",\\\"secured\\\":false}\" > /dev/null; then",
+  "                echo \"Registered app id $APP_ID but could not store it: set the repository variable FORGE_APP_ID to $APP_ID (or paste it into CogniRunner's Code tab). Until then every run registers again.\"",
+  "              fi",
   "              export FORGE_APP_ID=\"$APP_ID\"",
   "            fi",
   "          - node .cognirunner/inject-app-id.js \"$FORGE_APP_ID\"",
@@ -639,8 +643,10 @@ const README_MD = [
   "",
   "## How it deploys",
   "",
-  "The committed `manifest.yml` keeps a placeholder app id. The pipeline registers the app once",
-  "(when the repository variable `FORGE_APP_ID` is empty and `FORGE_DEVELOPER_SPACE` is set), and on",
+  "The committed `manifest.yml` keeps a placeholder app id. The pipeline registers the app when",
+  "`FORGE_APP_ID` is empty and `FORGE_DEVELOPER_SPACE` is set, and prints the id it got: the runner's own",
+  "token cannot create a repository variable, so set `FORGE_APP_ID` yourself (or paste it into",
+  "CogniRunner) and registration stops happening. On",
   "every run injects the id into the working copy, checks `.cognirunner/forge-permissions.lock`, deploys,",
   "and installs on the development environment only. A change to the manifest's permissions deploys but is",
   "not installed until the lock is re-approved.",

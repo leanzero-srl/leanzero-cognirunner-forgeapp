@@ -28,7 +28,7 @@ import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
    Retyping the sentence here would let the test and the mock agree with each other while
    both drift from src/shared/registry-limits.js — which is exactly what happened before
    (the suite hunted for "prune in the Memories tab", words no tenant has ever seen). */
-import { memoryCapRefusalMessage } from "../../src/shared/registry-limits.js";
+import { memoryCapRefusalMessage, memoryPlatformCapMessage } from "../../src/shared/registry-limits.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC = path.resolve(__dirname, "..");
@@ -1559,6 +1559,73 @@ try {
       ok(await kp.locator(".memory-quick-add .input").inputValue() === "Sprint field is customfield_10020.",
         `M1 ${theme} the refused text is kept in the input, not silently cleared`);
     } catch (e) { fail++; console.log(`  ✗ M1 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- M1b — F-201: the PLATFORM-CAP wall in the RULE-EDITOR Memories tab ----------------
+   * Two surfaces render the same refusal and only one of them was updated. `platform-cap`
+   * means the `pf_memories` value has passed Jira's ~240 KiB per-value ceiling: no write to
+   * it succeeds at all, including the single-row Delete this tab offers. The admin twin got
+   * a solid red wall (F-189); here the identical sentence came out as a muted grey line
+   * above a Delete button that is itself refused — the same severity grammar as "content too
+   * long", which reads as retryable. And the backend's own sentence says "the Memories tab",
+   * which is ambiguous between the two tabs that carry that title; only the ADMIN one has
+   * the multi-select the sentence asks for. So this surface must add the pointer.
+   * Both themes — every new hue needs a dark override. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M1b memories platform-cap wall in the rule editor — ${theme} (cfg-static)`);
+    const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __MEMORY_OVERCAP__: true });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+      await kp.locator(".knowledge-tab-memories").click();
+      await kp.locator(".memory-quick-add .input").waitFor({ timeout: 8000 });
+
+      ok(await kp.locator(".memory-cap-refusal").count() === 0,
+        `M1b ${theme} no wall before a write is attempted`);
+      await kp.locator(".memory-quick-add .input").fill("A memory this store cannot fit.");
+      await kp.locator(".btn-remember").click();
+
+      const wall = kp.locator(".memory-cap-refusal").first();
+      await wall.waitFor({ timeout: 8000 });
+      const wtxt = await wall.innerText();
+      ok(await wall.getAttribute("role") === "alert", `M1b ${theme} the wall is announced as an alert`);
+      // The backend's sentence, verbatim from its ONE home — it owns the byte deficit.
+      ok(wtxt.includes(memoryPlatformCapMessage(6544)),
+        `M1b ${theme} the wall carries the resolver's platform-cap sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/\b6544 bytes\b/.test(wtxt), `M1b ${theme} the deficit is a real quantity, not "some"`);
+      // OUR line: it must point at the tab that actually has the bulk control, and say that
+      // the one control on THIS screen cannot resolve it.
+      ok(/Apps → CogniRunner → Memories/.test(wtxt),
+        `M1b ${theme} the wall routes to the admin tab where the bulk delete lives (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/delete several at once/i.test(wtxt),
+        `M1b ${theme} the wall names the control it is routing to`);
+      ok(/one at a time here will not work/i.test(wtxt),
+        `M1b ${theme} the wall forecloses the per-row Delete this tab offers`);
+      // It is the WALL, not the grey error line — that substitution is the whole finding.
+      ok(await kp.locator(".memory-cap-refusal").count() === 1, `M1b ${theme} exactly one wall`);
+      const greys = await kp.locator(".doc-repo-embedded > div").evaluateAll(
+        (els) => els.filter((el) => /6544 bytes/.test(el.textContent || "") && !el.className.includes("memory-cap-refusal")).length,
+      );
+      ok(greys === 0, `M1b ${theme} the sentence is NOT also rendered as a plain error line (got ${greys})`);
+
+      // Owner design law, in both themes: solid saturated fill, white text, no left rail.
+      const style = await wall.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, w: getComputedStyle(el.firstElementChild).fontWeight, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      const rgb = style.bg.match(/\d+/g).map(Number);
+      ok(rgb[0] > 180 && rgb[1] < 90 && rgb[2] < 90, `M1b ${theme} wall is a SOLID red fill, not a tint — got ${style.bg}`);
+      ok((style.bg.match(/[\d.]+/g) || []).length < 4 || Number(style.bg.match(/[\d.]+/g)[3]) === 1,
+        `M1b ${theme} wall fill is fully opaque — got ${style.bg}`);
+      ok(/255,\s*255,\s*255/.test(style.fg), `M1b ${theme} wall text is white — got ${style.fg}`);
+      ok(Number(style.w) >= 700, `M1b ${theme} the wall title is 700 weight — got ${style.w}`);
+      ok(style.bl === style.bt, `M1b ${theme} no left accent rail (border-left ${style.bl} vs top ${style.bt})`);
+      // The refused text survives — nothing was stored, so nothing may be discarded.
+      ok(await kp.locator(".memory-quick-add .input").inputValue() === "A memory this store cannot fit.",
+        `M1b ${theme} the refused text is kept in the input`);
+    } catch (e) { fail++; console.log(`  ✗ M1b ${theme} threw: ` + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 

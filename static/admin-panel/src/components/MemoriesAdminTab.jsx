@@ -303,8 +303,20 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
         setCapRefusal(null);
         setSelected(new Set());
         await loadMemories();
-        const removed = result && typeof result.deleted === "number" ? result.deleted : n;
-        showToast(`${removed} ${removed === 1 ? "memory" : "memories"} deleted`);
+        // F-202 — `deleted` is an ARRAY of the ids that were actually present and went
+        // (src/index.js deleteMemory: `wanted.filter((x) => present.has(x))`), never a
+        // number. The old `typeof result.deleted === "number"` arm was dead in production
+        // and alive only under the screenshot mock, so the toast always reported `n` — the
+        // count the admin TICKED — which is wrong precisely when it matters: a stale list.
+        // `notFound` carries the rows that were already gone; saying so is the only thing
+        // that explains why 5 ticks removed 3 rows.
+        const removedIds = result && Array.isArray(result.deleted) ? result.deleted : null;
+        const removed = removedIds ? removedIds.length : n;
+        const missing = result && Array.isArray(result.notFound) ? result.notFound.length : 0;
+        showToast(
+          `${removed} ${removed === 1 ? "memory" : "memories"} deleted`
+          + (missing ? ` — ${missing} ${missing === 1 ? "was" : "were"} already gone` : ""),
+        );
       }
     } catch (e) {
       showToast("Failed to delete memories: " + e.message, "error");
@@ -468,7 +480,17 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
           own wording. Retyping it here would put the number in two places and let them
           disagree, which is this repo's signature defect.
           The second line is OURS to add, because it is about THIS SCREEN's controls: the
-          resolver cannot know the tab has a "Delete selected" button. */}
+          resolver cannot know the tab has a "Delete selected" button.
+
+          F-200 — and it must be branched on `isAdmin`, because that button is not always
+          there. The Add Memory form below is the ONE write control on this tab that is not
+          wrapped in `{isAdmin && ...}` (an editor is allowed to add — `addMemory` gates on
+          requireRole(editor), not admin), and `capRefusal` is raised from `handleAdd`. So a
+          project editor on an over-platform store is the exact person most likely to see
+          this wall — and for them the select column, the bulk bar and every row action are
+          unrendered. Telling them to tick rows and press "Delete selected" is an
+          instruction they cannot follow on a screen that shows neither control. They get
+          told what is true and who can fix it instead. */}
       {capRefusal && (
         <div className="memories-admin-capwall" role="alert">
           <span className="memories-admin-capwall-title">Memory store is over Jira's storage limit</span>
@@ -479,8 +501,9 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
                 : "The store is over the limit, so no change to it can be saved.")}
           </span>
           <span className="memories-admin-capwall-text">
-            Tick the memories you no longer need and use “Delete selected” to remove them in one
-            go. Archiving does not free capacity, and deleting them one at a time will not work.
+            {isAdmin
+              ? "Tick the memories you no longer need and use “Delete selected” to remove them in one go. Archiving does not free capacity, and deleting them one at a time will not work."
+              : "The memory store is over Jira's storage limit; a Jira admin has to delete memories in this tab before anything can be saved."}
           </span>
         </div>
       )}

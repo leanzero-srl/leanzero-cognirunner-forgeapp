@@ -173,35 +173,70 @@ async function pickForgeLlm(page) {
     // is not a weak gate, it is a wrong one: it fails honest code and teaches the next
     // person to delete it.
     //
-    // Cut from the DISTINCTIVE tail instead — the clause after the first em-dash, which
-    // carries the eviction policy and the remedy and belongs to this sentence alone.
+    // Cut from the DISTINCTIVE tail — the clause after the first em-dash, which carries
+    // the eviction policy and the remedy and belongs to this sentence alone.
     // Asserted explicitly rather than defaulted, so a rewording that drops the em-dash
     // fails loudly here instead of quietly producing a needle that guards nothing.
+    //
+    // F-204 — but the tail ALONE is the wrong gate, because it threw away the only half of
+    // the sentence that can carry a stale number. The whole reason this scan exists
+    // (F-168/F-172) is that a hand-typed cap drifts when MAX_MEMORIES changes, and the only
+    // substring that can carry a typed cap number is the HEAD — the clause ending in
+    // "(N max)". (Spelling that clause out here would make this comment the scan's own first
+    // offender, which is the proof that the gate below actually bites.)
+    // F-195 was right that the bare head "Memory store is full" is a wrong needle (it
+    // is also MemoryFullBanner's title and flagged three honest banner assertions); the fix
+    // for that was never to stop scanning the head, it was to include the `(N max)` clause
+    // so the needle stops matching the banner title. So: scan BOTH. The head guards the
+    // interpolated constant, the tail guards the wording.
     const emDash = expected.indexOf("—");
     ok(emDash > 0, `E0 the cap refusal still has the em-dash clause the needle is cut from (got "${expected}")`);
-    const NEEDLE = expected.slice(emDash + 1).trim();
+    const TAIL_NEEDLE = expected.slice(emDash + 1).trim();
+    const HEAD_NEEDLE = expected.slice(0, emDash).trim();
     // The floor is well above 20 now. A short needle is what made F-195 possible: a
     // 20-character phrase is a phrase several sentences in this app can legitimately
     // share, and a gate that matches more than the thing it guards flags honest code.
-    ok(NEEDLE.length > 40, `E0 the retype needle is long enough to be unique (${NEEDLE.length} chars: "${NEEDLE}")`);
-    // And it must be specific to THIS refusal — the byte-guard variant is a different
+    ok(TAIL_NEEDLE.length > 40, `E0 the tail needle is long enough to be unique (${TAIL_NEEDLE.length} chars: "${TAIL_NEEDLE}")`);
+    // The head's uniqueness comes from the interpolated cap, not from its length — assert
+    // that directly. Without the "(N max)" clause this needle is the banner title again and
+    // the F-195 false positives come straight back.
+    ok(HEAD_NEEDLE.includes(`(${MAX_MEMORIES} max)`),
+      `E0 the head needle carries the interpolated cap — that is the ONLY part a retype can make stale (got "${HEAD_NEEDLE}")`);
+    ok(HEAD_NEEDLE.includes(String(MAX_MEMORIES)),
+      "E0 the head needle contains MAX_MEMORIES itself, so a drifted literal cannot match it");
+    // And they must be specific to THIS refusal — the byte-guard variant is a different
     // sentence with the same owner, so a needle matching both guards neither precisely.
-    ok(!memoryCapRefusalMessage("bytes").includes(NEEDLE),
-      "E0 the needle is unique to the row-cap refusal — it must not also match the byte-guard one");
+    ok(!memoryCapRefusalMessage("bytes").includes(TAIL_NEEDLE),
+      "E0 the tail needle is unique to the row-cap refusal — it must not also match the byte-guard one");
+    ok(!memoryCapRefusalMessage("bytes").includes(HEAD_NEEDLE),
+      "E0 the head needle is unique to the row-cap refusal — it must not also match the byte-guard one");
     const files = fs.readdirSync(__dirname)
       .filter((f) => f === "bridge.js" || f.endsWith(".test.mjs"));
     const offenders = [];
     for (const f of files) {
       const lines = fs.readFileSync(path.join(__dirname, f), "utf8").split("\n");
       lines.forEach((line, i) => {
-        if (!line.includes(NEEDLE)) return;
+        if (!line.includes(TAIL_NEEDLE) && !line.includes(HEAD_NEEDLE)) return;
         // The sentence may only appear where it is IMPORTED/derived, never as a literal.
+        // Two exemptions, both of which are how a line legitimately carries the text:
+        //   - the builder call itself (`memoryCapRefusalMessage(...)`), and
+        //   - this file's own import of the shared module, which names it in a destructure.
         if (/\bmemoryCapRefusalMessage\b/.test(line)) return;
+        if (/registry-limits\.js/.test(line)) return;
         offenders.push(`${f}:${i + 1}`);
       });
     }
     ok(offenders.length === 0,
       `E0 no harness line retypes the cap refusal — derive it from memoryCapRefusalMessage (offenders: ${offenders.join(", ")})`);
+    // F-204 — prove the head needle actually BITES. A hand-typed copy of the head is the
+    // exact defect the scan exists for, so construct one here and confirm the predicate
+    // the loop above uses would flag it. Built by concatenation so this line is not itself
+    // a literal of the sentence (it would then be its own first offender).
+    const handTyped = "Memory store is full (" + MAX_MEMORIES + " max)";
+    ok(handTyped.includes(HEAD_NEEDLE) || HEAD_NEEDLE.includes(handTyped),
+      `E0 a hand-typed "(${MAX_MEMORIES} max)" head is caught by the head needle (needle "${HEAD_NEEDLE}")`);
+    ok(!/\bmemoryCapRefusalMessage\b/.test(handTyped) && !/registry-limits\.js/.test(handTyped),
+      "E0 the hand-typed head claims neither exemption — it would be reported as an offender");
     ok(files.includes("bridge.js") && files.length > 1,
       `E0 the retype scan actually read the harness sources (${files.length} files)`);
   }

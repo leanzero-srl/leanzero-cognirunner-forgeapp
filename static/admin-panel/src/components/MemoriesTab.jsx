@@ -104,6 +104,13 @@ export default function MemoriesTab({ onChanged = null }) {
   const [deletingId, setDeletingId] = useState(null); // row whose delete is in flight
   const [newMemoryId, setNewMemoryId] = useState(null); // freshly added row — flashes green
   const [error, setError] = useState(null);
+  // F-201 — a `platform-cap` refusal is a WALL, not an error line. It means the store has
+  // passed Jira's 240 KiB per-value ceiling and no write to it succeeds at all — including
+  // the per-row Delete this tab offers, which still rewrites the whole oversized array. The
+  // muted grey error line said that in the same voice as "content too long", next to the one
+  // control that cannot resolve it, so it read as a retryable hiccup. Kept in its own state
+  // (not `error`) so the two render differently and a later fix cannot collapse them.
+  const [capRefusal, setCapRefusal] = useState(null);
 
   const loadMemories = useCallback(async () => {
     try {
@@ -137,6 +144,26 @@ export default function MemoriesTab({ onChanged = null }) {
     setRefreshing(false);
   };
 
+  /**
+   * F-201 — ONE home for the `platform-cap` refusal on THIS surface, because the backend
+   * can answer it from both writes this tab makes (add and delete) and the remedy sentence
+   * is identical for both.
+   *
+   * The backend's own sentence (memoryPlatformCapMessage) is rendered verbatim — it owns
+   * the byte deficit, and retyping the number here would give it a second home. The line
+   * after it is OURS, because it is about WHERE THE CONTROL IS: the backend's copy says
+   * "the Memories tab", which is ambiguous between the two tabs that both carry that title,
+   * and only the admin one has the multi-select bulk delete that can actually clear a
+   * byte-capped store. This tab has a single-row Delete, which is refused by the same wall.
+   *
+   * Returns true when it consumed the result, so callers do not also set `error`.
+   */
+  const consumeCapRefusal = (result) => {
+    if (!result || result.reason !== "platform-cap") return false;
+    setCapRefusal({ error: result.error, bytesOver: result.bytesOver });
+    return true;
+  };
+
   const handleAdd = async () => {
     const content = newContent.trim();
     if (!content || adding) return;
@@ -150,7 +177,7 @@ export default function MemoriesTab({ onChanged = null }) {
         if (result.id) setNewMemoryId(result.id);
         showToast("Memory saved");
         if (onChanged) onChanged();
-      } else {
+      } else if (!consumeCapRefusal(result)) {
         setError(result.error || "Failed to add memory.");
       }
     } catch (e) {
@@ -166,9 +193,12 @@ export default function MemoriesTab({ onChanged = null }) {
     try {
       const result = await invoke("deleteMemory", { id });
       if (result.success) {
+        // A delete that lands is the one thing that can clear the wall, so drop it here
+        // rather than waiting for the next write to rediscover it is gone.
+        setCapRefusal(null);
         await refreshMemories();
         if (onChanged) onChanged();
-      } else {
+      } else if (!consumeCapRefusal(result)) {
         showToast(result.error || "Failed to delete memory.", "error");
       }
     } catch (e) {
@@ -220,6 +250,27 @@ export default function MemoriesTab({ onChanged = null }) {
           Remember
         </button>
       </div>
+
+      {/* F-201 — the capacity wall, rendered as the SAME solid red block the admin tab uses
+          (F-189): #dc2626 fill, white text, 700 title, full border radius, no left rail and
+          no tint — owner design law, dark override one shade lighter in injectStyles().
+          It is deliberately not the grey `error` line below: a platform-cap refusal is not
+          a retryable hiccup, it is the state in which every control on this tab is refused.
+          First line is the BACKEND'S sentence verbatim (memoryPlatformCapMessage owns the
+          byte deficit). Second line is ours, and it points AWAY from this screen, because
+          the bulk delete the first line asks for lives only in the admin panel. */}
+      {capRefusal && (
+        <div className="memory-cap-refusal" role="alert">
+          <span className="memory-cap-refusal-title">Memory store is over Jira&apos;s storage limit</span>
+          <span className="memory-cap-refusal-text">
+            {capRefusal.error || "The store is over the limit, so no change to it can be saved."}
+          </span>
+          <span className="memory-cap-refusal-text">
+            Deleting memories one at a time here will not work — open Apps → CogniRunner → Memories
+            to delete several at once.
+          </span>
+        </div>
+      )}
 
       {error && (
         <div style={{ color: "var(--error-color)", fontSize: "12px", fontWeight: 600, padding: "6px 12px 0" }}>

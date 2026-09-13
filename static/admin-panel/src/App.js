@@ -5068,6 +5068,26 @@ const injectCopiedComponentStyles = () => {
     }
     .memory-quick-add .input { flex: 1; }
 
+    /* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Same hard-stop
+       grammar as .memory-full-banner and the admin tab's .memories-admin-capwall (F-167,
+       F-189): solid #dc2626, white text, full border radius, NO left rail and NO tint.
+       Dark is one shade lighter (#ef4444), matching both of its siblings. Its own class
+       rather than a reuse of .memory-full-banner because that one is a row-cap warning
+       with a different owner (memoryStoreFullCopy) and a different layout. */
+    .memory-cap-refusal {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: #dc2626;
+      color: #ffffff;
+      border-radius: 4px;
+      padding: 9px 12px;
+      margin: 6px 12px 0;
+    }
+    html[data-color-mode="dark"] .memory-cap-refusal { background: #ef4444; color: #ffffff; }
+    .memory-cap-refusal-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+    .memory-cap-refusal-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+
     /* F-167 — memory store FULL. A hard stop, not a hint: solid #dc2626, white text,
        full border (never a left rail), no tint. Dark one shade lighter (#ef4444). */
     .memory-full-banner {

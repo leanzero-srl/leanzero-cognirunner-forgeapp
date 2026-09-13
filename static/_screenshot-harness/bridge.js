@@ -517,7 +517,13 @@ function getContext() {
     // The jira:issueContext "CogniRunner on this issue" glance — the platform gives the open issue.
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), theme: { colorMode: theme() }, extension: { type: "jira:issueContext", key: "cognirunner-issue-glance", issue: { id: "10042", key: "DEMO-42" }, project: { id: "10000", key: "DEMO" } } };
   // default: admin global page (auto-admin via jira:adminPage)
-  return { extension: { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: mockLicenseCtx(), siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
+  // F-200 — `__NOT_ADMIN__` must switch the MODULE too, not just checkIsAdmin. App.js
+  // auto-admins on `jira:adminPage` ("Detect if accessed from jira:adminPage"), so a mock
+  // that always reports that type makes `isAdmin: false` unreachable no matter what the
+  // resolver answers. `jira:globalPage` (cognirunner-global-page) is the real entry point a
+  // non-admin reaches the app through, which is what makes the editor scenario honest.
+  const notAdmin = typeof window !== "undefined" && !!window.__NOT_ADMIN__;
+  return { extension: notAdmin ? { type: "jira:globalPage", key: "cognirunner-global-page" } : { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: mockLicenseCtx(), siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
 }
 
 
@@ -715,6 +721,19 @@ const isMemoryOvercap = () => typeof window !== "undefined" && !!window.__MEMORY
  * zero — so a component that failed to clear its selection, or failed to reload, would
  * photograph identically to one that worked. */
 const DELETED_MEMORY_IDS = new Set();
+/* F-202 — the STALE LIST, and it is deliberately a SEPARATE set from DELETED_MEMORY_IDS.
+   `deleteMemory` answers with the ids it actually found (`deleted`) and the ids that were
+   already gone (`notFound`), so "ticked" and "removed" can legitimately differ: another
+   admin, or the rule-editor tab, removed a row while this table sat open. Modelling that
+   needs a row the SERVER no longer has but the loaded list still shows — so it must not go
+   through DELETED_MEMORY_IDS, which getMemories filters by and which would simply hide the
+   row instead. `__MEMORY_STALE_LIST__` seeds exactly one, so a suite can prove the toast
+   counts the RESPONSE array and not the selection. */
+const STALE_MEMORY_ID = "m3";
+const isServerGone = (id) => (
+  DELETED_MEMORY_IDS.has(id)
+  || (id === STALE_MEMORY_ID && typeof window !== "undefined" && !!window.__MEMORY_STALE_LIST__)
+);
 const MEMORY_PLATFORM_REFUSAL = () => ({
   success: false,
   reason: "platform-cap",
@@ -821,7 +840,16 @@ function invoke(name, payload) {
       // product does not have (F-085) — editions.test.mjs asserts the parity.
       features: ADVANCED_FEATURES.map((f) => ({ id: f.id, label: f.label, allowed: !isStandardEd() })),
     });
-    case "checkIsAdmin": return Promise.resolve({ success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
+    // F-200 — `isAdmin` is a real branch on several admin tabs (the Memories tab alone
+    // gates the select column, the bulk bar and every row action on it), and the mock used
+    // to make it unreachable by always answering true. `__NOT_ADMIN__` models a project
+    // EDITOR: a role the backend genuinely lets through `addMemory` (requireRole "editor"),
+    // which is exactly the person who can trip a write refusal with no delete control on
+    // screen. Without this flag the non-admin half of every `{isAdmin && ...}` is untested.
+    case "checkIsAdmin": return Promise.resolve(
+      typeof window !== "undefined" && window.__NOT_ADMIN__
+        ? { success: true, isAdmin: false, role: "editor", scope: "mine", accountId: ACCT }
+        : { success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
     case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001" });
     case "getConfigs": return Promise.resolve(ADMIN_CONFIGS);
     case "getRuleApiInfo": return Promise.resolve({
@@ -1084,8 +1112,23 @@ function invoke(name, payload) {
         window.__DELETE_MEMORY_CALLS__ = window.__DELETE_MEMORY_CALLS__ || [];
         window.__DELETE_MEMORY_CALLS__.push(payload);
       }
+      // F-202 — answer the SHAPE the backend answers, on BOTH arms. src/index.js
+      // deleteMemory returns `{ success, deleted, notFound, evicted }` where `deleted` and
+      // `notFound` are ARRAYS of ids (`wanted.filter((x) => present.has(x))` and its
+      // complement). The mock used to invent `deleted: <number>` for the bulk arm and a
+      // bare `{ success: true }` for the single arm — so the only thing exercising the
+      // UI's read of that field was photographing a shape production never emits, and the
+      // tab's numeric branch stayed green while being dead.
+      // A row already in DELETED_MEMORY_IDS is the real stale-list case: the admin ticked
+      // it, someone else removed it first, and it comes back in `notFound`.
+      const alreadyGone = ids.filter((i) => isServerGone(i));
+      const deleted = ids.filter((i) => !isServerGone(i));
       ids.forEach((i) => DELETED_MEMORY_IDS.add(i));
-      return Promise.resolve(Array.isArray(payload && payload.ids) ? { success: true, deleted: ids.length } : { success: true });
+      // And the backend's failure arm: nothing matched at all is a refusal, not a no-op
+      // success (src/index.js: `if (!deleted.length) return { success: false, error:
+      // "Memory not found", notFound }`).
+      if (!deleted.length) return Promise.resolve({ success: false, error: "Memory not found", notFound: alreadyGone });
+      return Promise.resolve({ success: true, deleted, notFound: alreadyGone, evicted: [] });
     }
     case "reviewConfig": return Promise.resolve({ success: true, review: { verdict: "has_issues", summary: "The steps are sound; two improvements suggested.", items: [{ type: "warning", message: "Step 2 posts a comment without checking the issue is still open." }, { type: "suggestion", message: "Reuse the JQL result from step 1 instead of re-querying." }] }, tokens: 1240 });
     case "searchIssues": return Promise.resolve({ success: true, issues: [{ key: "PROJ-481", fields: { summary: "Checkout latency spike on mobile", status: { name: "In Progress" }, issuetype: { name: "Bug" } } }] });

@@ -688,6 +688,10 @@ try {
       ok(/\b6544 bytes\b/.test(wtxt),
         `M3 ${theme} the wall names the deficit as a real quantity (got: ${wtxt.replace(/\n/g, " | ")})`);
       ok(/Delete selected/.test(wtxt), `M3 ${theme} the wall points at the control that recovers capacity`);
+      // F-200 — and it may only say that to someone who HAS that control. This is the admin
+      // arm, so the admin remedy is the right one and the non-admin sentence must be absent.
+      ok(!/a Jira admin has to delete memories/i.test(wtxt),
+        `M3 ${theme} an ADMIN is not told to go and find an admin (got: ${wtxt.replace(/\n/g, " | ")})`);
       ok(/Archiving does not free capacity/i.test(wtxt),
         `M3 ${theme} the wall forecloses the wrong instinct (archive frees nothing — F-176/F-182)`);
       ok(/one at a time will not work/i.test(wtxt),
@@ -754,8 +758,13 @@ try {
       await page.locator(".cr-confirm").first().waitFor({ timeout: 5000 });
       await page.locator(".cr-confirm .btn-danger").click();
       await page.locator(".mls-toast").first().waitFor({ timeout: 8000 });
-      ok(/2 memories deleted/.test(await page.locator(".mls-toast").first().innerText()),
+      const m3toast = await page.locator(".mls-toast").first().innerText();
+      ok(/2 memories deleted/.test(m3toast),
         `M3 ${theme} the toast reports how many went`);
+      // F-202 — nothing was stale here, so the "already gone" clause must NOT appear. A
+      // suffix that shows on a clean delete is as wrong as one that never shows.
+      ok(!/already gone/i.test(m3toast),
+        `M3 ${theme} a clean delete carries no already-gone clause (got: ${m3toast})`);
       // ONE call carrying `ids`, not two carrying `id`: `pf_memories` is a single KVS value,
       // so a UI that loops single deletes races itself and looks identical on screen.
       const calls = await page.evaluate(() => window.__DELETE_MEMORY_CALLS__ || []);
@@ -799,6 +808,104 @@ try {
       ok(env.errors.length === 0, `M4 ${theme} no page errors: ` + env.errors.join(" | "));
       await shot(page, `m4-memories-stats-healthy-${theme}`);
     } catch (e) { fail++; console.log(`  ✗ M4 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M5 — F-202: the bulk-delete toast counts the RESPONSE, not the ticks ----------------
+   * `deleteMemory` returns `{ deleted: string[], notFound: string[] }`. The tab used to read
+   * `typeof result.deleted === "number"`, an arm the backend can never satisfy — so the
+   * count it showed was always the number of rows the admin TICKED. That is wrong in exactly
+   * the case that matters: a list gone stale because another admin (or the rule-editor
+   * Memories tab) removed a row while this table sat open. `__MEMORY_STALE_LIST__` makes one
+   * of the six rows already-gone on the server while it is still on screen and still
+   * tickable, which is the only way to make "ticked" and "removed" differ. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M5 bulk-delete toast reports deleted/notFound — ${theme}`);
+    const env = await openAdmin(browser, theme, { __MEMORY_STALE_LIST__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+      const boxes = page.locator(".memories-admin-select");
+      // Row order is newest-first: m1, m2, m3(stale), m4, m5, then the archived m6.
+      await boxes.nth(0).check();   // m1 — really there
+      await boxes.nth(2).check();   // m3 — gone on the server, still on screen
+      await page.locator(".memories-admin-bulkdelete").first().click();
+      await page.locator(".cr-confirm").first().waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-danger").click();
+      await page.locator(".mls-toast").first().waitFor({ timeout: 8000 });
+      const ttxt = await page.locator(".mls-toast").first().innerText();
+      // TWO were ticked, ONE went. The old numeric-branch code said "2 memories deleted".
+      ok(/\b1 memory deleted\b/.test(ttxt),
+        `M5 ${theme} the toast counts result.deleted.length (1), not the 2 rows ticked (got: ${ttxt})`);
+      ok(!/\b2 memories deleted\b/.test(ttxt),
+        `M5 ${theme} the toast does NOT report the selection size (got: ${ttxt})`);
+      // And it explains the gap, which is the only thing that makes 2-ticked/1-gone readable.
+      ok(/already gone/i.test(ttxt),
+        `M5 ${theme} the toast mentions the notFound rows (got: ${ttxt})`);
+      ok(/\b1 was already gone\b/.test(ttxt),
+        `M5 ${theme} the toast names how many were already gone, singular (got: ${ttxt})`);
+      await shot(page, `m5-memories-stale-delete-${theme}`);
+      ok(env.errors.length === 0, `M5 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ M5 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M6 — F-200: the capacity wall does not give a non-admin an order they cannot obey ----------------
+   * The Add Memory form is the ONE write control on this tab that is not wrapped in
+   * `{isAdmin && ...}` — `addMemory` gates on requireRole("editor"), so a project editor is
+   * allowed to add and is therefore allowed to hit the platform-cap refusal. Every control
+   * the wall used to name (the select column, the bulk bar, "Delete selected", the row
+   * Delete buttons) is admin-only and simply not rendered for them. The wall must say who
+   * can fix it instead of pointing at buttons that are not on the page. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M6 platform-cap wall for a NON-admin — ${theme}`);
+    const env = await openAdmin(browser, theme, { __MEMORY_OVERCAP__: true, __NOT_ADMIN__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+      // First prove the premise: this really is the admin-less rendering, or the assertions
+      // below would pass vacuously against an admin screen that happens not to say the word.
+      ok(await page.locator(".memories-admin-select").count() === 0,
+        `M6 ${theme} a non-admin sees no select checkboxes (the premise of the finding)`);
+      ok(await page.locator(".memories-admin-bulkdelete").count() === 0,
+        `M6 ${theme} a non-admin has no "Delete selected" control anywhere on the page`);
+      ok(await page.locator(".memories-admin-tab .row-actions").count() === 0,
+        `M6 ${theme} a non-admin has no per-row Delete either`);
+      // ...and that the add form IS there, which is how they reach the refusal at all.
+      ok(await page.locator(".memories-admin-add input").count() === 1,
+        `M6 ${theme} the Add Memory form is NOT admin-gated — this is how an editor hits the wall`);
+
+      await page.locator(".memories-admin-add input").fill("A memory this store cannot fit.");
+      await page.locator(".btn-add-memory").click();
+      const wall = page.locator(".memories-admin-capwall").first();
+      await wall.waitFor({ timeout: 8000 });
+      const wtxt = await wall.innerText();
+      // The backend's sentence still travels verbatim — that half is not surface-dependent.
+      ok(wtxt.includes(memoryPlatformCapMessage(6544)),
+        `M6 ${theme} the wall still carries the resolver's sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
+      // The REMEDY half is. No instruction they cannot follow:
+      ok(!/Delete selected/.test(wtxt),
+        `M6 ${theme} the wall does NOT name a control that is not rendered (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(!/Tick the memories/i.test(wtxt),
+        `M6 ${theme} the wall does NOT tell them to tick rows that have no checkboxes`);
+      ok(/a Jira admin has to delete memories in this tab/i.test(wtxt),
+        `M6 ${theme} the wall names WHO can fix it (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/over Jira's storage limit/i.test(wtxt),
+        `M6 ${theme} the wall still names the condition`);
+      // Same solid-red hard-stop grammar in both themes — the copy changed, the design did not.
+      const wst = await wall.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      const wrgb = wst.bg.match(/\d+/g).map(Number);
+      ok(wrgb[0] > 180 && wrgb[1] < 90 && wrgb[2] < 90, `M6 ${theme} wall is a SOLID red fill — got ${wst.bg}`);
+      ok(/255,\s*255,\s*255/.test(wst.fg), `M6 ${theme} wall has white text — got ${wst.fg}`);
+      ok(wst.bl === wst.bt, `M6 ${theme} wall has NO left accent rail`);
+      await shot(page, `m6-memories-capwall-nonadmin-${theme}`);
+      ok(env.errors.length === 0, `M6 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ M6 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 

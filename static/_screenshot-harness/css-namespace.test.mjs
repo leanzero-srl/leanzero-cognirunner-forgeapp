@@ -22,6 +22,8 @@
  *      injectCopiedComponentStyles(), and since that block is appended LATER it won the tie
  *      at equal specificity. The Knowledge tab's root container rendered as a small pill
  *      button. Nothing warned.
+ *   N3 no style-injecting template literal in ANY of the four apps contains a backtick
+ *      (F-562), and the block is a plain literal with no interpolation.
  *
  * Run: node static/_screenshot-harness/css-namespace.test.mjs
  */
@@ -162,6 +164,54 @@ const appSrc = (app) => fs.readFileSync(path.join(STATIC, app, "src/App.js"), "u
     ok(newPrefixes.length === 0, `N2 no NEW component prefix is declared in both injectors (new: ${newPrefixes.join(", ")}) - pick a prefix the other block does not own, the later block wins the tie`);
     ok(stalePrefixes.length === 0, `N2 the prefix allow-list holds nothing that has since been separated (stale: ${stalePrefixes.join(", ")})`);
   }
+}
+
+
+/* ---------- N3 a backtick inside the CSS closes the stylesheet (F-562) ---------- */
+{
+  console.log("N3 no backtick inside any app's CSS template literal");
+  /* WHAT THIS COSTS WHEN IT IS MISSED. All four apps keep their live CSS in a JS template
+     literal, and the house comment style quotes class names in backticks. Writing
+     /* the `.gen-meta-chip` base ... *\/ INSIDE that literal terminates the string. The file
+     still PARSES, webpack still builds it with zero warnings, and the app dies at render
+     with a ReferenceError naming whatever identifier happened to follow. issue-glance
+     white-screened that way and took four editor-journeys blocks down with it; it took a
+     stash bisect to find, because every signal upstream of the browser was green.
+
+     The assertion is the strongest one available and it cannot false-positive: CSS has no
+     use for a backtick, ever. So between a `<var>.textContent = ` + backtick and the
+     `document.head.appendChild(<var>)` that closes the injector, there must be EXACTLY ONE
+     backtick and it must be the terminator - the character right after it is the `;`.
+     `${` is refused in the same span for the same reason: these blocks are constants, and
+     an interpolation would make "no backtick" un-assertable.
+
+     Every app, not just the one that bled: the trap is the house comment style, which is
+     shared. issue-glance names its element `el` rather than `style`, so the injector is
+     found by its SHAPE - any `<identifier>.textContent = <backtick>` - and not by a name. */
+  const APPS = ["config-ui", "config-view", "admin-panel", "issue-glance"];
+  let blocks = 0;
+  for (const app of APPS) {
+    const src = appSrc(app);
+    const opens = [...src.matchAll(/([A-Za-z_$][\w$]*)\.textContent = `/g)];
+    ok(opens.length > 0, `N3 ${app} has a style-injecting template literal at all`);
+    for (const m of opens) {
+      blocks++;
+      const varName = m[1];
+      const start = m.index + m[0].length;
+      const close = src.indexOf(`document.head.appendChild(${varName})`, start);
+      ok(close > start, `N3 ${app} the ${varName} injector still ends in document.head.appendChild(${varName})`);
+      if (close <= start) continue;
+      const span = src.slice(start, close);
+      const ticks = (span.match(/`/g) || []).length;
+      ok(ticks === 1, `N3 ${app} the ${varName} CSS literal holds ${ticks} backticks, want exactly 1 (the terminator) - a backtick in a CSS COMMENT closes the stylesheet and white-screens the app with a clean build`);
+      if (ticks === 1) {
+        const at = span.indexOf("`");
+        ok(span.slice(at + 1).trim().startsWith(";"), `N3 ${app} the ${varName} CSS literal's single backtick is its terminator`);
+        ok(!span.slice(0, at).includes("${"), `N3 ${app} the ${varName} CSS literal interpolates nothing`);
+      }
+    }
+  }
+  ok(blocks >= 4, `N3 every app's injector was located (found ${blocks})`);
 }
 
 console.log(`\ncss-namespace: ${failed === 0 ? "all checks passed" : `${failed} failed`}`);

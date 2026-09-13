@@ -17,14 +17,38 @@ const store = new Map();
  * what keeps `pf_memories` writable — F-183 was "the store grows past the platform cap and
  * then EVERY write, including the delete that would repair it, throws", which a mock with
  * no ceiling cannot show.
+ *
+ * F-193 — the ERROR SHAPE, and what is and is not measured here. @forge/kvs never throws a
+ * bare `Error`: an API failure arrives as `ForgeKvsAPIError` (a `ForgeKvsError` subclass —
+ * and note the subclass does NOT override `name`, so `error.name` reads "ForgeKvsError")
+ * carrying `code` from the response body, plus `responseDetails` and `context`
+ * (node_modules/@forge/kvs/out/errors.js). The mock previously threw a plain Error with an
+ * INVENTED code, `VALUE_TOO_LARGE`, and three comments went on to quote that fiction as
+ * measured fact — which is exactly how a real fix gets gated on a code the platform never
+ * emits, passing offline and never firing on Forge.
+ *
+ * What IS measured here: the BYTE THRESHOLD (245 760) and the fact that a write over it
+ * fails. What is NOT: the exact `code` an oversize single `set` returns. `STORAGE_LIMIT_EXCEEDED`
+ * is the storage-limit code the SDK's own test fixtures use
+ * (out/__test__/index.test.js), not a code observed from a live oversize set. So app code must
+ * never depend on the code alone — src/memories.js refuses an over-cap write BEFORE handing it
+ * to KVS, and treats any throw from the write as the same refusal.
  */
 const KVS_MAX_VALUE_BYTES = 245760;
+export const KVS_PLATFORM_MAX_VALUE_BYTES = KVS_MAX_VALUE_BYTES;
+export const KVS_STORAGE_LIMIT_CODE = "STORAGE_LIMIT_EXCEEDED";
 const enforceValueSize = (key, value) => {
   if (value === undefined) return;
   const bytes = new TextEncoder().encode(JSON.stringify(value) ?? "").length;
   if (bytes > KVS_MAX_VALUE_BYTES) {
     const error = new Error(`Value for key ${key} is ${bytes} bytes, over the ${KVS_MAX_VALUE_BYTES} byte limit`);
-    error.code = "VALUE_TOO_LARGE";
+    // Mirrors ForgeKvsAPIError: name inherited from ForgeKvsError, a body-supplied code,
+    // responseDetails and context. Not an instance of the real class (importing @forge/kvs
+    // into the mock that replaces it would be circular) — a structural stand-in.
+    error.name = "ForgeKvsError";
+    error.code = KVS_STORAGE_LIMIT_CODE;
+    error.responseDetails = { status: 400, statusText: "Bad Request", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/set", responseBodyLength: 0 };
+    error.context = { key, bytes, limit: KVS_MAX_VALUE_BYTES };
     throw error;
   }
 };

@@ -15,8 +15,11 @@
 //   so the "rows this save ADDS" arm refused the write — and `deleteMemory` never inspected the
 //   return value, so the admin was told the delete worked. Two halves: the write path must not
 //   treat a faulted read as an empty store, and every resolver must honour `{ refused: true }`.
+// F-193 — the mock's oversize throw mirrors @forge/kvs's real ForgeKvsAPIError shape instead of
+//   inventing a name and a code that the platform never emits.
 import "../lib/register-mocks-index.mjs";
-import storage from "../lib/mock-kvs.mjs";
+import storage, { KVS_PLATFORM_MAX_VALUE_BYTES, KVS_STORAGE_LIMIT_CODE } from "../lib/mock-kvs.mjs";
+import { readFileSync } from "node:fs";
 import { MEMORIES_KEY, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_CONTENT_MAX, serializedBytes } from "../../src/memories.js";
 const { handler } = await import("../../src/index.js");
 
@@ -123,6 +126,33 @@ const faultNthMemoryRead = (n) => {
     `a growing content edit over the guard is refused (got ${JSON.stringify({ success: grow.success, reason: grow.reason })})`);
   ok(typeof grow.error === "string" && /Memories tab/.test(grow.error), `the refusal names where to act: "${grow.error}"`);
   ok(JSON.stringify(load()) === before, "the refused edit left the store byte-identical");
+}
+
+// ---------------------------------------------------------------------------
+// F-193 — the mock's oversize throw must MIRROR the platform, not invent a shape.
+// @forge/kvs throws ForgeKvsAPIError (a ForgeKvsError subclass that does not override
+// `name`) carrying a body-supplied `code`, `responseDetails` and `context`. The mock used
+// to throw a bare Error with an invented `VALUE_TOO_LARGE`, and that fiction was quoted as
+// measured fact in three comments — the shape a real fix would then have been gated on.
+// ---------------------------------------------------------------------------
+{
+  const errorsSrc = readFileSync(new URL("../../node_modules/@forge/kvs/out/errors.js", import.meta.url), "utf8");
+  ok(/class ForgeKvsAPIError extends ForgeKvsError/.test(errorsSrc),
+    "positive control: the installed @forge/kvs really does define ForgeKvsAPIError");
+  ok(/this\.name = 'ForgeKvsError'/.test(errorsSrc),
+    "positive control: ForgeKvsError sets name 'ForgeKvsError' and the API subclass does not override it");
+
+  storage.__reset();
+  let thrown = null;
+  try {
+    await storage.set("oversize_probe", "x".repeat(KVS_PLATFORM_MAX_VALUE_BYTES + 10));
+  } catch (e) { thrown = e; }
+  ok(thrown !== null, `a value over ${KVS_PLATFORM_MAX_VALUE_BYTES} B is rejected by the mock`);
+  ok(thrown.name === "ForgeKvsError", `the throw carries the platform's error name (got ${thrown && thrown.name})`);
+  ok(thrown.code === KVS_STORAGE_LIMIT_CODE, `the code is the SDK's storage-limit code, not an invented one (got ${thrown && thrown.code})`);
+  ok(thrown.responseDetails && typeof thrown.responseDetails.status === "number" && thrown.context,
+    "the throw carries responseDetails and context like ForgeKvsAPIError does");
+  ok(storage.__raw("oversize_probe") === undefined, "the rejected value was never stored");
 }
 
 console.log(`\nmemory-store-repair: ${pass} passed, ${fail} failed`);

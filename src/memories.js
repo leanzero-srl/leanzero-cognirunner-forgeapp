@@ -432,8 +432,9 @@ export const serializedBytes = (arr) => utf8Len(JSON.stringify(Array.isArray(arr
  * content, so an instance parked just under the guard walked the value up to the 245 760 B
  * platform cap, at which point KVS rejects the write outright. MEASURED on the pre-fix
  * module (test-harness/scripts/memory-byte-guard.test.mjs, whose mock now enforces the real
- * platform limit): starting 400 B under the guard, the 76th full-length merge throws
- * VALUE_TOO_LARGE at 245 831 B, and from there every write that does not SHRINK the store
+ * platform limit): starting 400 B under the guard, the 76th full-length merge is REJECTED BY
+ * KVS at 245 831 B — the byte figure is what was measured; the platform's error CODE for it is
+ * not (F-193), so nothing here may be gated on one — and from there every write that does not SHRINK the store
  * fails the same way — the reinforce path itself can no longer record anything, and an
  * addMemory or a growing edit only ever returns an error. (A delete still gets through,
  * because the rejected write was never stored; the store is stuck, not bricked.)

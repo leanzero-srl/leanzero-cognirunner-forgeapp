@@ -13,8 +13,9 @@
 //   error-signature reinforce) called saveMemories(all) with no protectId, and F-178's
 //   `if (protectId)` gate had removed the byte guard from that path: model-emitted merges grew
 //   the single `pf_memories` value up to the platform cap, at which point KVS rejects it: measured
-//   on the pre-fix module, the 76th full-length merge throws VALUE_TOO_LARGE at 245 831 B and no
-//   growing write ever succeeds again.
+//   on the pre-fix module, the 76th full-length merge is REJECTED at 245 831 B and no growing write
+//   ever succeeds again. (F-193: the 245 831 B is measured; the platform's error CODE is not —
+//   the mock emits a ForgeKvsAPIError-shaped throw, see lib/mock-kvs.mjs.)
 // F-184 — metadata-only edits (archive/restore, project clear) must never be refused by the byte
 //   guard. Archive (-1 B) succeeded while Restore (+1 B) was refused: a one-way door.
 // F-185 — `meta.stepName` / `meta.ruleId` reached the stored row unclamped from the runtime and
@@ -79,7 +80,7 @@ for (let i = 0; i < 20; i++) {
   ok(load()[i].reinforcements === 1, `merge ${i + 1}: the reinforcement was recorded`);
   ok(serializedBytes(load()) < KVS_PLATFORM_CAP, `merge ${i + 1}: store stays under the KVS platform cap`);
 }
-ok(mergeWriteThrew === null, `20 merges wrote without a KVS VALUE_TOO_LARGE throw (${mergeWriteThrew?.message || "none"})`);
+ok(mergeWriteThrew === null, `20 merges wrote without a KVS value-size rejection (${mergeWriteThrew?.message || "none"})`);
 ok(serializedBytes(load()) < KVS_PLATFORM_CAP, "after 20 merges the store is still writable (under the platform cap)");
 ok(appliedMerges > 0, `the merges that still fitted were applied in full (${appliedMerges})`);
 ok(repairedMerges > 0, `the merges that would have crossed the guard kept the OLD text (${repairedMerges})`);
@@ -88,7 +89,7 @@ ok(serializedBytes(load()) < MEMORY_MAX_SERIALIZED_BYTES + 1200, "the store neve
 
 // ...and the runaway that F-183 actually produced: merging EVERY row to full length. Without the
 // ceiling this walks the single `pf_memories` value up to the 240 KiB platform cap (measured on the
-// pre-fix module: throws VALUE_TOO_LARGE at merge 76, 245 831 B) and no growing write works again.
+// pre-fix module: rejected at merge 76, 245 831 B) and no growing write works again.
 let runawayThrew = null;
 for (let i = 0; i < 198 && !runawayThrew; i++) {
   const all = await loadMemories();

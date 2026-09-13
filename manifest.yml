@@ -184,6 +184,21 @@ modules:
       label: CogniRunner
       icon: resource:icon-resource;icon.svg
 
+  # Coder panel (1.4). Declared in the SINGLE 1.4 manifest bump; 1.4 commit 9 fills
+  # in the view. Backed by the EXISTING issue-glance-resource — one resource may back
+  # several modules (the same resource already backs both admin pages), so this adds
+  # no bundle and no scope. The panel renders a read-only capability answer from the
+  # backend (getUserPermissions without allowBootstrap); it must never derive a
+  # permission from the module type, and it must never call checkIsAdmin (which may
+  # write the admin roster — F-251).
+  jira:issuePanel:
+    - key: coder-panel
+      resource: issue-glance-resource
+      resolver:
+        function: resolver
+      title: CogniRunner Coder
+      icon: resource:icon-resource;icon.svg
+
   # Atlassian-hosted LLMs (Forge LLMs, Preview since 2026-06-01). Enables the
   # "Atlassian (Forge LLM)" provider: Claude models served inside the Atlassian
   # platform via @forge/llm — no API key, no egress. NOTE: adding this module is a
@@ -302,6 +317,10 @@ modules:
     - key: async-ai-consumer
       queue: async-ai-queue
       function: async-ai-handler
+    # Long-running agent work (1.4 commit 8). Same gate, 900 s instead of 120.
+    - key: long-consumer
+      queue: long-queue
+      function: long-ai-handler
 
   # Web trigger: serves a single Jira attachment as base64 JSON behind a one-shot
   # capability token (URL token + Authorization bearer). Used by leanzero-mcp-doc-processor
@@ -335,6 +354,16 @@ modules:
       function: gitWebhookProbeFn
       response:
         type: dynamic
+    # PRODUCTION Git webhook (1.4). SEPARATE from git-webhook-probe above, which is
+    # the unauthenticated probe and must never be promoted into this slot. 55 s
+    # budget, but the handler only verifies the per-repo HMAC and enqueues —
+    # GitHub abandons a delivery at 10 s. Commit 2 ships an INERT 202 stub;
+    # commit 5 adds the verification and the enqueue (fail CLOSED on a bad or
+    # missing signature).
+    - key: git-webhook
+      function: gitWebhookFn
+      response:
+        type: dynamic
 
   # Lambda function for validation logic
   function:
@@ -342,6 +371,8 @@ modules:
       handler: index.testStateTrigger
     - key: gitWebhookProbeFn
       handler: index.gitWebhookProbe
+    - key: gitWebhookFn
+      handler: index.gitWebhook
     - key: validate
       handler: index.validate
     - key: executePostFunction
@@ -349,6 +380,14 @@ modules:
     - key: async-ai-handler
       handler: async-handler.handler
       timeoutSeconds: 120
+    # The 900 s consumer (1.4). `async-handler.longHandler` DELEGATES to the same
+    # handler as async-ai-handler, so the kill switch, the staleness horizon and
+    # the token-budget gate have ONE implementation that both consumers execute.
+    # The only difference between the two is this timeoutSeconds. Its first
+    # producer is 1.4 commit 8 (coder turns); nothing pushes to long-queue yet.
+    - key: long-ai-handler
+      handler: async-handler.longHandler
+      timeoutSeconds: 900
     - key: resolver
       handler: index.handler
     - key: serveAttachment
@@ -444,6 +483,20 @@ permissions:
         - address: "*.ts.net"
         # context7 hosted MCP (library/SDK docs)
         - address: https://mcp.context7.com
+        # GIT HOSTS (1.4). BACKEND ONLY — every git call is a backend fetch from
+        # src/git-providers.js; a Custom UI iframe never talks to a git host, so
+        # these must NOT be mirrored into `client`.
+        # THE LIST IS NOT SPELLED TWICE: these hosts are GIT_PROVIDER_HOSTS in
+        # src/git-providers.js, and test-harness/scripts/git-manifest-egress.test.mjs
+        # reads THIS FILE and asserts the two agree, in order. Add a host there
+        # first, then here.
+        - address: https://api.github.com
+        - address: https://api.bitbucket.org
+        # NOT an API host: Bitbucket's /diff and /src answer 302 to bitbucket.org,
+        # so a fetch that follows the redirect lands here. Included per the
+        # coordinator's decision (2026-09-13) that an unused outbound host costs
+        # nothing while a second major bump costs every tenant a re-consent.
+        - address: https://bitbucket.org
 
 app:
   runtime:

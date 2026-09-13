@@ -310,7 +310,17 @@ export async function testStateTrigger(req) {
         // the same HARNESS_SECRET Bearer gate (absent in production) as everything else here.
         "getMemories", "addMemory", "updateMemory", "deleteMemory", "getMemorySettings", "saveMemorySettings",
         // F-189 — read-only: what the store weighs against both ceilings.
-        "getMemoryStoreStats"]);
+        "getMemoryStoreStats",
+        // F-253 — read-only knowledge/read surfaces, here to prove TWO things live that no
+        // other hook path can reach. (1) The VIEWER FLOOR (F-235): a viewer-role account must
+        // still get docs, skills, skill content, knowledge counts and logs — these resolvers
+        // are the floor, so a regression that over-tightens requireRole shows up as a denial
+        // here rather than in a UI nobody scripts. (2) The explainRule OWNER ASYMMETRY: the
+        // same rule read by its owner and by a non-owner must differ in what canActOnConfig
+        // permits, which only a two-accountId invocation can demonstrate.
+        // getKnowledgeCounts and getLogs are already allowlisted above; listed here in the
+        // comment only, not re-added — one entry, one home.
+        "getContextDocs", "getSkills", "getSkillContent", "explainRule"]);
       const functionKey = body.functionKey || body.name;
       if (!ALLOWED_KEYS.has(functionKey)) {
         return json(400, { error: `functionKey not allowlisted: ${functionKey}` });

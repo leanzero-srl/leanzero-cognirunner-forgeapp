@@ -32,7 +32,57 @@
 // git-scaffolds.test.mjs: no rendered file may say `npm ci` unless that scaffold's file
 // list contains a lockfile.
 
-export const SCAFFOLD_VERSION = 1;
+// F-579 -- THE VERSION IS THE ONLY THING THAT TELLS AN INSTALLED REPO IT IS STALE.
+// The files below are COMMITTED INTO A CUSTOMER'S REPOSITORY. Once committed, this module
+// has no further contact with them: changing a line array fixes the NEXT install and leaves
+// every existing one running the old bytes. F-565 changed the workflow's content without
+// touching this constant, so every pipeline installed before it stayed dead while the Code
+// tab reported it installed with 6/6 steps done -- the stored row's `scaffoldVersion` was
+// written and reported but compared by nobody.
+//
+// THE RULE: ANY diff to a scaffold line array bumps SCAFFOLD_VERSION, adds its line to
+// SCAFFOLD_CHANGELOG (why, not what) and updates SCAFFOLD_CONTENT_HASH. That is not a
+// convention -- git-scaffolds.test.mjs hashes the line arrays on every run and fails,
+// printing the new hash, when the content moved and the version did not.
+export const SCAFFOLD_VERSION = 2;
+
+/**
+ * WHY EACH BUMP HAPPENED. One line per version, in the admin's language: the line for the
+ * version a repo is STUCK ON is the sentence the Code tab shows as outdatedReason, so it
+ * has to say what is wrong with what is committed there, not what changed in this file.
+ * Version 1 has no line -- it is the original install, and nothing was wrong with it yet.
+ */
+export const SCAFFOLD_CHANGELOG = Object.freeze({
+  2: "The deploy workflow committed by this pipeline was invalid YAML, so GitHub answered every deploy request with 422 (no workflow_dispatch trigger). Re-run the setup to commit the corrected workflow.",
+});
+
+/**
+ * The content fingerprint of the line arrays, over paths + lines of every scaffold.
+ * NOT computed here: this module is dependency-free and bundles into the admin panel, so
+ * the hash is a checked-in constant and git-scaffolds.test.mjs is what computes and
+ * compares it. A mismatch is never "update the hash" on its own -- the version and the
+ * changelog move in the same commit, or the guard has been defeated rather than satisfied.
+ */
+export const SCAFFOLD_CONTENT_HASH = "2092c63afedf7d915a3ca356bfde1557";
+
+/**
+ * The sentence for a row stuck on an older scaffold, or null when it is current.
+ *
+ * A row with NO recorded version is read as version 1 (the field was written from the
+ * first install, so an absent one is old, not unknown) -- the safe reading is "tell the
+ * admin to re-run a setup that is idempotent", never "assume it is fine".
+ */
+export const scaffoldOutdatedReason = (storedVersion) => {
+  const n = Number(storedVersion);
+  const stored = Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+  if (stored >= SCAFFOLD_VERSION) return null;
+  const lines = [];
+  for (let v = stored + 1; v <= SCAFFOLD_VERSION; v++) {
+    if (SCAFFOLD_CHANGELOG[v]) lines.push(SCAFFOLD_CHANGELOG[v]);
+  }
+  if (!lines.length) return "The deploy pipeline committed to this repository is older than the one CogniRunner installs now. Re-run the setup to update it.";
+  return lines.join(" ");
+};
 
 const PLACEHOLDER_APP_ID = "ari:cloud:ecosystem::app/PLACEHOLDER";
 

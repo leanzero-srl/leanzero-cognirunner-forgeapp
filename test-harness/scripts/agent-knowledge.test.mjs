@@ -189,8 +189,10 @@ ok(/Skill\(s\) too large for this run's .*-byte budget, not injected/.test(lst),
   ok((ah.match(/buildCoderKnowledge\(p\)/g) || []).length === 1, "called from ONE place, so the two paths cannot disagree");
   ok(/const executeCoderTurn = async[\s\S]*knowledge: await buildCoderKnowledge/.test(ah), "…and that place is the handler BOTH paths reach");
   ok(/knowledgeBudget\("coderTurn"\)/.test(ah), "with the coderTurn byte budget, from the ONE home");
-  ok(/Array\.isArray\(p && p\.skillIds\)/.test(ah), "skills come from the RULE's skillIds when the delivery carries them…");
-  ok(/if \(ids\.length\)/.test(ah), "…and from nothing otherwise (a panel turn has no rule to bind skills)");
+  ok(/Array\.isArray\(p && p\.skillIds\)/.test(ah), "skills come from the delivery's skillIds…");
+  // F-463 — BOTH producers now carry them: enqueueCoderPostFunction binds the RULE's
+  // ids and startCoderTurn binds the composer's. Before that, this half never ran.
+  ok(/if \(ids\.length\)/.test(ah), "…and from nothing otherwise — nothing is auto-matched here");
   ok(/settings && settings\.injection !== false/.test(ah), "memories follow the INSTANCE injection setting, not a per-rule flag");
   ok(/fetchSkillsBlock/.test(ah) && /buildMemoryBlock/.test(ah), "…built by the same two builders every other surface uses");
   ok(/catch \(e\) \{ console\.warn\("\[coder\] skills block skipped:/.test(ah) && /catch \(e\) \{ console\.warn\("\[coder\] memory block skipped:/.test(ah),

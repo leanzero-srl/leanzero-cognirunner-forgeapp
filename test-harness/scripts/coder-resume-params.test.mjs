@@ -132,5 +132,85 @@ await call("confirmCoderTicket", { ticketId: "tkt_4", decision: "skip" });
   ok(p && p.connectionId === "conn-2", "…against its own connection");
 }
 
+/* ===== 6. F-463 — THE PANEL TURN CARRIES ITS SKILL BINDING =====================
+ *
+ * `buildCoderKnowledge` (src/async-handler.js) has had a skills half since 1.4
+ * commit 13b and NOTHING ever passed `skillIds` to it, so the Coder — the one surface
+ * that writes code into somebody's repository — was the only agent in the product
+ * that ran with no skills at all. The chain proven here is:
+ *   startCoderTurn payload → the PUSHED task params → buildCoderKnowledge →
+ *   knowledge.skillsBlock (and coder-engine.test.mjs proves a skillsBlock reaches the
+ *   model payload). Every hop is the real code, none of it is a source grep.
+ */
+const { saveSkillInternal } = await import("../../src/skills.js");
+const { __coderKnowledgeInternals } = await import("../../src/async-handler.js");
+
+await saveSkillInternal(
+  { id: "skill_house", name: "House style", category: "Other" },
+  { instructions: "Two-space indent, never tabs." },
+);
+await saveSkillInternal(
+  { id: "skill_adf", name: "ADF rules", category: "ADF & Formatting" },
+  { instructions: "Comments are ADF documents." },
+);
+// Three more real skills, so the CAP is what drops the fifth rather than the
+// existence check — a clamp proven by an id that does not exist proves nothing.
+for (const id of ["skill_c", "skill_d", "skill_e"]) {
+  await saveSkillInternal({ id, name: `Spare ${id}`, category: "Other" }, { instructions: `Spare ${id} text.` });
+}
+
+const withSkills = await call("startCoderTurn", {
+  issueKey: ISSUE, threadId: "t_skills", message: "build it", simulation: true, connectionId: "conn-3",
+  // six ids, one duplicated and one malformed: the clamp is the listener's ONE
+  // normalizer, so four survive, in the author's order, de-duplicated.
+  skillIds: ["skill_house", "skill_adf", "skill_house", "sk 3", "skill_c", "skill_d", "skill_e"],
+});
+ok(withSkills && withSkills.success === true, `a turn may bind skills (${JSON.stringify(withSkills).slice(0, 160)})`);
+{
+  const p = lastCoderPush();
+  ok(Array.isArray(p && p.skillIds) && p.skillIds.length === 4,
+    `F-463: the pushed params carry the binding, clamped to four (${JSON.stringify(p && p.skillIds)})`);
+  ok(p.skillIds[0] === "skill_house" && p.skillIds[1] === "skill_adf" && !p.skillIds.includes("sk 3"),
+    "…in the author's order, de-duplicated, with the malformed id dropped");
+  const knowledge = await __coderKnowledgeInternals.buildCoderKnowledge(p);
+  // `buildKnowledgeMessages` (src/agent-runner.js) is what wraps this in the
+  // <<<SKILLS>>> fence, and coder-engine.test.mjs proves the fenced block reaches the
+  // model payload — what F-463 was missing is this block existing at all.
+  ok(typeof knowledge.skillsBlock === "string" && /### Skill: /.test(knowledge.skillsBlock),
+    `…and the consumer turns them into a skills block (${String(knowledge.skillsBlock).slice(0, 60)})`);
+  ok(/Two-space indent/.test(knowledge.skillsBlock) && /Comments are ADF documents/.test(knowledge.skillsBlock),
+    "…carrying the bound skills' own text");
+}
+
+// A turn that binds NOTHING still sends nothing — the fix does not conjure knowledge.
+await call("startCoderTurn", { issueKey: ISSUE, threadId: "t_noskills", message: "look", simulation: true });
+{
+  const p = lastCoderPush();
+  ok(Array.isArray(p.skillIds) && p.skillIds.length === 0, "a turn with no binding pushes an empty list");
+  const knowledge = await __coderKnowledgeInternals.buildCoderKnowledge(p);
+  ok(knowledge.skillsBlock === undefined, "…and no skills block is built for it");
+}
+
+// An id that does not exist is REFUSED at the door, by name — a picker that silently
+// binds nothing is a feature whose author believes it is on.
+const unknownSkill = await call("startCoderTurn", {
+  issueKey: ISSUE, threadId: "t_unknown", message: "go", skillIds: ["skill_house", "skill_ghost"],
+});
+ok(unknownSkill && unknownSkill.success === false && unknownSkill.reason === "unknown-skill",
+  `an unknown skill id is refused by name (${JSON.stringify(unknownSkill).slice(0, 200)})`);
+ok(/skill_ghost/.test(String(unknownSkill.error || "")), "…and the refusal names the id that does not exist");
+
+// The RESUME inherits the binding, exactly as it inherits simulation and connectionId.
+await storage.set(coder.coderTicketKey("tkt_5"), {
+  ticketId: "tkt_5", issueKey: ISSUE, threadId: "t_skills", ownerAccountId: OWNER,
+  action: "commit_files", args: {}, argsPreview: {}, status: "pending", simulation: true, connectionId: "conn-3",
+});
+await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
+{
+  const p = lastCoderPush();
+  ok(Array.isArray(p && p.skillIds) && p.skillIds.length === 4,
+    `the resume turn keeps the thread's skills (${JSON.stringify(p && p.skillIds)})`);
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

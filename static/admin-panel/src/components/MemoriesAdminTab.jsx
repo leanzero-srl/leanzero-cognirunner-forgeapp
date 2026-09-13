@@ -492,15 +492,15 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
           instruction they cannot follow on a screen that shows neither control. They get
           told what is true and who can fix it instead. */}
       {capRefusal && (
-        <div className="memories-admin-capwall" role="alert">
-          <span className="memories-admin-capwall-title">Memory store is over Jira's storage limit</span>
-          <span className="memories-admin-capwall-text">
+        <div className="hard-stop memories-admin-capwall" role="alert">
+          <span className="hard-stop-title memories-admin-capwall-title">Memory store is over Jira's storage limit</span>
+          <span className="hard-stop-text memories-admin-capwall-text">
             {capRefusal.error
               || (fmtBytes(capRefusal.bytesOver)
                 ? `The store is ${fmtBytes(capRefusal.bytesOver)} over the limit, so no change to it can be saved.`
                 : "The store is over the limit, so no change to it can be saved.")}
           </span>
-          <span className="memories-admin-capwall-text">
+          <span className="hard-stop-text memories-admin-capwall-text">
             {isAdmin
               ? "Tick the memories you no longer need and use “Delete selected” to remove them in one go. Archiving does not free capacity, and deleting them one at a time will not work."
               : "The memory store is over Jira's storage limit; a Jira admin has to delete memories in this tab before anything can be saved."}

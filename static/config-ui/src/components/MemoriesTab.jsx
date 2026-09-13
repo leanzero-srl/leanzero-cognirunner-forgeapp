@@ -86,9 +86,9 @@ export function MemoryFullBanner({ storeFull }) {
   if (!storeFull) return null;
   const { title, body } = memoryStoreFullCopy(storeFull);
   return (
-    <div className="memory-full-banner" role="alert">
-      <span className="memory-full-title">{title}</span>
-      <span className="memory-full-text">{body}</span>
+    <div className="hard-stop memory-full-banner" role="alert">
+      <span className="hard-stop-title memory-full-title">{title}</span>
+      <span className="hard-stop-text memory-full-text">{body}</span>
     </div>
   );
 }
@@ -160,9 +160,20 @@ export default function MemoriesTab({ onChanged = null }) {
    */
   const consumeCapRefusal = (result) => {
     if (!result || result.reason !== "platform-cap") return false;
+    // F-207 — the wall and the grey `error` line are two severities of the SAME slot:
+    // whatever the last write said. Leaving a stale grey line above a red wall shows the
+    // reader two different accounts of one refusal, so consuming a wall clears the line.
+    setError(null);
     setCapRefusal({ error: result.error, bytesOver: result.bytesOver });
     return true;
   };
+
+  /* F-207 — a refusal wall describes the LAST write. Any write that LANDS falsifies it,
+     so every success path clears both the wall and the grey error. Before this, only
+     delete cleared the wall: an add that succeeded after the store had been repaired in
+     the other tab left "no change can be saved" sitting over a memory that had just been
+     saved — the screen contradicting itself, with the newer fact the invisible one. */
+  const clearRefusals = () => { setCapRefusal(null); setError(null); };
 
   const handleAdd = async () => {
     const content = newContent.trim();
@@ -172,6 +183,7 @@ export default function MemoriesTab({ onChanged = null }) {
     try {
       const result = await invoke("addMemory", { content, source: "user" });
       if (result.success) {
+        clearRefusals();
         setNewContent("");
         await refreshMemories();
         if (result.id) setNewMemoryId(result.id);
@@ -193,9 +205,9 @@ export default function MemoriesTab({ onChanged = null }) {
     try {
       const result = await invoke("deleteMemory", { id });
       if (result.success) {
-        // A delete that lands is the one thing that can clear the wall, so drop it here
-        // rather than waiting for the next write to rediscover it is gone.
-        setCapRefusal(null);
+        // A delete that lands is one of the things that can clear the wall, so drop it
+        // here rather than waiting for the next write to rediscover it is gone.
+        clearRefusals();
         await refreshMemories();
         if (onChanged) onChanged();
       } else if (!consumeCapRefusal(result)) {
@@ -257,17 +269,20 @@ export default function MemoriesTab({ onChanged = null }) {
           It is deliberately not the grey `error` line below: a platform-cap refusal is not
           a retryable hiccup, it is the state in which every control on this tab is refused.
           First line is the BACKEND'S sentence verbatim (memoryPlatformCapMessage owns the
-          byte deficit). Second line is ours, and it points AWAY from this screen, because
-          the bulk delete the first line asks for lives only in the admin panel. */}
+          byte deficit). Second line is ours, and F-208 turned it from an instruction into a
+          STATEMENT: this tab is reachable by a project editor, and the admin panel's bulk
+          delete is admin-gated, so "open Apps → CogniRunner → Memories to delete several at
+          once" told most readers to go and do something they cannot do. It now names WHO
+          has to act and what has to happen before any write here can land. */}
       {capRefusal && (
-        <div className="memory-cap-refusal" role="alert">
-          <span className="memory-cap-refusal-title">Memory store is over Jira&apos;s storage limit</span>
-          <span className="memory-cap-refusal-text">
+        <div className="hard-stop memory-cap-refusal" role="alert">
+          <span className="hard-stop-title memory-cap-refusal-title">Memory store is over Jira&apos;s storage limit</span>
+          <span className="hard-stop-text memory-cap-refusal-text">
             {capRefusal.error || "The store is over the limit, so no change to it can be saved."}
           </span>
-          <span className="memory-cap-refusal-text">
-            Deleting memories one at a time here will not work — open Apps → CogniRunner → Memories
-            to delete several at once.
+          <span className="hard-stop-text memory-cap-refusal-text">
+            A Jira admin has to delete several memories at once in Apps → CogniRunner → Memories
+            before anything can be saved.
           </span>
         </div>
       )}

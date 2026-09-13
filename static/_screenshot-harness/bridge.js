@@ -522,6 +522,11 @@ function getContext() {
   // that always reports that type makes `isAdmin: false` unreachable no matter what the
   // resolver answers. `jira:globalPage` (cognirunner-global-page) is the real entry point a
   // non-admin reaches the app through, which is what makes the editor scenario honest.
+  // F-210 - `__DEMOTED_ADMIN__` is the OTHER half of the pair, and the one no scenario
+  // had: the module IS `jira:adminPage` (so Jira's own admin permission was enforced to
+  // get here) while `checkIsAdmin` answers editor/mine, which an app-level role demotion
+  // really does produce. App.js reconciles that with "jira:adminPage always grants admin";
+  // __NOT_ADMIN__ cannot test it because it also switches the module away.
   const notAdmin = typeof window !== "undefined" && !!window.__NOT_ADMIN__;
   return { extension: notAdmin ? { type: "jira:globalPage", key: "cognirunner-global-page" } : { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: mockLicenseCtx(), siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
 }
@@ -734,14 +739,18 @@ const isServerGone = (id) => (
   DELETED_MEMORY_IDS.has(id)
   || (id === STALE_MEMORY_ID && typeof window !== "undefined" && !!window.__MEMORY_STALE_LIST__)
 );
-const MEMORY_PLATFORM_REFUSAL = () => ({
+/* F-209 - how much ONE row frees. Deliberately less than the whole overshoot, so a
+   single-row delete cannot clear the deficit and a multi-row one can: that asymmetry IS
+   the platform-cap story both walls tell in words. Derived, never a second literal. */
+const MEMORY_OVERCAP_ROW_BYTES = Math.ceil(MEMORY_OVERCAP_OVER / 2);
+const MEMORY_PLATFORM_REFUSAL = (bytesOver = MEMORY_OVERCAP_OVER) => ({
   success: false,
   reason: "platform-cap",
   stored: false,
-  bytesOver: MEMORY_OVERCAP_OVER,
+  bytesOver,
   // The BACKEND's sentence, imported. It interpolates both the deficit and the platform
   // number, so this fixture cannot drift from the words a tenant actually reads.
-  error: memoryPlatformCapMessage(MEMORY_OVERCAP_OVER),
+  error: memoryPlatformCapMessage(bytesOver),
 });
 /* F-189 - hoisted so the delete fixture can filter it. Same rows as before. */
 const MEMORY_ROWS = [
@@ -847,7 +856,7 @@ function invoke(name, payload) {
     // which is exactly the person who can trip a write refusal with no delete control on
     // screen. Without this flag the non-admin half of every `{isAdmin && ...}` is untested.
     case "checkIsAdmin": return Promise.resolve(
-      typeof window !== "undefined" && window.__NOT_ADMIN__
+      typeof window !== "undefined" && (window.__NOT_ADMIN__ || window.__DEMOTED_ADMIN__)
         ? { success: true, isAdmin: false, role: "editor", scope: "mine", accountId: ACCT }
         : { success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
     case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001" });
@@ -1111,6 +1120,23 @@ function invoke(name, payload) {
       if (typeof window !== "undefined") {
         window.__DELETE_MEMORY_CALLS__ = window.__DELETE_MEMORY_CALLS__ || [];
         window.__DELETE_MEMORY_CALLS__.push(payload);
+      }
+      /* F-209 - a DELETE is a write, and under `platform-cap` it lands or is refused for
+         exactly the reason every other write is: `pf_memories` is ONE KVS value, so the
+         delete rewrites the whole array and the PLATFORM ceiling applies to what comes
+         out. That is what makes "memories have to be deleted together" true rather than
+         decorative: removing one row rewrites an array that is STILL over the limit and
+         is refused, while removing enough rows rewrites one that fits and lands.
+         The mock modelled neither - it let every delete through under __MEMORY_OVERCAP__,
+         which is a shape the backend cannot produce, and it left the delete-side
+         `consumeCapRefusal` in both Memories tabs (the ONLY refusal path the rule-editor
+         tab's per-row Delete can take) entirely unexercised. Derived from the same
+         overshoot constant: one row frees less than the deficit, two rows clear it. */
+      if (isMemoryOvercap()) {
+        const freed = ids.length * MEMORY_OVERCAP_ROW_BYTES;
+        if (freed < MEMORY_OVERCAP_OVER) {
+          return Promise.resolve(MEMORY_PLATFORM_REFUSAL(MEMORY_OVERCAP_OVER - freed));
+        }
       }
       // F-202 — answer the SHAPE the backend answers, on BOTH arms. src/index.js
       // deleteMemory returns `{ success, deleted, notFound, evicted }` where `deleted` and

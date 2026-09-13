@@ -2218,22 +2218,32 @@ const injectStyles = () => {
        override in sync for — it is the same alarm, said at more length. */
     .memories-admin-stats-note { font-weight: 700; }
 
-    /* The capacity wall. Same hard-stop grammar as .memory-full-banner (F-167): solid
-       #dc2626, white text, full border radius, NO left rail and NO tint. Dark is one
-       shade lighter (#ef4444), matching the memory-full banner it sits beside. */
-    .memories-admin-capwall {
+    /* F-212 — THE HARD-STOP GRAMMAR, declared ONCE per injectStyles home.
+       Three surfaces say "this store cannot accept a write": .memory-full-banner (row
+       cap, rule editor + admin), .memories-admin-capwall (platform cap, admin tab) and
+       .memory-cap-refusal (platform cap, rule editor). They were three hand-copied
+       blocks and they had already drifted — body weight 600 on one and 500 on the other
+       two — so the same severity rendered two ways depending on which screen you were
+       on. The hue, the fill, the text colour, the radius and the two type weights live
+       here; the three classes below keep ONLY what genuinely differs, which is margin.
+       Owner design law: solid #dc2626 (dark one shade lighter, #ef4444), white text,
+       700 title / 500 body, full radius, NO left rail and NO tint. */
+    .hard-stop {
       display: flex;
       flex-direction: column;
       gap: 3px;
       background: #dc2626;
       color: #ffffff;
+      border: none;
       border-radius: 4px;
       padding: 9px 12px;
-      margin-bottom: 10px;
     }
-    html[data-color-mode="dark"] .memories-admin-capwall { background: #ef4444; color: #ffffff; }
-    .memories-admin-capwall-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
-    .memories-admin-capwall-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
+    .hard-stop-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+    .hard-stop-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+
+    /* The capacity wall. Layout only; .hard-stop (F-212) owns the fill and the weights. */
+    .memories-admin-capwall { margin-bottom: 10px; }
 
     /* Row select column — sized so the checkbox column never steals width from the
        memory text, which is the only column whose content actually needs the room. */
@@ -5068,40 +5078,14 @@ const injectCopiedComponentStyles = () => {
     }
     .memory-quick-add .input { flex: 1; }
 
-    /* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Same hard-stop
-       grammar as .memory-full-banner and the admin tab's .memories-admin-capwall (F-167,
-       F-189): solid #dc2626, white text, full border radius, NO left rail and NO tint.
-       Dark is one shade lighter (#ef4444), matching both of its siblings. Its own class
-       rather than a reuse of .memory-full-banner because that one is a row-cap warning
-       with a different owner (memoryStoreFullCopy) and a different layout. */
-    .memory-cap-refusal {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      background: #dc2626;
-      color: #ffffff;
-      border-radius: 4px;
-      padding: 9px 12px;
-      margin: 6px 12px 0;
-    }
-    html[data-color-mode="dark"] .memory-cap-refusal { background: #ef4444; color: #ffffff; }
-    .memory-cap-refusal-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
-    .memory-cap-refusal-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    /* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Layout only; the
+       fill, the text colour and the type weights come from .hard-stop above. */
+    .memory-cap-refusal { margin: 6px 12px 0; }
 
-    /* F-167 — memory store FULL. A hard stop, not a hint: solid #dc2626, white text,
-       full border (never a left rail), no tint. Dark one shade lighter (#ef4444). */
-    .memory-full-banner {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      background: #dc2626;
-      color: #ffffff;
-      border-radius: 4px;
-      padding: 9px 12px;
-      margin-bottom: 10px;
-    }
-    .memory-full-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
-    .memory-full-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
+    /* F-167 — memory store FULL. Layout only; the hard-stop grammar above owns the rest
+       (F-212 — this block used to carry its own copy, with a 600 body weight the other
+       two walls did not have). */
+    .memory-full-banner { margin-bottom: 10px; }
     .kc-mem-full { color: #dc2626 !important; }
 
     .btn-remember {
@@ -5163,7 +5147,6 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .kc-skills { color: #8b5cf6; }
     html[data-color-mode="dark"] .kc-mem { color: #14b8a6; }
 
-    html[data-color-mode="dark"] .memory-full-banner { background: #ef4444; color: #ffffff; }
     html[data-color-mode="dark"] .kc-mem-full { color: #ef4444 !important; }
     html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #3b82f6; border-color: #3b82f6; }
     html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #8b5cf6; border-color: #8b5cf6; }
@@ -6253,6 +6236,12 @@ function App() {
     injectCopiedComponentStyles();
 
     const init = async () => {
+      // F-210 - the module this app was opened from. Only jira:adminPage is gated by
+      // Jira's own admin permission, so reaching it IS proof of site admin regardless of
+      // what checkIsAdmin answers (an app-level demotion can make that resolver say
+      // "editor" for a site admin). Lives here, in the effect's closure, because state
+      // set inside this async function is not readable from it.
+      let isAdminPage = false;
       try {
         const bridge = await import("@forge/bridge");
         invoke = bridge.invoke;
@@ -6282,9 +6271,12 @@ function App() {
         } catch (e) {
           console.log("Could not check license:", e);
         }
-        // Detect if accessed from jira:adminPage (auto-admin)
-        const moduleType = context?.extension?.type;
-        if (moduleType === "jira:adminPage") {
+        // Detect if accessed from jira:adminPage (auto-admin).
+        // F-210 - captured in the effect's own scope, NOT read back off state later:
+        // `isAdmin` inside this effect is frozen at its first-render value (false), so
+        // the reconciliation below used to be dead code.
+        if (context?.extension?.type === "jira:adminPage") {
+          isAdminPage = true;
           setIsAdmin(true);
         }
 
@@ -6320,8 +6312,12 @@ function App() {
         console.log("Could not check role:", e);
       }
 
-      // jira:adminPage always grants admin
-      if (isAdmin) { userIsAdmin = true; detectedRole = "admin"; detectedScope = "all"; }
+      // jira:adminPage always grants admin - role and scope included, so the header, the
+      // rules filter default and every role-gated control agree with the badge.
+      // F-210: this read `isAdmin` (the frozen first-render state, always false), so an
+      // app-demoted site admin landed on isAdmin:true (from the setIsAdmin above) with
+      // role "editor" and scope "mine" - admin chrome over editor permissions.
+      if (isAdminPage) { userIsAdmin = true; detectedRole = "admin"; detectedScope = "all"; }
       setIsAdmin((prev) => prev || userIsAdmin);
       setUserRole(detectedRole);
       setUserScope(detectedScope);

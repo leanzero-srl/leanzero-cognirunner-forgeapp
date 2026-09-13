@@ -706,6 +706,36 @@ try {
         `M3 ${theme} wall fill is fully opaque — got ${wst.bg}`);
       ok(/255,\s*255,\s*255/.test(wst.fg), `M3 ${theme} wall has white text — got ${wst.fg}`);
       ok(wst.bl === wst.bt, `M3 ${theme} wall has NO left accent rail`);
+      /* F-212 — the capwall must BE the shared hard-stop, not a look-alike. Rendering a
+         bare `.hard-stop` probe into the same document and comparing computed styles is
+         the only check that fails when someone re-types the fill or the weights into
+         `.memories-admin-capwall`: an "is it red, is it 700" assertion passes happily on
+         a drifted copy, which is exactly how the three surfaces ended up with two
+         different body weights. */
+      const parity = await wall.evaluate((el) => {
+        const probe = document.createElement("div");
+        probe.className = "hard-stop";
+        probe.innerHTML = '<span class="hard-stop-title">t</span><span class="hard-stop-text">b</span>';
+        document.body.appendChild(probe);
+        const g = (n) => {
+          const c = getComputedStyle(n);
+          const t = getComputedStyle(n.children[0]);
+          const b = getComputedStyle(n.children[1]);
+          return { bg: c.backgroundColor, fg: c.color, radius: c.borderTopLeftRadius, pad: c.padding, titleW: t.fontWeight, bodyW: b.fontWeight };
+        };
+        const out = { wall: g(el), base: g(probe) };
+        probe.remove();
+        return out;
+      });
+      ok(parity.wall.bg === parity.base.bg,
+        `M3 ${theme} the capwall takes its fill from .hard-stop — ${parity.wall.bg} vs ${parity.base.bg}`);
+      ok(parity.wall.fg === parity.base.fg, `M3 ${theme} the capwall takes its text colour from .hard-stop`);
+      ok(parity.wall.titleW === parity.base.titleW && Number(parity.base.titleW) >= 700,
+        `M3 ${theme} the capwall title is the shared 700 — ${parity.wall.titleW} vs ${parity.base.titleW}`);
+      ok(parity.wall.bodyW === parity.base.bodyW && Number(parity.base.bodyW) === 500,
+        `M3 ${theme} the capwall body is the shared 500 — ${parity.wall.bodyW} vs ${parity.base.bodyW}`);
+      ok(parity.wall.radius === parity.base.radius && parity.wall.pad === parity.base.pad,
+        `M3 ${theme} the capwall keeps only its margin, not its own box`);
       await shot(page, `m3-memories-capwall-${theme}`);
 
       /* ---- (1) checkbox multi-select + bulk delete through the app's OWN dialog ---- */
@@ -903,9 +933,85 @@ try {
       ok(wrgb[0] > 180 && wrgb[1] < 90 && wrgb[2] < 90, `M6 ${theme} wall is a SOLID red fill — got ${wst.bg}`);
       ok(/255,\s*255,\s*255/.test(wst.fg), `M6 ${theme} wall has white text — got ${wst.fg}`);
       ok(wst.bl === wst.bt, `M6 ${theme} wall has NO left accent rail`);
+      /* The page TITLE reads against the surface in both themes. Asserted here because
+         m6-memories-capwall-nonadmin-dark.png was read as showing a near-black title on
+         the dark surface: it is a mid-fade capture, not a token gap (the computed colour
+         is the dark --text-color, #F5F5F7). This check is what settles that question
+         next time without anyone squinting at a PNG. */
+      const titleLum = await page.locator("h2.title").first().evaluate((el) => {
+        const [r, g, b] = getComputedStyle(el).color.match(/\d+/g).map(Number);
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      });
+      ok(theme === "dark" ? titleLum > 140 : titleLum < 120,
+        `M6 ${theme} the page title contrasts with the surface (luminance ${Math.round(titleLum)})`);
       await shot(page, `m6-memories-capwall-nonadmin-${theme}`);
       ok(env.errors.length === 0, `M6 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  ✗ M6 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M7 — F-210: an app-DEMOTED site admin on jira:adminPage ----------------
+   * `jira:adminPage` is gated by Jira's OWN admin permission, so merely reaching this
+   * module proves site admin. App.js has always meant to reconcile that with the app's
+   * role resolver ("jira:adminPage always grants admin") — but the reconciliation read
+   * `isAdmin`, the state value, from inside the mount effect, where it is frozen at its
+   * first-render `false` forever. The branch had never once executed.
+   *
+   * The damage was not "no admin": the earlier `setIsAdmin(true)` still fired, so a site
+   * admin whose app role had been demoted to editor ended up with isAdmin TRUE and role
+   * "editor" / scope "mine" — admin chrome over editor permissions, and the rules list
+   * silently narrowed to their own rules with no indication why.
+   *
+   * `__DEMOTED_ADMIN__` is the only fixture that can show it: it keeps the module at
+   * jira:adminPage while checkIsAdmin answers editor/mine. `__NOT_ADMIN__` cannot, because
+   * it switches the module to jira:globalPage as well — so it is the negative control
+   * here, proving the reconciliation is keyed on the MODULE and not on "always admin".
+   * Both themes, because this decides what chrome renders. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M7 jira:adminPage overrides a demoted app role — ${theme}`);
+    const env = await openAdmin(browser, theme, { __DEMOTED_ADMIN__: true });
+    const { page } = env;
+    try {
+      await page.locator(".tab-bar").first().waitFor({ timeout: 10000 });
+      // isAdmin — the admin-only chrome is present despite checkIsAdmin saying editor.
+      ok(await page.locator(".tab-btn", { hasText: "Settings" }).count() === 1,
+        `M7 ${theme} the admin-only Settings tab renders for a site admin the app demoted`);
+      // scope "all" — the rules-scope filter only exists when userScope === "all", and its
+      // default value is computed from the same scope. This is the state F-210 corrupted.
+      const scopeSel = page.locator(".dropdown-trigger", { hasText: /All Rules|My Rules/ }).first();
+      await scopeSel.waitFor({ timeout: 8000 });
+      ok((await scopeSel.innerText()).includes("All Rules"),
+        `M7 ${theme} the rules scope defaults to All Rules, not My Rules (got: ${(await scopeSel.innerText()).trim()})`);
+      // role "admin" — the Memories tab's admin-gated controls are the visible consequence.
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+      ok(await page.locator(".memories-admin-select").count() > 0,
+        `M7 ${theme} the admin-gated select column renders (role reconciled to admin)`);
+      ok(await page.locator(".memories-admin-tab .row-actions").count() > 0,
+        `M7 ${theme} the admin-gated row actions render`);
+      await shot(page, `m7-demoted-admin-${theme}`);
+      ok(env.errors.length === 0, `M7 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  \u2717 M7 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* M7b — the NEGATIVE control. Same demoted role, but reached through jira:globalPage,
+   * where Jira enforced nothing. Here editor must stay editor: if M7 passed because the
+   * app simply grants admin to everyone, this fails. */
+  {
+    console.log("M7b jira:globalPage does NOT grant admin to an editor");
+    const env = await openAdmin(browser, "light", { __NOT_ADMIN__: true });
+    const { page } = env;
+    try {
+      await page.locator(".tab-bar").first().waitFor({ timeout: 10000 });
+      ok(await page.locator(".tab-btn", { hasText: "Settings" }).count() === 0,
+        "M7b an editor on jira:globalPage gets no admin-only Settings tab");
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+      ok(await page.locator(".memories-admin-select").count() === 0,
+        "M7b an editor on jira:globalPage gets no admin-gated select column");
+      ok(env.errors.length === 0, "M7b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  \u2717 M7b threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 

@@ -1595,14 +1595,19 @@ try {
       ok(wtxt.includes(memoryPlatformCapMessage(6544)),
         `M1b ${theme} the wall carries the resolver's platform-cap sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
       ok(/\b6544 bytes\b/.test(wtxt), `M1b ${theme} the deficit is a real quantity, not "some"`);
-      // OUR line: it must point at the tab that actually has the bulk control, and say that
-      // the one control on THIS screen cannot resolve it.
+      // OUR line. F-208 — this tab is reachable by a project EDITOR, and the bulk delete in
+      // the admin panel is admin-gated, so the line may not be phrased as an instruction to
+      // the reader: it has to name WHO can act and what has to happen first. It still says
+      // where the control lives, because that is how the reader escalates.
       ok(/Apps → CogniRunner → Memories/.test(wtxt),
-        `M1b ${theme} the wall routes to the admin tab where the bulk delete lives (got: ${wtxt.replace(/\n/g, " | ")})`);
-      ok(/delete several at once/i.test(wtxt),
-        `M1b ${theme} the wall names the control it is routing to`);
-      ok(/one at a time here will not work/i.test(wtxt),
-        `M1b ${theme} the wall forecloses the per-row Delete this tab offers`);
+        `M1b ${theme} the wall names where the bulk delete lives (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/A Jira admin has to delete several memories at once/i.test(wtxt),
+        `M1b ${theme} the wall names the ROLE that can act, not an instruction to the reader (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/before anything can be saved/i.test(wtxt),
+        `M1b ${theme} the wall states the precondition for any write landing here`);
+      // The imperative that told an editor to go and do an admin-only thing must be gone.
+      ok(!/\bopen Apps\b/i.test(wtxt) && !/Deleting memories one at a time here/i.test(wtxt),
+        `M1b ${theme} the wall does not instruct the reader to operate an admin-gated control (got: ${wtxt.replace(/\n/g, " | ")})`);
       // It is the WALL, not the grey error line — that substitution is the whole finding.
       ok(await kp.locator(".memory-cap-refusal").count() === 1, `M1b ${theme} exactly one wall`);
       const greys = await kp.locator(".doc-repo-embedded > div").evaluateAll(
@@ -1626,6 +1631,102 @@ try {
       ok(await kp.locator(".memory-quick-add .input").inputValue() === "A memory this store cannot fit.",
         `M1b ${theme} the refused text is kept in the input`);
     } catch (e) { fail++; console.log(`  ✗ M1b ${theme} threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- M1c — F-209 / F-207 / F-212: the DELETE side of the wall, and what clears it
+   * Three things that only this journey can prove.
+   *
+   * F-209: under `platform-cap` the per-row Delete on this tab is refused by the SAME
+   * ceiling the add is — `pf_memories` is one KVS value, so a one-row delete rewrites an
+   * array that is still oversized. The mock used to answer every delete with success, so
+   * `handleDelete`'s `consumeCapRefusal` branch — the only refusal path that button has —
+   * had never once rendered.
+   *
+   * F-207: a refusal wall describes the LAST write. A write that LANDS falsifies it, so a
+   * successful add must clear both the wall and the grey error line. Before the fix only
+   * delete cleared it, and consumeCapRefusal left a stale grey `error` sitting above the
+   * red wall — two different accounts of one refusal on screen at once.
+   *
+   * F-212: the wall and the store-full banner are the same severity and must render
+   * identically — same fill, same title weight, same body weight. They were hand-copied
+   * blocks and had already drifted (body 600 vs 500).
+   * Both themes. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M1c memories platform-cap: delete-side wall, clearing, hard-stop parity — ${theme} (cfg-static)`);
+    // BOTH flags: __MEMORY_OVERCAP__ for the platform wall, __MEMORY_FULL__ so the
+    // store-full banner is on screen at the same time — the F-212 parity assertion needs
+    // the two hard stops rendered together, in one document, under one theme.
+    const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __MEMORY_OVERCAP__: true, __MEMORY_FULL__: true });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+      await kp.locator(".knowledge-tab-memories").click();
+      await kp.locator(".memory-quick-add .input").waitFor({ timeout: 8000 });
+
+      /* ---- F-209: the per-row Delete is refused, and says so as the WALL ---- */
+      ok(await kp.locator(".memory-cap-refusal").count() === 0,
+        `M1c ${theme} no wall before anything is attempted`);
+      const rowDelete = kp.locator(".memory-item .doc-btn-delete").first();
+      await rowDelete.waitFor({ timeout: 8000 });
+      const rowsBefore = await kp.locator(".memory-item").count();
+      await rowDelete.click();
+      const wall = kp.locator(".memory-cap-refusal").first();
+      await wall.waitFor({ timeout: 8000 });
+      const dtxt = await wall.innerText();
+      ok(/over Jira/i.test(dtxt), `M1c ${theme} a refused DELETE renders the platform-cap wall, not a toast`);
+      ok(/bytes/.test(dtxt), `M1c ${theme} the delete-side wall names the deficit (got: ${dtxt.replace(/\n/g, " | ")})`);
+      ok(await kp.locator(".memory-item").count() === rowsBefore,
+        `M1c ${theme} a refused delete removes nothing from the list`);
+      // The call still went out with the single-row shape — the refusal is the SERVER's.
+      const dcalls = await page.evaluate(() => window.__DELETE_MEMORY_CALLS__ || []);
+      ok(dcalls.length === 1 && !!dcalls[0].id && !dcalls[0].ids,
+        `M1c ${theme} the row Delete sends { id } and is refused server-side (got: ${JSON.stringify(dcalls[0])})`);
+
+      /* ---- F-212: the wall and the store-full banner share ONE grammar ---- */
+      const grammar = (sel) => page.locator(sel).first().evaluate((el) => {
+        const c = getComputedStyle(el);
+        const t = getComputedStyle(el.firstElementChild);
+        const b = getComputedStyle(el.children[1] || el.firstElementChild);
+        return { bg: c.backgroundColor, fg: c.color, radius: c.borderTopLeftRadius,
+                 bl: c.borderLeftWidth, bt: c.borderTopWidth,
+                 titleW: t.fontWeight, bodyW: b.fontWeight };
+      });
+      const gWall = await grammar(".memory-cap-refusal");
+      ok(await kp.locator(".memory-full-banner").count() === 1,
+        `M1c ${theme} the store-full banner is on screen to compare against`);
+      const gFull = await grammar(".memory-full-banner");
+      ok(gWall.bg === gFull.bg,
+        `M1c ${theme} both hard stops share ONE fill — wall ${gWall.bg} vs banner ${gFull.bg}`);
+      ok(gWall.fg === gFull.fg, `M1c ${theme} both hard stops share one text colour`);
+      ok(gWall.titleW === gFull.titleW && Number(gWall.titleW) >= 700,
+        `M1c ${theme} both titles are the same 700 weight — ${gWall.titleW} vs ${gFull.titleW}`);
+      ok(gWall.bodyW === gFull.bodyW && Number(gWall.bodyW) === 500,
+        `M1c ${theme} both bodies are the same 500 weight — ${gWall.bodyW} vs ${gFull.bodyW} (F-212: these were 500 and 600)`);
+      ok(gWall.radius === gFull.radius, `M1c ${theme} both hard stops share one radius`);
+      ok(gWall.bl === gWall.bt && gFull.bl === gFull.bt, `M1c ${theme} neither hard stop grew a left rail`);
+
+      /* ---- F-207: a write that LANDS clears the wall and the grey line ---- */
+      // Repair the store the way an admin would have, in another tab: from here on every
+      // write succeeds, so the wall is describing a state that no longer exists.
+      await page.evaluate(() => { window.__MEMORY_OVERCAP__ = false; window.__MEMORY_FULL__ = false; });
+      await kp.locator(".memory-quick-add .input").fill("Team lives in customfield_10003.");
+      await kp.locator(".btn-remember").click();
+      await page.waitForTimeout(700);
+      ok(await kp.locator(".memory-cap-refusal").count() === 0,
+        `M1c ${theme} a successful ADD clears the refusal wall (F-207: only delete used to)`);
+      // ...including the GREY error line, which is the other half of F-207: consuming a
+      // wall used to leave whatever the previous failure had written sitting above it.
+      const stale = await kp.locator(".doc-repo-embedded").filter({ has: page.locator(".memory-quick-add") }).first().evaluate(
+        (el, sentence) => (el.innerText.includes(sentence) ? el.innerText : ""),
+        memoryPlatformCapMessage(3272),
+      );
+      ok(stale === "",
+        `M1c ${theme} no stale refusal text of any severity survives the successful write (got: ${stale.replace(/\n/g, " | ")})`);
+      ok(await kp.locator(".memory-quick-add .input").inputValue() === "",
+        `M1c ${theme} the accepted text is cleared from the input`);
+    } catch (e) { fail++; console.log(`  ✗ M1c ${theme} threw: ` + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 

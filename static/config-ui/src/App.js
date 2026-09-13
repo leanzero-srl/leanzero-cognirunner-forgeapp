@@ -1367,40 +1367,38 @@ const injectStyles = () => {
     }
     .memory-quick-add .input { flex: 1; }
 
-    /* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Same hard-stop
-       grammar as .memory-full-banner and the admin tab's .memories-admin-capwall (F-167,
-       F-189): solid #dc2626, white text, full border radius, NO left rail and NO tint.
-       Dark is one shade lighter (#ef4444), matching both of its siblings. Its own class
-       rather than a reuse of .memory-full-banner because that one is a row-cap warning
-       with a different owner (memoryStoreFullCopy) and a different layout. */
-    .memory-cap-refusal {
+    /* F-212 — THE HARD-STOP GRAMMAR, declared ONCE per injectStyles home.
+       Three surfaces say "this store cannot accept a write": .memory-full-banner (row
+       cap, rule editor + admin), .memories-admin-capwall (platform cap, admin tab) and
+       .memory-cap-refusal (platform cap, rule editor). They were three hand-copied
+       blocks and they had already drifted — body weight 600 on one and 500 on the other
+       two — so the same severity rendered two ways depending on which screen you were
+       on. The hue, the fill, the text colour, the radius and the two type weights live
+       here; the three classes below keep ONLY what genuinely differs, which is margin.
+       Owner design law: solid #dc2626 (dark one shade lighter, #ef4444), white text,
+       700 title / 500 body, full radius, NO left rail and NO tint. */
+    .hard-stop {
       display: flex;
       flex-direction: column;
       gap: 3px;
       background: #dc2626;
       color: #ffffff;
+      border: none;
       border-radius: 4px;
       padding: 9px 12px;
-      margin: 6px 12px 0;
     }
-    html[data-color-mode="dark"] .memory-cap-refusal { background: #ef4444; color: #ffffff; }
-    .memory-cap-refusal-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
-    .memory-cap-refusal-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
+    .hard-stop-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+    .hard-stop-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
 
-    /* F-167 — memory store FULL. A hard stop, not a hint: solid #dc2626, white text,
-       full border (never a left rail), no tint. Dark one shade lighter (#ef4444). */
-    .memory-full-banner {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      background: #dc2626;
-      color: #ffffff;
-      border-radius: 4px;
-      padding: 9px 12px;
-      margin-bottom: 10px;
-    }
-    .memory-full-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
-    .memory-full-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
+    /* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Layout only; the
+       fill, the text colour and the type weights come from .hard-stop above. */
+    .memory-cap-refusal { margin: 6px 12px 0; }
+
+    /* F-167 — memory store FULL. Layout only; the hard-stop grammar above owns the rest
+       (F-212 — this block used to carry its own copy, with a 600 body weight the other
+       two walls did not have). */
+    .memory-full-banner { margin-bottom: 10px; }
     .kc-mem-full { color: #dc2626 !important; }
 
     .btn-remember {
@@ -1462,7 +1460,6 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .kc-skills { color: #8b5cf6; }
     html[data-color-mode="dark"] .kc-mem { color: #14b8a6; }
 
-    html[data-color-mode="dark"] .memory-full-banner { background: #ef4444; color: #ffffff; }
     html[data-color-mode="dark"] .kc-mem-full { color: #ef4444 !important; }
     html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #3b82f6; border-color: #3b82f6; }
     html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #8b5cf6; border-color: #8b5cf6; }

@@ -610,37 +610,29 @@ html[data-color-mode="dark"] .dropdown-panel {
 }
 .memory-quick-add .input { flex: 1; }
 
-/* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Solid #dc2626, white
-   text, full border radius, no left rail, no tint; dark one shade lighter. Mirror of
-   injectStyles() in App.js, which is the LIVE source. */
-.memory-cap-refusal {
+/* F-212 — THE HARD-STOP GRAMMAR, declared once. Mirror of injectStyles() in App.js,
+   which is the LIVE source. Solid #dc2626 (dark #ef4444), white text, 700 title /
+   500 body, full radius, no left rail, no tint. The three hard-stop surfaces keep
+   only their margins. */
+.hard-stop {
   display: flex;
   flex-direction: column;
   gap: 3px;
   background: #dc2626;
   color: #ffffff;
+  border: none;
   border-radius: 4px;
   padding: 9px 12px;
-  margin: 6px 12px 0;
 }
-html[data-color-mode="dark"] .memory-cap-refusal { background: #ef4444; color: #ffffff; }
-.memory-cap-refusal-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
-.memory-cap-refusal-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
+.hard-stop-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+.hard-stop-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
 
-/* F-167 — memory store FULL. A hard stop, not a hint: solid #dc2626, white text,
-   full border (never a left rail), no tint. Dark one shade lighter (#ef4444). */
-.memory-full-banner {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  background: #dc2626;
-  color: #ffffff;
-  border-radius: 4px;
-  padding: 9px 12px;
-  margin-bottom: 10px;
-}
-.memory-full-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
-.memory-full-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
+/* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Layout only. */
+.memory-cap-refusal { margin: 6px 12px 0; }
+
+/* F-167 — memory store FULL. Layout only; .hard-stop owns the rest. */
+.memory-full-banner { margin-bottom: 10px; }
 .kc-mem-full { color: #dc2626 !important; }
 
 .btn-remember {
@@ -871,7 +863,6 @@ html[data-color-mode="dark"] .kc-docs { color: #3b82f6; }
 html[data-color-mode="dark"] .kc-skills { color: #8b5cf6; }
 html[data-color-mode="dark"] .kc-mem { color: #14b8a6; }
 
-html[data-color-mode="dark"] .memory-full-banner { background: #ef4444; color: #ffffff; }
 html[data-color-mode="dark"] .kc-mem-full { color: #ef4444 !important; }
 html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #3b82f6; border-color: #3b82f6; }
 html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #8b5cf6; border-color: #8b5cf6; }

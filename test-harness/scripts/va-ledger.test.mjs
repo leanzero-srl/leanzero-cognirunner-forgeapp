@@ -1075,6 +1075,88 @@ reset();
     eq(degraded.claimScan, "scan_unavailable", "F-575.DEGRADED — …and SAYS the corroboration was not obtained, rather than implying it was");
   }
 
+  /* ── F-585. THE SCAN'S OWN BOUND WAS EATING THE ANSWER ───────────────────────
+   *
+   * `liveClaimFor` used to read ONE page of 25 rows per prefix and never follow the
+   * cursor. `va_exec:{agent}:{issueKey}:{tickId}` rows live two days and are NOT released
+   * on success, so a working agent piles up hundreds of them — and they sort by ISSUE
+   * KEY, not by time. A live claim on a late-alphabet issue therefore sat past the end of
+   * page one, unreachable, and the function answered `live:false`, which
+   * `clearPurgeTombstone` consumed as PROOF. Absence of evidence, spent as evidence of
+   * absence — on the one code path whose whole job was to corroborate a destructive step.
+   *
+   * Two things are asserted: that a buried live claim is now FOUND, and that when the
+   * walk cannot finish it says so instead of inventing a negative. */
+  {
+    const AG5 = "job_tomb_f585";
+    const T0 = Date.parse("2026-09-13T12:00:00.000Z");
+    const CREATED = new Date(T0 + 5000).toISOString();
+    const NOW = T0 + K.VA_PURGE_SETTLE_MS + 60000;
+    const OLD = new Date(NOW - K.VA_PURGE_SETTLE_MS - 3600000).toISOString();   // a finished turn
+    const LIVE = new Date(NOW - 10000).toISOString();                            // still running
+
+    // (a) The ledger row's own scenario: 60 settled claims and ONE live one, buried behind
+    //     them in key order. 60 > the old `limit(25)`, so this fails on the old code.
+    reset();
+    await L.markAgentPurged(kvs, AG5, { now: T0 });
+    for (let i = 0; i < 60; i++) await kvs.set(K.vaExecClaimKey(AG5, `SUP-A${String(i).padStart(4, "0")}`, "t-old"), { at: OLD });
+    await kvs.set(K.vaExecClaimKey(AG5, "SUP-Z9999", "t-live"), { at: LIVE });
+
+    const found = await L.liveClaimFor(kvs, AG5, { now: NOW });
+    eq(found.ok, true, "F-585.BURIED — the scan completes");
+    eq(found.live, true, `F-585.BURIED — a live claim behind 60 settled ones is FOUND, not paged out of existence (got ${JSON.stringify(found)})`);
+    ok(String(found.key || "").includes("SUP-Z9999"), `F-585.BURIED — …and it is the right row (got ${found.key})`);
+    const kept = await L.clearPurgeTombstone(kvs, AG5, { createdAt: CREATED, now: NOW });
+    eq(kept.cleared, false, "F-585.BURIED — so the tombstone STANDS");
+    eq(kept.settling, "claim", "F-585.BURIED — …attributed to the live claim");
+
+    // (b) And it must really follow the CURSOR, not just carry a bigger first page: 260
+    //     rows is three pages at the 100-row page size the repo uses everywhere.
+    reset();
+    await L.markAgentPurged(kvs, AG5, { now: T0 });
+    for (let i = 0; i < 260; i++) await kvs.set(K.vaExecClaimKey(AG5, `SUP-A${String(i).padStart(4, "0")}`, "t-old"), { at: OLD });
+    await kvs.set(K.vaExecClaimKey(AG5, "SUP-Z9999", "t-live"), { at: LIVE });
+    const deep = await L.liveClaimFor(kvs, AG5, { now: NOW });
+    eq(deep.live, true, `F-585.CURSOR — a live claim on page THREE is found, so the walk really follows nextCursor (got ${JSON.stringify(deep)})`);
+
+    // (c) All settled and inside the budget → a PROVEN negative, and the clear proceeds.
+    //     This is the half that keeps F-512's lockout fixed: retained claim rows from
+    //     finished turns must not block a re-created agent for two days.
+    reset();
+    await L.markAgentPurged(kvs, AG5, { now: T0 });
+    for (let i = 0; i < 260; i++) await kvs.set(K.vaExecClaimKey(AG5, `SUP-A${String(i).padStart(4, "0")}`, "t-old"), { at: OLD });
+    const proven = await L.liveClaimFor(kvs, AG5, { now: NOW });
+    eq(proven.ok, true, "F-585.PROVEN — an exhausted walk is a real answer");
+    eq(proven.live, false, "F-585.PROVEN — …and 260 settled claims are a proven negative");
+    eq((await L.clearPurgeTombstone(kvs, AG5, { createdAt: CREATED, now: NOW })).cleared, true,
+      "F-585.PROVEN — …so the tombstone clears, exactly as before the fix");
+
+    // (d) TRUNCATION. More rows than the page budget can read → the walk did NOT finish,
+    //     and the one thing it must never do is report that as `live:false`. The tombstone
+    //     is KEPT, with the same `purge-settling` reason the tick skips on.
+    reset();
+    await L.markAgentPurged(kvs, AG5, { now: T0 });
+    for (let i = 0; i < 2001; i++) await kvs.set(K.vaExecClaimKey(AG5, `SUP-A${String(i).padStart(5, "0")}`, "t-old"), { at: OLD });
+    const trunc = await L.liveClaimFor(kvs, AG5, { now: NOW });
+    eq(trunc.ok, false, "F-585.TRUNCATED — a walk that hit its page cap is NOT an answer");
+    eq(trunc.reason, "scan_truncated", `F-585.TRUNCATED — …and it names itself, rather than passing as a negative (got ${JSON.stringify({ ok: trunc.ok, live: trunc.live, reason: trunc.reason })})`);
+    ok(String(trunc.prefix || "").startsWith("va_exec:"), `F-585.TRUNCATED — …naming the prefix it gave up on (got ${trunc.prefix})`);
+
+    const held = await L.clearPurgeTombstone(kvs, AG5, { createdAt: CREATED, now: NOW });
+    eq(held.cleared, false, `F-585.TRUNCATED — the tombstone is KEPT: unread rows are not absent rows (got ${JSON.stringify(held)})`);
+    eq(held.reason, "purge-settling", "F-585.TRUNCATED — …with the reason the tick already knows how to skip on");
+    eq(held.settling, "scan_truncated", "F-585.TRUNCATED — …distinguishable from a live claim, so an operator can tell a lockout from a race");
+
+    // …and truncation is graded ABOVE the other two "could not tell" answers on purpose: a
+    // store with no query() still clears (asserted above), because that is the store's
+    // limitation, while truncation is a statement about THIS agent's own claim space.
+    reset();
+    await L.markAgentPurged(kvs, AG5, { now: T0 });
+    const blind = { get: (k) => kvs.get(k), set: (k, v, o) => kvs.set(k, v, o), delete: (k) => kvs.delete(k) };
+    eq((await L.clearPurgeTombstone(blind, AG5, { createdAt: CREATED, now: NOW })).cleared, true,
+      "F-585.GRADING — scan_unavailable still clears; only scan_truncated blocks");
+  }
+
   // THE GUARD FAILS OPEN ON A READ FAULT — stated in the source, asserted here, because a
   // blip that refused every write would silently mute a LIVE agent.
   reset();

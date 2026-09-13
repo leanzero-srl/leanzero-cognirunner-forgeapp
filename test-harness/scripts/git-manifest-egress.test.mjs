@@ -115,8 +115,15 @@ const ah = readFileSync(path.join(root, "src", "async-handler.js"), "utf8");
 // of call sites goes above one and this fails.
 const gateCalls = ah.split("aiBudgetGate(").length - 1;
 ok(gateCalls === 1, `aiBudgetGate is CALLED exactly once in async-handler.js (${gateCalls}) — no second copy of the governor`);
-ok(/export async function longHandler\(event\)\s*\{\s*return handler\(event\);\s*\}/.test(ah),
-  "longHandler DELEGATES to handler — the two consumers differ only by manifest timeoutSeconds");
+// 1.4 commit 8 — longHandler now also MARKS the event as "arrived on the long queue"
+// (LONG_QUEUE_EVENTS), because `coder` refuses to run on the 120 s consumer. That mark is
+// the only thing it may add: the body must still be the mark plus the delegation and
+// nothing else, or the second consumer has started growing a body of its own.
+const longBody = (ah.match(/export async function longHandler\(event\)\s*\{([\s\S]*?)\n\}/) || [])[1] || "";
+ok(/LONG_QUEUE_EVENTS\.add\(event\)/.test(longBody) && /return handler\(event\);/.test(longBody),
+  "longHandler marks the event and DELEGATES to handler");
+ok(longBody.split(";").filter((s) => s.trim()).length <= 2,
+  "longHandler's body is the mark and the delegation only — the two consumers still differ only by manifest timeoutSeconds");
 const budgetGateMarkers = ah.split("TOKEN-BUDGET GATE").length - 1;
 ok(budgetGateMarkers === 1, `there is exactly one TOKEN-BUDGET GATE section (${budgetGateMarkers})`);
 // 1.4 commit 4b — and that section IS the extracted function, not a region inlined in

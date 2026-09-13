@@ -2221,6 +2221,138 @@ reset();
   eq((await L.readCompactBackoff(kvs, AG)).active, false, "F-506.clear — a converged compaction drops the marker");
 }
 
+/* ══ F-571. A DELETE LANDING MID-TURN STOPS THE WRITES, AND NAMES THE ONES IT MISSED ══
+ *
+ * The window F-553 left open: between the entry tombstone read and the write seam, the
+ * dispatcher runs with live Jira/Confluence/git executors and — before this — no
+ * cancellation of any kind. The turn made real external writes for a deleted agent and
+ * then reported `skipped: agent-purged`, discarding `outcome` and `session.changes`.
+ *
+ * The fixture is the ledger row's own story: round 1 writes, the admin's delete lands
+ * BETWEEN the rounds, round 2's write is refused, and the log line names round 1's.
+ */
+reset();
+{
+  const logged = [];
+  // A dispatcher that records the TARGET, not just the action name — the real one does
+  // (src/index.js `createApi` pushes `{action, key}`), and the whole point of the log
+  // line is that an admin can see WHERE the escaped writes went.
+  const writingDispatcher = (changes) => ({ executors = {} } = {}) => async (name, args) => {
+    for (const ex of Object.values(executors)) if (ex && typeof ex.handles === "function" && ex.handles(name)) return ex.execute(name, args || {});
+    changes.push({ action: name, key: (args && args.issueKey) || "SUP-1" });
+    return { success: true };
+  };
+
+  const changes = [];
+  const attempted = [];
+  /*
+   * A two-round model. Round 1 assigns. Between the rounds the admin's delete lands —
+   * `markAgentPurged` is the first thing `purgeAgent` does, exactly as in production.
+   * Round 2 then tries a second write.
+   *
+   * `runLoop` is a stand-in, so it must honour `isCancelled` the way the REAL
+   * `runAgentLoop` does (agent-runner.js checks it at the head of every round) — and
+   * asserting that it was PASSED at all is half of what this block is for: without the
+   * token the loop would sail into round 2's model call.
+   */
+  let sawCancelToken = null;
+  const twoRounds = async ({ execute, isCancelled }) => {
+    sawCancelToken = typeof isCancelled === "function" ? isCancelled : null;
+    // ROUND 1 — a real write, before anybody has deleted anything.
+    attempted.push({ round: 1, name: "set_assignee", result: await execute("set_assignee", { issueKey: "SUP-1", accountId: "u-1" }) });
+
+    // ── the admin deletes the agent, mid-turn ──
+    await L.markAgentPurged(kvs, AG);
+
+    // The ROUND BOUNDARY half of the fix: the real loop stops here and never calls the
+    // model again. Asserted directly because a stand-in cannot prove the real loop's own
+    // `for` body, and `agent-runner.js`'s check is covered by its own suite.
+    const cancelled = sawCancelToken ? await sawCancelToken() : false;
+
+    // ROUND 2 — the WITHIN-ROUND half. Even if a round already in flight still has write
+    // calls queued behind it, each one re-reads the tombstone and refuses.
+    attempted.push({ round: 2, name: "update_fields", result: await execute("update_fields", { issueKey: "SUP-1", fields: { summary: "x" } }) });
+
+    return { endedBy: cancelled ? "cancelled" : "finish", rounds: 2, summary: "", usage: { tokens: 1 }, __cancelled: cancelled };
+  };
+
+  const d = itemDeps({
+    runLoop: twoRounds,
+    createDispatcher: writingDispatcher(changes),
+    // `session.changes` IS the run's change ledger (agent-runner.js's write brake counts
+    // exactly this array), so the session and the dispatcher must share one — which is
+    // what the real `createApi` does and what makes the landed-writes report truthful.
+    createSession: async () => ({ changes, createApi: () => ({}), recordChange: (c) => { changes.push(c); return c; } }),
+    log: (line) => logged.push(String(line)),
+    __changes: changes,
+  });
+  const r = await V.runVaItem({
+    agent: vaJob({ powers: { replyInternal: true, replyPublic: false, assign: true, editFields: true, transition: false, confluenceRead: false, confluenceWrite: false, git: false, webSearch: false, skillIds: [] } }),
+    issueKey: "SUP-1", tickId: "t-purge", deps: d,
+  });
+
+  ok(typeof sawCancelToken === "function", "F-571.token — `isCancelled` is passed into runLoop, the way the Coder passes isJobCancelled");
+  // Guarded: without the fix `isCancelled` is simply absent, and a bare call would abort
+  // the whole file on a TypeError instead of reporting the four assertions that follow.
+  eq(sawCancelToken ? await sawCancelToken() : false, true, "F-571.token — …and it answers TRUE once the tombstone is written, so the real loop would end the turn");
+
+  eq(attempted[0].result.success, true, "F-571.round1 — the write made BEFORE the delete succeeds (the fixture really did write)");
+  eq(changes.length, 1, "F-571.round1 — …and exactly one change landed");
+
+  eq(attempted[1].result.success, false, "F-571.BLOCK_round2 — the write attempted AFTER the tombstone is refused");
+  eq(attempted[1].result.code, "agent-purged", "F-571.BLOCK_round2 — …with the reason the model can act on");
+  eq(changes.length, 1, "F-571.BLOCK_round2 — …and NOTHING further reached the dispatcher");
+
+  eq(r.skipped, true, "F-571.result — the turn still reports the skip");
+  eq(r.reason, "agent-purged", "F-571.result — …with the same reason");
+  eq(r.changes, 1, "F-571.result — but it no longer DISCARDS what it did: one write is carried on the task result");
+  eq((r.landedWrites || [])[0], "set_assignee SUP-1", "F-571.result — …named by action AND key, so the queue log shows where it went");
+  ok((r.refusals || []).some((x) => x.code === "agent-purged"), "F-571.result — and the refusal is carried too");
+
+  const line = logged.find((l) => l.includes("purged mid-turn"));
+  ok(Boolean(line), `F-571.log — the escape is LOGGED loudly, not dropped on the floor (lines: ${JSON.stringify(logged)})`);
+  ok(line && line.includes("SUP-1") && line.includes("set_assignee"),
+    `F-571.log — …and the line NAMES round 1's write, which is the only record left once the ledger is gone (got ${line})`);
+
+  // RECEIPT-FREE STAYS RECEIPT-FREE. The whole of F-553 is that a purged agent's turn
+  // writes no ledger row; carrying the changes must not have re-opened that by writing an
+  // effects row "just to record it". The writers refuse anyway, so this asserts the
+  // DESIGN rather than the mechanism — an effects row here would mean somebody added a
+  // write path that bypassed the guard.
+  const effects = await L.listEffects?.(kvs, AG);
+  ok(!effects || !effects.rows || effects.rows.length === 0,
+    "F-571.receipt_free — no effects row is minted for a purged agent, even though the writes are now reported");
+}
+
+/* ══ F-571 (b). A HEALTHY TURN IS UNTOUCHED ══════════════════════════════════
+ * The cancellation reads the tombstone before every write-class action, so the cost and
+ * the risk both land on the normal path. A turn with no tombstone must still write. */
+reset();
+{
+  const changes = [];
+  const loop = async ({ execute }) => {
+    await execute("set_assignee", { issueKey: "SUP-1", accountId: "u-1" });
+    return { endedBy: "finish", rounds: 1, summary: "done", usage: { tokens: 1 } };
+  };
+  const d = itemDeps({
+    runLoop: loop,
+    createDispatcher: ({ executors = {} } = {}) => async (name, args) => {
+      for (const ex of Object.values(executors)) if (ex && typeof ex.handles === "function" && ex.handles(name)) return ex.execute(name, args || {});
+      changes.push({ action: name, key: (args && args.issueKey) || "SUP-1" });
+      return { success: true };
+    },
+    createSession: async () => ({ changes, createApi: () => ({}), recordChange: (c) => { changes.push(c); return c; } }),
+    __changes: changes,
+  });
+  const r = await V.runVaItem({
+    agent: vaJob({ powers: { replyInternal: true, replyPublic: false, assign: true, editFields: false, transition: false, confluenceRead: false, confluenceWrite: false, git: false, webSearch: false, skillIds: [] } }),
+    issueKey: "SUP-1", tickId: "t-ok", deps: d,
+  });
+  eq(r.skipped, undefined, "F-571.no_regression — with no tombstone the turn is not skipped");
+  eq(changes.length, 1, "F-571.no_regression — …and the write still lands");
+  eq((r.refusals || []).length, 0, "F-571.no_regression — …with no spurious agent-purged refusal");
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

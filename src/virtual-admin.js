@@ -76,13 +76,33 @@ import { lintVoice } from "./shared/voice-lint.js";
 // listener gate and the admin's own capability read - a VA must not be the surface that
 // answers this question differently, or not at all.
 import { agentCapability } from "./shared/edition.js";
-import { assertWriteScope } from "./shared/agent-actions.js";
+// `getAgentAction` is how F-571's write-class re-check asks the CATALOGUE what a write is,
+// instead of retyping a list of action ids that the next action added would silently miss.
+import { assertWriteScope, getAgentAction } from "./shared/agent-actions.js";
 import { createVaLedgerExecutor, VA_LEDGER_ACTION_IDS } from "./va-ledger-actions.js";
 import { clampChars } from "./shared/text-clamp.js";
 
 const nowIso = (ms) => new Date(ms == null ? Date.now() : ms).toISOString();
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const asArray = (v) => (Array.isArray(v) ? v : []);
+
+/**
+ * ONE row of `session.changes`, rendered as `action key` for an operator's eye (F-571).
+ *
+ * The rows are minted by two writers with two shapes: the sandbox mutators in
+ * `src/index.js createApi` push `{action, key|from, ...}`, and `session.recordChange`
+ * (agent-runner.js, every non-Jira namespace) pushes `{action, namespace, repo, number,
+ * ...}`. The TARGET is what an admin needs when they have just deleted an agent and want
+ * to know where its last writes went, so the first identifier present wins and the
+ * action name alone is the honest fallback rather than an invented one.
+ */
+const describeChange = (c) => {
+  if (!isObj(c)) return "(unknown)";
+  const action = String(c.action || "change");
+  const target = c.key || c.from || c.repo || c.pageId || c.spaceKey || null;
+  const suffix = c.number != null ? `#${c.number}` : "";
+  return target ? `${action} ${target}${suffix}` : `${action}${suffix}`;
+};
 
 /**
  * "IS THIS JOB A VIRTUAL ADMINISTRATOR" — ONE HOME.
@@ -1321,7 +1341,51 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     writeScope: vaWriteScope(va),
   });
 
+  /*
+   * F-571 — THE CANCELLATION TOKEN, AND WHY THE TWO TOMBSTONE READS WERE NEVER ENOUGH.
+   *
+   * F-553 put a tombstone read at the ENTRY of the turn and another at the WRITE SEAM
+   * below. Between those two reads sits everything that actually touches the world: the
+   * model loop, and a dispatcher wired to LIVE Jira, Confluence and git executors. A
+   * delete landing anywhere in that window — a 25 s resolver racing a 120 s consumer,
+   * which is the premise of F-553 itself — was seen by nothing until the writes had
+   * already been made, and the turn then reported itself as a plain `skipped:
+   * agent-purged` while the only evidence of the writes sat in Jira's and Confluence's
+   * own history.
+   *
+   * So the tombstone is now read in TWO more places, and both are the Coder's shape
+   * (`src/coder-engine.js` passes `isJobCancelled` into this same `runAgentLoop`):
+   *
+   *  1. `isCancelled`, checked by `runAgentLoop` at every ROUND boundary. That is what
+   *     stops the NEXT model call — and with it every tool call that round would have
+   *     made — the moment the delete lands.
+   *  2. HERE, before every WRITE-CLASS action. The round boundary can be a whole model
+   *     call away, and a round already in flight may have several writes left in its
+   *     tool-call list. `kind === "write"` is read from `src/shared/agent-actions.js`,
+   *     the ONE home for that classification, so assign, transition, field edits,
+   *     labels, comments, every Confluence page write and every git write are covered by
+   *     the catalogue — not by a list retyped here that the next action would miss.
+   *     The ledger namespace is deliberately NOT covered: staging a draft is not a write
+   *     (the catalogue says so) and the ledger writers carry F-553's own guard anyway.
+   *
+   * READ FAULTS DO NOT CANCEL. `readPurgeTombstone` fails SOFT and says so, and
+   * `purgedGuard` in the ledger already treats a fault as "write on" — deliberate, and
+   * documented there. A cancellation firing on a storage blip would kill healthy turns.
+   */
+  const isPurged = async () => {
+    const t = await readPurgeTombstone(deps.store, agentId);
+    return t.purged === true;
+  };
+
   const execute = async (name, args) => {
+    const action = getAgentAction(name);
+    if (action && action.kind === "write" && (await isPurged())) {
+      outcome.refusals.push({ name, code: "agent-purged" });
+      return {
+        success: false, code: "agent-purged",
+        error: "This agent was deleted while the turn was running. Nothing further will be written; stop and finish.",
+      };
+    }
     const r = await dispatch(name, args && typeof args === "object" ? args : {});
     if (r && r.success === false) outcome.refusals.push({ name, code: r.code });
     return r;
@@ -1332,6 +1396,9 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     maxRounds: Math.min(Number(job.agent && job.agent.maxRounds) || 5, 8),
     deadlineMs: now() + (deps.turnBudgetMs || 100000),
     log: deps.log,
+    // F-571 — the round-boundary half of the cancellation. `runAgentLoop` ends the turn
+    // with `endedBy: "cancelled"` and never makes the next call.
+    isCancelled: isPurged,
   });
 
   /*
@@ -1344,7 +1411,31 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
    */
   const tombAtWrite = await readPurgeTombstone(deps.store, agentId);
   if (tombAtWrite.purged) {
-    return { ok: true, ran: true, skipped: true, issueKey, reason: "agent-purged", purgedAt: tombAtWrite.at, endedBy: loop.endedBy, rounds: loop.rounds };
+    /*
+     * F-571 — A RECEIPT-FREE SKIP THAT STILL SAYS WHAT LANDED.
+     *
+     * The skip stays receipt-free BY DESIGN and must: there is no ledger left to write
+     * into, every ledger writer refuses under the same tombstone, and re-creating a row
+     * for a deleted agent is the exact defect F-553 exists to prevent. So the writes this
+     * turn DID make — the ones the cancellation above did not get to in time — cannot go
+     * into a `va_effect` row, and asking for one would be asking a refusing writer.
+     *
+     * They must not vanish either. Before this, `outcome` and `session.changes` were
+     * dropped on the floor, so a turn that had just edited a Jira field and updated a
+     * Confluence page reported `skipped: agent-purged` and nothing else. They now go to
+     * the two places that survive a deleted agent: the operator LOG, loudly and by key,
+     * and the TASK RESULT, which the queue log carries.
+     */
+    const landed = asArray(session.changes).map(describeChange);
+    if (landed.length) {
+      deps.log(`[va] purged mid-turn: ${landed.length} write${landed.length === 1 ? "" : "s"} already landed on ${landed.join(", ")}`);
+    }
+    return {
+      ok: true, ran: true, skipped: true, issueKey, reason: "agent-purged", purgedAt: tombAtWrite.at,
+      endedBy: loop.endedBy, rounds: loop.rounds,
+      // What the turn DID before the tombstone appeared, and what it refused after it.
+      changes: landed.length, landedWrites: landed, refusals: outcome.refusals,
+    };
   }
 
   /* — ATTEMPTS (F-414): a turn that produced no outcome is an attempt, and it parks — */

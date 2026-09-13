@@ -909,6 +909,54 @@ export const requireAdvanced = async (context, featureId) => {
 };
 
 /**
+ * WHO OWNS A ROW, for visibility. ONE list: the account the rule currently ACTS AS
+ * (`createdBy`) and the account that first authored it (`firstCreatedBy`).
+ *
+ * F-432 — `armingStamp` (F-409) moves `createdBy` to whoever last SAVED the rule, and
+ * `createdBy` was also the only visibility key. So an admin re-arming an editor's rule —
+ * exactly what the F-390 refusal text tells them to do ("Re-save this rule as an admin to
+ * arm its write actions") — erased the rule from the editor's Rules tab, from their "My
+ * rules" filter, AND every historical run of it from their Logs tab, silently, with only
+ * an admin able to hand it back. The ownership MOVE is a decided trade (the account the
+ * rule acts as is the account answerable for it); the erasure of the author's view was not
+ * part of that decision. `firstCreatedBy` recorded the truth and no surface read it.
+ *
+ * Visibility is therefore `createdBy` OR `firstCreatedBy`. Permission is NOT: every gate
+ * that decides what a caller may DO (canActOnConfig, configActionVerdict) still reads
+ * `createdBy` alone — seeing a rule and being able to change it are different questions.
+ */
+export const ruleOwnerIds = (row) => {
+  const out = [];
+  for (const key of ["createdBy", "firstCreatedBy"]) {
+    const v = row && row[key];
+    if (v && !out.includes(v)) out.push(v);
+  }
+  return out;
+};
+
+/**
+ * THE ONE VISIBILITY PREDICATE. Used by getConfigs, by the "mine" display filter and by
+ * the getLogs scope filter — three surfaces that used to carry three copies of "is this
+ * row yours?", which is how the Rules tab and the Logs tab could disagree.
+ *
+ * Two modes, because two different questions share one owner list:
+ *
+ *  - `mode: "visibility"` (default) is a PERMISSION. An admin (or scope-"all") sees
+ *    everything; an own-scope caller sees rows they own plus OWNERLESS legacy rows, which
+ *    predate `createdBy` and would blank a table on upgrade if they vanished.
+ *  - `mode: "mine"` is a DISPLAY CHOICE the user makes, and it is strict: an ownerless row
+ *    is not yours, and an admin's "My rules" is still only the admin's rules. Admin never
+ *    short-circuits this arm — that is what made "My Rules" list everything before F-OWN.
+ */
+export const canSeeRule = (row, { accountId, role, scope, mode = "visibility" } = {}) => {
+  const owners = ruleOwnerIds(row);
+  if (mode === "mine") return !!accountId && owners.includes(accountId);
+  if (role === "admin" || scope === "all") return true;
+  if (!accountId) return true;
+  return owners.length === 0 || owners.includes(accountId);
+};
+
+/**
  * Decide which registry rows a caller may SEE. Pure — exported for unit tests.
  *
  * Two different jobs used to share one flag, and conflating them is what made
@@ -921,18 +969,17 @@ export const requireAdvanced = async (context, featureId) => {
  *    a row with no owner is not yours. The old `!c.createdBy ||` clause made
  *    every ownerless row belong to everybody.
  *
- * Enforcement runs first, the display choice narrows it further.
+ * Enforcement runs first, the display choice narrows it further. Both arms go through
+ * `canSeeRule`, so "yours" means the same thing here and in the Logs tab (F-432).
  */
 export const filterConfigsForUser = (configs, { filter, accountId, scope, role } = {}) => {
   let visible = Array.isArray(configs) ? configs : [];
   const isPrivileged = role === "admin" || scope === "all";
   if (!isPrivileged && accountId) {
-    // Permission: own-scope users see their rules plus unowned legacy rows.
-    visible = visible.filter((c) => !c.createdBy || c.createdBy === accountId);
+    visible = visible.filter((c) => canSeeRule(c, { accountId, role, scope }));
   }
   if (filter === "mine" && accountId) {
-    // Display choice: strictly authored by me.
-    visible = visible.filter((c) => c.createdBy === accountId);
+    visible = visible.filter((c) => canSeeRule(c, { accountId, role, scope, mode: "mine" }));
   }
   return visible;
 };
@@ -1841,12 +1888,15 @@ resolver.define("getLogs", async ({ payload, context }) => {
     let logs = await readLogs(payload?.ruleId || null);
     if (perms.role !== "admin" && perms.scope === "own") {
       const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-      const ownerOf = new Map(configs.map((c) => [String(c.id), c.createdBy || null]));
+      const rowOf = new Map(configs.map((c) => [String(c.id), c]));
       logs = logs.filter((l) => {
-        const owner = ownerOf.get(String(l.ruleId));
-        // Entries for deleted rules keep no owner to check — visible, like
-        // unowned rows. Owned rules' entries are visible to their owner only.
-        return owner === undefined || owner === null || owner === context.accountId;
+        const row = rowOf.get(String(l.ruleId));
+        // Entries for deleted rules keep no row to check — visible, like unowned rows.
+        // Everything else goes through THE visibility predicate (F-432), so a rule an
+        // admin re-armed does not silently take its whole history out of the author's
+        // Logs tab while it is still listed in their Rules tab.
+        if (row === undefined) return true;
+        return canSeeRule(row, { accountId: context.accountId, role: perms.role, scope: perms.scope });
       });
     }
     return { success: true, logs };
@@ -2014,6 +2064,12 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         premadeRuleType: isPremade ? premadeRuleType : undefined,
         ...(isInstanced ? { instanced: true } : {}),
         ...instanceIdPatch,
+        // F-432 — the FIRST author, written once and never moved. A validator/condition
+        // row does not re-stamp `createdBy` on save (only post-functions do, via
+        // `stampArming`), but a row that predates this field, or one whose owner an admin
+        // takes over elsewhere, still needs the author recorded: `canSeeRule` reads it, so
+        // the author keeps seeing their rule and its logs. No permission is read from it.
+        firstCreatedBy: configs[existingIndex].firstCreatedBy || configs[existingIndex].createdBy || null,
         updatedAt: now,
       };
     } else {
@@ -2028,6 +2084,8 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         ...(isInstanced ? { instanced: true } : {}),
         ...instanceIdPatch,
         createdBy: context.accountId || null,
+        // Set ONCE, at creation, and never moved (F-432). See the update branch above.
+        firstCreatedBy: context.accountId || null,
         createdAt: now,
         updatedAt: now,
       });

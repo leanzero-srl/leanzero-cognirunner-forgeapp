@@ -11714,6 +11714,10 @@ resolver.define("triggerGitDeploy", async ({ payload, context }) => {
 export {
   storeLog, callAIChat, getOpenAIKey, getOpenAIModel, getProviderConfig, isTransientAIError, raceDeadline,
   requireRole, requireAdmin, getUserPermissions, hasRole, canActOnConfig, makeTaskId, coerceToAdf,
+  // F-471 — the ONE ownership home. src/rules-api.js applies THIS gate to an editor
+  // token (acting as the account that minted it) so a REST caller and a click resolve
+  // ownership through the same predicate. Never write a second ownership check there.
+  gateExistingRow,
   // F-307: the ONE builder for the machine-readable half of a refusal. src/rules-api.js'
   // `errBody` is the second copy of this field list and converges here (F-331).
   refusalFields,

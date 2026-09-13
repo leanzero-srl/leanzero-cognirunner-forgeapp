@@ -573,5 +573,79 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
     "…and the epoch is still a readable number, not NaN, for every thread on the instance");
 }
 
+/* ===== 11. F-594 — A REBUILD MAY NOT SILENTLY STRIP A THREAD'S SKILLS ===============
+ *
+ * The F-578 rebuild had no fallback to the pin: with `ids.length === 0` the skills branch
+ * never ran, `out.skillsBlock` was never set, and the engine overwrote the pin with an
+ * empty skills block. Skill selection is per-viewer localStorage and the backend stores no
+ * per-thread binding, so an empty `skillIds` on a later turn of the same thread is the
+ * ORDINARY case — a second browser, cleared site data, or a colleague continuing the
+ * thread. One unrelated memory delete anywhere on the instance was therefore enough to
+ * strip a thread's skills for good, mid-conversation, with the turn log saying only "the
+ * prompt prefix moves once".
+ *
+ * Both directions are proven: the absent selection keeps the pin's skills, and an EXPLICIT
+ * empty selection still clears them.
+ */
+{
+  const { loadMemories, saveMemories, saveMemoryCandidate } = await import("../../src/memories.js");
+  const pinFor = async (thread, k) => storage.set(coder.coderPinKey(ISSUE, thread), {
+    issueKey: ISSUE, threadId: thread,
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+    memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch, at: new Date().toISOString(),
+  });
+  // Bump the MEMORY epoch — the invalidation this finding rides in on is always about the
+  // other store, which is exactly why it must not touch this thread's skills.
+  const bumpMemories = async () => {
+    await saveMemoryCandidate({ content: `Rebuild probe ${Math.random().toString(36).slice(2)} for the epoch bump.`, source: "user" });
+    const rows = await loadMemories();
+    await saveMemories(rows.slice(0, -1));
+  };
+  const build = (thread, extra) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: thread, message: "carry on", ...extra,
+  });
+
+  /* --- the absent selection --- */
+  const KEEP = "t_skill_keep";
+  await storage.set(coder.coderThreadKey(ISSUE, KEEP), {
+    issueKey: ISSUE, threadId: KEEP, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "build me a resolver" }], turns: 1,
+  });
+  const s1 = await build(KEEP, { skillIds: ["skill_house"], message: "build me a resolver" });
+  ok(Array.isArray(s1.skillIds) && s1.skillIds.includes("skill_house") && !!s1.skillsBlock,
+    "turn 1 binds a skill and renders it into the thread's block");
+  await pinFor(KEEP, s1);
+
+  await bumpMemories();
+  const s2 = await build(KEEP, { skillIds: [] });
+  ok(s2.repin === true, "an unrelated memory delete still invalidates the pin (F-578 is intact)");
+  ok(Array.isArray(s2.skillIds) && s2.skillIds.includes("skill_house"),
+    `THE FINDING: the rebuild keeps the pin's skills when the turn carries no selection (${JSON.stringify(s2.skillIds)})`);
+  ok(typeof s2.skillsBlock === "string" && /indent/.test(s2.skillsBlock),
+    "…and re-renders them INTO the prefix, so the re-pin cannot store an empty skills block");
+  ok(s2.skillsExtraBlock === undefined, "…with nothing hanging off the back of a rebuilt prefix");
+
+  // And the pin the engine would now write still carries them on the turn after.
+  await pinFor(KEEP, s2);
+  const s3 = await build(KEEP, { skillIds: [] });
+  ok(s3.repin === undefined && /indent/.test(String(s3.skillsBlock || "")),
+    "the next turn replays a pin that still has its skills");
+
+  /* --- the explicit clear --- */
+  const DROP = "t_skill_drop";
+  await storage.set(coder.coderThreadKey(ISSUE, DROP), {
+    issueKey: ISSUE, threadId: DROP, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "build me a resolver" }], turns: 1,
+  });
+  const d1 = await build(DROP, { skillIds: ["skill_house"], message: "build me a resolver" });
+  await pinFor(DROP, d1);
+  await bumpMemories();
+  const d2 = await build(DROP, { skillIds: [], skillIdsExplicit: true });
+  ok(d2.repin === true, "the explicit turn rebuilds too");
+  ok(!d2.skillsBlock && (!d2.skillIds || d2.skillIds.length === 0),
+    `a turn that MEANS the empty list still clears the thread's skills (${JSON.stringify(d2.skillIds)})`);
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

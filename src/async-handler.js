@@ -1404,7 +1404,22 @@ export const __coderKnowledgeInternals = { buildCoderKnowledge: (params) => buil
 const buildCoderKnowledge = async (p) => {
   const out = {};
   const budget = knowledgeBudget("coderTurn");
-  const ids = Array.isArray(p && p.skillIds) ? p.skillIds : [];
+  /*
+   * F-594 — WHAT THIS TURN ASKED FOR, which is not always what the THREAD holds.
+   *
+   * Skill selection is per-viewer and lives in the panel's localStorage
+   * (static/issue-glance/src/components/CoderPanel.jsx) — the backend stores no per-thread
+   * binding, so a second browser, a cleared site data, or a colleague continuing the same
+   * thread posts `skillIds: []`. That is an ABSENT SELECTION, not an instruction to run
+   * with none, and the difference only matters on the re-pin path below (see `ids`).
+   *
+   * `skillIdsExplicit` is how a caller says it means the empty list: a turn that wants to
+   * CHANGE a thread's skills passes the flag, and then `[]` clears them. Absent, `[]` falls
+   * back to the pin. Nothing produces the flag yet — no surface offers "unbind" — so the
+   * only direction it can currently take is the safe one.
+   */
+  const skillIdsExplicit = !!(p && p.skillIdsExplicit === true);
+  let ids = Array.isArray(p && p.skillIds) ? p.skillIds : [];
   // WHAT THIS THREAD ALREADY DECIDED, read once for all three blocks: the transcript row
   // (it carries the guide's section ids — F-550) and the pin row beside it (the skills and
   // memory BYTES the first turn rendered — F-574; they are not on the transcript because
@@ -1484,6 +1499,24 @@ const buildCoderKnowledge = async (p) => {
       console.log(`[coder] pin invalidated: ${verdict} — rebuilding this thread's knowledge (the prompt prefix moves once)`);
       out.pinInvalidated = verdict;
       out.repin = true;
+      /*
+       * F-594 — A REBUILD RE-BUILDS WHAT THE PIN HELD. The pin is the only record of the
+       * skills this thread was given: if this turn carries no selection (a second browser,
+       * the ordinary case — see `skillIdsExplicit` above), the rebuild used to run the
+       * `ids.length` branch with an empty list, leave `out.skillsBlock` unset, and let the
+       * engine overwrite the pin with `skillsBlock: ""`. The thread lost its skills
+       * permanently, mid-conversation, because an admin deleted an unrelated memory — and
+       * the turn log said only "the prompt prefix moves once".
+       *
+       * So the pin's ids are the fallback, and the only way DOWN is an explicit one.
+       */
+      const held = Array.isArray(pinned.skillIds) ? pinned.skillIds.map((x) => String(x)) : [];
+      if (held.length && !ids.length && !skillIdsExplicit) {
+        ids = held;
+        console.log(`[coder] re-pin: this turn carried no skill selection, so the pin's ${held.length} skill(s) are kept and re-rendered (${held.join(", ")})`);
+      } else if (held.length && skillIdsExplicit && !ids.length) {
+        console.log(`[coder] re-pin: this turn asked to run with NO skills, dropping the pinned ${held.length} (${held.join(", ")})`);
+      }
       pinned = null;
     }
   }

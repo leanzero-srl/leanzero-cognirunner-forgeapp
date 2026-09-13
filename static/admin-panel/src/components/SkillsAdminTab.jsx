@@ -27,6 +27,10 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import SkillEditor from "./SkillEditor";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
+import {
+  isPermissionRefusal, permissionRefusalText,
+  isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE,
+} from "./refusal";
 
 const CATEGORY_CLASS = {
   "Jira API": "skill-cat-jira",
@@ -41,6 +45,15 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /* F-296 — the same gap DocsTab had. `getSkills` carries the F-235 VIEWER FLOOR
+     (src/index.js:7360) and answers a non-roster reader with a RESOLVED refusal; this tab
+     had no branch for it, so it rendered "Couldn't load skills." beside a Retry — a false
+     claim about the app plus a control that can only ever be refused again. The pick-list
+     in the Knowledge panel has told this correctly since F-244; the admin table never did.
+     Two states, never one, for the F-255 reason: a role refusal and an edition denial have
+     different remedies and must not share a slot. */
+  const [accessRefusal, setAccessRefusal] = useState(null);
+  const [upgradeRefusal, setUpgradeRefusal] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [expandedContent, setExpandedContent] = useState(null);
@@ -63,11 +76,26 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
       if (result.success) {
         setSkills(result.skills || []);
         setLoadError(false);
+        setAccessRefusal(null);
+        setUpgradeRefusal(null);
         hasLoadedRef.current = true;
+      } else if (isPermissionRefusal(result)) {
+        /* AUTHORITATIVE even after a successful load — a role revoked mid-session is a real
+           state, and it clears the fault arm: a refusal answered is not a load that failed,
+           and showing both would give one state two voices. */
+        setAccessRefusal(result);
+        setUpgradeRefusal(null);
+        setLoadError(false);
+      } else if (isUpgradeRequired(result)) {
+        setUpgradeRefusal(result);
+        setAccessRefusal(null);
+        setLoadError(false);
       } else if (!hasLoadedRef.current) {
         setLoadError(true);
       }
     } catch (e) {
+      /* A THROW is transport, never a refusal — the resolver answers refusals with a
+         resolved body. This arm must not set accessRefusal/upgradeRefusal. */
       console.error("Failed to load skills:", e);
       if (!hasLoadedRef.current) setLoadError(true);
     }
@@ -321,13 +349,20 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
     );
   };
 
+  // One name for "the backend answered no", for the chrome that must not render either way.
+  const refused = !!accessRefusal || !!upgradeRefusal;
+
   return (
     <div className="skills-admin-tab">
       <div className="section-header">
         <span className="section-title">Skills</span>
-        <button className="btn-add-skill" onClick={() => setShowAdd(!showAdd)}>
-          {showAdd ? "Cancel" : "+ New Skill"}
-        </button>
+        {/* F-296 — no "+ New Skill" for a refused reader: creating a skill is a write the
+            same gate refuses, so offering it is the Retry mistake in another shape. */}
+        {!refused && (
+          <button className="btn-add-skill" onClick={() => setShowAdd(!showAdd)}>
+            {showAdd ? "Cancel" : "+ New Skill"}
+          </button>
+        )}
       </div>
       <div className="skills-admin-explainer">
         Skills are reusable instruction packs that teach the AI code generator domain-specific
@@ -365,6 +400,24 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
                 <div className="sk sk-text" style={{ width: 60, height: 11 }} />
               </div>
             ))}
+          </div>
+        ) : accessRefusal ? (
+          /* F-296 — the refusal, told as one, and BEFORE loadError so the outage arm can
+             never shadow it. No Retry — it could only re-ask and be refused again. Names
+             the level the gate asked for and WHO grants it, which is the only thing this
+             reader can act on. Slate .access-note, the one refusal grammar. */
+          <div style={{ padding: "14px" }}>
+            <div className="access-note" role="note">
+              {permissionRefusalText(accessRefusal, "skills")}
+            </div>
+          </div>
+        ) : upgradeRefusal ? (
+          /* F-296 — the edition arm. Solid orange, no Retry: no re-ask changes the plan. */
+          <div style={{ padding: "14px" }}>
+            <div className="upgrade-note" role="note">
+              <span className="upgrade-note-title">{UPGRADE_REQUIRED_HEADLINE}</span>
+              <span className="upgrade-note-text">{upgradeRequiredText(upgradeRefusal)}</span>
+            </div>
           </div>
         ) : loadError ? (
           <div style={{ padding: "14px" }}>

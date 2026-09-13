@@ -656,7 +656,13 @@ try {
       });
       ok(st.bl === st.bt, `F-273 ${theme} the upgrade note has NO left accent rail`);
       const bg = (st.bg.match(/[\d.]+/g) || []).map(Number);
-      const wantBg = theme === "dark" ? [245, 158, 11] : [180, 83, 9];
+      /* F-298 — the dark fill moved from #f59e0b (amber-500) to #d97706 (amber-600).
+         White text on amber-500 is ~2.1:1: legible to nobody who needs contrast, and it
+         reads as a highlighter wash rather than the solid statement the owner asked for.
+         Everywhere else in the app #f59e0b carries DARK text (#2a1602); this note keeps
+         WHITE text because white-on-solid is the grammar for a filled note, so the fill
+         is what had to move. */
+      const wantBg = theme === "dark" ? [217, 119, 6] : [180, 83, 9];
       ok(bg.slice(0, 3).every((v, i) => Math.abs(v - wantBg[i]) <= 2),
         `F-273 ${theme} the fill is the solid orange ${wantBg.join(",")} — got ${st.bg}`);
       /* Alpha 1 states the "no faded tint" law numerically — a 10% wash would still match
@@ -665,6 +671,23 @@ try {
         `F-273 ${theme} the fill is SOLID, not a low-alpha tint — got ${st.bg}`);
       const fg = (st.color.match(/\d+/g) || []).map(Number);
       ok(fg.slice(0, 3).every((v) => v >= 250), `F-273 ${theme} the text is white — got ${st.color}`);
+
+      /* F-298 — and the pair is MEASURED, not eyeballed. A hue assertion alone would have
+         stayed green on the amber-500 fill that caused this finding: it named the right
+         colour family and still could not be read. 3:1 is the WCAG floor for large/bold
+         text, which is what this note is (12px 700 title on a solid fill). Computed here
+         rather than trusted from the constants above so a future re-tint of either the
+         fill or the text has to pass the ratio, not just look like orange. */
+      const lum = (rgb) => {
+        const c = rgb.slice(0, 3).map((v) => {
+          const x = v / 255;
+          return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+        });
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+      };
+      const lf = lum(fg), lb = lum(bg);
+      const ratio = (Math.max(lf, lb) + 0.05) / (Math.min(lf, lb) + 0.05);
+      ok(ratio >= 3, `F-298 ${theme} the upgrade note clears 3:1 text/fill contrast — got ${ratio.toFixed(2)}:1`);
 
       /* The header counts, the fourth surface: three em-dashes are the app's symbol for
          "still loading", so a refused count read made the panel look permanently mid-fetch. */

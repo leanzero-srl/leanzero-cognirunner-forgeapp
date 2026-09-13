@@ -784,6 +784,16 @@ const MEMORY_SETTINGS = () => ({
   storeFull: (typeof window !== "undefined" && window.__MEMORY_FULL__) ? MEMORY_STORE_FULL : null,
 });
 
+/* F-296 - the reads that sit behind the F-228/F-235 VIEWER FLOOR, and the ones an edition
+   gate can refuse. ONE list each, so `__NO_ROSTER__` / `__UPGRADE_REQUIRED__` cannot mean
+   one thing on the memories tab and another on the docs tab - the exact drift that let the
+   admin Documentation and Skills tabs ship with no refusal branch while the embedded
+   components had one. `getContextDocContent` is deliberately ABSENT from the roster list:
+   that resolver has no role floor in the backend today, and a fixture that invents a gate
+   the backend does not have would verify a screen no tenant can reach. */
+const ROSTER_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats"];
+const EDITION_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats", "getKnowledgeCounts"];
+
 function invoke(name, payload) {
   const s = shot();
   const mkt = s.startsWith("admin-");
@@ -841,6 +851,40 @@ function invoke(name, payload) {
       error: "This feature requires the Coder edition.",
       reason: "upgrade-required",
       featureId: window.__UPGRADE_FEATURE__ || "static-post-function",
+    });
+  }
+  /* F-296 - the TENANT-WIDE edition state, the deliberate twin of `__NO_ROSTER__` below.
+     `__UPGRADE__` pokes one named resolver, which is right for proving a predicate but
+     wrong for proving a SCREEN: a site whose plan excludes the knowledge stores is refused
+     on every read at once, and a fixture that denies only one of them models a tenant that
+     does not exist. Each admin knowledge tab must stand up on its own under it - which is
+     what the F-296 findings were hiding behind: the embedded components had the arm, the
+     admin tabs did not, and no fixture ever put a whole tenant in that state.
+     `featureId` is overridable so the note's LABEL still comes from ADVANCED_FEATURES
+     rather than a string this file invents. */
+  if (typeof window !== "undefined" && window.__UPGRADE_REQUIRED__ && EDITION_GATED_READS.includes(name)) {
+    return Promise.resolve({
+      success: false,
+      error: "This feature requires the Coder edition.",
+      reason: "upgrade-required",
+      featureId: window.__UPGRADE_FEATURE__ || "coder",
+      memories: [], docs: [], skills: [],
+    });
+  }
+  /* F-296 - `__NO_ROSTER__` is a WHOLE-TENANT state too: a reader on neither the
+     CogniRunner roster nor Jira's admin list is refused by the F-228/F-235 VIEWER FLOOR on
+     every knowledge read, not only the memory ones it originally modelled (getContextDocs,
+     getSkills, getSkillContent, getMemories, getMemoryStoreStats all carry it). Handled
+     centrally here so the per-case branches below cannot drift apart; the shape is the
+     backend's own noPerm(..., "viewer") verbatim. */
+  if (typeof window !== "undefined" && window.__NO_ROSTER__ && ROSTER_GATED_READS.includes(name)) {
+    return Promise.resolve({
+      success: false,
+      error: "You don't have permission to read this.",
+      reason: "no-permission",
+      hint: "ask-app-admin",
+      needsRole: "viewer",
+      memories: [], docs: [], skills: [],
     });
   }
   // F-141 — HOLD fixture: window.__HOLD__ = ["fixPostFunctionCode"] parks that resolver
@@ -1102,12 +1146,15 @@ function invoke(name, payload) {
      * state the real rule would not produce. Answered on BOTH branches because the stats
      * line has two states — slate under the guard, red over it — and both are real. */
     case "getMemoryStoreStats": {
-      /* F-234 — this resolver carries the SAME F-228 viewer floor as getMemories
-         (src/index.js:7502), so `__NO_ROSTER__` must refuse it too. Without this the
-         fixture models a half-state no tenant is ever in — the read refused but the
-         store's byte pressure still reported — and the access-denied screen would be
-         verified with a size line on it that the real backend would never send. */
-      if (typeof window !== "undefined" && window.__NO_ROSTER__) return Promise.resolve({ success: false, error: "You don't have permission to read memories.", reason: "no-permission", needsRole: "viewer" });
+      /* F-234 — this resolver carries the SAME F-228 viewer floor as getMemories, so a
+         non-roster reader must be refused here too: without it the fixture models a
+         half-state no tenant is ever in — the read refused but the store's byte pressure
+         still reported — and the access-denied screen would be verified with a size line
+         the real backend would never send.
+         F-296 — that refusal now happens in ROSTER_GATED_READS above, with the docs and
+         skills reads that carry the identical floor. Kept as ONE list rather than a
+         per-case line each, because five hand-copied refusals are five chances for the
+         tabs to disagree about what "not on the roster" means. */
       const bytes = isMemoryOvercap() ? MEMORY_OVERCAP_BYTES : 49152;
       return Promise.resolve({
         success: true,
@@ -1139,7 +1186,8 @@ function invoke(name, payload) {
        its sentence from `needsRole`, so this fixture must carry both or every refusal test
        would silently assert against the failure path instead of the refusal path. */
     case "getMemories":
-      if (typeof window !== "undefined" && window.__NO_ROSTER__) return Promise.resolve({ success: false, error: "You don't have permission to read memories.", reason: "no-permission", needsRole: "viewer", memories: [] });
+      /* F-296 — the `__NO_ROSTER__` refusal moved to ROSTER_GATED_READS at the top of
+         invoke(), alongside the docs and skills reads behind the same viewer floor. */
       if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [], settings: MEMORY_SETTINGS() });
       return Promise.resolve({ success: true, settings: MEMORY_SETTINGS(), memories: MEMORY_ROWS.filter((m) => !DELETED_MEMORY_IDS.has(m.id)) });
     /* listeners + scheduled jobs + API tokens (admin) */

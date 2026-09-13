@@ -532,7 +532,14 @@ html[data-color-mode="dark"] .access-note { color: #64748b; }
    role is fine, nothing is broken, and the site's plan does not include the feature.
    It used to have no voice at all and fell through to .load-error, so the app told a
    paying Standard tenant it had failed and offered a Retry that cannot ever succeed.
-   Owner design law: SOLID saturated orange (#b45309, dark one shade lighter #f59e0b),
+   Owner design law: SOLID saturated orange (#b45309 light, #d97706 dark),
+       F-298 — the dark fill was #f59e0b (amber-500) under WHITE text: ~2.1:1, a hue that
+       reads as a highlighter wash rather than a statement and is unreadable for anyone who
+       needs contrast. The rest of the app pairs #f59e0b with DARK text (#2a1602) for
+       exactly that reason; this note must keep white text, because white-on-solid is the
+       owner's grammar for a chip/badge/note fill. So the FILL moves down one step to
+       #d97706 (amber-600, ~3.2:1 on white) instead of the text moving to dark, which would
+       have made it the only orange note in the app with a dark label.
    WHITE text, 700 title / 500 body, NO left accent rail, NO tinted or low-alpha wash.
    Orange is deliberately not the red hard-stop (nothing is wrong) and not the slate
    refusal (nobody can grant you this) — it is the app's one commercial statement. */
@@ -546,7 +553,7 @@ html[data-color-mode="dark"] .access-note { color: #64748b; }
   border-radius: 4px;
   padding: 9px 12px;
 }
-html[data-color-mode="dark"] .upgrade-note { background: #f59e0b; color: #ffffff; }
+html[data-color-mode="dark"] .upgrade-note { background: #d97706; color: #ffffff; }
 .upgrade-note-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
 .upgrade-note-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
 

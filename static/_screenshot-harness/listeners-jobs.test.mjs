@@ -1297,6 +1297,208 @@ try {
     await close(env);
   }
 
+  /* ---------------- M6e — F-296: the admin DOCUMENTATION tab had no refusal branch -------
+   * The defect this asserts against is an ABSENCE, which is why it survived F-244 and
+   * F-273. Those findings taught the EMBEDDED knowledge components (DocRepository,
+   * SkillsTab, MemoriesTab, KnowledgePanel) to tell a refusal and an edition denial apart
+   * from a fault. The ADMIN tabs are different files - DocsTab.jsx and SkillsAdminTab.jsx
+   * are NOT the duplicated components - and they were never touched, so they kept the one
+   * arm they were born with: anything that is not `success` is `loadError`. A non-roster
+   * reader opening Documentation was told "Couldn't load the documentation library." beside
+   * a Retry - the app blaming itself for a decision the backend made on purpose, plus a
+   * control that re-asks a settled question forever. `getContextDocs` carries the viewer
+   * floor, so this is a state real tenants reach, not a hypothetical.
+   * `__NO_ROSTER__` (not a single-resolver poke) because that is the tenant: every
+   * knowledge read is refused at once. Both themes - .access-note is a coloured claim.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M6e Documentation tab REFUSED - no roster role - ${theme}`);
+    const env = await openAdmin(browser, theme, { __NO_ROSTER__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Documentation");
+      const note = page.locator(".docs-tab .access-note");
+      await note.waitFor({ timeout: 10000 });
+      const t = (await note.innerText()).replace(/\s+/g, " ").trim();
+      ok(/You need CogniRunner viewer access to see documents\./.test(t),
+        `M6e ${theme} the note names the LEVEL the gate asked for (got: ${t})`);
+      ok(/Ask a CogniRunner admin under Permissions\./.test(t),
+        `M6e ${theme} and names WHO can grant it, and where`);
+
+      /* The three false things the reader used to be shown. Their ABSENCE is the fix - the
+         note merely existing would not prove the outage arm stopped firing. */
+      ok(await page.locator(".docs-tab .load-error").count() === 0,
+        `M6e ${theme} no "Couldn't load the documentation library." - nothing failed`);
+      ok(await page.locator(".docs-tab .btn-retry").count() === 0,
+        `M6e ${theme} and NO Retry - it could only re-ask and be refused again`);
+      ok(await page.locator(".docs-tab .empty-state").count() === 0,
+        `M6e ${theme} and not the empty state either - the library is unreadable, not empty`);
+      /* F-296 - and no controls that the same gate would refuse. An "+ Add Document"
+         button on a screen that just said "you have no access" is the Retry mistake
+         wearing a different label: it invites a write whose refusal is already known. */
+      ok(await page.locator(".docs-tab .section-actions:visible").count() === 0,
+        `M6e ${theme} no Add Document / filter chrome for a refused reader`);
+
+      // Owner design law on the slate note, read live in BOTH themes.
+      const st = await note.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { fg: c.color, w: c.fontWeight, bl: c.borderLeftWidth, bt: c.borderTopWidth, bg: c.backgroundColor };
+      });
+      const rgb = st.fg.match(/\d+/g).map(Number);
+      const wantSlate = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      ok(rgb.slice(0, 3).every((v, i) => Math.abs(v - wantSlate[i]) <= 2),
+        `M6e ${theme} the note is the neutral slate ${wantSlate.join(",")} - got ${st.fg}`);
+      ok(Number(st.w) >= 600, `M6e ${theme} 600+ weight - got ${st.w}`);
+      ok(st.bl === st.bt, `M6e ${theme} NO left accent rail`);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(st.bg), `M6e ${theme} not a tinted block - got ${st.bg}`);
+
+      await shot(page, `m6e-docs-access-denied-${theme}`);
+      ok(env.errors.length === 0, `M6e ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x M6e ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M6f — F-296: the admin SKILLS tab, same absence -----------------------
+   * `getSkills` carries the identical viewer floor, and SkillsAdminTab had the identical
+   * single arm. Asserted separately rather than folded into M6e because they are two
+   * files: a fix applied to one and not the other is exactly how this pair got here. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M6f Skills tab REFUSED - no roster role - ${theme}`);
+    const env = await openAdmin(browser, theme, { __NO_ROSTER__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Skills");
+      const note = page.locator(".skills-admin-tab .access-note");
+      await note.waitFor({ timeout: 10000 });
+      const t = (await note.innerText()).replace(/\s+/g, " ").trim();
+      ok(/You need CogniRunner viewer access to see skills\./.test(t),
+        `M6f ${theme} the note names the level required (got: ${t})`);
+      ok(/Ask a CogniRunner admin under Permissions\./.test(t),
+        `M6f ${theme} and names who can grant it`);
+      ok(await page.locator(".skills-admin-tab .load-error").count() === 0,
+        `M6f ${theme} no "Couldn't load skills." outage row`);
+      ok(await page.locator(".skills-admin-tab .btn-retry").count() === 0,
+        `M6f ${theme} and NO Retry`);
+      ok(await page.locator(".skills-admin-empty-title").count() === 0,
+        `M6f ${theme} and not the "No skills yet" empty state - a false claim about the store`);
+      ok(await page.locator(".btn-add-skill").count() === 0,
+        `M6f ${theme} and no "+ New Skill" - the same gate refuses the write`);
+      await shot(page, `m6f-skills-access-denied-${theme}`);
+      ok(env.errors.length === 0, `M6f ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x M6f ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M6g — F-296/F-298: an EDITION denial on all three admin tabs ----------
+   * The second half, and a different product statement: `reason: "upgrade-required"` says
+   * the SITE'S PLAN excludes the feature. The reader's role is fine, no CogniRunner admin
+   * can grant their way out of it, and a retry does not buy a licence. All three tabs fell
+   * through to the outage arm for it - Documentation and Skills because they had no refusal
+   * branch at all, Memories because F-234 gave it the permission arm only and F-273 never
+   * reached the admin app. So a paying Standard tenant was told the app had broken.
+   * F-298 rides along here: the note's DARK fill was #f59e0b under white text (~2.1:1) and
+   * is now #d97706. The ratio is COMPUTED, not eyeballed - the previous colour assertion
+   * named the right hue and still could not be read. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M6g Docs/Skills/Memories UPGRADE REQUIRED - ${theme}`);
+    const env = await openAdmin(browser, theme, { __UPGRADE_REQUIRED__: true, __UPGRADE_FEATURE__: "coder" });
+    const { page } = env;
+    try {
+      for (const [label, root, outage] of [
+        ["Documentation", ".docs-tab", /Couldn.t load the documentation library/i],
+        ["Skills", ".skills-admin-tab", /Couldn.t load skills/i],
+        ["Memories", ".memories-admin-tab", /Couldn.t load memories/i],
+      ]) {
+        await tab(page, label);
+        const note = page.locator(`${root} .upgrade-note`);
+        await note.waitFor({ timeout: 10000 });
+        const t = (await note.innerText()).replace(/\s+/g, " ").trim();
+        ok(/This needs CogniRunner Coder\./.test(t),
+          `M6g ${theme} ${label}: the note names the EDITION (got: ${t})`);
+        ok(/upgrade in Settings/.test(t),
+          `M6g ${theme} ${label}: and names the remedy and where to do it`);
+
+        ok(await page.locator(`${root} .load-error`).count() === 0,
+          `M6g ${theme} ${label}: an edition denial is NOT rendered as a failed load`);
+        ok(await page.locator(`${root} .btn-retry`).count() === 0,
+          `M6g ${theme} ${label}: and offers no Retry - no retry buys a licence`);
+        /* The F-255 law, in the direction that matters on these screens: a plan limit must
+           never be told as a role problem. Sending a paying admin to the Permissions tab to
+           fix a billing question is the failure mode this arm exists to catch. */
+        ok(await page.locator(`${root} .access-note`).count() === 0,
+          `M6g ${theme} ${label}: and is not mistold as a permission refusal`);
+        ok(!/You need CogniRunner \w+ access/.test(await page.locator(root).innerText()),
+          `M6g ${theme} ${label}: never asks the reader to get a role for a plan limit`);
+
+        // F-298 — solid saturated fill, white text, no rail, and a MEASURED ratio.
+        const st = await note.evaluate((el) => {
+          const c = getComputedStyle(el);
+          return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+        });
+        const bg = (st.bg.match(/[\d.]+/g) || []).map(Number);
+        const fg = (st.fg.match(/[\d.]+/g) || []).map(Number);
+        const wantBg = theme === "dark" ? [217, 119, 6] : [180, 83, 9];
+        ok(bg.slice(0, 3).every((v, i) => Math.abs(v - wantBg[i]) <= 2),
+          `M6g ${theme} ${label}: the fill is the solid orange ${wantBg.join(",")} - got ${st.bg}`);
+        ok(bg.length < 4 || bg[3] === 1,
+          `M6g ${theme} ${label}: the fill is SOLID, not a low-alpha tint - got ${st.bg}`);
+        ok(fg.slice(0, 3).every((v) => v >= 250), `M6g ${theme} ${label}: white text - got ${st.fg}`);
+        ok(st.bl === st.bt, `M6g ${theme} ${label}: NO left accent rail`);
+        const lum = (c) => {
+          const l = c.slice(0, 3).map((v) => {
+            const x = v / 255;
+            return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+          });
+          return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
+        };
+        const lf = lum(fg), lb = lum(bg);
+        const ratio = (Math.max(lf, lb) + 0.05) / (Math.min(lf, lb) + 0.05);
+        ok(ratio >= 3,
+          `M6g ${theme} ${label}: the upgrade note clears 3:1 text/fill contrast - got ${ratio.toFixed(2)}:1`);
+
+        ok(!outage.test(await page.locator(root).innerText()),
+          `M6g ${theme} ${label}: the outage sentence is gone`);
+        await shot(page, `m6g-${label.toLowerCase()}-upgrade-${theme}`);
+      }
+      /* F-243's law carried to the edition case: ONE note for one state. The Memories add
+         form is gated on `canEdit`, which answers "is your ROLE enough" and cannot answer
+         "does this site's plan include the store" - so an admin got a live Add Memory box
+         above a note saying the feature is not in their edition. */
+      ok(await page.locator(".memories-admin-add").count() === 0,
+        `M6g ${theme} no live Add Memory box above an upgrade note`);
+      ok(env.errors.length === 0, `M6g ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x M6g ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M6h — F-296 CONTROL: a THROWN read is still a retryable outage --------
+   * The arm that stops the fix over-reaching. If a later edit routed every unsuccessful
+   * load to one of the two notes, M6e/M6f/M6g would stay green while the real retry path
+   * quietly disappeared for everyone. A throw is TRANSPORT - the resolver never answered -
+   * and that one genuinely can succeed on a second try. One theme: a behaviour claim. */
+  {
+    console.log("M6h Docs/Skills THROW - still a retryable load error");
+    const env = await openAdmin(browser, "light", { __FAIL__: ["getContextDocs", "getSkills"] });
+    const { page } = env;
+    try {
+      await tab(page, "Documentation");
+      await page.locator(".docs-tab .load-error").waitFor({ timeout: 10000 });
+      ok(await page.locator(".docs-tab .btn-retry").count() === 1,
+        "M6h a transport failure on docs still offers Retry");
+      ok(await page.locator(".docs-tab .access-note").count() === 0,
+        "M6h and is NOT mistold as an access refusal");
+      ok(await page.locator(".docs-tab .upgrade-note").count() === 0,
+        "M6h and NOT as an edition denial either");
+      await tab(page, "Skills");
+      await page.locator(".skills-admin-tab .load-error").waitFor({ timeout: 10000 });
+      ok(await page.locator(".skills-admin-tab .btn-retry").count() === 1,
+        "M6h a transport failure on skills still offers Retry");
+      ok(await page.locator(".skills-admin-tab .access-note").count() === 0,
+        "M6h and is NOT mistold as an access refusal");
+    } catch (e) { fail++; console.log("  x M6h threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- M7 — F-213: an app-DEMOTED site admin on jira:adminPage ----------------
    * `jira:adminPage` is gated by Jira's OWN admin permission, so reaching this module
    * proves SITE admin. It proves nothing about the CogniRunner role, and F-210 conflated

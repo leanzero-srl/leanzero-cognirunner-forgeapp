@@ -9,6 +9,10 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
+import {
+  isPermissionRefusal, permissionRefusalText,
+  isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE,
+} from "./refusal";
 
 const CATEGORIES = [
   "API Documentation", "Field Mappings", "JSON Schemas",
@@ -19,6 +23,20 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /* F-296 — this tab had NO refusal branch at all, so both of the backend's non-fault
+     answers landed in `loadError`: "Couldn't load the documentation library." beside a
+     Retry. `getContextDocs` carries the F-228/F-235 VIEWER FLOOR (src/index.js:7279), so
+     a reader who is not on the CogniRunner roster gets a resolved refusal — and was told
+     the app had broken, next to a button that re-asks the settled question forever. The
+     embedded DocRepository has told this correctly since F-244/F-273; the ADMIN tab, the
+     one an admin is most likely to open, never learned it.
+     Two separate states, never one: F-255's whole point is that a role refusal and an
+     edition denial are different product statements with different remedies, and a single
+     slot holding both would let the next edit route a billing answer to the Permissions
+     tab. Each holds the RESULT, not a boolean — the sentences are built from `needsRole`
+     and `featureId`, so the copy can never drift from what the gate actually asked for. */
+  const [accessRefusal, setAccessRefusal] = useState(null);
+  const [upgradeRefusal, setUpgradeRefusal] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState(isAdmin ? "all" : "mine");
   const [showAdd, setShowAdd] = useState(false);
@@ -52,13 +70,30 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
       if (result.success) {
         setDocs(result.docs || []);
         setLoadError(false);
+        setAccessRefusal(null);
+        setUpgradeRefusal(null);
         hasLoadedRef.current = true;
+      } else if (isPermissionRefusal(result)) {
+        /* AUTHORITATIVE, and recorded even when an earlier load succeeded — a role revoked
+           mid-session is a real state, and the honest screen is "you no longer have
+           access", not the stale table plus a toast. Clears the other two arms: one state,
+           one voice. Checked BEFORE the hasLoadedRef branch so a refusal can never be
+           downgraded to a "couldn't refresh" toast that says nothing actionable. */
+        setAccessRefusal(result);
+        setUpgradeRefusal(null);
+        setLoadError(false);
+      } else if (isUpgradeRequired(result)) {
+        setUpgradeRefusal(result);
+        setAccessRefusal(null);
+        setLoadError(false);
       } else if (!hasLoadedRef.current) {
         setLoadError(true);
       } else {
         showToast(result.error || "Couldn't refresh documents", "error");
       }
     } catch (e) {
+      /* A THROW is transport, never a refusal — the resolver answers a refusal with a
+         RESOLVED body. This arm must not set accessRefusal/upgradeRefusal. */
       if (token !== loadDocsToken.current) return;
       console.error("Failed to load docs:", e);
       if (!hasLoadedRef.current) setLoadError(true);
@@ -194,11 +229,17 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
     return text;
   };
 
+  // One name for "the backend answered no", for the chrome that must not render either way.
+  const refused = !!accessRefusal || !!upgradeRefusal;
+
   return (
     <div className="docs-tab">
       <div className="section-header">
         <span className="section-title">Documentation Library</span>
-        <div className="section-actions">
+        {/* F-296 — a refused reader is offered no controls. The filter chooses between two
+            lists they cannot see, and "+ Add Document" is a write the same gate refuses;
+            rendering either would be the Retry mistake in a different shape. */}
+        <div className="section-actions" style={{ display: refused ? "none" : undefined }}>
           {isAdmin && (
             <div style={{ width: "160px" }}>
               <CustomSelect
@@ -282,6 +323,28 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
                 </div>
               </div>
             ))}
+          </div>
+        ) : accessRefusal ? (
+          /* F-296 — a refusal, told as one, and checked BEFORE loadError so the outage arm
+             can never shadow it. No Retry: the button re-asks the same question and gets
+             the same no, and a control that cannot succeed is worse than no control — it
+             keeps the reader pressing instead of learning who to ask. Plain slate
+             .access-note (the F-244 grammar, one home in injectCopiedComponentStyles), not
+             the red hard-stop: nothing is broken and nothing was lost. */
+          <div style={{ padding: "14px" }}>
+            <div className="access-note" role="note">
+              {permissionRefusalText(accessRefusal, "documents")}
+            </div>
+          </div>
+        ) : upgradeRefusal ? (
+          /* F-296 — the EDITION arm, also before loadError. Solid orange .upgrade-note,
+             deliberately a third voice: the reader's role is fine, nothing failed, and no
+             number of retries changes which edition the site is on. */
+          <div style={{ padding: "14px" }}>
+            <div className="upgrade-note" role="note">
+              <span className="upgrade-note-title">{UPGRADE_REQUIRED_HEADLINE}</span>
+              <span className="upgrade-note-text">{upgradeRequiredText(upgradeRefusal)}</span>
+            </div>
           </div>
         ) : loadError ? (
           <div style={{ padding: "14px" }}>

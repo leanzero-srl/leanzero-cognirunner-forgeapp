@@ -281,6 +281,30 @@ export const normalizeForgeAppId = (value) => {
 };
 
 /**
+ * THE ONE HOME for "what a setup request carries from the caller".
+ *
+ * F-547: the admin resolver in src/index.js used to repeat this list by hand and fell
+ * two fields behind (`developerSpaceId`, `appId`), so F-527/F-528 were unreachable from
+ * the UI — the field was collected, then silently dropped one layer up. The resolver now
+ * copies exactly these keys off `payload`, and `git-pipeline.test.mjs` asserts this list
+ * equals the function's own destructured parameters, so the drift cannot come back.
+ *
+ * `accountId` is deliberately NOT here: it comes from the invocation context, never from
+ * the payload, and a caller must not be able to name someone else.
+ */
+export const PIPELINE_SETUP_PAYLOAD_KEYS = Object.freeze([
+  "connectionId",
+  "repo",
+  "manifestYaml",
+  "site",
+  "product",
+  "branch",
+  "scaffoldVars",
+  "developerSpaceId",
+  "appId",
+]);
+
+/**
  * Validate a setup request against everything that can refuse it, take the
  * concurrency claim and enqueue. Returns `{ok:true, taskId, queued:true, lockHash}`
  * or a refusal carrying a machine `code`.

@@ -555,5 +555,68 @@ reset();
   ok(lastParams().scaffoldVars.UI_DIR === "none", "...and ride to the consumer unchanged");
 }
 
+/* ===== 14. F-547 — the resolver's forwarded keys ARE requestPipelineSetup's accepted keys =====
+   The F-526 shape, one layer up: a hand-copied field list in src/index.js fell behind the
+   module's signature and silently dropped `developerSpaceId`/`appId`. This asserts against
+   the SOURCE, because a runtime check can only see the fields a test happens to send. */
+{
+  const fs = await import("node:fs/promises");
+  const url = await import("node:url");
+  const here = url.fileURLToPath(new URL(".", import.meta.url));
+  const pipeSrc = await fs.readFile(here + "../../src/git-pipeline.js", "utf8");
+  const indexSrc = await fs.readFile(here + "../../src/index.js", "utf8");
+
+  // The destructured parameters of requestPipelineSetup, read off its signature.
+  const sig = pipeSrc.match(/export async function requestPipelineSetup\(\{([\s\S]*?)\}\s*=\s*\{\}\s*\)/);
+  ok(!!sig, "requestPipelineSetup's signature is readable from source");
+  const accepted = (sig ? sig[1] : "")
+    .split("\n")
+    .map((l) => l.replace(/\/\/.*$/, "").trim())
+    .filter(Boolean)
+    .map((l) => l.split(/[=,]/)[0].trim())
+    .filter(Boolean);
+  const declared = [...pipe.PIPELINE_SETUP_PAYLOAD_KEYS];
+  ok(JSON.stringify(accepted.filter((k) => k !== "accountId")) === JSON.stringify(declared),
+    `PIPELINE_SETUP_PAYLOAD_KEYS equals the accepted payload keys (signature ${JSON.stringify(accepted)} vs constant ${JSON.stringify(declared)})`);
+  ok(accepted.includes("accountId"),
+    "...and accountId is accepted but excluded from the payload list - it comes from context");
+  ok(declared.includes("developerSpaceId") && declared.includes("appId"),
+    "...and it carries the F-527/F-528 fields");
+
+  // The resolver must copy by that constant, not by a re-typed literal.
+  const resolverBody = indexSrc.match(/resolver\.define\("setupGitPipeline"[\s\S]*?\n\}\);/);
+  ok(!!resolverBody, "the setupGitPipeline resolver is readable from source");
+  const body = resolverBody ? resolverBody[0] : "";
+  ok(/for \(const k of PIPELINE_SETUP_PAYLOAD_KEYS\)/.test(body),
+    "setupGitPipeline forwards the payload by the exported key list, not a hand-copied literal");
+  for (const k of declared) {
+    ok(!new RegExp(`${k}:\\s*payload\\?\\.`).test(body),
+      `...so no hand-copied \`${k}: payload?.${k}\` line survives to drift`);
+  }
+  ok(/r\.variable \? \{ variable: r\.variable \}/.test(body),
+    "...and the F-541 `variable` extra rides the refusal out to the admin");
+}
+
+/* ===== 15. F-547 — the two new fields actually reach the module through the resolver ===== */
+reset();
+{
+  const connId = await seedConnection();
+  const ARI2 = "ari:cloud:ecosystem::app/8e6ab209-bb76-4a09-86cd-644f3f33960c";
+  const r = await call("setupGitPipeline", {
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    developerSpaceId: "d77c0cce-1111-4222-8333-444444444444", appId: ARI2,
+  });
+  ok(r.success === true, `a setup carrying the new fields queues (got ${JSON.stringify(r).slice(0, 200)})`);
+  const names = (r.status?.steps || []).map((x) => x.name).join("|");
+  ok(names.includes("var:FORGE_DEVELOPER_SPACE") && names.includes("var:FORGE_APP_ID"),
+    `...and BOTH new steps are planned through the resolver, not dropped one layer up (got ${names})`);
+  const bad = await call("setupGitPipeline", {
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    developerSpaceId: "not-a-space",
+  });
+  ok(bad.success === false && bad.code === "invalid_developer_space",
+    `...and a malformed one is refused by the module through the resolver (got ${JSON.stringify(bad).slice(0, 200)})`);
+}
+
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

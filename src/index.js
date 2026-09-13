@@ -98,6 +98,7 @@ import {
 // behaviour lives in src/git-pipeline.js and these resolvers are a permission skin.
 import {
   requestPipelineSetup,
+  PIPELINE_SETUP_PAYLOAD_KEYS,
   pipelineStatus,
   triggerPipelineDeploy,
   publicPipelineRow,
@@ -12006,16 +12007,13 @@ resolver.define("rotateGitCredential", async ({ payload, context }) => {
 resolver.define("setupGitPipeline", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) return needRole("admin");
   return okOr(async () => {
-    const r = await requestPipelineSetup({
-      connectionId: payload?.connectionId,
-      repo: payload?.repo,
-      manifestYaml: payload?.manifestYaml,
-      site: payload?.site,
-      product: payload?.product,
-      branch: payload?.branch,
-      scaffoldVars: payload?.scaffoldVars,
-      accountId: context.accountId,
-    });
+    // F-547 — the accepted key list has ONE home, in git-pipeline.js. Re-typing it here
+    // is what dropped `developerSpaceId`/`appId` (F-527/F-528) on the floor, so the
+    // payload is copied by that exported list instead. `accountId` comes from the
+    // invocation context and is never taken from the payload.
+    const args = { accountId: context.accountId };
+    for (const k of PIPELINE_SETUP_PAYLOAD_KEYS) args[k] = payload?.[k];
+    const r = await requestPipelineSetup(args);
     if (!r.ok) {
       return {
         success: false,
@@ -12024,6 +12022,8 @@ resolver.define("setupGitPipeline", async ({ payload, context }) => {
         ...(r.hint ? { hint: r.hint } : {}),
         ...(r.scopes ? { scopes: r.scopes } : {}),
         ...(r.added ? { added: r.added, removed: r.removed } : {}),
+        // F-541's machine-readable extra: which scaffold variable was refused.
+        ...(r.variable ? { variable: r.variable } : {}),
       };
     }
     return { success: true, async: true, taskId: r.taskId, lockHash: r.lockHash, status: publicPipelineRow(r.status) };

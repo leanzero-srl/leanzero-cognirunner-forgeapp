@@ -735,5 +735,88 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   ok(p3.pinEpochVerified === undefined, "…and nothing claims the bytes were verified unchanged");
 }
 
+/* ===== F-610 - A FOLLOW-UP TURN INHERITS THE THREAD'S SKILLS ==================
+ *
+ * F-594 taught `buildCoderKnowledge` to keep the pin's skills when a turn carries no
+ * selection "unless the turn passes `skillIdsExplicit`" - but NOTHING produced that flag,
+ * and `startCoderTurn` never read back the row `rememberCoderTurnParams` writes. So turn 2
+ * from a second browser (the picker lives in the viewer's localStorage) pushed
+ * `skillIds: []`, and the rebuild ran off the default set: the thread's skills vanished
+ * mid-conversation with nothing naming the cause.
+ *
+ * These drive the REAL resolver and read the PUSHED params, so they pin behaviour and not
+ * a source string: (1) turn 2 without skillIds keeps turn 1's ids, (2) turn 2 with an
+ * explicit `[]` clears them, (3) a stored-params read fault degrades to the default set,
+ * logs, and never throws.
+ */
+{
+  const T = "t_f610";
+  const first = await call("startCoderTurn", {
+    issueKey: ISSUE, threadId: T, message: "turn one", simulation: true,
+    skillIds: ["skill_house", "skill_adf"],
+  });
+  ok(first && first.success === true, `F-610: turn 1 binds two skills (${JSON.stringify(first).slice(0, 160)})`);
+  {
+    const p = lastCoderPush();
+    ok(p.skillIds.join(",") === "skill_house,skill_adf", "...and pushes them");
+    ok(p.skillIdsExplicit === true, "...flagged EXPLICIT, because the payload carried the key");
+  }
+
+  /* (1) turn 2 says nothing about skills - it inherits */
+  await call("startCoderTurn", { issueKey: ISSUE, threadId: T, message: "turn two", simulation: true });
+  {
+    const p = lastCoderPush();
+    ok(p.skillIds.join(",") === "skill_house,skill_adf",
+      `THE FINDING: a turn with no selection inherits the thread's stored skills (${JSON.stringify(p.skillIds)})`);
+    ok(p.skillIdsExplicit === false,
+      "...and is NOT explicit, so the pin's ids remain the fallback behind it (F-594's arm)");
+    const knowledge = await __coderKnowledgeInternals.buildCoderKnowledge(p);
+    // By NAME, not by body text: an earlier section of this file edits skill_house's
+    // instructions, and a test that pins yesterday's sentence tests the fixture.
+    ok(typeof knowledge.skillsBlock === "string" && /### Skill: House style/.test(knowledge.skillsBlock)
+      && /### Skill: ADF rules/.test(knowledge.skillsBlock),
+      `...and the rebuilt block still carries BOTH skills (${String(knowledge.skillsBlock).slice(0, 80)})`);
+  }
+
+  /* (2) turn 3 says `[]` and means it */
+  await call("startCoderTurn", { issueKey: ISSUE, threadId: T, message: "turn three", simulation: true, skillIds: [] });
+  {
+    const p = lastCoderPush();
+    ok(Array.isArray(p.skillIds) && p.skillIds.length === 0, "an explicit empty list clears the binding");
+    ok(p.skillIdsExplicit === true, "...and says so, so the re-pin drops the pinned skills instead of keeping them");
+    const row = await storage.get(`coder_turn:${ISSUE}:${T}`);
+    ok(row && Array.isArray(row.skillIds) && row.skillIds.length === 0,
+      `...and the stored row is CLEARED, so turn 4 does not resurrect them (${JSON.stringify(row && row.skillIds)})`);
+  }
+  await call("startCoderTurn", { issueKey: ISSUE, threadId: T, message: "turn four", simulation: true });
+  ok(lastCoderPush().skillIds.length === 0, "...turn 4, silent again, inherits the cleared binding");
+
+  /* (3) the read FAILS OPEN */
+  {
+    const T2 = "t_f610_fault";
+    await call("startCoderTurn", { issueKey: ISSUE, threadId: T2, message: "one", simulation: true, skillIds: ["skill_house"] });
+    const realGet = storage.get.bind(storage);
+    const warns = [];
+    const realWarn = console.warn;
+    console.warn = (...a) => { warns.push(a.join(" ")); };
+    storage.get = async (k) => {
+      if (String(k) === `coder_turn:${ISSUE}:${T2}`) throw new Error("kvs unavailable");
+      return realGet(k);
+    };
+    let threw = null;
+    let r = null;
+    try {
+      r = await call("startCoderTurn", { issueKey: ISSUE, threadId: T2, message: "two", simulation: true });
+    } catch (e) { threw = e; }
+    storage.get = realGet;
+    console.warn = realWarn;
+    ok(threw === null && r && r.success === true,
+      `a stored-params read fault does not fail the turn (threw=${threw && threw.message})`);
+    ok(lastCoderPush().skillIds.length === 0, "...it degrades to the default set (no inherited ids)");
+    ok(warns.some((w) => /turn params unreadable/i.test(w)),
+      `...and it is LOGGED, so a thread quietly losing its skills has a cause on the record (${JSON.stringify(warns).slice(0, 200)})`);
+  }
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

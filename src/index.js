@@ -11750,9 +11750,19 @@ const rememberCoderTurnParams = async (issueKey, threadId, params) => {
       // RESUME runs with the skills the owner started the thread with. An absent
       // value inherits what the row already holds; it is never re-read from the
       // confirm payload, for the same reason simulation is not.
-      skillIds: Array.isArray(params.skillIds) && params.skillIds.length
-        ? params.skillIds
-        : ((existing && Array.isArray(existing.skillIds)) ? existing.skillIds : []),
+      //
+      // F-610 - AN EMPTY LIST IS ONLY AN INSTRUCTION WHEN THE TURN SAYS SO. A turn
+      // that carried `skillIds` in its payload sets `skillIdsExplicit`, and then `[]`
+      // means UNBIND and is written as such. Without the flag `[]` is an ABSENT
+      // selection (a second browser, cleared site data - the panel keeps the picker in
+      // localStorage) and inherits the row, which is what `buildCoderKnowledge`
+      // (src/async-handler.js) does with the same flag on the re-pin path. The two
+      // halves read the flag the same way on purpose: one rule, one meaning.
+      skillIds: params.skillIdsExplicit === true
+        ? (Array.isArray(params.skillIds) ? params.skillIds : [])
+        : (Array.isArray(params.skillIds) && params.skillIds.length
+          ? params.skillIds
+          : ((existing && Array.isArray(existing.skillIds)) ? existing.skillIds : [])),
       updatedAt: new Date().toISOString(),
     }, CODER_TURN_PARAMS_TTL);
   } catch (e) {
@@ -11772,7 +11782,16 @@ const rememberCoderTurnParams = async (issueKey, threadId, params) => {
  */
 const coderResumeParams = async (issueKey, threadId) => {
   let stored = null;
-  try { stored = await storage.get(coderTurnParamsKey(issueKey, threadId)); } catch (e) { stored = null; }
+  try {
+    stored = await storage.get(coderTurnParamsKey(issueKey, threadId));
+  } catch (e) {
+    // F-610 — SAY IT OUT LOUD. This read failing is how a thread silently loses the
+    // shape it runs with (skills, round budget, connection) and drops to the defaults;
+    // it still fails OPEN, because refusing a turn over a KVS hiccup is worse, but a
+    // degraded turn must leave a cause on the record rather than look ordinary.
+    console.warn(`[coder] stored turn params unreadable for ${safeKeyPart(issueKey)}/${safeKeyPart(threadId)}, falling back: ${e && e.message}`);
+    stored = null;
+  }
   let src = stored && typeof stored === "object" ? stored : null;
   if (!src) {
     try {
@@ -11825,13 +11844,42 @@ resolver.define("startCoderTurn", async ({ payload, context }) => {
     // binds nothing is a feature whose author believes it is on. The existence check
     // reports UNKNOWN as "I could not check" and lets the turn through — refusing on a
     // KVS hiccup would make the Coder unusable for a reason nobody can see.
-    const skillIds = normalizeAgentKnowledge({ skillIds: payload?.skillIds }).skillIds;
-    if (skillIds.length) {
+    //
+    // F-610 — AND WHAT THE THREAD ALREADY HOLDS, WHEN THIS TURN BINDS NOTHING. The
+    // picker lives in the viewer's localStorage, so turn 2 from a second browser posts
+    // no `skillIds` at all; before this, that turn rebuilt the pin from the default set
+    // and the thread's skills vanished mid-conversation. Presence of the key in the
+    // PAYLOAD is the signal: it is how the panel says "these, and I mean it", so an
+    // explicit `[]` unbinds and is remembered as `[]`. Absent, the stored row for
+    // {issueKey, threadId} is the thread's own record and is inherited; `skillIdsExplicit`
+    // then stays false so `buildCoderKnowledge` keeps the pin's ids as a further fallback.
+    const skillIdsExplicit = Array.isArray(payload?.skillIds);
+    let skillIds = normalizeAgentKnowledge({ skillIds: payload?.skillIds }).skillIds;
+    if (skillIdsExplicit) {
+      // Only a binding this turn ASKED for is checked against the index. Inherited ids
+      // are never re-asserted: a skill deleted since turn 1 must cost that skill, not the
+      // whole thread, and `fetchSkillsBlock` already fails open on an id it cannot load.
+      if (skillIds.length) {
+        try {
+          await listenersMod.assertKnownSkillIds({ skillIds });
+        } catch (e) {
+          if (e && e.reason === "unknown-skill") return { success: false, error: e.message, reason: "unknown-skill" };
+          throw e;
+        }
+      }
+    } else {
+      // FAIL-OPEN ON THE READ. A KVS hiccup here must degrade to "no inherited binding"
+      // and say so on the log — the pin fallback in `buildCoderKnowledge` still stands
+      // behind it — never throw and turn a readable thread into a refused turn.
       try {
-        await listenersMod.assertKnownSkillIds({ skillIds });
+        const prior = await coderResumeParams(issueKey, threadId);
+        const inherited = normalizeAgentKnowledge({ skillIds: prior.skillIds }).skillIds;
+        if (inherited.length) {
+          skillIds = inherited;
+          console.log(`[coder] turn carried no skill selection, inheriting this thread's ${inherited.length} stored skill(s) (${inherited.join(", ")})`);
+        }
       } catch (e) {
-        if (e && e.reason === "unknown-skill") return { success: false, error: e.message, reason: "unknown-skill" };
-        throw e;
+        console.warn(`[coder] stored turn params unreadable for ${safeKeyPart(issueKey)}/${safeKeyPart(threadId)}, this turn runs with no inherited skills: ${e && e.message}`);
       }
     }
     const savedByRole = await savedByRoleFor(context.accountId);
@@ -11840,6 +11888,9 @@ resolver.define("startCoderTurn", async ({ payload, context }) => {
       issueKey, threadId, accountId: context.accountId,
       message: message.slice(0, coderMod.CODER_USER_MESSAGE_MAX_CHARS),
       skillIds,
+      // F-610 — travels with the turn so the re-pin path reads the same intent the
+      // stored row was written with.
+      skillIdsExplicit,
       simulation: payload?.simulation === true,
       connectionId: payload?.connectionId ? String(payload.connectionId).slice(0, 100) : null,
       maxRounds: payload?.maxRounds,

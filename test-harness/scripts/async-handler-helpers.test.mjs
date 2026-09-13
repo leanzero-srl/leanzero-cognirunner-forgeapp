@@ -792,7 +792,10 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     const close = asyncSrc.indexOf("\n}\n", at);
     return asyncSrc.slice(at, close + 2).replace("export async function", "async function");
   })();
-  const AI_TASK_TYPES = new Set(eval(asyncSrc.match(/export const AI_TASK_TYPES = new Set\(([\s\S]*?)\);/)[1]));
+  // F-325 — the set is DERIVED from ai-budget's list; import that list rather than
+  // eval'ing a literal that no longer exists.
+  const { TOKEN_SPENDING_TASK_TYPES } = await import("../../src/shared/ai-budget.js");
+  const AI_TASK_TYPES = new Set(TOKEN_SPENDING_TASK_TYPES);
   const buildGate = (deps) => new Function("GATE_DEPS", "console", "AI_TASK_TYPES", `return (${fnSrc});`)(deps, quietConsole, AI_TASK_TYPES);
   const runRegion = async (deps) => {
     const out = await buildGate(deps)({ body: { taskType: deps.taskType, taskId: deps.taskId, params: deps.params } }, {});
@@ -879,6 +882,44 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     const out = await runRegion(deps);
     ok(out.run === false && out.deferred === true && RAN.ran === false, "EXECUTED: a gitreview over budget is DEFERRED, not run");
     ok(pushed && pushed.delay === 42 && pushed.body.params.budgetDeferrals === 1, "EXECUTED: …re-pushed past the boundary with the deferral counted");
+  }
+  {
+    // F-324 — a deferral that HALF succeeds must never run inline. Order first: the
+    // job row is written BEFORE the push (the old order wrote it after, and a KVS
+    // fault there unwound into the fail-open catch and ran the task twice).
+    const order = [];
+    const { RAN, deps } = regionDeps({
+      taskType: "review", taskId: "D1", params: { config: { ruleId: "r1" } },
+      getProviderConfig: async () => ({ provider: "atlassian" }),
+      estimateTaskTokens: () => 9000,
+      aiBudgetGate: async () => ({ allow: false, delaySeconds: 30, used: 34000, reserved: 0, budget: 35000 }),
+      updateAsyncJob: async () => { order.push("row"); },
+      pushDeferred: async () => { order.push("push"); return { jobId: "J" }; },
+      bumpAiBudgetBucket: async () => {},
+    });
+    await runRegion(deps);
+    ok(order[0] === "row" && order.includes("push"), "EXECUTED: the job row is written BEFORE the deferred push");
+    ok(RAN.ran === false, "EXECUTED: …and the task does not run inline");
+  }
+  {
+    // …and when the PUSH throws, the region FAILS CLOSED: it rethrows past the
+    // fail-open catch so the platform redelivers, instead of running now beside a
+    // deferred copy that may have landed.
+    let reset = 0;
+    const { RAN, deps } = regionDeps({
+      taskType: "review", taskId: "D2", params: { config: { ruleId: "r1" } },
+      getProviderConfig: async () => ({ provider: "atlassian" }),
+      estimateTaskTokens: () => 9000,
+      aiBudgetGate: async () => ({ allow: false, delaySeconds: 30, used: 34000, reserved: 0, budget: 35000 }),
+      updateAsyncJob: async (id, patch) => { if (patch && patch.budgetWait === null) reset++; },
+      pushDeferred: async () => { throw new Error("queue down"); },
+      bumpAiBudgetBucket: async () => {},
+    });
+    let threw = null;
+    try { await runRegion(deps); } catch (e) { threw = e; }
+    ok(threw && /queue down/.test(threw.message), "EXECUTED: a failed deferral push RETHROWS past the fail-open catch (F-324)");
+    ok(RAN.ran === false, "EXECUTED: …the task does NOT run inline — a double run is worse than a redelivery");
+    ok(reset === 1, "EXECUTED: …and the job row's budgetWait is reset so the row does not claim a wait that never started");
   }
 }
 
@@ -979,7 +1020,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/await dispatchGitEvent\(envelope\)/.test(g), "…and delegates to listeners.js — matching, brakes and ignoreSelf have ONE home");
   ok(!/callAIChat|callModel|reviewPullRequest/.test(g), "the dispatch makes NO model call: the AI runs in the task it enqueues");
   ok(!/AI_TASK_TYPES = new Set\(\[[^\]]*git-event/.test(asyncSrc), "git-event is NOT an AI task — pacing a matcher would delay deliveries, not spend");
-  const aiTypes = new Set(eval(asyncSrc.match(/export const AI_TASK_TYPES = new Set\(([\s\S]*?)\);/)[1]));
+  const { TOKEN_SPENDING_TASK_TYPES: spending } = await import("../../src/shared/ai-budget.js");
+  const aiTypes = new Set(spending);
   ok(!aiTypes.has("git-event") && aiTypes.has("gitreview"), "EXECUTED: the governor paces the review, never the delivery");
   ok(UNPOLLED_TASKS.has("git-event"), "nothing polls a delivery — no orphan async_task row");
 

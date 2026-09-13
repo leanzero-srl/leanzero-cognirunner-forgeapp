@@ -74,6 +74,32 @@ export const effectiveBudget = (provider, settings) => {
   return AI_BUDGET_DEFAULT_TPM[provider] || 0;
 };
 
+/**
+ * The diff byte cap a PR review truncates to. The VALUE's one home is
+ * `DIFF_MAX_TOTAL_BYTES` in src/git-providers.js; this module is dependency-free
+ * (it is imported by frontends and by the consumer), so it cannot import a module
+ * that pulls fetch and the provider layer. `ai-budget.test.mjs` asserts the two are
+ * EQUAL, so a change to the cap fails the suite rather than drifting silently.
+ */
+export const GITREVIEW_DIFF_CAP_BYTES = 60 * 1024;
+
+/**
+ * WHO SPENDS TOKENS — ONE list, three answers (F-325).
+ *
+ * `TOKEN_SPENDING_TASK_TYPES` always spend; `MODE_DECIDED_TASK_TYPES` spend only when
+ * the rule they run is in agent / non-static mode (the consumer reads the rule row);
+ * `NON_AI_TASK_TYPES` never spend. The consumer's `AI_TASK_TYPES` is DERIVED from the
+ * first list rather than retyped — the two used to disagree (`coder`, `va-item` and
+ * `va-post` had estimates here and were absent there), which meant the moment a
+ * producer for them existed they would run unpaced and unreserved against the same
+ * per-minute ceiling the governor exists to protect.
+ */
+export const TOKEN_SPENDING_TASK_TYPES = Object.freeze([
+  "review", "codegen", "fixcode", "skilldistill", "memory_distill", "gitreview", "coder", "va-item", "va-post",
+]);
+export const MODE_DECIDED_TASK_TYPES = Object.freeze(["postfunction", "listener", "scheduledjob"]);
+export const NON_AI_TASK_TYPES = Object.freeze(["git-event", "gitcredrotate", "probe"]);
+
 /** ~4 chars per token is the usual English/JSON ratio; good enough for a gate. */
 export const estimateTokensFromText = (text) => Math.ceil(String(text || "").length / 4);
 
@@ -104,8 +130,15 @@ export const estimateTaskTokens = (taskType, params, learned) => {
     // (60 KB) before the prompt is built, so this is bounded by construction; the flat
     // 4000 covers the rubric prefix, the PR body/comments and the JSON answer.
     case "gitreview": {
+      // F-323 — the estimate must NOT quietly become the flat 4000 for the most
+      // expensive queued task in the app. `diffBytes` is supplied by the producer (the
+      // git-event dispatcher knows the PR's size from the envelope); when it cannot
+      // know, the honest assumption is the CAP the engine will truncate to, not zero.
+      // Under-reserving is what breaches the provider's per-minute ceiling and lands
+      // the 429 on a user-facing validator instead of on the background work.
       const bytes = Number(p.diffBytes);
-      return (Number.isFinite(bytes) && bytes > 0 ? Math.ceil(bytes / 4) : 0) + 4000;
+      const effective = Number.isFinite(bytes) && bytes > 0 ? Math.min(bytes, GITREVIEW_DIFF_CAP_BYTES) : GITREVIEW_DIFF_CAP_BYTES;
+      return Math.ceil(effective / 4) + 4000;
     }
     // One coder turn is the most expensive thing the app can queue (probe (f):
     // ~40k for a round on a frontier model). Deliberately generous.

@@ -608,7 +608,15 @@ export const enqueueListenerRun = async ({ listener, eventType, event, ctx, sour
  * in the params: executeGitReview reads it from the rule row, so a params forgery
  * cannot arm a verdict action.
  */
-export const enqueueGitReviewRun = async ({ listener, ctx }) => {
+/** Bytes of diff a PR is likely to carry, from whatever size fields the envelope has. */
+export const prDiffBytes = (pr) => {
+  if (!pr || typeof pr !== "object") return null;
+  const lines = Number(pr.additions) + Number(pr.deletions);
+  if (Number.isFinite(lines) && lines > 0) return Math.min(lines * 40, 1024 * 1024);
+  return null;
+};
+
+export const enqueueGitReviewRun = async ({ listener, ctx, event = null }) => {
   const m = await idx();
   const { Queue } = await import("@forge/events");
   const queue = new Queue({ key: "async-ai-queue" });
@@ -617,6 +625,13 @@ export const enqueueGitReviewRun = async ({ listener, ctx }) => {
   const params = {
     connId: ctx.connectionId || null, repoId: ctx.repoId || null, prNumber: ctx.prNumber ?? null,
     ruleId: listener.id, simulation: listener.simulationMode === true, enqueuedAt,
+    // F-323 — the token governor prices a review by its DIFF, and only the producer
+    // ever sees the PR's size (the engine fetches the diff after the gate has already
+    // decided). When the envelope carries additions/deletions we pass a byte estimate
+    // (~40 bytes per changed line, the usual patch line with its context); when it does
+    // not, we pass nothing and the estimator assumes the cap the engine truncates to —
+    // never the flat minimum, which is what breached the per-minute ceiling.
+    ...(prDiffBytes(event && event.pullRequest) == null ? {} : { diffBytes: prDiffBytes(event.pullRequest) }),
   };
   await queue.push({ body: { taskType: "gitreview", taskId, params } });
   await m.writeAsyncJob({ taskId, taskType: "gitreview", status: "queued", ruleId: listener.id, ruleName: listener.name, issueKey: ctx.issueKey || null, provider: null, model: null, accountId: null, enqueuedAt });
@@ -643,7 +658,7 @@ export const enqueueForListener = async ({ listener, eventType, event, ctx, sour
       console.log(`[listener] ${eventType}: "${listener.name}" (${listener.id}) skipped — the PR review engine needs a pull-request number`);
       return null;
     }
-    const r = await enqueueGitReviewRun({ listener, ctx });
+      const r = await enqueueGitReviewRun({ listener, ctx, event });
     return { ...r, taskType: "gitreview" };
   }
   const r = await enqueueListenerRun({ listener, eventType, event, ctx, source });

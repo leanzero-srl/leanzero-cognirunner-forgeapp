@@ -76,7 +76,7 @@ import {
   // vendor's bill — and it SUCCEEDED, so the failure was invisible.
   readProviderConfigFresh as getProviderConfig,
 } from "./index";
-import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS, MAX_BUDGET_DEFER_DELAY_S } from "./shared/ai-budget.js";
+import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS, MAX_BUDGET_DEFER_DELAY_S, TOKEN_SPENDING_TASK_TYPES } from "./shared/ai-budget.js";
 // Learned memories — injected into static-PF reviews and persisted by the
 // memory_distill task (runtime auto-capture, opt-in). defangFence neutralizes
 // fence tokens in untrusted content interpolated into prompts here.
@@ -1307,9 +1307,15 @@ const refuseQueuedRunWithoutProvider = async (taskType, taskId, params, ruleRow,
  * and enqueues — it calls no model, so pacing it would only delay the enqueue of work
  * that IS paced a moment later. Its ai-budget estimate is 0 for the same reason.
  */
-export const AI_TASK_TYPES = new Set([
-  "review", "codegen", "fixcode", "skilldistill", "memory_distill", "gitreview",
-]);
+/**
+ * DERIVED, never retyped (F-325). The list of task types that spend tokens lives in
+ * src/shared/ai-budget.js beside the estimator that prices them; keeping a second copy
+ * here is how `coder`, `va-item` and `va-post` came to have estimates and no pacing —
+ * unreachable today, and silently unpaced the moment a producer lands.
+ * `postfunction` / `listener` / `scheduledjob` are decided per RULE below (static code
+ * and script mode spend nothing), which is why they are not in this set.
+ */
+export const AI_TASK_TYPES = new Set(TOKEN_SPENDING_TASK_TYPES);
 
 /**
  * The gate's real collaborators. Injected (rather than closed over) so the offline
@@ -1353,7 +1359,9 @@ export async function runGatedTask(event, deps = {}) {
   const d = { ...GATE_DEPS, ...deps };
   const { taskType, taskId, params } = (event && event.body) || {};
   const { ttl, jobRow = null, enqAt = null, budgetDeferrals = 0 } = d;
-  const budgetRuleId = params?.config?.ruleId || params?.config?.id || params?.listenerId || params?.jobId || null;
+  // F-323 — `params.ruleId` is how a gitreview names its rule; without it the learned
+  // per-rule cost could never apply to the one task whose real cost varies most.
+  const budgetRuleId = params?.config?.ruleId || params?.config?.id || params?.listenerId || params?.jobId || params?.ruleId || null;
   let budgetEstimate = 0;
   let budgetProvider = null;
   let budgetReserveMs = 0; // the reservation's minute — the release must hit the SAME bucket
@@ -1367,6 +1375,10 @@ export async function runGatedTask(event, deps = {}) {
   // receipt need. Read once and pass it down; the old second read sat in front of
   // storeLog inside one try, so a KVS fault on it lost the execution-log entry too.
   let ruleRow = null;
+  // F-324 — set when a deferral half-succeeded. The catch below is deliberately
+  // fail-OPEN ("run now"); this one error must pass straight through it, because
+  // running now after a push that may have landed is the double-run.
+  let fatalDeferError = null;
   try {
     let usesAi = false;
     if (taskType === "postfunction") usesAi = !/static/.test(String(params?.config?.type || ""));
@@ -1403,13 +1415,37 @@ export async function runGatedTask(event, deps = {}) {
           ...event.body,
           params: { ...params, enqueuedAt: new Date().toISOString(), firstEnqueuedAt, budgetDeferrals: budgetDeferrals + 1 },
         };
-        // A small concurrency cap on the re-pushed events keeps a drained backlog from
-        // all passing the (non-atomic) ledger check in the same instant.
-        const pr = await d.pushDeferred(body, gate.delaySeconds);
+        // F-324 — ROW FIRST, PUSH SECOND, and a half-success is FAIL-CLOSED.
+        //
+        // The old order pushed the deferred copy and then wrote the job row, both
+        // inside this fail-OPEN try: a KVS fault on the write unwound into the catch
+        // and the task ran NOW as well as when the deferred copy arrived — the model
+        // called twice for one request, double-spending exactly the tokens the gate
+        // was deferring. Only `listener` (lst_exec) and `gitreview` (its head-SHA
+        // claim) are protected downstream; review/codegen/fixcode/skilldistill are not.
+        //
+        // So: write the row first (a row that says "queued" for a push that never
+        // happened is visible and self-correcting — the task is re-delivered by the
+        // platform), then push. If the PUSH fails, reset the row and RETHROW past the
+        // fail-open catch: the delivery is retried, and nothing runs inline.
         await d.updateAsyncJob(taskId, {
-          status: "queued", enqueuedAt: body.params.enqueuedAt, jobId: pr?.jobId || jobRow?.jobId || null, startedAt: null,
+          status: "queued", enqueuedAt: body.params.enqueuedAt, jobId: jobRow?.jobId || null, startedAt: null,
           budgetWait: { until, deferrals: budgetDeferrals + 1, firstEnqueuedAt, used: gate.used + gate.reserved, budget: gate.budget, estimate: budgetEstimate, provider: budgetProvider },
         }, d.JOB_TTL_ACTIVE, { taskId, taskType, status: "queued", enqueuedAt: body.params.enqueuedAt });
+        let pr;
+        try {
+          pr = await d.pushDeferred(body, gate.delaySeconds);
+        } catch (e) {
+          try {
+            await d.updateAsyncJob(taskId, { status: "queued", budgetWait: null, startedAt: null }, d.JOB_TTL_ACTIVE);
+          } catch { /* best-effort: the row is advisory, the refusal below is not */ }
+          console.error(`[budget] deferral push failed for ${taskType} (${taskId}) — NOT running inline (fail closed): ${e?.message}`);
+          fatalDeferError = e;
+          throw e;
+        }
+        if (pr && pr.jobId) {
+          try { await d.updateAsyncJob(taskId, { jobId: pr.jobId }, d.JOB_TTL_ACTIVE); } catch { /* best-effort */ }
+        }
         console.log(`[budget] deferred ${taskType} (${taskId}) ${gate.delaySeconds}s — minute at ${gate.used + gate.reserved}/${gate.budget} tokens, needs ~${budgetEstimate} (${budgetProvider}, deferral ${budgetDeferrals + 1})`);
         return { run: false, deferred: true, budgetRuleId, budgetEstimate: 0, budgetProvider: null, budgetReserveMs: 0, ruleRow };
       }
@@ -1423,6 +1459,8 @@ export async function runGatedTask(event, deps = {}) {
       }
     }
   } catch (e) {
+    // F-324 — the ONE error that is not fail-open. Everything else below is.
+    if (fatalDeferError) throw fatalDeferError;
     // The gate must never block the queue: on any ledger/queue failure, run now.
     console.warn(`[budget] gate skipped for ${taskType} (${taskId}): ${e?.message}`);
     if (budgetProvider && budgetEstimate && budgetReserveMs) { try { await d.bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs); } catch { /* best-effort */ } }

@@ -933,6 +933,76 @@ ok(healed2.success === true && JSON.parse(fetchCalls[1].body || "{}").config.sec
   "…and “Set up webhook” re-installs exactly that secret");
 ok(healed2.connection.webhooks["acme/app"].hookState === null, "…clearing the banner");
 
+/* --- F-504: THE PROMOTE FAILURE HAS A LEVER, SO IT IS OBSERVABLE LIVE -------------
+ *
+ * Everything above reaches `rotation-failed` by failing a MOCK KVS write, which exists
+ * only in this process. On a real tenant there was no way to reach it at all, so F-481's
+ * pending-secret acceptance window and F-491's reconcile were unproven in the only place
+ * that matters. `HARNESS_FAULT_HOOK_PROMOTE` is that missing seam: same file, same env
+ * gate, same one-shot counter as the dispatch lever. These arms prove the lever produces
+ * the SAME state the mock fault does — and that it is inert unarmed and in production.
+ */
+{
+  const fault = await import("../../src/harness-fault.js");
+  const savedHarnessEnv = process.env.HARNESS_SECRET;
+  const faultParts = [hookId, "acme/app"];
+  const beforeLever = storage.__raw(HOOK_KEY).secret;
+
+  // (a) UNARMED, env present: the lever changes nothing — a rotation still succeeds.
+  process.env.HARNESS_SECRET = "dev";
+  fetchCalls = [];
+  fetchQueue = [res(200, { id: 4242 })];
+  const leverOff = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+  ok(leverOff.success === true, `an UNARMED lever has no effect — the rotation completes (${JSON.stringify(leverOff).slice(0, 120)})`);
+  const promoted = JSON.parse(fetchCalls[0].body || "{}").config.secret;
+  ok(storage.__raw(HOOK_KEY).secret === promoted && storage.__raw(HOOK_KEY).pending === undefined,
+    "…the promotion happened and the window is closed");
+  ok(beforeLever !== promoted, "…(sanity) the secret really did change");
+
+  // (b) ARMED: the promote write throws ONCE, and the outcome is the F-481 shape exactly.
+  await fault.armHarnessFault(fault.HARNESS_FAULT_HOOK_PROMOTE, faultParts, 1);
+  fetchCalls = [];
+  fetchQueue = [res(200, { id: 4242 })];
+  const levered = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+  ok(levered.success === false && levered.code === "rotation-failed",
+    `an ARMED lever breaks the PROMOTE, and the refusal is the real one — "rotation-failed" (${JSON.stringify(levered).slice(0, 160)})`);
+  const leveredInstalled = JSON.parse(fetchCalls[0].body || "{}").config.secret;
+  const leveredRow = storage.__raw(HOOK_KEY);
+  ok(leveredRow.secret === promoted && leveredRow.pending === leveredInstalled,
+    "…the row carries BOTH secrets: current is still the old one, the installed one is pending");
+  const leveredCands = await conns.getHookSecretCandidates(hookId, "acme/app");
+  ok(leveredCands.length === 2 && leveredCands.includes(leveredInstalled) && leveredCands.includes(promoted),
+    `…so the verifier accepts both for the window and no delivery 401s (${leveredCands.length} candidates)`);
+  ok(storage.__raw(conns.gitConnKey(hookId)).webhooks["acme/app"].hookState === "rotation-failed",
+    "…and the connection is stamped rotation-failed, which is what the live driver reads");
+  ok(findSecret(levered, leveredInstalled) === null && findSecret(levered, promoted) === null,
+    "…and a levered failure still returns no secret — the lever is not a read path");
+  ok((await fault.readHarnessFault(fault.HARNESS_FAULT_HOOK_PROMOTE, faultParts)).value === null,
+    "…the single armed unit was consumed: exactly ONE failure, then the retry runs for real");
+
+  // (c) the retry: F-491's reconcile promotes the installed secret first, so nothing is evicted.
+  fetchCalls = [];
+  fetchQueue = [res(200, { id: 4242 })];
+  const retried = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+  ok(retried.success === true, `the retry the banner invites now succeeds — the lever fired once only (${retried.code || "ok"})`);
+  ok(storage.__raw(HOOK_KEY).pending === undefined && storage.__raw(conns.gitConnKey(hookId)).webhooks["acme/app"].hookState === null,
+    "…closing both the window and the banner");
+
+  // (d) PRODUCTION: arm the row, remove the env gate, rotate — the lever must be dead.
+  await fault.armHarnessFault(fault.HARNESS_FAULT_HOOK_PROMOTE, faultParts, 1);
+  delete process.env.HARNESS_SECRET;
+  fetchCalls = [];
+  fetchQueue = [res(200, { id: 4242 })];
+  const prodRot = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+  ok(prodRot.success === true,
+    `with HARNESS_SECRET absent (production) an armed row CANNOT break a rotation (${JSON.stringify(prodRot).slice(0, 120)})`);
+  ok((await fault.readHarnessFault(fault.HARNESS_FAULT_HOOK_PROMOTE, faultParts)).value.count === 1,
+    "…and the row was not even read — a planted lever is inert, not merely unlucky");
+  process.env.HARNESS_SECRET = "dev";
+  await fault.disarmHarnessFault(fault.HARNESS_FAULT_HOOK_PROMOTE, faultParts);
+  if (savedHarnessEnv === undefined) delete process.env.HARNESS_SECRET; else process.env.HARNESS_SECRET = savedHarnessEnv;
+}
+
 // --- rotation before setup is refused, and the allow-list gates both.
 fetchCalls = [];
 const rotNever = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/other" });

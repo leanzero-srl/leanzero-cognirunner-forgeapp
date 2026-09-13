@@ -80,6 +80,9 @@ import { safeKeyPart, isKeyConflict, assertKvsKey } from "./shared/kvs-keys.js";
 // F-310 - the repo-id canonical form has ONE home, and it is a shared/ module because
 // the admin panel needs the same answer and cannot import this file (it loads @forge/kvs).
 import { normalizeRepoId, gitHookSecretKey } from "./shared/git-ids.js";
+// F-504 — the dev-only fault lever. Import-time cost only; every call returns false
+// without touching storage when HARNESS_SECRET is absent (production).
+import { harnessFaultArmed, HarnessFault, HARNESS_FAULT_HOOK_PROMOTE } from "./harness-fault.js";
 
 /* ===== KEY NAMES — the ONE home. Never retype one of these strings. ===== */
 
@@ -1232,6 +1235,17 @@ export async function rotateGitHookSecret(connId, repoId, { triggerUrl, fetchImp
   // installed secret, so the hook is not deaf — but the rotation is unfinished and
   // that has to be visible, not swallowed into a generic error string.
   try {
+    // DEV-ONLY FAULT LEVER (F-504 live proof), the ONE seam that can stand in for a
+    // promote-write refusal. It sits INSIDE this try and immediately before the write,
+    // so a planted throw leaves exactly the state a real one would: the provider already
+    // signs `secret`, the row still holds {secret: OLD, pending: secret}, and the catch
+    // below stamps `rotation-failed`. `harnessFaultArmed` returns false on its FIRST
+    // statement — with no KVS read — unless process.env.HARNESS_SECRET is set; dev and
+    // staging builds carry it, PRODUCTION NEVER DOES, so this line is inert in production
+    // and cannot be planted there. Its key shape, cap and TTL live in src/harness-fault.js.
+    if (await harnessFaultArmed(HARNESS_FAULT_HOOK_PROMOTE, connId, t.repo)) {
+      throw new HarnessFault(`harness fault armed for conn=${safeKeyPart(connId)} repo=${safeKeyPart(t.repo)} — hook-secret promotion refused`);
+    }
     await writeHookSecret(connId, t.repo, secret, { rotated: true });
   } catch (e) {
     const msg = String((e && e.message) || e || "").slice(0, 300);

@@ -92,9 +92,10 @@ const setupWorld = ({ rounds = [], provider = "anthropic" } = {}) => {
       if (world.chatHook) await world.chatHook();
       // `cachePrefix` rides along because it is the thing the provider turns into
       // `cache_control` breakpoints (F-636) — a request captured without it cannot show
-      // where the cache boundary was declared.
+      // where the cache boundary was declared. `turnPrefix` is the SECOND boundary the
+      // adapters place a mark at (F-641): the messages stable for THIS turn's rounds.
       world.requests.push(JSON.parse(JSON.stringify({
-        messages: args.messages, cachePrefix: args.cachePrefix,
+        messages: args.messages, cachePrefix: args.cachePrefix, turnPrefix: args.turnPrefix,
         tools: (args.tools || []).map((t) => t.function.name),
       })));
       const r = rounds[world.round] !== undefined ? rounds[world.round] : reply([finish()]);
@@ -1195,6 +1196,87 @@ await check("F-636: a turn carrying an addition still marks the cache INSIDE the
     `THE FINDING: the breakpoint (index ${mark}) falls inside the ${common} messages the previous turn already sent, so the read is a hit — it used to land on the addition at index ${firstCacheMark(now.messages, now.messages.length)}`);
   assert.equal(firstCacheMark(prev.messages, prev.cachePrefix), mark,
     "…at the SAME index the rebuild turn wrote its entry at, which is what makes it reachable");
+});
+
+/* ═════════ F-641: the loop declares BOTH boundaries, so both marks exist ═════════
+ *
+ * F-636 bought the cross-turn mark by giving up the within-turn one. On turn 1 that cost
+ * the turn EVERY message mark: `history` is empty, so the cross-turn prefix is the system
+ * prompt plus the knowledge blocks — all `system`, all hoisted into Anthropic's `system`
+ * field — and the one markable message, the user's turn with its fenced issue context,
+ * fell outside the declared prefix. Rounds 2..8 of that turn then re-billed it in full.
+ *
+ * This drives the REAL placement rule (`cacheBreakpointIndices` +
+ * `markOpenRouterCacheBreakpoints`, lifted out of src/index.js rather than re-stated here)
+ * over the requests the engine actually emitted.
+ */
+const placementRule = await (async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const indexSrc = readFileSync(fileURLToPath(new URL("../../src/index.js", import.meta.url)), "utf8");
+  const grab = (re, what) => {
+    const m = indexSrc.match(re);
+    if (!m) throw new Error(`could not lift ${what} out of src/index.js`);
+    return m[0].replace(/^const [A-Za-z]+ = /, "").replace(/;\s*$/, "");
+  };
+  const mb = grab(/const markCacheBreakpoint = \(msg\) => \{[\s\S]*?\n\};/, "markCacheBreakpoint");
+  const mi = grab(/const cacheBreakpointIndices = \(\{ messages, boundaries[\s\S]*?\n\};/, "cacheBreakpointIndices");
+  const mo = grab(/const markOpenRouterCacheBreakpoints = \(messages, prefixCount, turnCount\) => \{[\s\S]*?\n\};/, "markOpenRouterCacheBreakpoints");
+  // eslint-disable-next-line no-new-func
+  return new Function(`const markCacheBreakpoint = ${mb};\nconst cacheBreakpointIndices = ${mi};\nreturn ${mo};`)();
+})();
+
+const markedIndices = (req) => placementRule(req.messages, req.cachePrefix, req.turnPrefix)
+  .map((m, i) => (Array.isArray(m.content) && m.content.some((pp) => pp && pp.cache_control) ? i : -1))
+  .filter((i) => i >= 0);
+
+await check("F-641: a FIRST turn — nothing but system messages inside the prefix — still marks the user's turn", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  await startTurn(world, { knowledge: { skillsBlock: SKILLS, memoryBlock: MEM, fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"] } });
+
+  const t1 = world.requests[0];
+  assert.equal(t1.turnPrefix, t1.messages.length, "the within-turn boundary is every seeded message");
+  assert.ok(t1.cachePrefix < t1.turnPrefix,
+    `turn 1's two boundaries genuinely differ (cross-turn ${t1.cachePrefix} of ${t1.turnPrefix})`);
+  assert.ok(t1.messages.slice(0, t1.cachePrefix).every((mm) => mm.role === "system"),
+    "…because with no history the cross-turn prefix is system messages ONLY — the shape that lost the mark");
+  const marks = markedIndices(t1);
+  assert.ok(marks.includes(t1.messages.length - 1),
+    `THE FINDING: the user's turn carries a breakpoint, so rounds 2..N read the fenced issue context back instead of re-billing it (marks ${JSON.stringify(marks)})`);
+  assert.ok(marks.length >= 2 && marks.length <= 4,
+    `two to four breakpoints, inside the provider cap (got ${marks.length})`);
+});
+
+await check("F-641: a turn WITH history marks the cross-turn boundary AND this turn's words", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"] };
+  await startTurn(world, { knowledge: stable });
+  await startTurn(world, { userMessage: "and deploy it", knowledge: { ...stable, memoryExtraBlock: MEM_NEW } });
+
+  const t2 = world.requests[1];
+  const marks = markedIndices(t2);
+  assert.ok(marks.includes(t2.cachePrefix - 1),
+    `F-636 STILL HOLDS: a mark sits at the end of the history, inside the bytes turn 1 sent (marks ${JSON.stringify(marks)}, prefix ${t2.cachePrefix})`);
+  assert.ok(marks.includes(t2.messages.length - 1),
+    "…and this turn's own words carry the within-turn mark the rounds read back");
+  assert.ok(marks.length <= 4, `at most four breakpoints (got ${marks.length})`);
+});
+
+await check("F-641: a caller with no stablePrefixCount declares ONE boundary twice — placement unchanged", async () => {
+  const msgs = [
+    { role: "system", content: "RULES" },
+    { role: "user", content: "one-shot question" },
+  ];
+  const legacy = placementRule(msgs, 2)
+    .map((m, i) => (Array.isArray(m.content) && m.content.some((pp) => pp && pp.cache_control) ? i : -1))
+    .filter((i) => i >= 0);
+  const both = placementRule(msgs, 2, 2)
+    .map((m, i) => (Array.isArray(m.content) && m.content.some((pp) => pp && pp.cache_control) ? i : -1))
+    .filter((i) => i >= 0);
+  assert.deepEqual(both, legacy, "coinciding boundaries collapse to the pre-F-641 marks");
+  assert.equal(placementRule(msgs, 0, 2), msgs, "and a caller that never opted in is returned AS IS");
 });
 
 await check("F-578: a re-pin too large to write CLEARS the stale row rather than leaving it to replay", async () => {

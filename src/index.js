@@ -13651,21 +13651,64 @@ const markCacheBreakpoint = (msg) => {
 };
 
 /**
- * Mark the stable prefix of an OpenAI-shaped message array for OpenRouter's explicit
- * cache breakpoints. TWO at most (the API allows four; the rest are reserved for a
- * future field-guide/tool-definition block):
+ * WHICH MESSAGES CARRY A CACHE BREAKPOINT — the ONE home for the placement rule, read by
+ * both adapters that can cache (Anthropic natively; OpenRouter/managed on anthropic/*).
  *
- *   1. the LAST SYSTEM message — the system prompt is the largest stable block in every
- *      agent turn, and everything before a breakpoint is cached, so one marker here
- *      covers the whole system prefix however many system messages there are;
- *   2. the LAST message of the declared stable prefix, when that is not the same
- *      message — this extends the cached span over the opening user/tool turns that the
- *      agent loop re-sends verbatim every round.
+ * THERE ARE TWO BOUNDARIES, AND F-641 IS WHAT IT COSTS TO DECLARE ONLY ONE:
+ *   - the CROSS-TURN boundary (`cachePrefix`) — where this turn's bytes stop being the
+ *     THREAD's bytes (F-636). A mark there is the one the NEXT turn reads back.
+ *   - the WITHIN-TURN boundary (`turnPrefix`) — everything seeded before the agent loop
+ *     began appending, which is stable for the ROUNDS of this turn. A mark there is what
+ *     rounds 2..N read back, and on a thread's FIRST turn it is the only mark that can
+ *     exist at all: `history` is empty, so the cross-turn prefix is system messages only,
+ *     and the one message that could carry a marker (the user's turn, with its fenced
+ *     issue context) sits outside it. Declaring the cross-turn boundary alone therefore
+ *     re-billed that block on every later round of every first turn.
+ * The two coincide for every caller that knows only one of them, and that case stays
+ * BYTE-IDENTICAL — same single mark, at the same index.
  *
- * `prefixCount` is the caller's declaration, clamped to the array length here; a caller
- * that over-declares can only cost a cache miss, never corrupt the conversation.
+ * A boundary is placed on the LAST MARKABLE message at or before it (`isMarkable` is how
+ * the Anthropic adapter skips the system messages it hoists out of the array); a boundary
+ * with no markable message before it places NOTHING rather than drifting onto a message
+ * that is not a boundary. Over the budget, the LARGEST index is dropped first — the
+ * cross-turn mark is the one that pays across turns and it always sits earlier.
+ *
+ * Counts are the caller's declaration, clamped to the array length here; a caller that
+ * over-declares can only cost a cache miss, never corrupt the conversation.
  */
-const markOpenRouterCacheBreakpoints = (messages, prefixCount) => {
+const cacheBreakpointIndices = ({ messages, boundaries, isMarkable = () => true, maxMarks = 4, seed = [] }) => {
+  if (!Array.isArray(messages) || messages.length === 0) return new Set();
+  const marks = new Set(seed.filter((i) => Number.isInteger(i) && i >= 0 && i < messages.length));
+  const ends = [...new Set(boundaries
+    .map((b) => Math.floor(Number(b)))
+    .filter((b) => Number.isFinite(b) && b > 0)
+    .map((b) => Math.min(b, messages.length)))].sort((a, b) => a - b);
+  for (const end of ends) {
+    for (let i = end - 1; i >= 0; i--) {
+      if (isMarkable(messages[i], i)) { marks.add(i); break; }
+    }
+  }
+  return new Set([...marks].sort((a, b) => a - b).slice(0, Math.max(0, Math.floor(maxMarks))));
+};
+
+/**
+ * Mark the stable prefix of an OpenAI-shaped message array for OpenRouter's explicit
+ * cache breakpoints. THREE at most, inside an API cap of four:
+ *
+ *   1. the LAST SYSTEM message inside the cross-turn prefix — the system prompt is the
+ *      largest stable block in every agent turn, and everything before a breakpoint is
+ *      cached, so one marker here covers the whole system prefix however many system
+ *      messages there are;
+ *   2. the LAST message of the declared CROSS-TURN prefix — the span the next turn of the
+ *      same thread has to match;
+ *   3. the LAST message of the WITHIN-TURN prefix, when that is a different message —
+ *      this extends the cached span over the user/tool turns the agent loop re-sends
+ *      verbatim every round (F-641).
+ *
+ * Duplicates collapse, so a caller that declares one boundary emits exactly what it did
+ * before.
+ */
+const markOpenRouterCacheBreakpoints = (messages, prefixCount, turnCount) => {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
   const stableEnd = Math.min(Math.floor(prefixCount), messages.length) - 1;
   if (stableEnd < 0) return messages;
@@ -13673,14 +13716,17 @@ const markOpenRouterCacheBreakpoints = (messages, prefixCount) => {
   for (let i = 0; i <= stableEnd; i++) {
     if (messages[i] && messages[i].role === "system") lastSystem = i;
   }
-  const marks = new Set();
-  if (lastSystem >= 0) marks.add(lastSystem);
-  marks.add(stableEnd);
+  const marks = cacheBreakpointIndices({
+    messages,
+    boundaries: [prefixCount, turnCount],
+    seed: lastSystem >= 0 ? [lastSystem] : [],
+    maxMarks: 4,
+  });
   return messages.map((m, i) => (marks.has(i) ? markCacheBreakpoint(m) : m));
 };
 
 const callAIChatRaw = async (opts) => {
-  const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel, cachePrefix } = opts;
+  const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel, cachePrefix, turnPrefix } = opts;
   const { provider, baseUrl } = await getProviderConfig();
 
   // F-115 — a null provider means the config READ faulted (fail-closed, see
@@ -13726,9 +13772,10 @@ const callAIChatRaw = async (opts) => {
   }
 
   if (provider === "anthropic") {
-    // cachePrefix rides through UNCHANGED for every other provider (none of them read
-    // it) — only the Anthropic adapter acts on it. See callAnthropicChat (F-353).
-    return callAnthropicChat({ apiKey, model: requestedModel, messages, tools, tool_choice, baseUrl, jsonMode, cachePrefix });
+    // cachePrefix / turnPrefix ride through UNCHANGED for every other provider (none of
+    // them read them) — only the Anthropic adapter acts on them. See callAnthropicChat
+    // (F-353, F-641).
+    return callAnthropicChat({ apiKey, model: requestedModel, messages, tools, tool_choice, baseUrl, jsonMode, cachePrefix, turnPrefix });
   }
 
   // AWS Bedrock (BYOK): bearer-token auth + the unified Converse API. Translated to/from
@@ -13832,12 +13879,14 @@ const callAIChatRaw = async (opts) => {
      * OPT-IN, like the Anthropic adapter (F-353): `cachePrefix` is the number of LEADING
      * messages the CALLER declares byte-stable. Every one-shot caller passes nothing and
      * is deliberately unchanged — a single call per prompt only ever pays the write.
-     * Only the multi-round agent loop sets it. At most TWO breakpoints are emitted (the
-     * merged system message, and the last message of the stable prefix).
+     * Only the multi-round agent loop sets it, and it declares BOTH boundaries —
+     * `cachePrefix` (cross-turn) and `turnPrefix` (this turn's seeded messages, F-641).
+     * At most THREE breakpoints are emitted (the merged system message, the end of the
+     * cross-turn prefix, the end of the within-turn prefix); the API cap is four.
      */
     if (Number(cachePrefix) > 0 && (provider === "openrouter" || provider === MANAGED_PROVIDER_ID)
         && /^anthropic\//i.test(String(model || ""))) {
-      outboundMessages = markOpenRouterCacheBreakpoints(outboundMessages, Number(cachePrefix));
+      outboundMessages = markOpenRouterCacheBreakpoints(outboundMessages, Number(cachePrefix), Number(turnPrefix) || 0);
     }
 
     const requestBody = { model, ...buildModelParams(), messages: outboundMessages };
@@ -13934,17 +13983,23 @@ const callAIChatRaw = async (opts) => {
  * multi-round agent loop (`runAgentLoop`, src/agent-runner.js) sets it, because there
  * the same prefix is re-sent once per round.
  *
+ * `turnPrefix` is the SECOND boundary (F-641): the count of messages that are stable for
+ * the ROUNDS of this turn, which on a thread's first turn is the only boundary with a
+ * non-system message before it. Omitted ⇒ the cross-turn boundary is the only one, which
+ * is byte-identical to what every pre-F-641 caller got.
+ *
  * Render order is tools → system → messages, so the marker on the system block caches
- * the tool definitions with it. At most TWO breakpoints are emitted here (system, plus
- * the last content block of the last stable message) — the API cap is four.
+ * the tool definitions with it. At most THREE breakpoints are emitted here (system, plus
+ * the last content block of the last message at each declared boundary) — the cap is four.
  */
-const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode, cachePrefix = 0 }) => {
+const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode, cachePrefix = 0, turnPrefix = 0 }) => {
   const prefixCount = Number(cachePrefix) > 0 ? Math.floor(Number(cachePrefix)) : 0;
-  // The anthropic message object that the LAST stable source message landed in; the
-  // breakpoint goes on its last content block. Tool results merge into a previous user
-  // message, and system messages are hoisted out, so this is tracked during conversion
-  // rather than computed from an index afterwards.
-  let prefixBoundaryMsg = null;
+  // The anthropic message objects that the boundary source messages landed in; the
+  // breakpoint goes on the last content block of each. Tool results merge into a previous
+  // user message, and system messages are hoisted out, so these are collected during
+  // conversion rather than computed from an index afterwards. A Set, because two source
+  // boundaries can merge into one anthropic message and must then mark it once.
+  const boundaryMsgs = new Set();
   // 1. Extract system prompt from messages
   let systemText = "";
   const filteredMessages = [];
@@ -13963,14 +14018,23 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
 
   // 2. Convert messages content (images, files, tool results)
   const anthropicMessages = [];
-  // Source-order index of the last message inside the declared stable prefix. System
-  // messages were hoisted above, so count against the ORIGINAL array.
+  // Source-order indices that carry a breakpoint, decided by the ONE placement helper
+  // (cacheBreakpointIndices) against the ORIGINAL array — system messages were hoisted
+  // above, so they can never be a boundary here and the helper is told to skip them. The
+  // system block below takes one of Anthropic's four cache_control slots, so three remain.
+  const markSrcIndices = prefixCount > 0
+    ? cacheBreakpointIndices({
+      messages,
+      boundaries: [prefixCount, turnPrefix],
+      isMarkable: (m) => !!m && m.role !== "system",
+      maxMarks: 3,
+    })
+    : new Set();
   let srcIndex = -1;
-  const lastStableSrcIndex = prefixCount > 0 ? Math.min(prefixCount, messages.length) - 1 : -1;
   for (const msg of filteredMessages) {
     // Re-derive this message's position in the original array (filteredMessages keeps order).
     srcIndex = messages.indexOf(msg, srcIndex + 1);
-    const isStable = prefixCount > 0 && srcIndex >= 0 && srcIndex <= lastStableSrcIndex;
+    const isStable = markSrcIndices.has(srcIndex);
     if (msg.role === "tool") {
       // OpenAI tool result → Anthropic tool_result inside a user message
       const lastMsg = anthropicMessages[anthropicMessages.length - 1];
@@ -13982,11 +14046,11 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
       // Merge into previous user message if it exists, else create new one
       if (lastMsg && lastMsg.role === "user" && Array.isArray(lastMsg.content)) {
         lastMsg.content.push(toolResultBlock);
-        if (isStable) prefixBoundaryMsg = lastMsg;
+        if (isStable) boundaryMsgs.add(lastMsg);
       } else {
         const created = { role: "user", content: [toolResultBlock] };
         anthropicMessages.push(created);
-        if (isStable) prefixBoundaryMsg = created;
+        if (isStable) boundaryMsgs.add(created);
       }
     } else {
       const converted = { role: msg.role };
@@ -14013,7 +14077,7 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
         converted.content = contentBlocks;
       }
       anthropicMessages.push(converted);
-      if (isStable) prefixBoundaryMsg = converted;
+      if (isStable) boundaryMsgs.add(converted);
     }
   }
 
@@ -14073,15 +14137,17 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
   // Anthropic's native mcp_servers connector is intentionally NOT used (it forwards
   // only the bearer, so per-tenant service keys never reach the server, and it would
   // double-expose tools that are already function tools).
-  // Breakpoint 2 of 2: the last content block of the last message the caller declared
-  // stable. Everything AFTER it (this round's tool transcript) stays uncached, which is
-  // the point — the marker must sit at the end of the SHARED portion, not at the end of
-  // the whole prompt, or every request writes a fresh entry that is never read back.
-  if (prefixCount > 0 && prefixBoundaryMsg) {
-    if (typeof prefixBoundaryMsg.content === "string") {
-      prefixBoundaryMsg.content = [{ type: "text", text: prefixBoundaryMsg.content, cache_control: { type: "ephemeral" } }];
-    } else if (Array.isArray(prefixBoundaryMsg.content) && prefixBoundaryMsg.content.length > 0) {
-      const last = prefixBoundaryMsg.content[prefixBoundaryMsg.content.length - 1];
+  // Breakpoints 2 and 3: the last content block of the last message at each declared
+  // boundary — the CROSS-TURN one (what the next turn of this thread reads back) and the
+  // WITHIN-TURN one (what rounds 2..N of this turn read back). Everything AFTER the last
+  // of them (this round's tool transcript) stays uncached, which is the point: a marker at
+  // the end of the whole prompt writes a fresh entry every request and never reads it back.
+  for (const boundaryMsg of boundaryMsgs) {
+    if (typeof boundaryMsg.content === "string") {
+      if (!boundaryMsg.content) continue;
+      boundaryMsg.content = [{ type: "text", text: boundaryMsg.content, cache_control: { type: "ephemeral" } }];
+    } else if (Array.isArray(boundaryMsg.content) && boundaryMsg.content.length > 0) {
+      const last = boundaryMsg.content[boundaryMsg.content.length - 1];
       if (last && typeof last === "object") last.cache_control = { type: "ephemeral" };
     }
   }

@@ -318,15 +318,20 @@ ok(agentCapabilityCopy("managed-key-missing").remedy.includes("LeanZero"),
 // 6. Prompt caching — cache_control on anthropic/* ONLY, and the usage that comes back
 // =====================================================================================
 {
-  const m = indexSrc.match(/const markOpenRouterCacheBreakpoints = \(messages, prefixCount\) => \{[\s\S]*?\n\};/);
+  const m = indexSrc.match(/const markOpenRouterCacheBreakpoints = \(messages, prefixCount, turnCount\) => \{[\s\S]*?\n\};/);
   ok(!!m, "found markOpenRouterCacheBreakpoints");
   const mb = indexSrc.match(/const markCacheBreakpoint = \(msg\) => \{[\s\S]*?\n\};/);
   ok(!!mb, "found markCacheBreakpoint");
+  // F-641: the placement rule lives in ONE helper both adapters read. Pull it in with the
+  // marker, or this test would be exercising a copy of a rule that has a single home.
+  const mi = indexSrc.match(/const cacheBreakpointIndices = \(\{ messages, boundaries[\s\S]*?\n\};/);
+  ok(!!mi, "found cacheBreakpointIndices (the ONE placement helper)");
   // eslint-disable-next-line no-eval
   const markCacheBreakpoint = eval("(" + mb[0].replace("const markCacheBreakpoint = ", "").replace(/;\s*$/, "") + ")");
   // eslint-disable-next-line no-eval
   const mark = eval(
     "(function(){ const markCacheBreakpoint = " + mb[0].replace("const markCacheBreakpoint = ", "").replace(/;\s*$/, "") + ";\n"
+    + "const cacheBreakpointIndices = " + mi[0].replace("const cacheBreakpointIndices = ", "").replace(/;\s*$/, "") + ";\n"
     + "return " + m[0].replace("const markOpenRouterCacheBreakpoints = ", "").replace(/;\s*$/, "") + "; })()");
 
   const sys = { role: "system", content: "RULES" };
@@ -355,6 +360,36 @@ ok(agentCapabilityCopy("managed-key-missing").remedy.includes("LeanZero"),
   const parts = markCacheBreakpoint({ role: "user", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] });
   ok(parts.content[0].cache_control === undefined && parts.content[1].cache_control.type === "ephemeral",
     "with parts content, only the LAST block carries the marker");
+
+  /* F-641 - the SECOND boundary. `prefixCount` is the cross-turn span (the end of the
+   * stored history); `turnCount` is everything seeded for this turn's rounds. Declaring
+   * only the first moved the within-turn mark off the user's turn, so rounds 2..N of the
+   * same turn re-billed the fenced issue context at full price - and on a FIRST turn,
+   * where the cross-turn prefix is the system messages alone, there was no within-turn
+   * mark left anywhere. */
+  const markedAt = (arr) => arr
+    .map((mm, i) => (Array.isArray(mm.content) && mm.content.some((pp) => pp && pp.cache_control) ? i : -1))
+    .filter((i) => i >= 0);
+  {
+    const sys2 = { role: "system", content: "knowledge" };
+    const hist = { role: "assistant", content: "turn 1 answer" };
+    const add = { role: "system", content: "added this turn" };
+    const turn = { role: "user", content: "turn 2 words" };
+    const full = [sys, u1, hist, add, turn];
+    const out2 = mark(full, 3, 5);
+    ok(JSON.stringify(markedAt(out2)) === "[0,2,4]",
+      `THE FINDING: the system mark, the CROSS-TURN mark at the end of the history and the WITHIN-TURN mark on this turn's words, got ${JSON.stringify(markedAt(out2))}`);
+    ok(markedAt(out2).length <= 4, "still inside OpenRouter's cap of four breakpoints");
+    // Turn 1: no history, so the cross-turn prefix is system messages only and the user
+    // turn is the ONLY message a within-turn mark can sit on.
+    const first = [sys, sys2, turn];
+    ok(JSON.stringify(markedAt(mark(first, 2, 3))) === "[1,2]",
+      `turn 1 keeps a mark on the user's turn as well as on the system prefix, got ${JSON.stringify(markedAt(mark(first, 2, 3)))}`);
+    // A caller that declares one boundary emits exactly what it emitted before F-641.
+    ok(JSON.stringify(markedAt(mark(full, 3))) === JSON.stringify(markedAt(mark(full, 3, 3))),
+      "one declared boundary == two coinciding boundaries == the pre-F-641 placement");
+    ok(JSON.stringify(markedAt(mark(msgs, 2))) === "[0,1]", "and the original two-message case is untouched");
+  }
 }
 {
   // The call site: anthropic/* only, openrouter + managed only, opt-in only.

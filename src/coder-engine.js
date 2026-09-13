@@ -892,6 +892,11 @@ const runCoderTurnClaimed = async ({
     // anything the previous turn had written, read zero cached tokens, and F-550's
     // detector reported a prefix move no one had decided. The boundary is declared here
     // because this is the one place that knows it.
+    //
+    // F-641 — it is the CROSS-TURN boundary and only that. The loop pairs it with the
+    // WITHIN-TURN one (its own seeded count) so both marks are emitted; on turn 1, where
+    // `history` is empty and this prefix is all system messages, the within-turn mark on
+    // the user's turn is the only one there is.
     stablePrefixCount: prefix.length,
     isCancelled: cancelToken ? () => m.isJobCancelled(cancelToken) : null,
     roundLabel: (n) => `Coder round ${n}`,

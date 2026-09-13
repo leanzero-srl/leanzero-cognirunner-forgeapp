@@ -475,10 +475,10 @@ export const runAgentLoop = async ({
    * precisely so they do NOT sit inside the bytes the next turn has to match
    * (src/coder-engine.js). Those additions are `system` messages.
    *
-   * `markOpenRouterCacheBreakpoints` / `callAnthropicChat` (src/index.js) place their two
-   * `cache_control` marks at the LAST SYSTEM MESSAGE inside the declared prefix and at its
-   * END. Declaring the whole array therefore moved the first mark onto the volatile
-   * addition — so on any turn that carried one, the request had no breakpoint anywhere
+   * `markOpenRouterCacheBreakpoints` / `callAnthropicChat` (src/index.js) place their
+   * `cache_control` marks at the LAST SYSTEM MESSAGE inside the declared prefix and at the
+   * END of each boundary the loop declares. Declaring the whole array moved the first mark
+   * onto the volatile addition — so on any turn that carried one, the request had no breakpoint anywhere
    * inside the bytes the previous turn had written, the cross-turn read came back ZERO,
    * and F-550's detector reported a prefix move nobody had decided (measured live on
    * staging 2026-09-14, on the turn after a pin rebuild).
@@ -487,6 +487,13 @@ export const runAgentLoop = async ({
    * the history: the next turn matches the first one exactly, and the rounds of THIS turn
    * still cache everything up to the history and re-bill only the additions and the user's
    * own words.
+   *
+   * F-641 — THIS COUNT NEVER TRAVELS ALONE. It narrows the CROSS-TURN span only; the loop
+   * also declares `turnPrefix` (every seeded message), which is the span the ROUNDS of this
+   * turn share. Passing this one on its own cost the within-turn mark, and on a thread's
+   * FIRST turn cost it entirely: with no history the narrowed prefix is system messages,
+   * all hoisted, so the only markable message — the user's turn with its fenced issue
+   * context — fell outside every boundary and rounds 2..N re-billed it at full price.
    */
   stablePrefixCount = null,
 }) => {
@@ -497,6 +504,9 @@ export const runAgentLoop = async ({
   const seeded = Array.isArray(messages) ? messages.length : 0;
   const declared = Number(stablePrefixCount);
   const cachePrefix = Number.isFinite(declared) && declared > 0 ? Math.min(Math.floor(declared), seeded) : seeded;
+  // `seeded` rides out as `turnPrefix` on every round alongside it (F-641). When a caller
+  // declares no cross-turn boundary the two are equal, the adapters collapse them, and the
+  // request is byte-for-byte what it was before this field existed.
   const out = {
     messages, actions: [], rounds: 0, summary: "", outcome: "failed", error: null, endedBy: null,
     // `firstRoundCacheReadTokens` is the ONLY number that can answer the CROSS-TURN
@@ -511,7 +521,7 @@ export const runAgentLoop = async ({
     let ai;
     const t0 = Date.now();
     try {
-      ai = await m.raceDeadline(m.callAIChat({ apiKey, model, messages, tools, tool_choice: exhausted ? "none" : "auto", cachePrefix }), deadlineMs - 1500, roundLabel(round + 1));
+      ai = await m.raceDeadline(m.callAIChat({ apiKey, model, messages, tools, tool_choice: exhausted ? "none" : "auto", cachePrefix, turnPrefix: seeded }), deadlineMs - 1500, roundLabel(round + 1));
     } catch (e) {
       out.error = `AI call failed: ${String(e && e.message).slice(0, 300)}`; out.endedBy = "provider-error"; log(`ERROR: ${out.error}`); break;
     }

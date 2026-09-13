@@ -43,6 +43,7 @@ const extract = (decl) => {
 };
 
 const fnSrc = extract("const convertContentBlock = (block) =>")
+  + "\n" + extract("const cacheBreakpointIndices = ({ messages, boundaries")
   + "\n" + extract("const callAnthropicChat = async ({ apiKey, model, messages");
 
 // eslint-disable-next-line no-new-func
@@ -140,6 +141,86 @@ install();
   const u = res.data.usage;
   ok(u.cache_read_tokens === 0 && u.cache_creation_tokens === 0, "both cache counters are 0");
   ok(u.prompt_tokens === 100 && u.total_tokens === 120, "uncached totals unchanged from before F-353");
+}
+
+/* ===================================================================================
+ * F-641 - TWO BOUNDARIES, TWO MARKS. F-636 narrowed the declared prefix to the
+ * CROSS-TURN boundary (the end of the stored history) and the adapter then emitted one
+ * message mark instead of two. On a thread's FIRST turn it emitted NONE inside the
+ * messages at all: with no history the cross-turn prefix is system messages only, every
+ * one of them is hoisted into `system`, and the single markable message - the user turn
+ * carrying the fenced issue context - sat outside the boundary, so rounds 2..8 re-billed
+ * it at full input price. The loop now declares BOTH boundaries and each one gets a mark.
+ *
+ * `marked(body)` reports WHERE the marks are, because "how many" was exactly the
+ * question that could not tell these cases apart.
+ * =================================================================================== */
+const marked = (body) => (body.messages || []).map((m, i) => (
+  Array.isArray(m.content) && m.content.some((p) => p && p.cache_control) ? i : -1
+)).filter((i) => i >= 0);
+
+console.log("\n== 5. F-641 turn 1 (system + knowledge + user): the user turn keeps a mark ==");
+install();
+{
+  const turn1 = [
+    { role: "system", content: "STABLE SYSTEM PROMPT" },
+    { role: "system", content: "<<<SKILLS>>> knowledge <<<SKILLS>>>" },
+    { role: "user", content: "## ISSUE CONTEXT ... plus the user's words" },
+  ];
+  // cachePrefix = system + knowledge (history is empty); turnPrefix = the whole seed.
+  await callAnthropicChat({ apiKey: "k", model: "m", messages: turn1, baseUrl: "https://x", cachePrefix: 2, turnPrefix: 3 });
+  ok(Array.isArray(lastBody.system) && lastBody.system[0].cache_control?.type === "ephemeral",
+    "the hoisted system block still carries its breakpoint");
+  ok(JSON.stringify(marked(lastBody)) === "[0]",
+    `THE FINDING: the user turn (the only markable message) carries the within-turn mark, got ${JSON.stringify(marked(lastBody))}`);
+  ok(countCacheControl(lastBody) === 2, `two breakpoints on turn 1, got ${countCacheControl(lastBody)}`);
+}
+
+console.log("\n== 6. F-641 turn N with history and no additions: both boundaries marked ==");
+install();
+{
+  const turnN = [
+    { role: "system", content: "STABLE SYSTEM PROMPT" },
+    { role: "system", content: "knowledge" },
+    { role: "user", content: "turn 1 words" },
+    { role: "assistant", content: "turn 1 answer" },
+    { role: "user", content: "turn 2 words" },
+  ];
+  await callAnthropicChat({ apiKey: "k", model: "m", messages: turnN, baseUrl: "https://x", cachePrefix: 4, turnPrefix: 5 });
+  // filteredMessages drops the two system messages, so source 2,3,4 -> anthropic 0,1,2.
+  ok(JSON.stringify(marked(lastBody)) === "[1,2]",
+    `the cross-turn mark sits at the end of the history and the within-turn mark on this turn's words, got ${JSON.stringify(marked(lastBody))}`);
+  ok(countCacheControl(lastBody) === 3, `three breakpoints, inside the cap of four, got ${countCacheControl(lastBody)}`);
+}
+
+console.log("\n== 7. F-641 turn N with a post-history addition (F-636 must still hold) ==");
+install();
+{
+  const withAddition = [
+    { role: "system", content: "STABLE SYSTEM PROMPT" },
+    { role: "system", content: "knowledge" },
+    { role: "user", content: "turn 1 words" },
+    { role: "assistant", content: "turn 1 answer" },
+    { role: "system", content: "<<<LEARNED_MEMORIES>>> added this turn <<<LEARNED_MEMORIES>>>" },
+    { role: "user", content: "turn 2 words" },
+  ];
+  await callAnthropicChat({ apiKey: "k", model: "m", messages: withAddition, baseUrl: "https://x", cachePrefix: 4, turnPrefix: 6 });
+  // source 2,3,5 -> anthropic 0,1,2 (the addition is hoisted into `system`).
+  ok(marked(lastBody).includes(1),
+    `F-636 STILL HOLDS: a mark lands INSIDE the history, the span the next turn has to match, got ${JSON.stringify(marked(lastBody))}`);
+  ok(marked(lastBody).includes(2), "...and the within-turn mark is on the user's own words");
+  ok(countCacheControl(lastBody) === 3, `three breakpoints, got ${countCacheControl(lastBody)}`);
+}
+
+console.log("\n== 8. F-641 a caller that declares ONE boundary is byte-unchanged ==");
+install();
+{
+  await callAnthropicChat({ apiKey: "k", model: "m", messages: baseMessages(), baseUrl: "https://x", cachePrefix: 2 });
+  const legacy = JSON.stringify(lastBody);
+  install();
+  await callAnthropicChat({ apiKey: "k", model: "m", messages: baseMessages(), baseUrl: "https://x", cachePrefix: 2, turnPrefix: 2 });
+  ok(JSON.stringify(lastBody) === legacy, "two coinciding boundaries emit exactly what the one-boundary caller emitted");
+  ok(countCacheControl(lastBody) === 2, "...still two breakpoints, at the same places");
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

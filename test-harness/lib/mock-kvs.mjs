@@ -82,6 +82,8 @@ const enforceValueSize = (key, value) => {
  * one, so it can never leak into a later assertion in the same file.
  */
 let pendingSetFault = null;
+// F-481 — a one-shot set fault aimed at a SPECIFIC write, `{ match, error }`.
+let pendingSetFaultWhen = null;
 // F-230 — the same one-shot device for READS. A permission lookup whose roster GET
 // faults must be distinguishable from one that reads an empty roster, so a suite
 // needs a get() that throws exactly once.
@@ -102,6 +104,14 @@ const storage = {
     if (pendingSetFault) {
       const fault = pendingSetFault;
       pendingSetFault = null;
+      throw fault;
+    }
+    // F-481 — the SELECTIVE half. A multi-step write path (store → provider → promote)
+    // needs a fault on a LATER set, not the next one, and the steps share a key, so the
+    // predicate sees the value too. One-shot for the same reason `__failNextSet` is.
+    if (pendingSetFaultWhen && pendingSetFaultWhen.match(key, clone(value))) {
+      const fault = pendingSetFaultWhen.error;
+      pendingSetFaultWhen = null;
       throw fault;
     }
     // Conditional writes must be atomic even when callers await them concurrently.
@@ -148,7 +158,7 @@ const storage = {
     return transaction;
   },
   // test helpers (not part of the real API)
-  __reset() { store.clear(); pendingSetFault = null; pendingGetFault = null; },
+  __reset() { store.clear(); pendingSetFault = null; pendingSetFaultWhen = null; pendingGetFault = null; },
   // Arm ONE throw from the next `set` — a transient fault, not the size ceiling.
   __failNextSet(error) {
     const fault = error instanceof Error ? error : new Error(String(error || "KVS write failed"));
@@ -158,6 +168,17 @@ const storage = {
       fault.responseDetails = { status: 500, statusText: "Internal Server Error", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/set" };
     }
     pendingSetFault = fault;
+  },
+  // Arm ONE throw from the next `set` whose key+value satisfy `match(key, value)` —
+  // for write paths where the fault that matters is the SECOND write to one key (F-481).
+  __failSetWhen(match, error) {
+    const fault = error instanceof Error ? error : new Error(String(error || "KVS write failed"));
+    if (!error || !(error instanceof Error)) {
+      fault.name = "ForgeKvsError";
+      fault.code = "INTERNAL_SERVER_ERROR";
+      fault.responseDetails = { status: 500, statusText: "Internal Server Error", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/set" };
+    }
+    pendingSetFaultWhen = { match, error: fault };
   },
   // Arm ONE throw from the next `get` — a transient read fault (F-230).
   __failNextGet(error) {

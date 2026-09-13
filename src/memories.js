@@ -180,11 +180,33 @@ const markMemoryStoreFull = async (reason, source) => {
  * was one line earlier).
  */
 const HYPOTHETICAL_PROBE_ID = "__memory_store_full_probe__";
+/*
+ * F-180 — the probe must be the WORST CASE a real newcomer can be, because the
+ * guard it is probing counts UTF-8 BYTES while MEMORY_CONTENT_MAX is a CHARACTER
+ * cap. An ASCII probe was ~400 B where a real maximum-length lesson in CJK or
+ * emoji is 1200-1600 B, so the probe was byte-OPTIMISTIC: on a multibyte store
+ * sitting just under the guard it answered "a lesson would fit",
+ * refreshMemoryStoreFull cleared the marker, and the very next capture was
+ * refused — the banner flapped with traffic while nothing was being learned.
+ * (Measured at the time of filing: 168 rows of 400 CJK chars = 229 043 B cleared
+ * the marker, and the next real newcomer was refused with reason "bytes".)
+ *
+ * The probe is MEMORY_CONTENT_MAX emoji — 1602 serialized bytes, i.e. the
+ * MEMORY_CONTENT_MAX * 4 worst case — plus a representative `meta` (an
+ * auto-captured row always carries errorSig/ruleId/stepName). That is deliberately
+ * HEAVIER than any row that can actually be stored: `substring(0, MEMORY_CONTENT_MAX)`
+ * clamps UTF-16 code units, so the true maximum is 400 CJK chars ~= 1200 B (an emoji
+ * costs two code units, so only 200 of them survive the clamp). Erring heavy is the
+ * safe direction — the worst it does is hold the banner up while a slightly smaller
+ * lesson would still have fitted; erring light reinstates F-170, a green banner over
+ * an instance that is silently discarding everything it learns.
+ */
+const PROBE_CONTENT = "\u{1F600}".repeat(MEMORY_CONTENT_MAX);
 export const wouldRefuseNewMemory = (arr) => {
   const now = new Date().toISOString();
   const probe = {
     id: HYPOTHETICAL_PROBE_ID,
-    content: "x".repeat(MEMORY_CONTENT_MAX),
+    content: PROBE_CONTENT,
     source: "test",
     projectKey: null,
     confidence: 0.5,
@@ -192,6 +214,7 @@ export const wouldRefuseNewMemory = (arr) => {
     createdAt: now,
     updatedAt: now,
     disabled: false,
+    meta: { errorSig: "00000000", ruleId: HYPOTHETICAL_PROBE_ID, stepName: HYPOTHETICAL_PROBE_ID },
   };
   const list = [probe, ...(Array.isArray(arr) ? arr : [])];
   return !pruneForSave(list, HYPOTHETICAL_PROBE_ID).protectedKept;

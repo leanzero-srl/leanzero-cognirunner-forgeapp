@@ -13,7 +13,8 @@
 import storage from "../lib/mock-kvs.mjs";
 import {
   buildMemoryBlock, getMemorySettings, saveMemories, saveMemorySettingsInternal,
-  MEMORIES_KEY, MEMORY_SETTINGS_KEY,
+  wouldRefuseNewMemory, pruneForSave,
+  MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_CONTENT_MAX,
 } from "../../src/memories.js";
 
 let pass = 0, fail = 0;
@@ -240,6 +241,36 @@ ok(s.runtimeInjection === true && s.injection === true && s.autoCapture === fals
   ok(out.length < arr.length, `size guard evicted rows (${arr.length} → ${out.length})`);
   ok(out.some((m) => m.id === "userA") && out.some((m) => m.id === "userB"),
     "both USER memories survive the size-based prune (auto rows evicted first)");
+}
+
+// ===================== F-180: the store-full probe is a WORST-CASE row =====================
+
+// wouldRefuseNewMemory answers "would a novel lesson be kept right now?" and is what clears
+// the store-full marker. Its probe used ASCII (~400 B) against a UTF-8 BYTE guard, so on a
+// MULTIBYTE store sitting just under the guard it said "yes" while the next real capture was
+// refused: the banner flapped with traffic and getKnowledgeCounts.storeFull read null while
+// nothing was being learned. The probe is now MEMORY_CONTENT_MAX * 4 bytes of content + meta.
+{
+  const cjk = "字".repeat(MEMORY_CONTENT_MAX); // 400 chars = 1200 UTF-8 bytes
+  const store = [];
+  while (bytes(store) < 227000) store.push(mk({ id: `c${store.length}`, content: cjk, source: "user", confidence: 1.0 }));
+  // pad to the EXACT size filed with F-180 (229 043 B — 957 B of headroom under the guard),
+  // where the old ASCII probe cleared the marker and the next real capture was refused
+  const pad = mk({ id: "pad", content: "p", source: "user", confidence: 1.0 });
+  store.push(pad);
+  pad.content = "p".repeat(1 + (229043 - bytes(store)));
+  const size = bytes(store);
+  ok(size === 229043, `the filed fixture is reproduced exactly (${size} B, 957 B under the guard)`);
+  ok(wouldRefuseNewMemory(store) === true,
+    "F-180: the marker STAYS raised — a worst-case newcomer would not fit in the remaining headroom");
+  // …and that agrees with what actually happens to a real multibyte newcomer
+  const real = mk({ id: "NEW", content: cjk, source: "fix", confidence: 0.2 });
+  const dry = pruneForSave([real, ...store], "NEW");
+  ok(dry.protectedKept === false && dry.reason === "bytes",
+    `a real CJK newcomer IS refused by the byte guard (got ${JSON.stringify({ kept: dry.protectedKept, reason: dry.reason })})`);
+  // the probe must not be so heavy that it lies the other way: an EMPTY store accepts a lesson
+  ok(wouldRefuseNewMemory([]) === false, "an empty store is not reported full");
+  ok(wouldRefuseNewMemory(store.slice(0, 100)) === false, "a store with real headroom is not reported full");
 }
 
 // ===================== F-178: a save with NO newcomer NEVER evicts =====================

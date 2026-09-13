@@ -41,6 +41,10 @@ import { pipelineStepNames } from "../../src/shared/git-pipeline-steps.js";
    `currentScaffoldVersion` from it against the row's stored version, so a fixture that
    re-stated the sentence would just agree with itself and stop catching a drift. */
 import { SCAFFOLD_VERSION, scaffoldOutdatedReason } from "../../src/shared/git-scaffolds.js";
+/* F-605: `live`, `stuck` and `outdated` are DERIVED by publicPipelineRow from the one
+   dependency-free module, so the fixture calls the same functions instead of restating
+   them - a fixture that re-states a rule only ever agrees with itself (F-600). */
+import { pipelineLive, pipelineStuck, pipelineOutdated, PIPELINE_CLAIM_TTL_MINUTES, PIPELINE_OUTDATED_REMEDY } from "../../src/shared/git-pipeline-state.js";
 /* F-090: the allowance block the mock serves is COMPUTED by the same function the
    backend calls (forgeLlmAllowanceStatus), from the same seat->dollars rule
    (allowanceUsdForSeats). It used to be hand-written, and it hand-wrote `pct: 46`
@@ -1126,7 +1130,11 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
      window.__PIPE_SCENARIO__  - "none" (default: no row, so the setup form), "outdated"
                                  (F-583: installed 6/6 but stuck on scaffold v1), "queued"
                                  (queued -> running -> installed across polls),
-                                 "installed", "partial" (failed at commit-scaffold).
+                                 "installed", "partial" (failed at commit-scaffold),
+                                 "stuck" (F-605: queued, aged past the claim TTL, so the
+                                 run is gone and the repo still holds the old scaffold),
+                                 "stuckfresh" (the same dead run on a repo that was never
+                                 installed: stuck, and correctly NOT outdated).
      window.__PIPE_REFUSE__    - the machine `code` setupGitPipeline refuses with:
                                  "lock_mismatch" (carries added/removed BY NAME),
                                  "scope_not_allowed" (carries scopes),
@@ -1136,7 +1144,12 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
                                  carries `variable`).
      window.__PIPE_IDS__       - {developerSpaceId, appId} for the already-installed
                                  scenarios, so the row can be asked to render them.
+     window.__PIPE_VARS__      - the scaffoldVars the installed row carries (F-604); set
+                                 it to null for a row installed before the field existed.
      window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed.
+     window.__PIPE_DEPLOY_REFUSE__ - the machine `code` triggerGitDeploy refuses with;
+                                 "pipeline_outdated" is F-611's, carrying the changelog
+                                 line and the shared remedy sentence.
      window.__PIPE_SETUP__     - WRITTEN BY the mock: the last setupGitPipeline payload
                                  (F-526, the scaffoldVars assertion reads it). */
 /* F-465: the step ids are IMPORTED from the one home now
@@ -1169,6 +1182,13 @@ const PIPE_IDS = () => {
   const seeded = (typeof window !== "undefined" && window.__PIPE_IDS__) || null;
   return seeded || { developerSpaceId: null, appId: null };
 };
+/* The installed scaffold variables. Overridable so an arm can ask for a row that has
+   none at all (a pipeline installed before the field existed). */
+const PIPE_VARS = () => {
+  if (typeof window !== "undefined" && window.__PIPE_VARS__ !== undefined) return window.__PIPE_VARS__;
+  return { APP_NAME: "Acme Ops", UI_DIR: "static/app" };
+};
+
 const PIPE_STEPS = (kind, phase) => PIPELINE_STEP_NAMES(kind, PIPE_IDS()).map((name, i) => ({
   name,
   status: phase === "all" ? "done"
@@ -1179,7 +1199,11 @@ const PIPE_STEPS = (kind, phase) => PIPELINE_STEP_NAMES(kind, PIPE_IDS()).map((n
   ...(phase === "fail" && name === "commit-scaffold"
     ? { error: "The default branch is protected and refused the commit" } : {}),
 }));
-const PIPE_ROW = (status, storedScaffoldVersion = SCAFFOLD_VERSION) => ({
+/* F-605: a row whose run stopped reporting. The timestamps are aged past the claim's TTL,
+   because that is what the product reads - a fixture that set `stuck: true` by hand would
+   pass against a renderer that never derived anything. */
+const PIPE_STUCK_AT = () => new Date(Date.now() - (PIPELINE_CLAIM_TTL_MINUTES + 5) * 60 * 1000).toISOString();
+const PIPE_ROW = (status, storedScaffoldVersion = SCAFFOLD_VERSION, opts = {}) => withDerived({
   connId: "gc_1", repoId: "acme/web", kind: "github", scaffold: "forge-pipeline",
   /* F-583: the DEFAULT row is now installed at the CURRENT scaffold version. It used to be
      hardcoded to 1, which — once SCAFFOLD_VERSION went to 2 — quietly made every existing
@@ -1187,24 +1211,46 @@ const PIPE_ROW = (status, storedScaffoldVersion = SCAFFOLD_VERSION) => ({
      prove the healthy state renders, so the age is a parameter and the outdated arm asks
      for it explicitly. */
   scaffoldVersion: storedScaffoldVersion,
-  /* Derived exactly as publicPipelineRow derives them, from the shared module. */
-  outdated: scaffoldOutdatedReason(storedScaffoldVersion) !== null,
-  outdatedReason: scaffoldOutdatedReason(storedScaffoldVersion),
   currentScaffoldVersion: SCAFFOLD_VERSION,
   status,
   steps: PIPE_STEPS("github", status === "installed" ? "all" : status === "partial" ? "fail" : status === "running" ? "some" : "none"),
   failedStep: status === "partial" ? "commit-scaffold" : null,
   lockHash: "b91c7a44", lockScopes: ["read:jira-work", "write:jira-work", "storage:app"],
   branch: "main", commitSha: status === "installed" ? "9f31c0de" : null,
-  installedAt: status === "installed" ? "2026-09-13T09:06:00.000Z" : null,
-  queuedAt: "2026-09-13T09:00:00.000Z", startedAt: null, updatedAt: "2026-09-13T09:06:00.000Z",
+  /* opts.installedAt: a row that installed once and is being set up AGAIN. That is the
+     F-605 case - the repository holds the previous scaffold, which is why the remedy has
+     to come back when the re-run dies. */
+  installedAt: status === "installed" || opts.installedAt ? "2026-09-13T09:06:00.000Z" : null,
+  /* A run IN FLIGHT is dated NOW, because liveness is derived from the clock against the
+     claim's TTL (F-605): a queued row with a fixed timestamp is a run that died hours ago,
+     which is a different scenario and not the one the walking sequence is about. */
+  queuedAt: opts.stuck ? PIPE_STUCK_AT() : (status === "queued" || status === "running") ? new Date().toISOString() : "2026-09-13T09:00:00.000Z",
+  startedAt: null,
+  updatedAt: opts.stuck ? PIPE_STUCK_AT() : (status === "queued" || status === "running") ? new Date().toISOString() : "2026-09-13T09:06:00.000Z",
   lastRun: PIPE_STATE_RUN(), requestedBy: ACCT,
   /* publicPipelineRow exposes both, normalised: the space id lower-cased, the app id as
      the full ARI. The fixture normalises the same way so the card is asked to render the
      BACKEND's value rather than the reader's keystrokes. */
   developerSpaceId: PIPE_IDS().developerSpaceId || null,
   appId: PIPE_IDS().appId || null,
+  /* F-604: publicPipelineRow carries the scaffold variables the pipeline was RENDERED
+     with, so a re-setup can be prefilled from what is installed. The fixture's values are
+     deliberately NOT the scaffold's defaults - a form seeded from the defaults would look
+     identical to a prefilled one if they matched. */
+  scaffoldVars: PIPE_VARS(),
 });
+
+/* The three DERIVED fields, computed by the product's own predicates over the row the
+   fixture just built - the same call publicPipelineRow makes. */
+function withDerived(row) {
+  return {
+    ...row,
+    outdated: pipelineOutdated(row),
+    outdatedReason: pipelineOutdated(row) ? scaffoldOutdatedReason(row.scaffoldVersion) : null,
+    live: pipelineLive(row),
+    stuck: pipelineStuck(row),
+  };
+}
 /* The QUEUED journey is a SEQUENCE, not a state: each poll advances it one stage, which
    is the only way "queued becomes installed" can prove the card really re-read. */
 const PIPE_STATE = { walking: false, stage: 0, run: null, ids: null };
@@ -1223,6 +1269,14 @@ const PIPE_READ = (repoId) => {
      committed to the repo is the v1 one whose YAML makes GitHub answer every dispatch 422.
      Stored version 1 against a shipped SCAFFOLD_VERSION of 2. */
   if (scenario === "outdated") return PIPE_ROW("installed", 1);
+  /* F-605 - the row a dead run leaves behind: still "queued", timestamps past the claim's
+     TTL, and stuck on the OLD scaffold because the version is stamped by the commit and the
+     commit never happened. Before the fix this row read live and current: no banner, no
+     setup form, and a repository still holding the broken workflow. */
+  if (scenario === "stuck") return PIPE_ROW("queued", 1, { stuck: true, installedAt: true });
+  /* The same dead run on a repository that was NEVER installed: stuck, but not outdated -
+     nothing was committed, so there are no stale bytes and the banner would be a lie. */
+  if (scenario === "stuckfresh") return PIPE_ROW("queued", null, { stuck: true });
   if (scenario === "installed" || scenario === "partial") return PIPE_ROW(scenario);
   return null;
 };
@@ -1240,6 +1294,15 @@ const PIPE_REFUSALS = {
   identity_required: {
     success: false, code: "identity_required",
     error: "No Forge deploy identity is configured", hint: "configure-forge-identity",
+  },
+  /* F-611: the deploy refusal for a stale pipeline. Built from the two shared homes the
+     backend builds it from - the changelog line for the version the repo is stuck on, and
+     the one remedy sentence - so a fixture cannot describe a refusal the product does not
+     send. Reachable through __PIPE_DEPLOY_REFUSE__, because it answers triggerGitDeploy. */
+  pipeline_outdated: {
+    success: false, code: "pipeline_outdated",
+    error: `${scaffoldOutdatedReason(SCAFFOLD_VERSION - 1)} ${PIPELINE_OUTDATED_REMEDY}`,
+    scaffoldVersion: SCAFFOLD_VERSION - 1, currentScaffoldVersion: SCAFFOLD_VERSION,
   },
   /* F-527/F-528/F-541 refusals, in the shape src/git-pipeline.js returns them. Each is a
      refusal ABOUT ONE FIELD, which is the whole reason the code exists: rendered as a
@@ -2227,6 +2290,11 @@ function invoke(name, payload) {
       if (payload && payload.confirm !== true) return Promise.resolve({ success: false, error: "Starting a deploy needs an explicit confirmation", code: "confirmation_required" });
       if (typeof window !== "undefined" && window.__PIPE_DEPLOY_FAIL__) {
         return Promise.resolve({ success: false, error: "No installed pipeline for that repository", code: "not_installed" });
+      }
+      /* F-611: the backend consults `outdated` now, so the mock does too - a fixture that
+         always said yes would let a UI that cannot render the refusal pass. */
+      if (typeof window !== "undefined" && window.__PIPE_DEPLOY_REFUSE__) {
+        return Promise.resolve(PIPE_REFUSALS[window.__PIPE_DEPLOY_REFUSE__] || { success: false, code: window.__PIPE_DEPLOY_REFUSE__, error: "refused" });
       }
       PIPE_STATE.run = { id: null, ref: "main", workflow: "forge-deploy.yml", at: new Date().toISOString(), by: ACCT };
       return Promise.resolve({ success: true, run: PIPE_STATE.run });

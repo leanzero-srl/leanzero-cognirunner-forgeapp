@@ -57,7 +57,12 @@
 
 import storage from "@forge/kvs";
 import { createHash } from "node:crypto";
-import { renderScaffold, buildPermissionLock, scaffoldVarError, SCAFFOLD_VERSION, scaffoldOutdatedReason } from "./shared/git-scaffolds.js";
+import { renderScaffold, buildPermissionLock, scaffoldVarError, scaffoldVarNames, SCAFFOLD_VERSION, scaffoldOutdatedReason } from "./shared/git-scaffolds.js";
+/* F-605/F-611 - the two DERIVED answers about a row ("are the committed files stale",
+   "is a run in flight") live in a dependency-free module so the admin panel's fixture can
+   import them instead of re-stating them. Re-exported here because every caller already
+   imports this module, and a second import path is how one home becomes two. */
+import { pipelineOutdated, pipelineLive, pipelineStuck, PIPELINE_CLAIM_TTL_MINUTES, PIPELINE_OUTDATED_REMEDY } from "./shared/git-pipeline-state.js";
 import { assertCommitWithinCaps, GitProviderError } from "./git-providers.js";
 import {
   getConnection,
@@ -92,6 +97,7 @@ import { pipelineStepNames } from "./shared/git-pipeline-steps.js";
  * the queue's retry is never swallowed — see `runPipelineSetup`.
  */
 export { gitPipelineKey, gitPipelineClaimKey };
+export { pipelineOutdated, pipelineLive, pipelineStuck, PIPELINE_CLAIM_TTL_MINUTES, PIPELINE_OUTDATED_REMEDY };
 /* F-557 — the two Forge id shapes live in the same dependency-free module, because the
    Code tab form checks them too; re-exported because every caller imports them here. */
 export { normalizeDeveloperSpaceId, normalizeForgeAppId };
@@ -104,7 +110,11 @@ export const PIPELINE_SCAFFOLD = "forge-pipeline";
 export const PIPELINE_LOCK_PATH = ".cognirunner/forge-permissions.lock";
 /** Installs are development-only; the rendered workflow enforces it, we set the var. */
 export const PIPELINE_FORGE_ENV = "development";
-const CLAIM_TTL = { ttl: { value: 10, unit: "MINUTES" } };
+/* The concurrency claim's life, from the SAME constant the liveness rule uses: once the
+   claim has expired a run that has not reported in is not coming back, and calling the row
+   "live" past that point is what hid the outdated banner for ever (F-605). One constant,
+   so the two answers cannot drift apart. */
+const CLAIM_TTL = { ttl: { value: PIPELINE_CLAIM_TTL_MINUTES, unit: "MINUTES" } };
 
 /**
  * THE SCOPE ALLOW-LIST. A lock may only carry scopes from this list.
@@ -290,10 +300,10 @@ export async function requestPipelineSetup({
   manifestYaml,
   site,
   product = "Jira",
-  branch = null,
-  scaffoldVars = null,
-  developerSpaceId = null,
-  appId = null,
+  branch = undefined,
+  scaffoldVars = undefined,
+  developerSpaceId = undefined,
+  appId = undefined,
   accountId = null,
 } = {}) {
   // The security model is DATA, and this is the assertion that keeps it honest.
@@ -397,6 +407,37 @@ export async function requestPipelineSetup({
     );
   }
 
+  /* F-604 — A RE-SETUP IS A RE-RUN OF WHAT WAS INSTALLED, NOT A FRESH ONE.
+     F-583 lets an INSTALLED-but-outdated row reach the setup form, and this write used
+     to be a whole-row `storage.set` built only from the payload: a field the caller did
+     not send landed as null, so the remedy for a stale scaffold quietly re-rendered the
+     workflow with the scaffold's DEFAULT variables and dropped the repo's developer space
+     and app id. The rule is CARRY-OVER, NOT OVERWRITE: `undefined` means "the caller said
+     nothing, keep what the row holds"; an explicitly sent value (including an empty one)
+     still wins, so a field can be cleared on purpose. The Code tab prefills the form from
+     the row for the same reason, but the backend does not rely on it - a script that posts
+     a partial payload gets the same carry-over. */
+  const carriedVars =
+    scaffoldVars === undefined
+      ? (existing && existing.scaffoldVars && typeof existing.scaffoldVars === "object" ? existing.scaffoldVars : null)
+      : (scaffoldVars && typeof scaffoldVars === "object" ? scaffoldVars : null);
+  // Carried values were validated when they were first accepted, but a row can be older
+  // than the current rule, so they are re-checked here - before the claim, before the
+  // enqueue, and never inside the consumer where secrets are already committed.
+  if (carriedVars) {
+    for (const [k, v] of Object.entries(carriedVars)) {
+      const err = scaffoldVarError(k, v);
+      if (err) return invalid(err, "invalid_scaffold_var", { variable: k });
+    }
+  }
+  const carriedSpaceId = developerSpaceId === undefined
+    ? (existing && existing.developerSpaceId) || null
+    : spaceId;
+  const carriedAppId = appId === undefined ? (existing && existing.appId) || null : forgeAppId;
+  const carriedBranch = branch === undefined
+    ? (existing && existing.branch) || null
+    : (branch ? String(branch) : null);
+
   // Nothing has been written yet. From here on there is exactly one write before
   // the enqueue — the claim — and it is released by whichever run does not finish.
   const taskId = `gpipe_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -424,10 +465,10 @@ export async function requestPipelineSetup({
           repoId,
           site: String(site).trim(),
           product: String(product || "Jira").trim() || "Jira",
-          branch: branch ? String(branch) : null,
-          scaffoldVars: scaffoldVars && typeof scaffoldVars === "object" ? scaffoldVars : null,
-          developerSpaceId: spaceId,
-          appId: forgeAppId,
+          branch: carriedBranch,
+          scaffoldVars: carriedVars,
+          developerSpaceId: carriedSpaceId,
+          appId: carriedAppId,
           lock,
           lockHash,
           requestedBy: accountId || null,
@@ -449,10 +490,23 @@ export async function requestPipelineSetup({
     repoId,
     kind: conn.kind,
     scaffold: PIPELINE_SCAFFOLD,
-    scaffoldVersion: SCAFFOLD_VERSION,
-    steps: freshSteps(conn.kind, { developerSpaceId: spaceId, appId: forgeAppId }),
-    developerSpaceId: spaceId,
-    appId: forgeAppId,
+    /* F-605 — THE VERSION DESCRIBES THE COMMITTED BYTES, SO IT IS STAMPED BY THE COMMIT.
+       It used to be written here, when the setup was QUEUED. A run that never reached the
+       commit step then left a row saying "current" for a repository still holding the old
+       workflow: `outdated` went false, `live` stayed true, and the Code tab showed neither
+       the banner nor the setup form again. The queued row therefore keeps the PREVIOUS
+       version (or none for a first install) and runPipelineSetup stamps the new one with
+       the commit. */
+    scaffoldVersion: existing ? existing.scaffoldVersion ?? null : null,
+    steps: freshSteps(conn.kind, { developerSpaceId: carriedSpaceId, appId: carriedAppId }),
+    // F-604 — what this run will RENDER with, stored on the row so the Code tab can
+    // prefill a later re-setup from it instead of from the scaffold's defaults.
+    scaffoldVars: carriedVars,
+    developerSpaceId: carriedSpaceId,
+    appId: carriedAppId,
+    branch: carriedBranch || (existing ? existing.branch || null : null),
+    commitSha: existing ? existing.commitSha || null : null,
+    failedStep: null,
     lockHash,
     lockPermissions: lock.permissions.slice(0, 200),
     lockScopes: scopes,
@@ -523,7 +577,7 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
   // idempotent (F-533: secrets and variables are PUT, the commit is a fresh tree), so
   // running the chain again is safe and is the only remedy the product has.
   if (row.installedAt && row.lockHash === lockHash && row.status === "installed" &&
-      scaffoldOutdatedReason(row.scaffoldVersion) === null) {
+      !pipelineOutdated(row)) {
     return finish({ ok: true, duplicate: true, status: publicPipelineRow(row) });
   }
   if (row.lockHash && lockHash && row.lockHash !== lockHash) {
@@ -646,6 +700,17 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
  * `publicConnection` is one: a field added to the stored row must not become a
  * field the UI receives by accident.
  */
+/** The declared scaffold variables of a row, clamped. `null` when the row has none. */
+function publicScaffoldVars(vars) {
+  if (!vars || typeof vars !== "object") return null;
+  const out = {};
+  for (const name of scaffoldVarNames(PIPELINE_SCAFFOLD)) {
+    if (vars[name] === undefined || vars[name] === null) continue;
+    out[name] = String(vars[name]).slice(0, 200);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export function publicPipelineRow(row) {
   if (!row || typeof row !== "object") return null;
   return {
@@ -658,9 +723,15 @@ export function publicPipelineRow(row) {
     // carries, so a row goes stale the moment the app ships a new scaffold, without a
     // migration touching a single row. `outdatedReason` is the changelog line for the
     // version the repo is stuck on - the Code tab shows it verbatim.
-    outdated: scaffoldOutdatedReason(row.scaffoldVersion) !== null,
-    outdatedReason: scaffoldOutdatedReason(row.scaffoldVersion),
+    outdated: pipelineOutdated(row),
+    outdatedReason: pipelineOutdated(row) ? scaffoldOutdatedReason(row.scaffoldVersion) : null,
     currentScaffoldVersion: SCAFFOLD_VERSION,
+    /* F-605 - DERIVED, and the Code tab reads it rather than re-deriving "queued means
+       busy". `live` is a run still inside the claim's window; `stuck` is a run that was
+       queued or started and never reported again, which is the state that used to be
+       indistinguishable from a healthy one. */
+    live: pipelineLive(row),
+    stuck: pipelineStuck(row),
     status: row.status || null,
     steps: (Array.isArray(row.steps) ? row.steps : []).map((s) => ({
       name: String(s && s.name).slice(0, 40),
@@ -685,6 +756,12 @@ export function publicPipelineRow(row) {
     // F-528 — a public app identifier, not a credential. The UI needs it to tell the
     // admin whether the pipeline still has to register on every run.
     appId: row.appId || null,
+    /* F-604 — the scaffold variables this pipeline was rendered with, so a re-setup can
+       be prefilled from what is installed rather than from the scaffold's defaults. These
+       are an app NAME and a folder PATH the admin typed; the allow-list stays an
+       allow-list, so only DECLARED scaffold variables are projected, each clamped, and a
+       key the scaffold does not declare never reaches the browser. */
+    scaffoldVars: publicScaffoldVars(row.scaffoldVars),
   };
 }
 
@@ -755,6 +832,20 @@ export async function triggerPipelineDeploy({
   const row = await readPipelineRow(connectionId, repoId);
   if (!row || row.status !== "installed") {
     return invalid("No installed pipeline for that repository — set it up first", "not_installed");
+  }
+  /* F-611 — AN OUTDATED PIPELINE MUST NOT BE DISPATCHED. F-602 removed the button from
+     the Code tab, which is the half a reader sees; this is the half that answers the
+     resolver and any script that calls it. The workflow committed to the repository is
+     the invalid one, so the dispatch cannot do anything but 422, and a refusal that names
+     the cause is worth more than the provider's error. The SENTENCE is the same one the
+     tab shows, from the same two homes: the scaffold changelog line for the version the
+     repo is stuck on, plus the shared remedy. */
+  if (pipelineOutdated(row)) {
+    return invalid(
+      `${scaffoldOutdatedReason(row.scaffoldVersion)} ${PIPELINE_OUTDATED_REMEDY}`,
+      "pipeline_outdated",
+      { scaffoldVersion: row.scaffoldVersion ?? null, currentScaffoldVersion: SCAFFOLD_VERSION }
+    );
   }
   const branch = ref || row.branch || null;
   if (!branch) return invalid("A branch to deploy is required", "invalid");

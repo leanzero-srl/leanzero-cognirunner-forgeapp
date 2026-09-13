@@ -59,6 +59,9 @@ import {
   APP_ID_ARI_PREFIX, normalizeDeveloperSpaceId, normalizeForgeAppId,
 } from "../../../../src/shared/git-ids.js";
 import { SCAFFOLDS, scaffoldVarError, SCAFFOLD_VAR_LABELS, scaffoldHasCustomUi } from "../../../../src/shared/git-scaffolds.js";
+/* F-611: the remedy sentence for a stale pipeline, from the same module the backend's
+   refusal reads it from. The screen and the API say the one thing. */
+import { PIPELINE_OUTDATED_REMEDY } from "../../../../src/shared/git-pipeline-state.js";
 
 const KIND_OPTIONS = GIT_PROVIDER_KINDS.map((k) => ({ value: k, label: gitProviderKindMeta(k).label }));
 
@@ -174,9 +177,16 @@ const PIPELINE_CODE_COPY = {
   security_model: "Pipeline setup is refused by the app's own security model check.",
   not_installed: "There is no installed pipeline for this repository yet.",
   confirmation_required: "A deploy needs an explicit confirmation.",
+  /* F-611: the backend refuses a deploy on an outdated pipeline. The tab hides the button
+     in that state (F-602), so this is the copy for the race - the row went stale between
+     the render and the press - and for anything else that reaches the resolver. */
+  pipeline_outdated: "The workflow committed to this repository is not the one this version of CogniRunner installs, so a deploy would be refused by the provider. Set the pipeline up again first.",
 };
 
-const PIPE_STATUS_LABEL = { queued: "QUEUED", running: "RUNNING", installed: "INSTALLED", partial: "PARTIAL" };
+/* F-605: "stuck" is not a stored status - it is the derived state of a run that was
+   queued or started and never reported again. It earns its own label because QUEUED reads
+   as "any moment now" and this one never will be. */
+const PIPE_STATUS_LABEL = { queued: "QUEUED", running: "RUNNING", installed: "INSTALLED", partial: "PARTIAL", stuck: "SETUP DID NOT FINISH" };
 const STEP_STATUS_LABEL = { pending: "waiting", running: "running", done: "done", failed: "failed" };
 
 const POLL_MS = 5000;
@@ -218,6 +228,18 @@ function PipelineError({ err, onNeedIdentity }) {
           {scopes.map((sc) => <span key={sc} className="code-diff code-diff-rem">{sc}</span>)}
         </span>
         <span className="code-pipe-err-text">Remove them from the manifest, or deploy this app by hand.</span>
+      </>
+    );
+  } else if (code === "pipeline_outdated") {
+    /* F-611: this one is a DEPLOY refusal, not a setup refusal, so it does not borrow the
+       generic title. The version pair rides the refusal because the backend sends it. */
+    body = (
+      <>
+        <span className="code-pipe-err-title">This pipeline is outdated</span>
+        <span className="code-pipe-err-text">{PIPELINE_CODE_COPY.pipeline_outdated}</span>
+        {err.currentScaffoldVersion != null && (
+          <span className="code-pipe-outdated-ver">Installed scaffold v{Number(err.scaffoldVersion) >= 1 ? Math.floor(Number(err.scaffoldVersion)) : 1} to v{err.currentScaffoldVersion}</span>
+        )}
       </>
     );
   } else {
@@ -285,6 +307,20 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
   const timerRef = useRef(null);
   const readRef = useRef(null);
 
+  /* Called from inside the READ, not from an effect on `row`: the fields then commit in
+     the same render as the row, so the form is never painted with the scaffold's defaults
+     for a frame and then corrected. */
+  const seedFormFrom = (r) => {
+    if (!r || seededRef.current === repoId) return;
+    seededRef.current = repoId;
+    const vars = r.scaffoldVars || {};
+    if (vars.APP_NAME) { appNameTouched.current = true; setAppName(vars.APP_NAME); }
+    if (vars.UI_DIR) setUiDir(vars.UI_DIR);
+    if (r.developerSpaceId) setDeveloperSpaceId(r.developerSpaceId);
+    if (r.appId) setAppId(r.appId);
+    if (r.branch) setBranch(r.branch);
+  };
+
   readRef.current = async (token, tries) => {
     let r = null;
     try {
@@ -297,10 +333,12 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
     if (r && r.success) {
       setReadFailed(false); setRefusal(null);
       setRow(r.status || null);
+      seedFormFrom(r.status || null);
       setDeploy(r.deploy || null);
       setDeployError(r.deployError || null);
-      const st = r.status && r.status.status;
-      if (st === "queued" || st === "running") {
+      /* F-605: poll while the BACKEND says the run is live. Polling on the raw status kept
+         a dead run's card re-reading for ten minutes and then declaring itself stalled. */
+      if (r.status && r.status.live) {
         if (tries < POLL_MAX) {
           timerRef.current = setTimeout(() => { if (tokenRef.current === token) readRef.current(token, tries + 1); }, POLL_MS);
         } else {
@@ -323,6 +361,23 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
       if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
     };
   }, [conn.id, repoId]);
+
+  /* F-604 - PREFILL THE FORM FROM THE ROW, ONCE PER REPO.
+
+     F-583 admits an INSTALLED-but-outdated pipeline to this form, and the form's fields
+     start at the scaffold's DEFAULTS. Following the amber banner therefore re-installed the
+     pipeline with APP_NAME/UI_DIR defaults and dropped the developer space and app id the
+     repository was set up with: the remedy for stale bytes broke the build folder and the
+     app registration in the same commit. The row is the record of what is installed
+     (publicPipelineRow carries scaffoldVars, developerSpaceId, appId and branch), so a
+     re-setup starts from it.
+
+     SEEDED ONCE, per repo. The card polls every 5 seconds; a seed that ran on every read
+     would overwrite whatever the admin is typing. The manifest is deliberately NOT seeded -
+     the row stores a lock hash, never the manifest, and the paste is what proves the
+     permissions again. */
+  const seededRef = useRef(null);
+  useEffect(() => { seededRef.current = null; }, [conn.id, repoId]);
 
   const restartPolling = () => {
     const token = ++tokenRef.current;
@@ -367,8 +422,12 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
         /* F-548: both are optional, and an EMPTY one is sent as absent rather than as
            an empty string, because the backend reads "present and malformed" as a
            refusal and "absent" as "do not write this repository variable at all". */
-        developerSpaceId: developerSpaceId.trim() || undefined,
-        appId: appId.trim() || undefined,
+        /* F-604: with a row on screen the form was PREFILLED from it, so an emptied field
+           is an explicit clear and is sent as the empty string; the backend reads a key it
+           was not sent as "keep what the row holds". With no row there is nothing to keep
+           and the F-548 shape is unchanged. */
+        developerSpaceId: row ? developerSpaceId.trim() : (developerSpaceId.trim() || undefined),
+        appId: row ? appId.trim() : (appId.trim() || undefined),
       });
       if (r && r.success) {
         setRow(r.status || null);
@@ -434,7 +493,14 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
   }
 
   const status = (row && row.status) || null;
-  const live = status === "queued" || status === "running";
+  /* F-605 - LIVENESS IS THE BACKEND'S ANSWER, not "status says queued". The status field
+     is written by the run, so a run that dies leaves "queued" on the row forever; this
+     screen then polled, said it had stopped watching, and hid BOTH the outdated banner and
+     the setup form on every later visit, for a repository whose committed workflow was
+     still the broken one. `live` and `stuck` are derived in src/git-pipeline.js against the
+     claim's own TTL, and the tab renders them. */
+  const live = !!(row && row.live);
+  const stuck = !!(row && row.stuck);
   /* F-583 - the row is OUTDATED when the scaffold committed to the repository is older
      than the one this build installs. `outdated`/`outdatedReason`/`currentScaffoldVersion`
      are DERIVED by publicPipelineRow (F-579) against the shipped SCAFFOLD_VERSION, so the
@@ -456,8 +522,8 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
             byte-for-byte what a healthy install reports, while every dispatch 422s. The
             green badge is the single most load-bearing thing on this screen, so the state
             that contradicts it has to TAKE ITS PLACE rather than sit underneath it. */}
-        <span className={`code-pipe-status ${outdated ? "code-pipe-outdated" : `code-pipe-${status || "none"}`}`}>
-          {outdated ? "PIPELINE OUTDATED" : status ? PIPE_STATUS_LABEL[status] || String(status).toUpperCase() : "NOT SET UP"}
+        <span className={`code-pipe-status ${outdated ? "code-pipe-outdated" : stuck ? "code-pipe-stuck" : `code-pipe-${status || "none"}`}`}>
+          {outdated ? "PIPELINE OUTDATED" : stuck ? PIPE_STATUS_LABEL.stuck : status ? PIPE_STATUS_LABEL[status] || String(status).toUpperCase() : "NOT SET UP"}
         </span>
         {row && row.installedAt && (
           <span className="code-fact"><span className="code-fact-k">Installed</span><span className="code-fact-v">{new Date(row.installedAt).toLocaleString()}</span></span>
@@ -502,7 +568,10 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
           {toVersion != null && (
             <span className="code-pipe-outdated-ver">Installed scaffold v{fromVersion} to v{toVersion}</span>
           )}
-          <span className="code-pipe-err-text">Use "Set up pipeline" below to commit the current workflow to this repository.</span>
+          {/* F-611: the remedy sentence has ONE home, shared with the refusal
+              triggerGitDeploy answers a script with, so the screen and the API cannot
+              describe the same state in two different ways. */}
+          <span className="code-pipe-err-text">{PIPELINE_OUTDATED_REMEDY}</span>
         </div>
       )}
 
@@ -531,6 +600,17 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
         <div className="code-pipe-warn" role="alert">
           <span className="code-pipe-err-title">This setup stopped at {row.failedStep}</span>
           <span className="code-pipe-err-text">Everything before it is done. Fix the cause and set it up again.</span>
+        </div>
+      )}
+
+      {stuck && (
+        /* The sentence the admin needs is what was and was NOT done: the setup never ran,
+           so nothing was written to the repository, and the remedy is the form below - which
+           this state unlocks, because the form's gate is `!live`. */
+        <div className="code-pipe-warn" role="alert">
+          <span className="code-pipe-err-title">This setup never finished</span>
+          <span className="code-pipe-err-text">It was queued{row && row.queuedAt ? ` at ${new Date(row.queuedAt).toLocaleString()}` : ""} and the run stopped reporting. Nothing new was committed to the repository.</span>
+          <span className="code-pipe-err-text">Set it up again below. A setup is safe to repeat: every step writes the same values.</span>
         </div>
       )}
 

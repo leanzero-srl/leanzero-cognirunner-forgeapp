@@ -29,6 +29,7 @@ import { pushed as pushedEvents } from "../lib/mock-forge-api.mjs";
 const conns = await import("../../src/git-connections.js");
 const pipe = await import("../../src/git-pipeline.js");
 const scaf = await import("../../src/shared/git-scaffolds.js");
+const state = await import("../../src/shared/git-pipeline-state.js");
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -705,6 +706,183 @@ reset();
   const dup = await runQueued({ ...lastParams(), taskId: "redelivered-579" });
   ok(dup.ok === true && dup.duplicate === true && fetchCalls.length === 0,
     `a redelivery of a CURRENT install is still a no-op (got ${JSON.stringify(dup).slice(0, 160)})`);
+}
+
+/* ===== 17. F-604 — A RE-SETUP CARRIES THE INSTALLED VALUES, IT DOES NOT RESET THEM =====
+ * F-583 lets an outdated-but-installed row reach the setup form. The row write used to be
+ * built from the payload alone, so a caller that omitted a field got null: re-running the
+ * remedy re-rendered the workflow with the scaffold's DEFAULT variables and erased the
+ * repository's developer space and app id. Carry-over, not overwrite. */
+reset();
+{
+  const connId = await seedConnection();
+  const SPACE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const ARI = "ari:cloud:ecosystem::app/11111111-2222-3333-4444-555555555555";
+  await call("setupGitPipeline", {
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    scaffoldVars: { APP_NAME: "Acme App", UI_DIR: "static/app" },
+    developerSpaceId: SPACE, appId: ARI,
+  });
+  fetchQueue = githubSetupChain(5);
+  await runQueued(lastParams());
+  const key = pipe.gitPipelineKey(connId, REPO);
+  const installed = storage.__raw(key);
+  ok(installed.status === "installed", `the seed install completes (got ${installed.status} / ${installed.failedStep})`);
+  ok(installed.scaffoldVars && installed.scaffoldVars.UI_DIR === "static/app",
+    `the installed row records the variables it was rendered with (got ${JSON.stringify(installed.scaffoldVars)})`);
+  const pub = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(pub.status.scaffoldVars && pub.status.scaffoldVars.APP_NAME === "Acme App" &&
+     pub.status.scaffoldVars.UI_DIR === "static/app",
+    "…and the public row carries them, so the Code tab can prefill the form from what is installed");
+  ok(findSecret(pub, GH_TOKEN) === null && findSecret(pub, FORGE_TOKEN) === null,
+    "…without carrying a secret with them");
+
+  // Age it, then re-set-up with NO scaffoldVars / space / app id in the payload at all.
+  storage.__seed(key, { ...installed, scaffoldVersion: 1 });
+  pushedEvents.length = 0;
+  const again = await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  ok(again.success === true, `a partial payload is accepted (got ${JSON.stringify(again).slice(0, 160)})`);
+  const queuedRow = storage.__raw(key);
+  ok(queuedRow.scaffoldVars && queuedRow.scaffoldVars.UI_DIR === "static/app" &&
+     queuedRow.developerSpaceId === SPACE && queuedRow.appId === ARI,
+    `the re-setup row KEPT the installed values instead of nulling them (got ${JSON.stringify({ v: queuedRow.scaffoldVars, s: queuedRow.developerSpaceId, a: queuedRow.appId })})`);
+  ok(queuedRow.installedAt === installed.installedAt,
+    "…and it keeps installedAt, so the header does not lose the install date");
+  const params = lastParams();
+  ok(params.scaffoldVars && params.scaffoldVars.UI_DIR === "static/app" &&
+     params.developerSpaceId === SPACE && params.appId === ARI,
+    `…and the CONSUMER is asked to render the same folder and set the same variables (got ${JSON.stringify({ v: params.scaffoldVars, s: params.developerSpaceId, a: params.appId })})`);
+  fetchCalls = [];
+  const chain = githubSetupChain(5);
+  chain.splice(4 + 5, 1); // no default-branch lookup: the row already names the branch
+  fetchQueue = chain;
+  const out = await runQueued(params);
+  ok(out.ok === true, `the carried re-setup runs (got ${JSON.stringify(out).slice(0, 200)})`);
+  const treeCall = fetchCalls.find((c) => /git\/trees/.test(c.url));
+  ok(!!treeCall && String(treeCall.body).includes("static/app") && !String(treeCall.body).includes("static/ui"),
+    "…and the COMMITTED workflow builds the folder the pipeline was installed with, not the scaffold default");
+
+  // An explicitly EMPTY value is a clear, not an omission: the admin can still remove one.
+  storage.__seed(key, { ...storage.__raw(key), scaffoldVersion: 1 });
+  await call("setupGitPipeline", {
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE, developerSpaceId: "", appId: "",
+  });
+  const cleared = storage.__raw(key);
+  ok(cleared.developerSpaceId === null && cleared.appId === null,
+    `an explicitly empty field CLEARS the stored one (got ${JSON.stringify({ s: cleared.developerSpaceId, a: cleared.appId })})`);
+  ok(cleared.scaffoldVars && cleared.scaffoldVars.UI_DIR === "static/app",
+    "…and clearing one field does not disturb the ones the payload said nothing about");
+}
+
+/* ===== 18. F-605 — THE VERSION IS STAMPED BY THE COMMIT, AND A DEAD RUN IS NOT LIVE =====
+ * `scaffoldVersion` was written on the QUEUED row, so a run that never reached the commit
+ * step left a repository holding the old workflow while the row claimed the current
+ * version: `outdated` went false, `live` stayed true (status is written by the run, and a
+ * dead run never updates it), and the Code tab showed neither the banner nor the form. */
+reset();
+{
+  const connId = await seedConnection();
+  await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  const key = pipe.gitPipelineKey(connId, REPO);
+  const queued = storage.__raw(key);
+  ok(queued.status === "queued" && (queued.scaffoldVersion === null || queued.scaffoldVersion === undefined),
+    `a QUEUED first setup carries no scaffold version - nothing is committed yet (got ${JSON.stringify(queued.scaffoldVersion)})`);
+  fetchQueue = githubSetupChain();
+  await runQueued(lastParams());
+  ok(storage.__raw(key).scaffoldVersion === scaf.SCAFFOLD_VERSION,
+    "…and the COMMIT is what stamps it");
+
+  // The defect, exactly: an installed-and-stale row is re-set-up and the run dies.
+  const installed = storage.__raw(key);
+  storage.__seed(key, { ...installed, scaffoldVersion: 1 });
+  await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  const requeued = storage.__raw(key);
+  ok(requeued.status === "queued" && requeued.scaffoldVersion === 1,
+    `a re-setup QUEUES on the PREVIOUS version - the repo still holds the old bytes (got ${JSON.stringify(requeued.scaffoldVersion)})`);
+
+  // Fresh queue: live, and deliberately not reported as outdated while it is about to run.
+  const fresh = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(fresh.status.live === true && fresh.status.stuck === false,
+    `a run inside the claim's window is LIVE (got ${JSON.stringify({ l: fresh.status.live, s: fresh.status.stuck })})`);
+
+  // Now the run never happens. Age the row past the claim TTL.
+  const longAgo = new Date(Date.now() - (pipe.PIPELINE_CLAIM_TTL_MINUTES + 5) * 60 * 1000).toISOString();
+  storage.__seed(key, { ...requeued, queuedAt: longAgo, updatedAt: longAgo });
+  const dead = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(dead.status.live === false && dead.status.stuck === true,
+    `a run that stopped reporting past the claim TTL is NOT live (got ${JSON.stringify({ l: dead.status.live, s: dead.status.stuck })})`);
+  ok(dead.status.outdated === true && dead.status.outdatedReason === scaf.SCAFFOLD_CHANGELOG[2],
+    `…and the repository is still reported OUTDATED, which is the signal the defect erased (got ${JSON.stringify(dead.status.outdatedReason).slice(0, 80)})`);
+
+  // A run that DID install is never stuck and never live.
+  const done = pipe.publicPipelineRow(installed);
+  ok(done.live === false && done.stuck === false, "an installed row is neither live nor stuck");
+
+  // A first setup that dies in the queue is stuck, but NOT outdated: nothing was committed,
+  // so there are no stale bytes to replace and the banner would be a false sentence.
+  const neverInstalled = { ...requeued, installedAt: null, scaffoldVersion: null, queuedAt: longAgo, updatedAt: longAgo };
+  const never = pipe.publicPipelineRow(neverInstalled);
+  ok(never.stuck === true && never.outdated === false && never.outdatedReason === null,
+    `a first setup that never ran is stuck, not outdated (got ${JSON.stringify({ s: never.stuck, o: never.outdated })})`);
+
+  // A row with no usable timestamp fails to LIVE: the claim refuses a second setup anyway.
+  ok(pipe.publicPipelineRow({ status: "queued" }).live === true,
+    "a queued row that cannot be dated is treated as live, not as abandoned");
+}
+
+/* ===== 19. F-611 — THE DEPLOY DOOR CONSULTS THE SAME PREDICATE THE SCREEN DOES =====
+ * F-602 removed the "Trigger deploy" button from an outdated pipeline's card, which closes
+ * the half a reader sees. The resolver still forwarded the dispatch, so a script - or the
+ * race where the row goes stale between the render and the press - still reached the 422,
+ * surfaced as a generic provider failure instead of the refusal that names the cause. */
+reset();
+{
+  const connId = await seedConnection();
+  await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  fetchQueue = githubSetupChain();
+  await runQueued(lastParams());
+  const key = pipe.gitPipelineKey(connId, REPO);
+  const installed = storage.__raw(key);
+
+  // A CURRENT pipeline still deploys — the refusal must not take the feature away.
+  fetchCalls = [];
+  fetchQueue = [res(204, {})];
+  const okRun = await call("triggerGitDeploy", { connectionId: connId, repo: REPO, confirm: true });
+  ok(okRun.success === true, `a current pipeline still deploys (got ${JSON.stringify(okRun).slice(0, 160)})`);
+
+  // Age it to the offshoot's state: installed, 6/6, stuck on v1. The row carries the run
+  // the successful deploy just recorded, which is what proves the refusal writes nothing.
+  storage.__seed(key, { ...storage.__raw(key), scaffoldVersion: 1 });
+  const beforeRefusal = storage.__raw(key);
+  fetchCalls = [];
+  fetchQueue = [];
+  const refused = await call("triggerGitDeploy", { connectionId: connId, repo: REPO, confirm: true });
+  ok(refused.success === false && refused.code === "pipeline_outdated",
+    `an OUTDATED pipeline refuses the deploy by machine code (got ${JSON.stringify(refused).slice(0, 200)})`);
+  ok(fetchCalls.length === 0,
+    "…and nothing was dispatched: the refusal happens before the provider is touched");
+  ok(refused.error.includes(scaf.SCAFFOLD_CHANGELOG[2]),
+    `…carrying the changelog line the Code tab shows, verbatim (got ${JSON.stringify(refused.error).slice(0, 120)})`);
+  ok(refused.error.includes(state.PIPELINE_OUTDATED_REMEDY),
+    "…and the one shared remedy sentence, so the screen and the API say the same thing");
+
+  // The row is untouched by a refusal: the run recorded by the SUCCESSFUL deploy above is
+  // still the last one, so nothing was written on the way out.
+  const after = storage.__raw(key);
+  ok(after.lastRun && after.lastRun.ref === "main" && after.lastRun.at === beforeRefusal.lastRun.at,
+    `the refusal records no new run on the row (got ${JSON.stringify(after.lastRun)})`);
+
+  // ONE PREDICATE. The projection the tab renders and the deploy gate answer the same way
+  // for the same row — that is the whole point of naming it.
+  const pub = pipe.publicPipelineRow(storage.__raw(key));
+  ok(pub.outdated === pipe.pipelineOutdated(storage.__raw(key)) && pub.outdated === true,
+    "the row the screen renders and the gate the deploy asks are the same predicate");
+
+  // A row that never installed refuses as not_installed, not as outdated: nothing is stale.
+  storage.__seed(key, { ...installed, installedAt: null, status: "partial", scaffoldVersion: 1 });
+  const notSetUp = await call("triggerGitDeploy", { connectionId: connId, repo: REPO, confirm: true });
+  ok(notSetUp.code === "not_installed",
+    `a repo that never installed is refused as not_installed (got ${JSON.stringify(notSetUp.code)})`);
 }
 
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);

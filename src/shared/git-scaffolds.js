@@ -901,6 +901,18 @@ export const SCAFFOLDS = {
 /** Metadata-only view for UIs (no file bodies). */
 export const SCAFFOLD_INDEX = Object.entries(SCAFFOLDS).map(([id, s]) => ({ id, label: s.label, description: s.description, files: s.files.map((f) => f.path), vars: Object.keys(s.vars) }));
 
+/**
+ * The variable names a scaffold DECLARES, in its own order.
+ *
+ * F-604 - the public projection of a stored pipeline row carries the variables it was
+ * rendered with, and "which keys are variables" is this module's fact, not the caller's.
+ * An unknown key stored on an old row therefore never reaches a browser.
+ */
+export const scaffoldVarNames = (kind) => {
+  const s = SCAFFOLDS[kind];
+  return s && s.vars ? Object.keys(s.vars) : [];
+};
+
 const substitute = (text, vars) => String(text).replace(/\{\{([A-Z_]+)\}\}/g, (m, k) => (Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m));
 
 const SAFE_VAR_CHARS = /^[A-Za-z0-9 ._\/-]+$/;

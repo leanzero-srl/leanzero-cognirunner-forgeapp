@@ -61,7 +61,7 @@ import {
   // for the merge rules (constraints carried across by code); this file only decides WHEN
   // it runs, claims it, verifies the result and writes the receipt.
   memoryNeedsCompaction, memoryBytes, compactMemory, pinnedSurvived,
-  takeCompactClaim,
+  takeCompactClaim, readCompactBackoff, setCompactBackoff, clearCompactBackoff,
 } from "./va-ledger.js";
 import {
   VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX,
@@ -366,9 +366,28 @@ export const itemQueueFor = (va) => {
  * cost of that refusal is one wasted model call and a memory that is still too big — the
  * cost of the alternative is a standing rule a human typed, gone for ever, silently.
  *
- * FAIL SOFT, ALWAYS. Every failure path here leaves the old memory in place and returns a
- * reason for the receipt. Compaction is housekeeping: an agent whose tick refuses to sweep
- * because its notebook could not be tidied is a worse agent than one with a fat notebook.
+ * FAIL SOFT, ALWAYS — for the SWEEP. Every failure path here leaves the old memory in
+ * place (or a converged fallback), returns a reason for the receipt, and never stops the
+ * tick from sweeping: an agent whose tick refuses to work because its notebook could not
+ * be tidied is a worse agent than one with a fat notebook. Fail soft is about the WORK,
+ * not about the VERDICT — see the convergence gate below.
+ *
+ * F-506 — IT ASKS WHETHER THE MEMORY ACTUALLY SHRANK, and that question is the whole
+ * point of this step. Before it, any `compacted: true` was accepted: the fail-open arm of
+ * `compactMemory` handed back the ORIGINAL prose, this wrote it, reported `ran: true` with
+ * `before === after`, put NOTHING on the receipt (the skip was gated on `!ran`), and the
+ * next tick — five minutes later, for ever — bought another failed provider call. 288 a
+ * day on a memory that never shrank by a byte. So:
+ *   · the memory must end up UNDER `memoryCompactBytes`, re-measured from what was
+ *     actually stored, and a fallback (`fellBack`) is a FAILURE however small the row is —
+ *     it means the turn was paid for and produced no summary;
+ *   · a failed turn arms `va_compact_backoff:{agent}` (6 h) so the following ticks skip
+ *     the model call by name instead of re-buying the same failure. The per-tick claim
+ *     cannot do this: its key carries the `tickId`, so it only ever stops a REDELIVERY;
+ *   · the failure is a GATE skip, and a gated tick is not an ok tick (F-502). This is the
+ *     one thing about compaction that is NOT housekeeping — a spend that repeats and
+ *     achieves nothing is exactly what the banner exists for.
+ * `gate: "compaction"` on the returned row is what the tick reads to decide both.
  */
 export const runVaCompaction = async ({ agent, tick, deps }) => {
   let before = 0;
@@ -388,6 +407,17 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
     // turns, and the second one compacts an already-compacted memory — the way a memory
     // loses its detail twice over for one tick's worth of growth. `already_claimed` and
     // `storage_fault` both mean DO NOT PROCEED; neither is carried on from.
+    // THE BACKOFF, BEFORE THE CLAIM AND BEFORE THE SPEND (F-506). A provider that failed
+    // us within the window is not asked again: this is the only thing standing between a
+    // revoked BYOK key and one failed model call every five minutes for ever. NOT a gate
+    // skip — the loud one was recorded when the failure happened; these ticks are the
+    // engine deliberately not paying for a known-broken call, and marking six hours of
+    // ticks failed would bury the banner it already raised.
+    const backoff = await readCompactBackoff(deps.store, agent);
+    if (backoff.active) {
+      return { ran: false, reason: "compaction-backoff", since: backoff.since || null, cause: backoff.reason || null, before };
+    }
+
     const claim = await takeCompactClaim(deps.store, agent, tick);
     if (!claim.ok) return { ran: false, reason: `not_claimed:${claim.reason}`, before };
 
@@ -405,6 +435,11 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
     // not written, and the old one stands.
     const survived = pinnedSurvived(memory, result.memory);
     if (!survived.ok) {
+      // A turn WAS paid for and the memory is still over budget, so the backoff is armed
+      // here too (F-506) — a summariser that drops pinned lines will drop them again next
+      // tick. The tick stays ok: this is the engine protecting a human-typed rule, which
+      // is the refusal working, not a failure to report.
+      await setCompactBackoff(deps.store, agent, "pinned_dropped", { now: deps.now() });
       return {
         ran: false, kept: true, before,
         reason: `pinned_dropped:${survived.missing.length}`,
@@ -415,11 +450,37 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
     const wrote = await writeMemory(deps.store, agent, { text: result.memory.text, constraints: result.memory.constraints }, { now: deps.now() });
     // A refused write (`memory-full`) leaves the previous row in storage — `writeMemory`
     // refuses BEFORE it sets anything — so the old memory is intact and nothing is lost.
-    if (!wrote.ok) return { ran: false, reason: `write_refused:${wrote.reason}`, before };
+    if (!wrote.ok) {
+      await setCompactBackoff(deps.store, agent, `write_refused:${wrote.reason}`, { now: deps.now() });
+      return { ran: false, gate: "compaction", reason: "did-not-converge", detail: `write_refused:${wrote.reason}`, before };
+    }
 
+    /*
+     * THE CONVERGENCE GATE (F-506). Measured from `wrote.bytes` — what is in storage —
+     * not from what the compactor proposed, for the same reason `pinnedSurvived` re-asks:
+     * a property checked where the write happens survives a refactor of the thing that
+     * produced it.
+     *
+     * A FALLBACK COUNTS AS A FAILURE even when the clamped row is small. The clamp now
+     * converges by construction (va-ledger.js), so the bytes alone would say "fine" — but
+     * the turn was bought and no summary came back, the notes were bluntly cut instead of
+     * summarised (§3.14 law 7), and asking the same dead provider again in five minutes is
+     * the bill this finding is about.
+     */
+    const after = wrote.bytes;
+    const converged = after <= VA_LIMITS.memoryCompactBytes;
+    if (result.fellBack === true || !converged) {
+      const reason = result.fellBack === true ? "summariser-failed" : "did-not-converge";
+      await setCompactBackoff(deps.store, agent, result.reason || reason, { now: deps.now() });
+      return { ran: false, gate: "compaction", reason, before, after, fellBack: result.fellBack === true, detail: result.reason || null };
+    }
+
+    // It converged: the provider is healthy and the window, if one was open, is closed —
+    // otherwise a single bad afternoon would mute compaction for six hours after the fix.
+    await clearCompactBackoff(deps.store, agent);
     return {
-      ran: true, before, after: wrote.bytes,
-      fellBack: result.fellBack === true,
+      ran: true, before, after,
+      fellBack: false,
       reason: result.reason || null,
     };
   } catch (e) {
@@ -509,16 +570,30 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
      * compaction that lands after the fan-out is a whole tick of turns reading the row
      * that was already over budget.
      *
-     * It never fails the tick. `ran: false` with a reason is the ordinary answer (the
-     * memory is under the threshold), and every error path here also answers that way.
+     * IT ALMOST NEVER FAILS THE TICK. `ran: false` with a reason is the ordinary answer
+     * (the memory is under the threshold, or a backoff window is open), and the sweep runs
+     * regardless of what happened here — compaction is housekeeping.
+     *
+     * THE ONE EXCEPTION is the convergence gate (F-506): a compaction turn that was PAID
+     * FOR and left the memory over the trigger. That is not housekeeping, it is a spend
+     * that repeats and achieves nothing, and until F-506 it was invisible on every surface
+     * — `ran: true`, `before === after`, empty `skipped`, green tick. The step marks it
+     * `gate: "compaction"`, and a tick the engine stopped at a gate is not an ok tick
+     * (F-502). The old sentence here — "every error path here also answers `ran:false`" —
+     * was false for the one error path that costs money, which is how this hid.
      */
     const compaction = await runVaCompaction({ agent, tick, deps });
     // A compaction that did not run for any reason OTHER than the everyday
     // "under_threshold" is a named skip: it means the memory is over budget and stayed
     // over budget, which is a thing an admin reading this receipt tomorrow needs to see.
+    // `gate` rides along when it is set, because that field — not the reason string — is
+    // what separates "the engine refused" from "there was nothing to do" (F-482/F-502).
     if (!compaction.ran && compaction.reason && compaction.reason !== "under_threshold") {
-      skipped.push({ key: "(memory)", reason: `compaction:${compaction.reason}` });
+      const row = { key: "(memory)", reason: `compaction:${compaction.reason}` };
+      if (compaction.gate) row.gate = compaction.gate;
+      skipped.push(row);
     }
+    const compactionGated = compaction.gate === "compaction";
 
     const maxItems = Math.max(0, Math.trunc(guard(va, "maxItemsPerTick")));
     // THE IDENTITY, ONCE PER TICK (F-451/F-452). The sweep fingerprints every candidate
@@ -587,14 +662,23 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
       tickId: tick, phase: "prepare", started,
       candidates, staged: fannedOut, skipped,
       next: deps.nextRunOf ? deps.nextRunOf(job) : null,
-      // PRESENT ONLY WHEN A TURN RAN. Absent is "nothing to compact", which must not read
-      // like a compaction that achieved nothing.
-      compacted: compaction.ran
+      // PRESENT ONLY WHEN A TURN WAS BOUGHT. Absent is "nothing to compact", which must
+      // not read like a compaction that achieved nothing — and a compaction that achieved
+      // nothing (F-506's `gate`) must not be absent either: the bytes are the evidence
+      // that the spend bought no shrinkage, so they ride the receipt on BOTH arms.
+      compacted: (compaction.ran || compaction.gate === "compaction")
         ? { before: compaction.before, after: compaction.after, fellBack: compaction.fellBack, reason: compaction.reason }
         : null,
     });
-    await recordTickHealth(deps.store, agent, true, { now: deps.now(), phase: "prepare" });
-    return { ok: true, candidates, fannedOut, skipped, queue: queueKey, compacted: compaction };
+    // The health counter takes the compaction gate too, for the same reason the capability
+    // gate moves it: the banner is the only thing that reaches an admin who is not reading
+    // receipts, and "this agent is buying a model call it cannot use" is precisely what it
+    // is for. The SWEEP above still ran and its work still counts — only the verdict moves.
+    await recordTickHealth(deps.store, agent, !compactionGated, {
+      now: deps.now(), phase: "prepare",
+      ...(compactionGated ? { reason: `compaction:${compaction.reason}` } : {}),
+    });
+    return { ok: !compactionGated, candidates, fannedOut, skipped, queue: queueKey, compacted: compaction };
   } catch (e) {
     const error = String((e && e.message) || e).slice(0, 300);
     // BOTH, and in this order: the receipt is the evidence, the health row is the banner.

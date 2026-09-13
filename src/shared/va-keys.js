@@ -30,6 +30,7 @@ import { VA_LIMITS } from "./va-config.js";
 
 const part = (s) => safeKeyPart(s);
 const days = (n) => ({ ttl: { value: n, unit: "DAYS" } });
+const hours = (n) => ({ ttl: { value: n, unit: "HOURS" } });
 
 /* ── row TTLs, in the option shape KVS `set` and `claimRuleExecution` both take ── */
 
@@ -64,6 +65,21 @@ export const VA_CAPS_TTL = days(2);
 export const VA_HEALTH_TTL = days(VA_LIMITS.itemTtlDays);
 /** Claims: 2 days. Longer than any retry window, shorter than the item row. */
 export const VA_CLAIM_TTL = days(2);
+/**
+ * F-506 — THE COMPACTION BACKOFF: 6 hours, and the number lives HERE rather than in
+ * `va-config.js` on purpose. Every other number in this file is a CAP an admin can reason
+ * about (how long a row is kept, how many items a tick may take); this one is not a cap,
+ * it is the lifetime of the marker itself — how long a broken summariser is left alone
+ * before the next tick is allowed to pay for another attempt. It has exactly one reader
+ * and one writer (`readCompactBackoff` / `setCompactBackoff` in `src/va-ledger.js`) and no
+ * surface renders it, so the "caps have one home" rule has nothing to bind: the TTL IS the
+ * policy, and it belongs beside the key it expires.
+ *
+ * 6 hours is ~72 skipped 5-minute ticks: long enough that a revoked BYOK key costs four
+ * failed calls a day instead of 288, short enough that a fixed key heals itself the same
+ * working day without anybody touching the agent.
+ */
+export const VA_COMPACT_BACKOFF_TTL = hours(6);
 /**
  * A half-finished setup interview: 7 days (`VA_LIMITS.wizardTtlDays`, one home in
  * `registry-limits.js`). This row is keyed on an ACCOUNT ID, which is the one key part
@@ -161,3 +177,16 @@ export const vaPostClaimKey = (agent, issueKey, stagedAt) =>
  */
 export const vaCompactClaimKey = (agent, tickId) =>
   assertKvsKey(`va_compact:${part(agent)}:${part(tickId)}`);
+
+/**
+ * `va_compact_backoff:{agent}` — F-506. Set when a compaction turn was PAID FOR and did
+ * not converge (the summariser threw, or its output was still over the trigger), read
+ * before the claim on every later tick.
+ *
+ * Keyed on the AGENT, not the tick, and that is the whole point: the claim above makes one
+ * tick buy one turn, and a per-tick key can never stop the NEXT tick asking a provider
+ * that is still dead. Before this, a revoked key bought 288 failed model calls a day, for
+ * ever, on a memory that never shrank by a byte.
+ */
+export const vaCompactBackoffKey = (agent) =>
+  assertKvsKey(`va_compact_backoff:${part(agent)}`);

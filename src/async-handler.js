@@ -35,6 +35,8 @@ import { clampForgeLlmModel, FORGE_LLM_DEFAULT, EDITION_IDS } from "./shared/edi
 // these queued LM Studio variants alike.
 import {
   dispatchPostFunction,
+  // 1.4 commit 12 — the ONE writer of a coder post-function's execution-log entry.
+  recordCoderPfOutcome,
   sweepPostFunctionJobs,
   buildCodegenRequest,
   buildFixRequest,
@@ -111,7 +113,7 @@ import {
 // task-type STRING has ONE home (the producer and this registry read the same
 // constant), and the work itself lives in src/git-pipeline.js, not here.
 import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
-import { runCoderTurn } from "./coder-engine.js";
+import { runCoderTurn, isHeadlessTrigger } from "./coder-engine.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict } from "./shared/kvs-keys.js";
@@ -1273,6 +1275,16 @@ const executeGitEvent = async (params) => {
  * absent from UNPOLLED_TASKS — the turn's reply and its `awaiting:"confirm"` ticket reach
  * the user through the task row.
  *
+ * …EXCEPT when a workflow POST-FUNCTION produced it (1.4 commit 12, `params.pf`). Then
+ * nobody polls: the transition finished minutes ago. The outcome goes into the execution
+ * log through `recordCoderPfOutcome` (src/index.js) — the ONE writer of that log entry —
+ * so the rule's result is visible where every other post-function's result is, with a
+ * `stepResults[]` row carrying a status and a recommendation. Never a silent success.
+ *
+ * HEADLESS IS DERIVED, NOT RETYPED. `isHeadlessTrigger` (src/coder-engine.js) turns the
+ * payload's provenance label into the engine's flag, so a producer that sets
+ * `triggerSource` and forgets `headless` still gets the restrictive answer.
+ *
  * IT SPENDS TOKENS, and a lot of them: `coder` is in TOKEN_SPENDING_TASK_TYPES
  * (src/shared/ai-budget.js, estimate 16 000) so the ONE governor paces it like every
  * other AI task. Nothing here calls the budget gate — `runGatedTask` already did.
@@ -1290,12 +1302,19 @@ const executeCoderTurn = async (params, taskId) => {
       simulation: typeof p.simulation === "boolean" ? p.simulation : undefined,
       connectionId: p.connectionId || null, maxRounds: p.maxRounds,
       gateFacts: p.gateFacts || null, savedByRole: p.savedByRole || "editor", cancelToken: taskId,
+      headless: isHeadlessTrigger(p.triggerSource) || p.headless === true,
+      allowedActions: Array.isArray(p.allowedActions) ? p.allowedActions : null,
     });
   } catch (e) {
     console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: failed (${(e && e.message) || e})`);
-    return { success: false, error: `Coder turn failed: ${String((e && e.message) || e).slice(0, 200)}` };
+    const failed = { success: false, error: `Coder turn failed: ${String((e && e.message) || e).slice(0, 200)}` };
+    if (p.pf) await recordCoderPfOutcome(p, failed);
+    return failed;
   }
   console.log(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: ${out.awaiting ? `awaiting ${out.awaiting}` : out.endedBy || "ended"} in ${out.rounds || 0} round(s)`);
+  // The post-function's half of the contract. Never allowed to change what the turn
+  // reports — it only records it, and a failure to record is logged, not raised.
+  if (p.pf) await recordCoderPfOutcome(p, out);
   return out;
 };
 

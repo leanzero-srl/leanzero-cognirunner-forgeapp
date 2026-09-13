@@ -77,6 +77,15 @@
  *                 group, and strict is a checkbox whose helper text is the two rows of
  *                 that table it actually flips. Both ids are picked, never typed,
  *                 because the two ways they can be wrong fail CLOSED at the transition.
+ *
+ *                 OBJECT FORM (1.4 commit 12): `git: { prMatch: false }` keeps the same
+ *                 group but hides a sub-control that rule has no use for. `git: true`
+ *                 means every sub-control, exactly as before. A renderer must read
+ *                 `params.git === true || params.git.<sub> !== false`, never plain
+ *                 truthiness, or it draws a control the executor ignores.
+ *   coderMode   — the CODER_PF_MODES picker (writes `mode`; see the mode table below)
+ *   instructions— one optional multi-line text box (writes `instructions`), UNTRUSTED and
+ *                 clamped to CODER_PF_INSTRUCTIONS_MAX bytes before it reaches a model
  */
 
 export const COMPARE_OPS = [
@@ -545,8 +554,124 @@ export const PREMADE_LISTENERS = [
 export const getPremadeListener = (key) =>
   PREMADE_LISTENERS.find((r) => r.key === key) || null;
 
+/* ═══════════════════════ POST-FUNCTIONS (1.4 commit 12) ═══════════════════════ */
+
+/**
+ * THE ONE MODE TABLE for the `postfunction-coder` premade post-function.
+ *
+ * One row per mode. The row owns THREE things and nothing else owns any of them:
+ *   `label` / `help`   — the copy every UI renders (config-ui, admin-panel, config-view).
+ *   `template`         — the instruction sent to the Coder engine. `{{issueKey}}` and
+ *                        `{{repo}}` are the ONLY placeholders; the renderer
+ *                        (`renderCoderPfMessage` in src/index.js) substitutes them and
+ *                        appends the admin's own `instructions` inside a fence, because
+ *                        that text is UNTRUSTED and never becomes part of the template.
+ *   `actions`          — the mode's action SUBSET. It is a ceiling, not a grant: the
+ *                        engine intersects it with `normalizeAllowedActions`'s verdict for
+ *                        the rule's gate context, so a mode can only ever narrow what the
+ *                        instance already allows.
+ *
+ * WHY NO `approve_pull_request`, `request_changes` OR `trigger_deploy` IN ANY ROW:
+ * those three are `dangerous` in src/shared/agent-actions.js, and a post-function is an
+ * EXTERNAL, headless trigger — a transition fired it and no human is watching. The gate
+ * refuses a dangerous action on an external trigger whatever was saved, so listing one
+ * here would be a promise the gate breaks at run time. The parity lint asserts this.
+ *
+ * `review` may COMMENT on a pull request (`add_pr_comment`, a `confirm` action): that
+ * survives only when an ADMIN saved the rule. On an editor-saved rule the gate drops it
+ * and the turn HALTS by name rather than writing — see the headless path in
+ * src/coder-engine.js.
+ */
+export const CODER_PF_MODES = [
+  {
+    id: "build",
+    label: "Build the change",
+    help: "Read the issue, write the code, push it to a new branch and open a pull request back to the default branch.",
+    template:
+      "A Jira transition on {{issueKey}} asked you to BUILD the change this issue describes, in the repository {{repo}}.\n"
+      + "Read the issue first, then create a branch, commit the whole files you changed, and open a pull request that names the issue key in its title.\n"
+      + "Post one Jira comment saying what you did and linking the pull request. If the issue does not describe enough to build, say so in a comment and finish — do not guess.",
+    actions: ["get_issue", "add_comment", "create_branch", "commit_files", "open_pull_request", "get_pull_request", "get_build_state"],
+  },
+  {
+    id: "open-branch",
+    label: "Open a branch",
+    help: "Create a branch for this issue from the repository's default branch and report it on the issue. No code is written.",
+    template:
+      "A Jira transition on {{issueKey}} asked you to OPEN A BRANCH for this issue in {{repo}}.\n"
+      + "Read the issue, create one branch from the default branch whose name carries the issue key, and post one Jira comment naming the branch. Write no code and open no pull request.",
+    actions: ["get_issue", "add_comment", "create_branch"],
+  },
+  {
+    id: "open-pr",
+    label: "Open a pull request",
+    help: "Open a pull request from the issue's existing branch into the default branch, and report it on the issue.",
+    template:
+      "A Jira transition on {{issueKey}} asked you to OPEN A PULL REQUEST in {{repo}} for the branch that already carries this issue's work.\n"
+      + "Read the issue, find the branch that names the issue key, open a pull request into the default branch describing the change, and post one Jira comment linking it. Commit nothing.",
+    actions: ["get_issue", "add_comment", "open_pull_request", "get_pull_request"],
+  },
+  {
+    id: "fix",
+    label: "Fix the failing build",
+    help: "Read the failing build on the issue's pull request, commit a fix to its branch, and report what changed.",
+    template:
+      "A Jira transition on {{issueKey}} asked you to FIX the failing build on this issue's pull request in {{repo}}.\n"
+      + "Read the pull request and its build state, work out what failed, and commit the smallest fix to the SAME branch — never to the default branch. Post one Jira comment saying what failed and what you changed. If the build is passing, change nothing and say so.",
+    actions: ["get_issue", "add_comment", "get_pull_request", "get_build_state", "commit_files"],
+  },
+  {
+    id: "review",
+    label: "Review the pull request",
+    help: "Read the issue's pull request and leave one review comment on it. Never approves and never blocks a merge.",
+    template:
+      "A Jira transition on {{issueKey}} asked you to REVIEW this issue's pull request in {{repo}}.\n"
+      + "Read the pull request, then leave ONE comment on it naming correctness bugs, missing error handling, secrets in the diff and anything that widens permissions — name the file and the line. If it looks fine, say so in one sentence. Post one Jira comment with your verdict. Never approve and never request changes.",
+    actions: ["get_issue", "add_comment", "get_pull_request", "get_build_state", "add_pr_comment"],
+  },
+];
+
+export const CODER_PF_MODE_IDS = CODER_PF_MODES.map((m) => m.id);
+export const getCoderPfMode = (id) => CODER_PF_MODES.find((m) => m.id === String(id || "")) || null;
+
+/** The admin's own instruction text. UNTRUSTED — clamped here, fenced by the renderer. */
+export const CODER_PF_INSTRUCTIONS_MAX = 2048;
+
+/**
+ * Premade POST-FUNCTIONS. One entry today.
+ *
+ * `key` IS the post-function's `config.type` (`resolvePfType` in src/index.js maps a
+ * premade PF row onto it), which is what lets `isHeavyPf` and `dispatchPostFunction` name
+ * it explicitly. A coder job takes MINUTES and the workflow post-function budget is 25 s,
+ * so this type is ALWAYS heavy and NEVER runs inline — a failed enqueue is a logged
+ * failure, never a fall-back to an inline run.
+ *
+ * `params.git` is the GIT group of commit 10 in its OBJECT form: `prMatch` is switched
+ * OFF because nothing here locates a pull request from the `cognirunner.git` issue
+ * property — the mode's instruction tells the Coder to find its own. `strict` is kept and
+ * means what the fail-open/fail-closed table beside `enqueueCoderPostFunction`
+ * (src/index.js) says. `coderMode` renders the CODER_PF_MODES picker (writes `mode`);
+ * `instructions` renders one optional multi-line text box (writes `instructions`,
+ * clamped to CODER_PF_INSTRUCTIONS_MAX).
+ */
+export const PREMADE_POSTFUNCTIONS = [
+  {
+    key: "postfunction-coder",
+    label: "Coder: build / open branch / open PR / fix / review",
+    help: "Hand this transition to the CogniRunner Coder: it reads the issue, works in the repository you pick and reports back on the issue. Pick what it should do. It runs in the BACKGROUND — a coder job takes minutes and a transition cannot wait for it, so the transition completes immediately and the Coder posts its plan, log and result onto the issue.",
+    category: "Git",
+    network: true,
+    requiresCapability: "git",
+    params: { git: { prMatch: false }, coderMode: true, instructions: true },
+    availability: "available",
+  },
+];
+
+export const getPremadePostFunction = (key) =>
+  PREMADE_POSTFUNCTIONS.find((r) => r.key === key) || null;
+
 export const getCatalog = (mode) =>
-  mode === "condition" ? PREMADE_CONDITIONS : PREMADE_VALIDATORS;
+  mode === "condition" ? PREMADE_CONDITIONS : (mode === "postfunction" ? PREMADE_POSTFUNCTIONS : PREMADE_VALIDATORS);
 
 export const findRule = (mode, key) =>
   getCatalog(mode).find((r) => r.key === key) || null;

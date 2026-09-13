@@ -18,7 +18,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { PREMADE_VALIDATORS, PREMADE_CONDITIONS, PREMADE_LISTENERS, getPremadeListener } from "../../src/shared/premade-rules-catalog.js";
+import {
+  PREMADE_VALIDATORS, PREMADE_CONDITIONS, PREMADE_LISTENERS, getPremadeListener,
+  PREMADE_POSTFUNCTIONS, getPremadePostFunction, CODER_PF_MODES, CODER_PF_MODE_IDS, getCoderPfMode,
+} from "../../src/shared/premade-rules-catalog.js";
 import { isKnownEvent, requiresRepoFilter, isGitEvent } from "../../src/shared/jira-events.js";
 import { AGENT_ACTIONS } from "../../src/shared/agent-actions.js";
 import { normalizeListener } from "../../src/listeners.js";
@@ -125,6 +128,74 @@ for (const row of PREMADE_LISTENERS) {
   }
 }
 
+// 4. Premade POST-FUNCTIONS ⇄ the action catalogue + the wiring in src/index.js (1.4/12).
+// A post-function type that isHeavyPf does not name would run INSIDE the 25 s transition
+// budget; a mode that names a `dangerous` action promises something the gate refuses on
+// an external trigger. Both are silent at save time and only show up on a live workflow.
+{
+  const indexSrc = readFileSync(resolve(here, "../../src/index.js"), "utf8");
+  const engineSrc = readFileSync(resolve(here, "../../src/coder-engine.js"), "utf8");
+  const byId = new Map(AGENT_ACTIONS.map((a) => [a.id, a]));
+  const pfKeys = new Set();
+  for (const row of PREMADE_POSTFUNCTIONS) {
+    const where = `Premade post-function "${row.key}"`;
+    if (pfKeys.has(row.key)) problems.push(`${where} is declared twice`);
+    pfKeys.add(row.key);
+    if (catalogKeys.has(row.key)) problems.push(`${where} collides with a workflow premade rule key`);
+    if (getPremadePostFunction(row.key) !== row) problems.push(`${where} is not findable by key`);
+    if (!row.label || !row.help) problems.push(`${where} has no label/help`);
+    // It must be named by name in all three homes §3.9 lists. A grep, not an inference.
+    if (!indexSrc.includes(`const CODER_PF_TYPE = "${row.key}"`)) {
+      problems.push(`${where} is not the constant src/index.js routes on (CODER_PF_TYPE)`);
+    }
+  }
+  if (!/const isHeavyPf = [\s\S]{0,600}isCoderPfType\(pfType\)/.test(indexSrc)) {
+    problems.push("isHeavyPf does not name the coder post-function — it would run INLINE inside the 25 s transition budget");
+  }
+  if (!/if \(isCoderPfType\(pfType\)\) \{\s*\n\s*await enqueueCoderPostFunction/.test(indexSrc)) {
+    problems.push("executePostFunction has no explicit coder enqueue before the generic heavy path");
+  }
+  if (!/if \(isCoderPfType\(type\)\) \{/.test(indexSrc)) {
+    problems.push("dispatchPostFunction has no explicit coder branch — it would fall through to a type-guess executor");
+  }
+  if (!/key: "long-queue"[\s\S]{0,400}taskType: "coder"[\s\S]{0,400}concurrency: \{ key: `coder:\$\{issueKey\}`, limit: 1 \}/.test(indexSrc)) {
+    problems.push("the coder post-function does not push to long-queue with concurrency coder:<issueKey> limit 1");
+  }
+  if (!/triggerSource: headless \? "external" : null/.test(engineSrc)) {
+    problems.push("src/coder-engine.js no longer makes a headless turn an EXTERNAL trigger — a post-function could hold a dangerous action");
+  }
+  // The mode table.
+  const seenModes = new Set();
+  for (const m of CODER_PF_MODES) {
+    const where = `Coder PF mode "${m.id}"`;
+    if (seenModes.has(m.id)) problems.push(`${where} is declared twice`);
+    seenModes.add(m.id);
+    if (getCoderPfMode(m.id) !== m) problems.push(`${where} is not findable by id`);
+    if (!m.label || !m.help) problems.push(`${where} has no label/help`);
+    if (!m.template || !m.template.includes("{{issueKey}}") || !m.template.includes("{{repo}}")) {
+      problems.push(`${where} template must use both {{issueKey}} and {{repo}}`);
+    }
+    for (const ph of m.template.match(/\{\{[^}]*\}\}/g) || []) {
+      if (ph !== "{{issueKey}}" && ph !== "{{repo}}") {
+        problems.push(`${where} template uses ${ph}, which renderCoderPfMessage does not substitute — it would reach the model verbatim`);
+      }
+    }
+    if (!Array.isArray(m.actions) || !m.actions.length) problems.push(`${where} names no actions`);
+    let git = 0;
+    for (const id of m.actions || []) {
+      const a = byId.get(id);
+      if (!a) { problems.push(`${where} names "${id}", which is not in the agent-action catalogue`); continue; }
+      if (a.kind === "control") problems.push(`${where} names the control action "${id}" — finish is implicit`);
+      if (a.dangerous) problems.push(`${where} names the DANGEROUS action "${id}" — a post-function is an external trigger and the gate always refuses it`);
+      if ((a.namespace || "jira") === "git") git++;
+    }
+    if (!git) problems.push(`${where} has no git action at all, so the rule cannot do anything in a repository`);
+  }
+  if (CODER_PF_MODE_IDS.join() !== CODER_PF_MODES.map((m) => m.id).join()) {
+    problems.push("CODER_PF_MODE_IDS is out of step with CODER_PF_MODES");
+  }
+}
+
 const validatorCount = PREMADE_VALIDATORS.filter((r) => r.availability !== "unavailable").length;
 const conditionCount = PREMADE_CONDITIONS.filter((r) => r.availability !== "unavailable").length;
 // Count ROWS, not key-set arithmetic: one key may legitimately appear in BOTH lists
@@ -142,5 +213,6 @@ if (problems.length) {
 console.log(
   `✓ Premade-rule parity OK — ${validatorCount} validators + ${conditionCount} conditions wired ` +
   `(${executorKeys.size} executor branches; ${unavailableCount} catalog rules marked unavailable) ` +
-  `+ ${PREMADE_LISTENERS.length} premade listener(s) checked against the event + action catalogues.`,
+  `+ ${PREMADE_LISTENERS.length} premade listener(s) checked against the event + action catalogues ` +
+  `+ ${PREMADE_POSTFUNCTIONS.length} premade post-function(s) / ${CODER_PF_MODES.length} coder mode(s) checked against the action catalogue and the index.js wiring.`,
 );

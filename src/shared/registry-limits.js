@@ -304,5 +304,5 @@ export const memoryWriteFaultMessage = () => "Could not save — Jira storage re
 
 export const memoryPlatformCapMessage = (bytesOver) => {
   const over = Math.max(1, Math.round(Number(bytesOver) || 0));
-  return `Memory store is ${over} bytes over Jira's ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}-byte storage limit, so no change to it can be saved — not even deleting one memory. A Jira admin can free at least ${over} bytes by selecting several memories in the Memories tab and deleting them together.`;
+  return `Memory store is ${over} bytes over Jira's ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}-byte storage limit, so no change to it can be saved — not even deleting one memory. Freeing at least ${over} bytes means selecting several memories in the Memories tab and deleting them together.`;
 };

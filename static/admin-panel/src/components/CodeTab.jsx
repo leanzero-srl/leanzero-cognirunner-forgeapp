@@ -31,12 +31,21 @@
  *     value. Same for the Forge identity: `getForgeIdentityStatus` returns booleans and
  *     an email.
  *
- *  5. Pipeline setup is NOT here. It is commit 7 and it is an admin resolver over
- *     src/shared/git-scaffolds.js; a placeholder that looked like a control would invite
- *     a click that cannot work.
+ *  5. THE PER-REPO CONTROLS (F-460 / F-461) ARE SETUP, NEVER EXECUTION. Registering a
+ *     webhook, rotating its secret, installing a pipeline and starting a deploy are ADMIN
+ *     RESOLVERS; no agent reaches them. The webhook SECRET has no render path here at all,
+ *     for the same reason a token has none: the UI is told a hook EXISTS and when it was
+ *     made, which is a fact, never a value.
+ *
+ *  6. THE PIPELINE ROW IS THE BACKEND'S, READ AND NEVER DERIVED. Status, step names and
+ *     step states are rendered from `getGitPipelineStatus` exactly as src/git-pipeline.js
+ *     wrote them; the step list is `pipelineStepNames(kind)` and is not retyped here. A
+ *     refusal is rendered from its `code` and its NAMED scopes (`lock_mismatch` prints the
+ *     added and removed scopes by name, `scope_not_allowed` prints the refused ones), never
+ *     from a sentence match.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
@@ -58,6 +67,460 @@ const IDENTITY_CONSENT = "I am handing CogniRunner an Atlassian API token that w
 const KindChip = ({ kind }) => (
   <span className={`code-kind code-kind-${gitProviderKindMeta(kind).id}`}>{gitProviderKindMeta(kind).label}</span>
 );
+
+/* =========================================================================
+ * PER-REPO SETUP (F-460 webhook, F-461 pipeline)
+ *
+ * Both live on the REPOSITORY, not on the connection, because both are per-repo
+ * facts in the backend: the hook record is keyed by repo id on the connection row,
+ * and the pipeline row is `git_pipeline:<connId>:<repoId>`. One control per fact.
+ * ========================================================================= */
+
+/** Every refusal these resolvers can answer with, said in the admin's words.
+ *  It is keyed by the backend's machine `code` and NOT by its sentence: matching a
+ *  sentence is the defect F-242 closed, and the two codes that carry NAMES
+ *  (lock_mismatch, scope_not_allowed) are rendered from their arrays, not from here. */
+const PIPELINE_CODE_COPY = {
+  not_found: "That git connection no longer exists.",
+  auth_dead: "This connection's credential is dead, so nothing can be installed until it is replaced.",
+  not_allowed: "That repository is not on this connection's allow-list. Add it to the allowed repositories first.",
+  identity_required: "A Forge deploy identity is needed before a pipeline can deploy your app.",
+  consent_required: "The stored deploy identity has no recorded consent. Store it again and tick the consent box.",
+  manifest_required: "Paste the app's manifest.yml. The permission lock is built from it, so there is nothing to install without it.",
+  already_running: "A setup for this repository is already running. Watch it below.",
+  queue: "The setup could not be queued. Nothing was written to the repository.",
+  security_model: "Pipeline setup is refused by the app's own security model check.",
+  not_installed: "There is no installed pipeline for this repository yet.",
+  confirmation_required: "A deploy needs an explicit confirmation.",
+};
+
+const PIPE_STATUS_LABEL = { queued: "QUEUED", running: "RUNNING", installed: "INSTALLED", partial: "PARTIAL" };
+const STEP_STATUS_LABEL = { pending: "waiting", running: "running", done: "done", failed: "failed" };
+
+const POLL_MS = 5000;
+/* 10 minutes at 5s. A setup that has not moved by then will not move inside this
+   screen's lifetime, and a poll that never stops is a tab that heats a laptop for an
+   hour. The card says it stopped watching rather than pretending it still is. */
+const POLL_MAX = 120;
+
+/** The refusal body, rendered. Scopes are printed BY NAME, which is the whole point of
+ *  the lock: "the permissions changed" is not an answer an admin can act on. */
+function PipelineError({ err, onNeedIdentity }) {
+  if (!err) return null;
+  const code = err.code || "";
+  let body = null;
+  if (code === "lock_mismatch") {
+    const added = Array.isArray(err.added) ? err.added : [];
+    const removed = Array.isArray(err.removed) ? err.removed : [];
+    body = (
+      <>
+        <span className="code-pipe-err-title">The committed lock differs</span>
+        <span className="code-pipe-err-text">
+          This manifest asks for different permissions than the lock already committed to the repository. Re-approve them before the pipeline is reinstalled.
+        </span>
+        <span className="code-lock-diff">
+          {added.map((sc) => <span key={`a-${sc}`} className="code-diff code-diff-add">+{sc}</span>)}
+          {removed.map((sc) => <span key={`r-${sc}`} className="code-diff code-diff-rem">&minus;{sc}</span>)}
+          {added.length === 0 && removed.length === 0 && (
+            <span className="code-diff code-diff-rem">the permissions block changed</span>
+          )}
+        </span>
+      </>
+    );
+  } else if (code === "scope_not_allowed") {
+    const scopes = Array.isArray(err.scopes) ? err.scopes : [];
+    body = (
+      <>
+        <span className="code-pipe-err-title">CogniRunner will not install a pipeline for these scopes</span>
+        <span className="code-lock-diff">
+          {scopes.map((sc) => <span key={sc} className="code-diff code-diff-rem">{sc}</span>)}
+        </span>
+        <span className="code-pipe-err-text">Remove them from the manifest, or deploy this app by hand.</span>
+      </>
+    );
+  } else {
+    body = (
+      <>
+        <span className="code-pipe-err-title">This setup was refused</span>
+        <span className="code-pipe-err-text">{PIPELINE_CODE_COPY[code] || err.error || "The setup could not be started."}</span>
+      </>
+    );
+  }
+  const needsIdentity = code === "identity_required" || code === "consent_required";
+  return (
+    <div className="code-pipe-err" role="alert">
+      {body}
+      {needsIdentity && (
+        /* The remedy is a card on this same screen, so the refusal takes the reader to
+           it instead of naming it and leaving them to hunt for it. */
+        <button className="code-pipe-goto" onClick={onNeedIdentity}>Go to the deploy identity</button>
+      )}
+    </div>
+  );
+}
+
+/** The pipeline half of a repo row: the installed state, the step chain of a run in
+ *  flight, the setup form when there is no row yet, and the deploy trigger. */
+function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
+  const [row, setRow] = useState(null);
+  const [deploy, setDeploy] = useState(null);
+  const [deployError, setDeployError] = useState(null);
+  const [reading, setReading] = useState(true);
+  const [readFailed, setReadFailed] = useState(false);
+  const [refusal, setRefusal] = useState(null);   // a role / edition refusal on the READ
+  const [err, setErr] = useState(null);           // a setup or deploy refusal body
+  const [manifestYaml, setManifestYaml] = useState("");
+  const [site, setSite] = useState("");
+  const [product, setProduct] = useState("Jira");
+  const [branch, setBranch] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [deploying, setDeploying] = useState(false);
+  const [run, setRun] = useState(null);
+  const [stalled, setStalled] = useState(false);
+
+  /* THE STALE GUARD. Every read carries the token it was started under; a poll that
+     lands after the card was pointed at another repo, or after it unmounted, answers
+     a question nobody asked and must not paint. */
+  const tokenRef = useRef(0);
+  const timerRef = useRef(null);
+  const readRef = useRef(null);
+
+  readRef.current = async (token, tries) => {
+    let r = null;
+    try {
+      r = await invoke("getGitPipelineStatus", { connectionId: conn.id, repo: repoId });
+    } catch (e) {
+      r = null;
+    }
+    if (tokenRef.current !== token) return;
+    setReading(false);
+    if (r && r.success) {
+      setReadFailed(false); setRefusal(null);
+      setRow(r.status || null);
+      setDeploy(r.deploy || null);
+      setDeployError(r.deployError || null);
+      const st = r.status && r.status.status;
+      if (st === "queued" || st === "running") {
+        if (tries < POLL_MAX) {
+          timerRef.current = setTimeout(() => { if (tokenRef.current === token) readRef.current(token, tries + 1); }, POLL_MS);
+        } else {
+          setStalled(true);
+        }
+      }
+    } else if (isPermissionRefusal(r) || isUpgradeRequired(r)) {
+      setRefusal(r);
+    } else {
+      setReadFailed(true);
+    }
+  };
+
+  useEffect(() => {
+    const token = ++tokenRef.current;
+    setReading(true); setStalled(false);
+    readRef.current(token, 0);
+    return () => {
+      tokenRef.current += 1;
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    };
+  }, [conn.id, repoId]);
+
+  const restartPolling = () => {
+    const token = ++tokenRef.current;
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    setStalled(false);
+    timerRef.current = setTimeout(() => { if (tokenRef.current === token) readRef.current(token, 1); }, POLL_MS);
+  };
+
+  const handleSetup = async () => {
+    if (busy) return;
+    setBusy(true); setErr(null);
+    try {
+      const r = await invoke("setupGitPipeline", {
+        connectionId: conn.id, repo: repoId,
+        manifestYaml, site: site.trim(), product,
+        branch: branch.trim() || undefined,
+      });
+      if (r && r.success) {
+        setRow(r.status || null);
+        showToast("Pipeline setup queued");
+        restartPolling();
+      } else if (isPermissionRefusal(r) || isUpgradeRequired(r)) {
+        setRefusal(r);
+      } else {
+        setErr(r || { error: "The setup could not be started." });
+      }
+    } catch (e) {
+      setErr({ error: "Could not reach the app to start this setup." });
+    }
+    setBusy(false);
+  };
+
+  const handleDeploy = async () => {
+    if (deploying) return;
+    if (!(await confirmDialog(
+      `This starts a real deploy of your Forge app from ${repoId}, under the stored Atlassian deploy identity. It runs in your repository's CI and it cannot be called back.`,
+      { title: "Start a deploy?", confirmLabel: "Start deploy" }))) return;
+    setDeploying(true); setErr(null);
+    try {
+      const r = await invoke("triggerGitDeploy", {
+        connectionId: conn.id, repo: repoId, confirm: true,
+        ref: branch.trim() || undefined,
+      });
+      if (r && r.success) {
+        setRun(r.run || null);
+        showToast("Deploy started");
+        restartPolling();
+      } else if (isPermissionRefusal(r) || isUpgradeRequired(r)) {
+        setRefusal(r);
+      } else {
+        setErr(r || { error: "The deploy could not be started." });
+      }
+    } catch (e) {
+      setErr({ error: "Could not reach the app to start this deploy." });
+    }
+    setDeploying(false);
+  };
+
+  if (refusal) {
+    return (
+      <div className="code-pipe">
+        <div className="access-note" role="note">
+          {isPermissionRefusal(refusal)
+            ? permissionRefusalText(refusal, "the deploy pipeline")
+            : `${UPGRADE_REQUIRED_HEADLINE} ${upgradeRequiredText(refusal)}`}
+        </div>
+      </div>
+    );
+  }
+
+  if (reading) {
+    return (
+      <div className="code-pipe">
+        <div className="sk sk-text" style={{ width: 180, height: 13 }} />
+      </div>
+    );
+  }
+
+  const status = (row && row.status) || null;
+  const live = status === "queued" || status === "running";
+  const lastRun = run || (row && row.lastRun) || null;
+  const latest = deploy && deploy.latest ? deploy.latest : null;
+
+  return (
+    <div className="code-pipe">
+      <div className="code-pipe-head">
+        <span className="code-pipe-title">Deploy pipeline</span>
+        <span className={`code-pipe-status code-pipe-${status || "none"}`}>
+          {status ? PIPE_STATUS_LABEL[status] || String(status).toUpperCase() : "NOT SET UP"}
+        </span>
+        {row && row.installedAt && (
+          <span className="code-fact"><span className="code-fact-k">Installed</span><span className="code-fact-v">{new Date(row.installedAt).toLocaleString()}</span></span>
+        )}
+        {row && row.branch && (
+          <span className="code-fact"><span className="code-fact-k">Branch</span><span className="code-fact-v">{row.branch}</span></span>
+        )}
+        {status === "installed" && (
+          <button className="btn-primary btn-small code-pipe-deploy" disabled={deploying} onClick={handleDeploy}>
+            {deploying ? "Starting…" : "Trigger deploy"}
+          </button>
+        )}
+      </div>
+
+      {readFailed && (
+        <div className="load-error">
+          <span>Couldn't read the pipeline status.</span>
+          <button className="btn-retry" onClick={() => { const t = ++tokenRef.current; setReading(true); readRef.current(t, 0); }}>Retry</button>
+        </div>
+      )}
+
+      {row && Array.isArray(row.steps) && row.steps.length > 0 && (
+        /* The step chain is the BACKEND's list, in its order, with its own states. A
+           partial setup is the case this exists for: it names the step that failed. */
+        <div className="code-steps">
+          {row.steps.map((st) => (
+            <div key={st.name} className={`code-step code-step-${st.status || "pending"}`}>
+              <span className="code-step-state">{STEP_STATUS_LABEL[st.status] || st.status}</span>
+              <span className="code-step-name">{st.name}</span>
+              {st.error && <span className="code-step-err">{st.error}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {status === "partial" && row && row.failedStep && (
+        <div className="code-pipe-warn" role="alert">
+          <span className="code-pipe-err-title">This setup stopped at {row.failedStep}</span>
+          <span className="code-pipe-err-text">Everything before it is done. Fix the cause and set it up again.</span>
+        </div>
+      )}
+
+      {live && !stalled && <p className="hint code-pipe-live">Running. This re-reads the status every 5 seconds.</p>}
+      {live && stalled && (
+        <div className="code-pipe-warn" role="alert">
+          <span className="code-pipe-err-title">Still not finished after 10 minutes</span>
+          <span className="code-pipe-err-text">This screen stopped watching. Reopen the pipeline to read the status again.</span>
+        </div>
+      )}
+
+      {row && Array.isArray(row.lockScopes) && row.lockScopes.length > 0 && (
+        <div className="code-lock">
+          <span className="code-lock-title">Locked scopes</span>
+          <span className="code-lock-diff">
+            {row.lockScopes.map((sc) => <span key={sc} className="code-diff code-diff-lock">{sc}</span>)}
+          </span>
+        </div>
+      )}
+
+      {lastRun && (
+        <div className="code-run">
+          <span className="code-run-title">Last deploy</span>
+          <span className="code-fact"><span className="code-fact-k">Ref</span><span className="code-fact-v">{lastRun.ref || "unknown"}</span></span>
+          {lastRun.workflow && <span className="code-fact"><span className="code-fact-k">Workflow</span><span className="code-fact-v">{lastRun.workflow}</span></span>}
+          {lastRun.id && <span className="code-fact"><span className="code-fact-k">Run</span><span className="code-fact-v">{String(lastRun.id)}</span></span>}
+          {lastRun.at && <span className="code-fact"><span className="code-fact-k">Started</span><span className="code-fact-v">{new Date(lastRun.at).toLocaleString()}</span></span>}
+          {latest && <span className={`code-run-state code-run-${latest.state || "pending"}`}>{latest.state || "pending"}</span>}
+          {latest && latest.url && (
+            <a className="code-run-link" href={latest.url} target="_blank" rel="noopener noreferrer">Open the run</a>
+          )}
+          {!latest && !deployError && (
+            /* GitHub answers a dispatch with 204 and no id, so a run that has just been
+               asked for has no link yet. Saying so beats rendering a dead link. */
+            <span className="code-run-note">The provider has not reported a run for it yet.</span>
+          )}
+          {deployError && <span className="code-run-note">The run list could not be read: {deployError}</span>}
+        </div>
+      )}
+
+      <PipelineError err={err} onNeedIdentity={onNeedIdentity} />
+
+      {!live && status !== "installed" && (
+        <div className="code-pipe-form">
+          <p className="hint" style={{ marginTop: 0 }}>
+            CogniRunner commits a deploy workflow to this repository, stores the deploy identity as CI secrets, and locks the app's permissions to the manifest you paste here. The lock is what refuses a later manifest that quietly asks for more.
+          </p>
+          <div className="form-group">
+            <label className="label" htmlFor={`pipe-manifest-${conn.id}-${repoId}`}>manifest.yml</label>
+            <textarea id={`pipe-manifest-${conn.id}-${repoId}`} className="code-textarea" rows={7}
+              value={manifestYaml} spellCheck={false}
+              placeholder="Paste the app's manifest.yml here"
+              onChange={(e) => setManifestYaml(e.target.value)} />
+            {/* PASTE ONLY, and deliberately: a native file control is browser chrome the
+                app cannot style, which is the same rule that keeps native selects and
+                confirms out of every screen here. */}
+            <p className="hint">Copy the manifest.yml from the repository root. Only its permissions block is read, and it is what the lock is built from.</p>
+          </div>
+          <div className="code-pipe-fields">
+            <div className="form-group">
+              <label className="label" htmlFor={`pipe-site-${conn.id}-${repoId}`}>Atlassian site</label>
+              <input id={`pipe-site-${conn.id}-${repoId}`} className="code-input" type="text" value={site}
+                placeholder="your-site.atlassian.net" onChange={(e) => setSite(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ maxWidth: 200 }}>
+              <span className="label">Product</span>
+              {/* The app's own dropdown. There is no native select anywhere in this app. */}
+              <CustomSelect value={product} onChange={setProduct}
+                options={[{ value: "Jira", label: "Jira" }, { value: "Confluence", label: "Confluence" }]} />
+            </div>
+            <div className="form-group" style={{ maxWidth: 220 }}>
+              <label className="label" htmlFor={`pipe-branch-${conn.id}-${repoId}`}>Branch</label>
+              <input id={`pipe-branch-${conn.id}-${repoId}`} className="code-input" type="text" value={branch}
+                placeholder="the repository's default branch" onChange={(e) => setBranch(e.target.value)} />
+            </div>
+          </div>
+          <div className="code-form-actions">
+            <button className="btn-primary btn-small" disabled={busy || !manifestYaml.trim() || !site.trim()} onClick={handleSetup}>
+              {busy ? "Queueing…" : status === "partial" ? "Set up again" : "Set up pipeline"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One allow-listed repository: its webhook state and its pipeline. */
+function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity }) {
+  const hook = (conn.webhooks && conn.webhooks[repoId]) || null;
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null);       // a refusal or a fault, said plainly
+  const [rotatedAt, setRotatedAt] = useState(null);
+  const [openPipe, setOpenPipe] = useState(false);
+
+  const say = (r, fallback) => {
+    if (isPermissionRefusal(r)) return permissionRefusalText(r, "webhooks");
+    if (isUpgradeRequired(r)) return `${UPGRADE_REQUIRED_HEADLINE} ${upgradeRequiredText(r)}`;
+    return (r && r.error) || fallback;
+  };
+
+  const handleSetupHook = async () => {
+    if (busy) return;
+    setBusy(true); setNote(null);
+    try {
+      const r = await invoke("setupGitWebhook", { connectionId: conn.id, repo: repoId });
+      if (r && r.success) {
+        /* The secret is minted by the backend and is NEVER returned, so there is nothing
+           here to show and nothing to leak. That the hook exists is the whole answer. */
+        showToast("Webhook registered");
+        await onChanged();
+      } else {
+        setNote(say(r, "The webhook could not be registered."));
+      }
+    } catch (e) {
+      setNote("Could not reach the app to register this webhook.");
+    }
+    setBusy(false);
+  };
+
+  const handleRotateSecret = async () => {
+    if (busy) return;
+    if (!(await confirmDialog(
+      `Deliveries signed with the old secret stop being accepted the moment this finishes. Rules listening to ${repoId} keep working, because CogniRunner updates the hook at the provider too.`,
+      { title: "Rotate this webhook secret?", confirmLabel: "Rotate" }))) return;
+    setBusy(true); setNote(null);
+    try {
+      const r = await invoke("rotateGitWebhookSecret", { connectionId: conn.id, repo: repoId });
+      if (r && r.success) {
+        setRotatedAt(r.rotatedAt || new Date().toISOString());
+        showToast("Webhook secret rotated");
+        await onChanged();
+      } else {
+        setNote(say(r, "The secret could not be rotated."));
+      }
+    } catch (e) {
+      setNote("Could not reach the app to rotate this secret.");
+    }
+    setBusy(false);
+  };
+
+  const rotated = rotatedAt || (hook && hook.rotatedAt) || null;
+
+  return (
+    <div className="code-repo-row">
+      <div className="code-repo-head">
+        <span className="code-repo">{repoId}</span>
+        <span className={`code-hook ${hook ? "set" : "unset"}`}>
+          {hook ? `WEBHOOK SET ${new Date(hook.createdAt).toLocaleDateString()}` : "NO WEBHOOK"}
+        </span>
+        {rotated && (
+          <span className="code-fact"><span className="code-fact-k">Secret rotated</span><span className="code-fact-v">{new Date(rotated).toLocaleString()}</span></span>
+        )}
+        <div className="code-repo-actions">
+          {hook
+            ? <button className="btn-secondary btn-small" disabled={busy} onClick={handleRotateSecret}>{busy ? "Working…" : "Rotate secret"}</button>
+            : <button className="btn-secondary btn-small" disabled={busy} onClick={handleSetupHook}>{busy ? "Registering…" : "Set up webhook"}</button>}
+          <button className="btn-secondary btn-small" onClick={() => setOpenPipe((v) => !v)}>
+            {openPipe ? "Hide pipeline" : "Pipeline"}
+          </button>
+        </div>
+      </div>
+      {!hook && (
+        <p className="hint code-hook-hint">Nothing in this repository reaches CogniRunner until a webhook is registered. The secret is minted here and never shown, to anyone.</p>
+      )}
+      {note && <div className="code-hook-note" role="alert">{note}</div>}
+      {openPipe && <PipelineCard invoke={invoke} conn={conn} repoId={repoId} onNeedIdentity={onNeedIdentity} />}
+    </div>
+  );
+}
 
 export default function CodeTab({ invoke }) {
   const [capability, setCapability] = useState(null);
@@ -132,6 +595,16 @@ export default function CodeTab({ invoke }) {
   }, [invoke]);
 
   useEffect(() => { load(); }, [load]);
+
+  /* A pipeline refused for `identity_required` / `consent_required` is refused by a card
+     that is already on this screen, so the refusal SCROLLS to it and opens its form. */
+  const identityRef = useRef(null);
+  const goToIdentity = useCallback(() => {
+    setShowIdentity(true);
+    if (identityRef.current && identityRef.current.scrollIntoView) {
+      identityRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, []);
 
   const capCopy = agentCapabilityCopy(capability ? capability.reason : "unknown");
   const capOn = !!(capability && capability.enabled);
@@ -416,10 +889,16 @@ export default function CodeTab({ invoke }) {
                     </div>
                   )}
 
+                  {/* ONE ROW PER ALLOW-LISTED REPO. The allow-list is the boundary the
+                      whole feature rests on, so the webhook and the pipeline hang off the
+                      repository they act on and nowhere else. */}
                   <div className="code-conn-repos">
                     {c.repos.length === 0
                       ? <span className="code-repo-none">No repositories allowed. An agent can do nothing with this connection.</span>
-                      : c.repos.map((r) => <span key={r} className="code-repo">{r}</span>)}
+                      : c.repos.map((r) => (
+                          <RepoRow key={r} invoke={invoke} conn={c} repoId={r}
+                            onChanged={load} onNeedIdentity={goToIdentity} />
+                        ))}
                   </div>
 
                   {who && (
@@ -477,7 +956,7 @@ export default function CodeTab({ invoke }) {
       </div>
 
       {/* ── FORGE DEPLOY IDENTITY ──────────────────────────────────────────── */}
-      <div className="card code-card">
+      <div className="card code-card" ref={identityRef}>
         <div className="section-header">
           <span className="section-title">Forge deploy identity</span>
           <div className="section-actions">

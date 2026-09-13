@@ -2132,6 +2132,80 @@ try {
     }
   }
 
+  /* ---------------- E4b — F-634: the embedded doc PREVIEW is refused, not broken ----------
+   * The rule editor's Documentation tab is DocRepository.jsx (the duplicated component, so
+   * this case covers the admin wizard's copy too). F-626 gave `getContextDocContent` the
+   * F-235 viewer floor; the component still branched on `result.success` alone and dropped
+   * the backend's permission sentence into the red error text - an outage claim for a
+   * decision the backend made on purpose, and no remedy for the one thing the reader can act
+   * on. E4 above is the deliberate twin: the LIST read failing is still an outage with a
+   * Retry, and these two must never collapse into each other.
+   *
+   * `__REFUSE__` on the single door, not `__NO_ROSTER__`: the tenant-wide state refuses
+   * `getContextDocs` as well, so no doc row renders and there is nothing to expand. Both
+   * themes, because .access-note makes a coloured claim. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E4b Documentation preview REFUSED (getContextDocContent) — ${theme}`);
+    const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __REFUSE__: ["getContextDocContent"], __REFUSE_ROLE__: "viewer" });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+      await kp.locator(".knowledge-tab-docs").click();
+      // The LIST is fine — the control arm. Without it this case could pass against a panel
+      // that refused everything and rendered no rows at all.
+      await kp.locator(".doc-item").first().waitFor({ timeout: 8000 });
+      ok(await kp.locator(".access-note").count() === 0, `E4b ${theme} the docs list itself is NOT refused`);
+      ok(await kp.locator(".load-error").count() === 0, `E4b ${theme} and is not an outage either`);
+
+      await kp.locator(".doc-item .doc-btn-preview").first().click();
+      const note = kp.locator(".doc-preview .access-note").first();
+      await note.waitFor({ timeout: 8000 });
+      const t = (await note.innerText()).replace(/\s+/g, " ").trim();
+      ok(/You need CogniRunner viewer access to see this document\./.test(t),
+        `E4b ${theme} the note names the LEVEL the gate asked for (got: ${t})`);
+      ok(/Ask a CogniRunner admin under Permissions\./.test(t),
+        `E4b ${theme} and names WHO can grant it, and where`);
+      ok(await kp.locator(".doc-preview-content").count() === 0,
+        `E4b ${theme} and no body is rendered — the content was withheld, not emptied`);
+
+      // Owner design law, read live: slate, bold, no rail, no tint.
+      const st = await note.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { fg: c.color, w: c.fontWeight, bl: c.borderLeftWidth, bt: c.borderTopWidth, bg: c.backgroundColor };
+      });
+      const rgb = st.fg.match(/\d+/g).map(Number);
+      const wantSlate = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      ok(rgb.slice(0, 3).every((v, i) => Math.abs(v - wantSlate[i]) <= 2),
+        `E4b ${theme} the note is the neutral slate ${wantSlate.join(",")} — got ${st.fg}`);
+      ok(Number(st.w) >= 600, `E4b ${theme} 600+ weight — got ${st.w}`);
+      ok(st.bl === st.bt, `E4b ${theme} NO left accent rail`);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(st.bg), `E4b ${theme} not a tinted block — got ${st.bg}`);
+    } catch (e) { fail++; console.log(`  ✗ E4b ${theme} threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- E4c — F-634 CONTROL: a FAULT on the same door keeps the error text -----
+   * The over-reach arm. A thrown content read is TRANSPORT — the resolver never answered —
+   * and must stay an error, not become a permission note. Without this, routing every
+   * unsuccessful body read to .access-note would leave E4b green. One theme. */
+  {
+    console.log("E4c Documentation preview THROWS — still an error, not a refusal");
+    const env = await openEditor(browser, "config-ui", "cfg-static", "light", { __FAIL__: ["getContextDocContent"] });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+      await kp.locator(".knowledge-tab-docs").click();
+      await kp.locator(".doc-item").first().waitFor({ timeout: 8000 });
+      await kp.locator(".doc-item .doc-btn-preview").first().click();
+      await kp.getByText(/Failed to load content/i).first().waitFor({ timeout: 8000 });
+      ok(await kp.locator(".doc-preview .access-note").count() === 0,
+        "E4c a transport failure is NOT mistold as an access refusal");
+    } catch (e) { fail++; console.log("  ✗ E4c threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- E1 — no provider key → amber warning on the form ---------------- */
   {
     console.log("E1 no-key provider warning (cfg-validator)");

@@ -1050,9 +1050,17 @@ const MEMORY_SETTINGS = () => ({
    gate can refuse. ONE list each, so `__NO_ROSTER__` / `__UPGRADE_REQUIRED__` cannot mean
    one thing on the memories tab and another on the docs tab - the exact drift that let the
    admin Documentation and Skills tabs ship with no refusal branch while the embedded
-   components had one. `getContextDocContent` is deliberately ABSENT from the roster list:
-   that resolver has no role floor in the backend today, and a fixture that invents a gate
-   the backend does not have would verify a screen no tenant can reach. */
+   components had one.
+
+   F-634 - `getContextDocContent` IS on the roster list now. It used to be excluded on the
+   ground that "that resolver has no role floor in the backend today", which was true when
+   this comment was written and stopped being true with F-626 (src/index.js getContextDocContent
+   now answers noPerm(..., "viewer") like every other knowledge read). A fixture list that
+   states the backend has no gate is worse than a missing case: it reads as a decision, so the
+   next reader trusts it instead of checking, and the screen behind the new refusal - a reader
+   expanding a doc row - shipped covered by nothing. The rule the exclusion was protecting is
+   still right, and it is the reason the list is checked against src/index.js rather than
+   extended by habit: a fixture must never invent a gate the backend does not have. */
 /* ── 1.4 commit 6: CODE TAB fixtures ──────────────────────────────────────────────
    The shapes are the BACKEND's own allow-lists, field for field: `publicConnection`
    (src/git-connections.js) for a connection row, `publicWhoami` + `capabilityFlags` for a
@@ -1670,7 +1678,7 @@ const VA_MEMORY = {
   constraints: ["Never promise a delivery date that came from the supplier without saying it is the supplier's date.", "Escalations go to the on-call rota, never to the team channel."],
 };
 
-const ROSTER_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats"];
+const ROSTER_GATED_READS = ["getContextDocs", "getContextDocContent", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats"];
 const EDITION_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats", "getKnowledgeCounts"];
 
 function invoke(name, payload) {
@@ -2107,6 +2115,12 @@ function invoke(name, payload) {
     case "getAppAdmins": return Promise.resolve(ADMINS);
     case "searchUsers": return Promise.resolve({ success: true, users: [{ accountId: "557058:55555555-5555-5555-5555-555555555555", displayName: "Alex Newman", avatarUrl: "https://secure.gravatar.com/avatar/ddd?d=identicon&s=24" }, { accountId: "557058:66666666-6666-6666-6666-666666666666", displayName: "Jordan Lee", avatarUrl: null }] });
     case "getContextDocs": return Promise.resolve((typeof window !== "undefined" && window.__EMPTY__) ? { success: true, docs: [] } : DOCS);
+    /* F-634 - the SUCCESS arm only. This door carries the F-235 viewer floor since F-626, and
+       both refusal shapes are served above: `__NO_ROSTER__` for the whole-tenant state (which
+       also refuses the LIST, so the row is never reachable to expand), and
+       `__REFUSE__: ["getContextDocContent"]` for the door on its own - the state a reader is
+       actually in when the list was read before their role changed, and the only fixture that
+       can put a doc row on screen and refuse its body. */
     case "getContextDocContent": return Promise.resolve({ success: true, doc: { content: '{\n  "orders": { "GET /v2/orders": "List orders" }\n}' } });
     // F-167 - window.__MEMORY_FULL__ models the store at its hard ceiling: the backend
     // answers getMemorySettings/getKnowledgeCounts with storeFull = { at, reason } and

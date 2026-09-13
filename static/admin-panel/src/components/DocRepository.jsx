@@ -72,6 +72,14 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
   const [expandedDoc, setExpandedDoc] = useState(null);
   const [expandedContent, setExpandedContent] = useState("");
   const [expandedError, setExpandedError] = useState(null);
+  /* F-634 — the PREVIEW's refusal arm, held apart from `expandedError` for the same reason
+     `accessRefusal` is held apart from `loadError` above. F-626 put the F-235 viewer floor on
+     `getContextDocContent`, so this door can now answer "not you" with the machine-readable
+     shape — and until this state existed the sentence was piped into the red error box, which
+     claims the content failed to load. It did not: the backend declined to send it, and the
+     only thing the reader can act on is who grants the role. Holds the RESULT, not a boolean,
+     because `needsRole` comes off it. */
+  const [expandedRefusal, setExpandedRefusal] = useState(null);
   const [loadingContent, setLoadingContent] = useState(false);
   const [deletingId, setDeletingId] = useState(null); // row whose delete is in flight
   const [newDocId, setNewDocId] = useState(null); // freshly saved row — flashes green
@@ -245,6 +253,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
     // Clear the previous doc's content so it can never masquerade as this one's.
     setExpandedContent("");
     setExpandedError(null);
+    setExpandedRefusal(null);
     setLoadingContent(true);
     try {
       const result = await invoke("getContextDocContent", { id });
@@ -253,11 +262,21 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
       if (expandedIdRef.current !== id) return;
       if (result.success) {
         setExpandedContent(result.doc.content);
+      } else if (isPermissionRefusal(result)) {
+        /* F-634 — checked BEFORE the fault arm so the outage copy can never shadow it, the
+           same order the mount-load branch uses. Each arm clears the other: one answer, one
+           voice. */
+        setExpandedRefusal(result);
+        setExpandedError(null);
       } else {
+        setExpandedRefusal(null);
         setExpandedError(result.error || "Failed to load content");
       }
     } catch (e) {
       if (expandedIdRef.current !== id) return;
+      /* A THROW is transport, never a refusal — the resolver answers refusals with a
+         resolved body. This arm must not set expandedRefusal. */
+      setExpandedRefusal(null);
       setExpandedError("Failed to load content: " + e.message);
     }
     setLoadingContent(false);
@@ -454,6 +473,14 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
                         <div className="sk sk-text" style={{ width: "75%", height: 10, marginBottom: 6 }} />
                         <div className="sk sk-text" style={{ width: "55%", height: 10 }} />
                       </>
+                    ) : expandedRefusal ? (
+                      /* F-634 — the refusal, told as one: the slate .access-note that every
+                         other refused knowledge read on this panel already uses, naming the
+                         level the gate wanted and who grants it. Not the red error colour —
+                         nothing broke and nothing was lost. */
+                      <div className="access-note" role="note">
+                        {permissionRefusalText(expandedRefusal, "this document")}
+                      </div>
                     ) : expandedError ? (
                       <div style={{ color: "var(--error-color)", fontSize: "12px", fontWeight: 600 }}>
                         {expandedError}

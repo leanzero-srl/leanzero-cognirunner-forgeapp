@@ -49,6 +49,13 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
   const [expandedDoc, setExpandedDoc] = useState(null);
   const [expandedContent, setExpandedContent] = useState(null);
   const [expandedError, setExpandedError] = useState(null);
+  /* F-634 — the PREVIEW's refusal arm, held apart from `expandedError` exactly as
+     `accessRefusal` is held apart from `loadError` for the list read. F-626 put the F-235
+     viewer floor on `getContextDocContent`, so this door can now answer "not you"; before
+     this state that sentence landed in the outage box beside a Retry, which claims the app
+     failed and offers a control that can only re-ask a settled question. Holds the RESULT,
+     because the sentence needs `needsRole` off it. */
+  const [expandedRefusal, setExpandedRefusal] = useState(null);
   const [loadingExpanded, setLoadingExpanded] = useState(false);
   // Tracks whether the first load has succeeded — later loads (filter change,
   // post-save/delete re-fetch) keep the list visible under a frosted veil.
@@ -149,6 +156,7 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
   const fetchExpandedContent = async (id) => {
     setExpandedContent(null);
     setExpandedError(null);
+    setExpandedRefusal(null);
     setLoadingExpanded(true);
     try {
       const result = await invoke("getContextDocContent", { id });
@@ -156,9 +164,15 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
       // while the fetch was in flight. The newer call owns the state.
       if (expandedDocRef.current !== id) return;
       if (result.success) setExpandedContent(result.doc.content);
-      else setExpandedError(result.error || "Couldn't load this document's content.");
+      /* F-634 — the refusal is checked BEFORE the fault arm, so the outage copy can never
+         shadow it. Each arm clears the other: one answer, one voice. */
+      else if (isPermissionRefusal(result)) { setExpandedRefusal(result); setExpandedError(null); }
+      else { setExpandedRefusal(null); setExpandedError(result.error || "Couldn't load this document's content."); }
     } catch (e) {
       if (expandedDocRef.current !== id) return;
+      /* A THROW is transport, never a refusal — the resolver answers refusals with a
+         RESOLVED body. This arm must not set expandedRefusal. */
+      setExpandedRefusal(null);
       setExpandedError("Couldn't load this document's content.");
     } finally {
       // Only the call that still owns the expansion clears the loading flag.
@@ -405,6 +419,14 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
                               <div className="sk sk-text" style={{ width: "85%", height: 11, marginBottom: 6 }} />
                               <div className="sk sk-text" style={{ width: "70%", height: 11, marginBottom: 6 }} />
                               <div className="sk sk-text" style={{ width: "60%", height: 11 }} />
+                            </div>
+                          ) : expandedRefusal ? (
+                            /* F-634 — the refusal, told as one and with NO Retry: re-asking
+                               gets the same no, and a control that cannot succeed keeps the
+                               reader pressing instead of asking for the role. The same slate
+                               .access-note this tab already renders for a refused list. */
+                            <div className="access-note anim-rise" role="note">
+                              {permissionRefusalText(expandedRefusal, "this document")}
                             </div>
                           ) : expandedError ? (
                             <div className="load-error anim-rise">

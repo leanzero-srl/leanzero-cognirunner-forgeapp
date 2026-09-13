@@ -1541,6 +1541,88 @@ try {
     await close(env);
   }
 
+  /* ---------------- M6i — F-634: the DOC PREVIEW is refused, not broken -------------------
+   * F-626 put the F-235 viewer floor on `getContextDocContent`, and left all three consumers
+   * branching on `result.success` alone. So the door that had just learned to say "not you"
+   * had its sentence piped into the outage box beside a Retry - the same false claim M6e
+   * removed from the LIST read, reappearing one click deeper, on the tab M6e is watching.
+   * That is why this is asserted at the ROW and not the tab: M6e stays green throughout.
+   *
+   * `__REFUSE__` on the single door rather than `__NO_ROSTER__`, deliberately: the tenant-wide
+   * state refuses `getContextDocs` too, so there is no row on screen to expand and the screen
+   * under test cannot be reached. A reader whose role changed after the list was read is the
+   * state this models, and it is the only one that renders this arm. Both themes - .access-note
+   * is a coloured claim.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M6i Documentation preview REFUSED - getContextDocContent - ${theme}`);
+    const env = await openAdmin(browser, theme, { __REFUSE__: ["getContextDocContent"], __REFUSE_ROLE__: "viewer" });
+    const { page } = env;
+    try {
+      await tab(page, "Documentation");
+      // The LIST is fine - the control arm. If this ever stops being true the case below is
+      // testing an empty screen and would pass for the wrong reason.
+      await page.locator(".docs-tab table.table").waitFor({ timeout: 10000 });
+      ok(await page.locator(".docs-tab .access-note").count() === 0,
+        `M6i ${theme} the list itself is NOT refused - only the body read is`);
+      await page.locator(".docs-tab .row-actions .btn-small", { hasText: "View" }).first().click();
+
+      const note = page.locator(".docs-tab .access-note").first();
+      await note.waitFor({ timeout: 10000 });
+      const t = (await note.innerText()).replace(/\s+/g, " ").trim();
+      ok(/You need CogniRunner viewer access to see this document\./.test(t),
+        `M6i ${theme} the note names the LEVEL the gate asked for (got: ${t})`);
+      ok(/Ask a CogniRunner admin under Permissions\./.test(t),
+        `M6i ${theme} and names WHO can grant it, and where`);
+
+      /* The two false things the reader used to be shown. Their ABSENCE is the fix. */
+      ok(await page.locator(".docs-tab .load-error").count() === 0,
+        `M6i ${theme} no "Couldn't load this document's content." - nothing failed`);
+      ok(await page.locator(".docs-tab .btn-retry").count() === 0,
+        `M6i ${theme} and NO Retry - it could only re-ask and be refused again`);
+
+      // Owner design law on the slate note, read live in BOTH themes.
+      const st = await note.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { fg: c.color, w: c.fontWeight, bl: c.borderLeftWidth, bt: c.borderTopWidth, bg: c.backgroundColor };
+      });
+      const rgb = st.fg.match(/\d+/g).map(Number);
+      const wantSlate = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      ok(rgb.slice(0, 3).every((v, i) => Math.abs(v - wantSlate[i]) <= 2),
+        `M6i ${theme} the note is the neutral slate ${wantSlate.join(",")} - got ${st.fg}`);
+      ok(Number(st.w) >= 600, `M6i ${theme} 600+ weight - got ${st.w}`);
+      ok(st.bl === st.bt, `M6i ${theme} NO left accent rail`);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(st.bg), `M6i ${theme} not a tinted block - got ${st.bg}`);
+
+      await shot(page, `m6i-doc-preview-refused-${theme}`);
+      ok(env.errors.length === 0, `M6i ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x M6i ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M6j — F-634 CONTROL: a FAULT on the same door keeps its Retry ---------
+   * The arm that stops the fix over-reaching, the twin of M6h one click deeper. A thrown
+   * content read is TRANSPORT - the resolver never answered - and that one genuinely can
+   * succeed on a second try, so the error box and its Retry must both survive. Without this,
+   * routing every unsuccessful body read to the note would leave M6i green. One theme: a
+   * behaviour claim, not a coloured one. */
+  {
+    console.log("M6j Documentation preview THROWS - still a retryable load error");
+    const env = await openAdmin(browser, "light", { __FAIL__: ["getContextDocContent"] });
+    const { page } = env;
+    try {
+      await tab(page, "Documentation");
+      await page.locator(".docs-tab table.table").waitFor({ timeout: 10000 });
+      await page.locator(".docs-tab .row-actions .btn-small", { hasText: "View" }).first().click();
+      await page.locator(".docs-tab .load-error").waitFor({ timeout: 10000 });
+      ok(await page.locator(".docs-tab .btn-retry").count() === 1,
+        "M6j a transport failure on the body read still offers Retry");
+      ok(await page.locator(".docs-tab .access-note").count() === 0,
+        "M6j and is NOT mistold as an access refusal");
+    } catch (e) { fail++; console.log("  x M6j threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- M7 — F-213: an app-DEMOTED site admin on jira:adminPage ----------------
    * `jira:adminPage` is gated by Jira's OWN admin permission, so reaching this module
    * proves SITE admin. It proves nothing about the CogniRunner role, and F-210 conflated

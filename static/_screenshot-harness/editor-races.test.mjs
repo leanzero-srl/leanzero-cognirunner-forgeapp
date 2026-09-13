@@ -2,6 +2,7 @@
 import {chromium} from 'playwright';
 import {fileURLToPath} from 'node:url';
 import {ensureFreshBuildShot} from './lib/build-shot.mjs';
+import {pickEventRow} from './lib/pick-event-row.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http'; import fs from 'node:fs';import path from 'node:path';
 const root=ensureFreshBuildShot('admin-panel'); // F-125: never serve a bundle older than src/
@@ -22,7 +23,7 @@ for(const kind of ['listener','job']){
  const settle=()=>page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
  await page.locator('.tab-btn',{hasText:new RegExp('^\\s*'+tab+'\\s*$')}).click();
  if(kind==='listener'){
-  await defer('testListener');await page.getByText('+ Add Listener',{exact:true}).click();await page.locator(nameInput).fill('Unsaved A');await page.locator('.evp-search').fill('comment');await page.locator('.evp-row',{hasText:'Comment added'}).locator('input').check();await page.locator('.mode-btn.mode-agent').click();await page.locator('.agc-textarea').fill('Read only');await page.locator('.lst-test .btn-solid').click();await wait();
+  await defer('testListener');await page.getByText('+ Add Listener',{exact:true}).click();await page.locator(nameInput).fill('Unsaved A');await page.locator('.evp-search').fill('comment');await pickEventRow(page,'Comment added').locator('input').check();await page.locator('.mode-btn.mode-agent').click();await page.locator('.agc-textarea').fill('Read only');await page.locator('.lst-test .btn-solid').click();await wait();
   assert.equal(await page.locator('.section-actions .btn-edit').isDisabled(),true);checked('save cannot compete with a test for an unsaved ID');
   await back();await edit(1);
   const opened=await page.evaluate(()=>window.__CALLS__.filter(c=>c.name==='getListener').at(-1).payload.id);

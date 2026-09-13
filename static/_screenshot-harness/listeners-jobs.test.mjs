@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
+import { pickEventRow } from "./lib/pick-event-row.mjs";
 /* F-189 - the byte guard, the platform ceiling and the over-platform refusal sentence come
    from the ONE home for them, so a test cannot assert a limit or a sentence the app does
    not actually use. */
@@ -115,7 +116,7 @@ try {
       ok(["Comment added", "User mentioned in comment", "Comment deleted"].every((l) => commentRows.some((t) => t.includes(l))),
         "L2 search narrows the catalogue to the comment events (3 Jira rows present)");
       ok(commentRows.some((t) => t.includes("Pull request comment added")), "L2 the git PR-comment event joins the comment search");
-      await page.locator(".evp-row", { hasText: "Comment added", hasNotText: "Pull request" }).locator("input").check();
+      await pickEventRow(page, "Comment added").locator("input").check();
       ok(await page.locator(".evp-selected .evp-chip", { hasText: "Comment added" }).count() === 1, "L2 picked event shows as a solid chip");
       await page.locator(".evp-search").fill("viewed");
       ok(await page.locator(".evp-row .evp-vol", { hasText: "HIGH VOLUME" }).count() === 1, "L2 high-volume warning on Issue viewed");
@@ -256,7 +257,7 @@ try {
       await page.locator("button", { hasText: "Show last real payload" }).click();
       await page.locator(".lst-sample .runres-pre").waitFor();
       await page.locator(".evp-search").fill("Issue updated");
-      await page.locator(".evp-row", { hasText: "Issue updated" }).locator("input").check();
+      await pickEventRow(page, "Issue updated").locator("input").check();
       await page.locator(".lst-test-field .dropdown-trigger").click();
       await page.locator(".dropdown-item", { hasText: /^Issue updated$/ }).click();
       ok(await page.locator(".lst-sample").count() === 0, "R1 prior event sample disappears when test event changes");
@@ -327,7 +328,7 @@ try {
       await page.locator(".lst-editor").waitFor();
       ok((await page.locator(".lst-test").innerText()).includes("Pick an event first"), "R1 empty event selection gives a clear next step");
       await page.locator(".evp-search").fill("Version released");
-      await page.locator(".evp-row", { hasText: "Version released" }).locator("input").check();
+      await pickEventRow(page, "Version released").locator("input").check();
       ok(await page.locator(".lst-test .issue-picker").count() === 0 && (await page.locator(".lst-test").innerText()).includes("This event has no current issue"), "R1 nonissue event removes irrelevant issue picker");
       ok(env.errors.length === 0, "R1 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ R1 threw: " + e.message.split("\n")[0]); }

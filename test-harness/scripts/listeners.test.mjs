@@ -16,7 +16,7 @@ import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
   BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
-  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, BRAKE_BUCKET_MS, takeAgentRunSlot, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets, summarizeEventForAi,
+  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, BRAKE_BUCKET_MS, takeAgentRunSlot, runListener, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets, summarizeEventForAi,
   GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule, toIndexRow as toJobIndexRow, MAX_SCOPE_ISSUES } from "../../src/scheduled-jobs.js";
@@ -601,6 +601,83 @@ ok(defs.every((d) => d.type === "function" && d.function.parameters.type === "ob
   ok((await takeAgentRunSlot()).braked === false, "ALLOW: one below the cap still runs (the brake is >=, not >)");
   // The bucket is the ONLY thing in the key: this brake counts EVERYTHING, by design.
   ok(!/lst_brake|job|listener/.test(bucketKey) && /^agent_brake:\d+$/.test(bucketKey), "the key carries no rule and no issue — it is tenant-wide");
+}
+
+/* ===== the tenant-wide agent brake is taken at the LISTENER run site too (F-396) =====
+
+It was wired at the JOB run site only, so the brake was tenant-wide in name and in key
+while the busiest producer of agent runs — a comment storm firing agent listeners — walked
+straight past it. These assert the run site itself: the model must never be reached. */
+
+// The agent module is stubbed the same way the index module is above: ONE dynamic
+// specifier, the one listeners.js asks for, mapped to a counting stub. The count is the
+// assertion — "the brake refused" and "the model never ran" are different claims.
+const AGENT_STUB_HOOK = `
+export async function resolve(spec, ctx, next) {
+  if (spec === "./agent-runner.js" && String(ctx.parentURL || "").endsWith("/src/listeners.js")) return { url: "cogni-mock:agent", shortCircuit: true, format: "module" };
+  return next(spec, ctx);
+}
+export async function load(url, ctx, next) {
+  if (url === "cogni-mock:agent") return { format: "module", shortCircuit: true, source: "export const runAgentTask = async (a) => globalThis.__lstAgent(a); export const evaluateAiCondition = async () => ({ match: true, reason: 'y', tokens: 0, aiTimeMs: 0 });" };
+  return next(url, ctx);
+}`;
+register("data:text/javascript," + encodeURIComponent(AGENT_STUB_HOOK));
+
+{
+  const agentListener = normalizeListener({
+    name: "Storm", events: ["avi:jira:commented:issue"], mode: "agent",
+    agent: { instructions: "reply", allowedActions: ["add_comment"], maxRounds: 2 },
+  }, { accountId: "u" });
+  const runIt = () => runListener({
+    listener: agentListener, eventType: "avi:jira:commented:issue",
+    event: { issue: { key: "LZPT-1", fields: {} } }, ctx: { issueKey: "LZPT-1", projectKey: "LZPT" },
+  });
+  const bucketKey = `agent_brake:${Math.floor(Date.now() / BRAKE_BUCKET_MS)}`;
+
+  // BLOCK — the bucket is at the cap before the listener fires.
+  storage.__reset();
+  let called = 0;
+  globalThis.__lstAgent = async () => { called++; return { success: true, outcome: "done", summary: "s", rounds: 1, toolCalls: [], changes: [], logs: [], tokens: 0, aiTimeMs: 0 }; };
+  storage.__seed(bucketKey, AGENT_RUN_BRAKE_MAX_PER_BUCKET);
+  const blocked = await runIt();
+  ok(called === 0, "BLOCK: at the cap the listener's model is NEVER called");
+  ok(blocked.skipped === true && blocked.braked === true, "…the run reports itself skipped and braked");
+  ok(blocked.brake && blocked.brake.kind === "agent-runs" && blocked.brake.max === AGENT_RUN_BRAKE_MAX_PER_BUCKET,
+    "…with the same refusal shape the job run site uses (kind, max, reason)");
+  ok(/more than \d+ AI agent runs in 5 minutes/.test(blocked.brake.reason), "…naming the reason from the ONE home");
+  ok(blocked.log.brake && blocked.log.brake.kind === "agent-runs" && blocked.log.reason === blocked.brake.reason,
+    "…and the LOG ROW carries it, so the Listeners tab can say why nothing happened");
+  ok(blocked.log.isValid === false && blocked.log.decision === "SKIP", "a braked run is not a success and not a silent miss");
+
+  // ALLOW — one below the cap still runs, and the run is accounted for.
+  storage.__reset();
+  called = 0;
+  storage.__seed(bucketKey, AGENT_RUN_BRAKE_MAX_PER_BUCKET - 1);
+  const allowed = await runIt();
+  ok(called === 1, "ALLOW: one below the cap the listener runs (the brake is >=, not >)");
+  ok(allowed.skipped === false && allowed.brake === undefined, "…with no brake reported at all");
+  ok(Number(storage.__raw(bucketKey)) === AGENT_RUN_BRAKE_MAX_PER_BUCKET, "…and taking the slot IS the accounting");
+
+  // ONE BUCKET, shared. A JOB run consumes a listener's slot: the job site takes the slot
+  // through the same takeAgentRunSlot() and the same key, which is what "tenant-wide"
+  // has to mean. Here the job's take is the real function, called directly.
+  storage.__reset();
+  called = 0;
+  for (let i = 0; i < AGENT_RUN_BRAKE_MAX_PER_BUCKET; i++) await takeAgentRunSlot(); // the jobs
+  const starved = await runIt();
+  ok(called === 0 && starved.braked === true,
+    "SHARED BUCKET: agent runs started elsewhere (a sweeping job) spend the listener's allowance");
+
+  // SCRIPT mode is untouched — it starts no model, so it costs no AI and takes no slot.
+  storage.__reset();
+  storage.__seed(bucketKey, AGENT_RUN_BRAKE_MAX_PER_BUCKET);
+  const scriptListener = normalizeListener({ name: "S", events: ["avi:jira:commented:issue"], functions: [{ code: "api.log(1)" }] }, { accountId: "u" });
+  const scriptRun = await runListener({ listener: scriptListener, eventType: "avi:jira:commented:issue", event: { issue: { key: "LZPT-1", fields: {} } }, ctx: { issueKey: "LZPT-1" } }).catch((e) => ({ threw: e }));
+  // It reaches the SANDBOX (the index stub has no runSandboxSteps, so it throws there)
+  // rather than returning a brake row: past the brake is exactly where it should be.
+  ok(!scriptRun.braked && scriptRun.threw && /runSandboxSteps/.test(String(scriptRun.threw.message)),
+    "a SCRIPT listener is not stopped by the AI brake — it starts no model, and the run reaches the sandbox");
+  ok(Number(storage.__raw(bucketKey)) === AGENT_RUN_BRAKE_MAX_PER_BUCKET, "…and it takes no slot from the agent bucket");
 }
 
 console.log(`LISTENERS: ${pass} passed, ${fail} failed`);

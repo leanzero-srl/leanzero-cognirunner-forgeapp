@@ -15,67 +15,16 @@
 // ask a real question.
 import assert from "node:assert/strict";
 import {
-  IDENTIFIER_PATTERNS, NON_KEY_PREFIXES, findIdentifierLeak, reduceResults, parseSearchPayload,
-  cacheFieldsOf, createSearchBudget, createWebSearchExecutor,
+  findIdentifierLeak, reduceResults, parseSearchPayload,
+  cacheFieldsOf, createSearchBudget, createWebSearchExecutor, createProjectKeysMemo,
   TOP_RESULTS, SNIPPET_MAX_CHARS, SEARCHES_PER_TURN, RESULT_RULE, WEB_SEARCH_SYSTEM_RULE,
+  createRunSearchBudget,
 } from "../../src/web-search-tool.js";
+import { WEB_SEARCH_MAX_PER_RUN, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "../../src/shared/registry-limits.js";
 
 let n = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); n++; };
 const eq = (a, b, msg) => { assert.deepEqual(a, b, `${msg} — got ${JSON.stringify(a)}`); n++; };
-
-/* ===================== the ONE regex table ===================== */
-
-ok(Array.isArray(IDENTIFIER_PATTERNS) && IDENTIFIER_PATTERNS.length >= 5, "the table has every kind the plan names");
-for (const row of IDENTIFIER_PATTERNS) {
-  ok(typeof row.id === "string" && row.id, `${row.id}: has an id`);
-  ok(typeof row.kind === "string" && row.kind, `${row.id}: names a KIND for the refusal`);
-  ok(row.re instanceof RegExp, `${row.id}: is a regex`);
-  ok(!row.re.global, `${row.id}: is not /g (a stateful lastIndex makes a leak check skip every other call)`);
-}
-eq([...new Set(IDENTIFIER_PATTERNS.map((r) => r.id))].length, IDENTIFIER_PATTERNS.length, "ids are unique");
-
-/* ===================== POSITIVE fixtures — these must REFUSE ===================== */
-
-const LEAKS = [
-  ["does 712020:8f3a91cc own this", "accountId"],
-  ["wolfaenpak.atlassian.net rest api v3 search", "atlassianHost"],
-  ["who is mihai.perdum@leanzero.net", "email"],
-  ["what is 3f2504e0-4f89-11d3-9a0c-0305e82c3301", "uuid"],
-  ["is COGTEST-1421 a known bug", "issueKey"],
-  ["PROJ-1 root cause", "issueKey"],
-];
-for (const [query, id] of LEAKS) {
-  const leak = findIdentifierLeak(query);
-  ok(leak && leak.id === id, `refuses ${id}: "${query.slice(0, 30)}…"`);
-  // THE REFUSAL NAMES THE KIND, NEVER THE VALUE. This is the assertion the whole
-  // module exists for: a refusal that echoes the identifier has leaked it into the
-  // transcript, the execution log and the operator's screen.
-  ok(!leak.message.includes(query), `${id}: the refusal does not echo the query`);
-  for (const token of query.split(/\s+/).filter((t) => /[:@]|-\d|\d{4}/.test(t))) {
-    ok(!leak.message.includes(token), `${id}: the refusal does not echo the identifier token`);
-  }
-  ok(leak.message.includes(leak.kind), `${id}: the refusal names the kind`);
-}
-
-/* ===================== NEGATIVE fixtures — these must PASS ===================== */
-
-const CLEAN = [
-  "what changed in UTF-8 handling in node 24",
-  "CVE-2024-3094 xz backdoor summary",
-  "RFC-7231 cache-control semantics",
-  "ISO-8601 duration format",
-  "jira rest api v3 search jql pagination nextPageToken",
-  "forge kvs 240 KiB value limit",
-  "HTTP-2 server push deprecation",
-  "SHA-256 collision status",
-];
-for (const query of CLEAN) ok(findIdentifierLeak(query) === null, `allows the public question "${query.slice(0, 40)}…"`);
-
-ok(findIdentifierLeak("") === null, "an empty query is not a leak (it is refused elsewhere, for being empty)");
-ok(findIdentifierLeak(null) === null, "null does not throw");
-ok(NON_KEY_PREFIXES.has("UTF") && NON_KEY_PREFIXES.has("CVE"), "the deny-list holds the standards that share an issue key's shape");
-ok(!NON_KEY_PREFIXES.has("PROJ") && !NON_KEY_PREFIXES.has("COGTEST"), "…and nothing that looks like a real project key");
 
 /* ===================== reduction: top 5, 300 chars, allow-list ===================== */
 
@@ -95,6 +44,40 @@ for (const r of reduced) {
 eq(reduceResults(null), [], "a non-array payload reduces to nothing");
 eq(reduceResults([{ junk: 1 }]), [], "a row with neither title nor link is dropped");
 eq(reduceResults([{ name: "n", url: "u", description: "d" }]), [{ title: "n", link: "u", snippet: "d" }], "the alternate field names are accepted");
+
+/* ===== the project-key memo (its CELL lives in src/index.js, beside the provider memo) ===== */
+
+// THE MEMO: a hit does not re-read, and a FAILED read is never cached.
+{
+  let reads = 0;
+  let now = 1000;
+  const memo = createProjectKeysMemo(async () => { reads++; return { ok: true, keys: ["LZPT"] }; }, 30000, () => now);
+  const a = await memo();
+  const b = await memo();
+  eq(a, { ok: true, keys: ["LZPT"] }, "the memo reports the tenant's keys");
+  ok(reads === 1, "MEMO HIT: the second call inside the window does NOT re-read");
+  eq(b, a, "…and returns the same value");
+  now += 30001;
+  await memo();
+  ok(reads === 2, "past the 30 s window it reads again");
+
+  let fails = 0;
+  const bad = createProjectKeysMemo(async () => { fails++; throw new Error("kvs hiccup"); }, 30000, () => now);
+  eq(await bad(), { ok: false, keys: [] }, "a THROWING read is reported as ok:false, never thrown at the caller");
+  await bad();
+  ok(fails === 2, "…and a FAILURE is not memoised — one hiccup must not buy 30 s of shape-fallback refusals");
+  const notOk = createProjectKeysMemo(async () => ({ ok: false }), 30000, () => now);
+  eq(await notOk(), { ok: false, keys: [] }, "a reader that reports failure is passed through as failure");
+}
+
+/* ===== the leak table is NOT this module's (F-419) — see identifier-leak.test.mjs ===== */
+
+// The table and the scanner moved to src/shared/identifier-leak.js so the knowledge bake
+// scans for the same identifiers. What this suite still owns is that the tool REACHES it:
+// every caller of the executor goes through this module, and a re-export that quietly
+// disappears would turn the leak check into a no-op with no test failing anywhere else.
+ok(typeof findIdentifierLeak === "function", "the tool re-exports the scanner from its shared home");
+ok(findIdentifierLeak("PROJ-123 root cause") !== null, "…and it is the real one (it still refuses)");
 
 /* ===================== envelope parsing ===================== */
 
@@ -149,11 +132,129 @@ ok(typeof ex.execute === "function", "the executor has an execute()");
   budget.used = budget.max;
   const r = await ex.execute("web_search", { query: "node 24 release date" });
   ok(r.success === false && r.code === "budget_spent", "past the budget the tool refuses…");
-  ok(/budget is spent/.test(r.error) && /2 searches per run/.test(r.error), "…with a NAMED reason that states the cap");
+  ok(/budget is spent/.test(r.error) && /2 searches per turn/.test(r.error), "…with a NAMED reason that states the cap");
 }
 eq(createSearchBudget().max, SEARCHES_PER_TURN, "the default budget is the plan's number");
 eq(createSearchBudget().used, 0, "a fresh budget starts at zero");
 ok(createSearchBudget() !== createSearchBudget(), "the budget is PER RUN, not module state (a warm container serves many tenants)");
+
+/* ========== the executor asks the instance for the keys, through ONE seam ========== */
+
+{
+  // A site whose project key is API: the search never happens, and the refusal is logged
+  // by kind. This is the whole of F-395 seen from where it matters.
+  let reads = 0;
+  const logs2 = [];
+  const tenant = createWebSearchExecutor({
+    // Budget ZERO deliberately: the leak check runs BEFORE the budget, so a refusal that
+    // says "budget_spent" is proof the query was NOT treated as a leak — and no branch of
+    // this suite ever reaches the network or imports src/index.js.
+    budget: createSearchBudget(0), log: (s2) => logs2.push(s2),
+    deps: { projectKeys: async () => { reads++; return { ok: true, keys: ["API"] }; } },
+  });
+  const r = await tenant.execute("web_search", { query: "API-12 root cause" });
+  ok(r.success === false && r.code === "identifier_leak:issueKey", "the executor refuses a key that IS a project here");
+  ok(reads === 1, "…having asked the instance exactly once for this search");
+  ok(!r.error.includes("API-12") && !logs2.some((l) => l.includes("API-12")), "…and neither the refusal nor the log carries the value");
+
+  const okr = await tenant.execute("web_search", { query: "CVE-2024-1234 exploitability" });
+  ok(okr.code === "budget_spent", "…and the same executor lets the public CVE question PAST the leak check");
+}
+{
+  // A seam that THROWS is the read failing: the tool falls back to the shape rule and
+  // refuses. A leak check that crashes open is worse than one that refuses too much.
+  const broken = createWebSearchExecutor({ budget: createSearchBudget(0), deps: { projectKeys: async () => { throw new Error("no"); } } });
+  const r = await broken.execute("web_search", { query: "PROJ-123 root cause" });
+  ok(r.success === false && r.code === "identifier_leak:issueKey", "a THROWING project read falls back to the shape rule, which refuses");
+}
+
+/* ========== the RUN ceiling and the tenant brake (F-407) ==========
+
+The per-turn budget is per runAgentTask call, and a scoped job calls that once PER ISSUE —
+so a 100-issue sweep could make 300 searches with every turn politely inside its three. */
+
+{
+  eq(createRunSearchBudget().max, WEB_SEARCH_MAX_PER_RUN, "the run ceiling is the number from its ONE home");
+  eq(createRunSearchBudget().used, 0, "…and starts at zero");
+  ok(createRunSearchBudget() !== createRunSearchBudget(), "…and is per run, not module state");
+
+  // The RUN ceiling refuses even when the TURN budget is untouched — which is exactly the
+  // shape of the sweep this exists for: a fresh turn per issue, each with its own three.
+  const runBudget = createRunSearchBudget(2);
+  runBudget.used = 2;
+  const logs3 = [];
+  const ex3 = createWebSearchExecutor({
+    budget: createSearchBudget(3), runBudget, log: (l) => logs3.push(l),
+    deps: { projectKeys: async () => ({ ok: true, keys: ["LZPT"] }) },
+  });
+  const r = await ex3.execute("web_search", { query: "node 24 release date" });
+  ok(r.success === false && r.code === "run_budget_spent", "a fresh TURN is still refused once the RUN's ceiling is spent");
+  ok(r.brake && r.brake.kind === "web-searches-run" && r.brake.max === 2, "…reporting WHICH limit it hit");
+  ok(r.error.includes(brakeRefusalText("web-searches-run", 2)), "…with the sentence from the ONE home");
+  ok(logs3.some((l) => /RUN's search ceiling/.test(l)), "…and the log says run, not turn, so an operator narrows the scope");
+  ok(r.rule === RESULT_RULE, "…and it still carries the reading rule");
+}
+{
+  // The tenant-wide brake is taken LAST, so a refused query never spends the installation's
+  // allowance. Here the leak check refuses first and the brake seam is never reached.
+  let takes = 0;
+  const ex4 = createWebSearchExecutor({
+    budget: createSearchBudget(3), runBudget: createRunSearchBudget(5),
+    deps: {
+      projectKeys: async () => ({ ok: true, keys: ["API"] }),
+      mcpEnabled: async () => true,
+      webSearchBrake: async () => { takes++; return { braked: false, kind: "web-searches", max: WEB_SEARCH_BRAKE_MAX_PER_BUCKET }; },
+    },
+  });
+  const leaked = await ex4.execute("web_search", { query: "API-12 root cause" });
+  ok(leaked.code === "identifier_leak:issueKey" && takes === 0, "a REFUSED query never takes a slot from the tenant's search brake");
+}
+{
+  // And when the installation's brake IS tripped, the search is refused by name, with
+  // neither budget spent — the brake is not this run's fault and must not read as if it were.
+  const turn = createSearchBudget(3);
+  const run = createRunSearchBudget(5);
+  const logs5 = [];
+  const ex5 = createWebSearchExecutor({
+    budget: turn, runBudget: run, log: (l) => logs5.push(l),
+    deps: {
+      projectKeys: async () => ({ ok: true, keys: ["LZPT"] }),
+      mcpEnabled: async () => true,
+      webSearchBrake: async () => ({ braked: true, kind: "web-searches", max: WEB_SEARCH_BRAKE_MAX_PER_BUCKET, reason: brakeRefusalText("web-searches", WEB_SEARCH_BRAKE_MAX_PER_BUCKET) }),
+    },
+  });
+  const r5 = await ex5.execute("web_search", { query: "forge kvs value limit" });
+  ok(r5.success === false && r5.code === "brake:web-searches", "BLOCK: the installation's 5-minute search brake refuses the search");
+  ok(r5.brake.kind === "web-searches" && r5.brake.max === WEB_SEARCH_BRAKE_MAX_PER_BUCKET, "…naming the limit that tripped, distinctly from the run ceiling");
+  ok(/more than \d+ web searches in 5 minutes/.test(r5.error), "…with the sentence from the ONE home");
+  ok(turn.used === 0 && run.used === 0, "…and neither budget is charged for a search that never happened");
+  ok(logs5.some((l) => /search brake/.test(l)), "…and the refusal is logged");
+}
+{
+  // A brake that cannot be read does NOT refuse: both budgets above are already hard
+  // ceilings, and a KVS hiccup must not silence every agent on the instance.
+  const ex6 = createWebSearchExecutor({
+    budget: createSearchBudget(0), runBudget: createRunSearchBudget(5),
+    deps: { projectKeys: async () => ({ ok: true, keys: ["LZPT"] }), webSearchBrake: async () => { throw new Error("kvs down"); } },
+  });
+  const r6 = await ex6.execute("web_search", { query: "forge kvs value limit" });
+  ok(r6.code === "budget_spent", "a brake read that THROWS is fail-open — the budgets still bound the run");
+}
+
+/* the wiring: one counter per RUN, at both run sites */
+{
+  const fs = await import("node:fs/promises");
+  const jobSrc = await fs.readFile(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
+  const lstSrc = await fs.readFile(new URL("../../src/listeners.js", import.meta.url), "utf8");
+  const agentSrc = await fs.readFile(new URL("../../src/agent-runner.js", import.meta.url), "utf8");
+  ok(/const webRunBudget = createRunSearchBudget\(\);[\s\S]{0,400}const runOne = async/.test(jobSrc),
+    "the job creates ONE run budget OUTSIDE runOne — a per-issue counter is not a run budget");
+  ok(/webRunBudget }\);/.test(jobSrc), "…and passes it into every turn of the run");
+  ok(/webRunBudget: createRunSearchBudget\(\)/.test(lstSrc), "the listener run site carries one too");
+  ok(/webRunBudget = null/.test(agentSrc) && /runBudget: webRunCeiling/.test(agentSrc),
+    "the runner takes the caller's ceiling and hands it to the executor");
+  ok(/takeWebSearchSlot/.test(lstSrc), "the tenant-wide search brake lives beside the agent-run brake, in ONE home");
+}
 
 /* ===================== the two sentences ===================== */
 
@@ -166,7 +267,7 @@ ok(/must come from a read/.test(WEB_SEARCH_SYSTEM_RULE) && /when you could not c
 /* ===================== the wiring, asserted on the source ===================== */
 
 const src = await (await import("node:fs/promises")).readFile(new URL("../../src/agent-runner.js", import.meta.url), "utf8");
-ok(/createWebSearchExecutor, createSearchBudget, WEB_SEARCH_SYSTEM_RULE/.test(src), "the runner imports the executor from its ONE home");
+ok(/createWebSearchExecutor, createSearchBudget, createRunSearchBudget, WEB_SEARCH_SYSTEM_RULE/.test(src), "the runner imports the executor from its ONE home");
 ok(/allowed\.includes\("web_search"\)[\s\S]{0,200}executors\.web \|\| createWebSearchExecutor/.test(src),
   "the runner installs the web executor only for an agent that holds the action, and a caller's own executor still wins");
 ok(/\$\{webRule\}/.test(src) && /allowed\.includes\("web_search"\) \? `\\n- \$\{WEB_SEARCH_SYSTEM_RULE\}`/.test(src),
@@ -174,5 +275,11 @@ ok(/\$\{webRule\}/.test(src) && /allowed\.includes\("web_search"\) \? `\\n- \$\{
 const idxSrc = await (await import("node:fs/promises")).readFile(new URL("../../src/index.js", import.meta.url), "utf8");
 ok(/export const callBridgeTool = async/.test(idxSrc), "callBridgeTool is exported (the one new export the web tool needs)");
 ok(/export const mcpEnabled = async/.test(idxSrc), "mcpEnabled is exported (the MCP toggle has ONE reader)");
+ok(/export const getTenantProjectKeys = createProjectKeysMemo\(readTenantProjectKeys, PROVIDER_CACHE_TTL_MS\)/.test(idxSrc),
+  "the project-key memo CELL lives in index.js, on the provider memo's TTL — one cache home, not two (F-395)");
+ok(/project\/search\?maxResults=/.test(idxSrc) && /orderBy=key/.test(idxSrc), "…and it reads the tenant's projects, paginated");
+const toolSrc = await (await import("node:fs/promises")).readFile(new URL("../../src/web-search-tool.js", import.meta.url), "utf8");
+ok(/getTenantProjectKeys\(\)/.test(toolSrc), "the tool's DEFAULT dep points at that one reader");
+ok(/deps\.projectKeys/.test(toolSrc), "…reached through the deps seam, so the leak rule stays testable offline");
 
 console.log(`web-search-tool: ${n} passed, 0 failed`);

@@ -41,9 +41,10 @@ import {
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { knowledgeBudget, AGENT_RUN_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
+import { knowledgeBudget, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
+import { createRunSearchBudget } from "./web-search-tool.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 // ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
 import { safeKeyPart } from "./shared/kvs-keys.js";
@@ -88,6 +89,11 @@ export const BRAKE_MAX_PER_LISTENER = 120;
  * whole point is that it counts EVERYTHING.
  */
 const AGENT_BRAKE_PREFIX = "agent_brake:";
+// The same mechanism, one bucket along, for the OTHER thing an agent spends that is not
+// tokens: hosted web searches (F-407). Its own key, because "stop searching" and "stop
+// running agents" are different refusals and an operator must be able to tell which
+// tripped.
+const WEB_SEARCH_BRAKE_PREFIX = "web_search_brake:";
 const SAMPLE_TTL = { ttl: { value: 7, unit: "DAYS" } };
 const SAMPLE_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -612,17 +618,32 @@ export const bumpBrake = async (b) => { if (b.readFailed) return; try { await st
  * the accounting), or `{ braked: true, reason, max }` to skip, with the sentence from the
  * ONE home in src/shared/registry-limits.js.
  */
-export const takeAgentRunSlot = async ({ max = AGENT_RUN_BRAKE_MAX_PER_BUCKET } = {}) => {
+export const takeAgentRunSlot = async ({ max = AGENT_RUN_BRAKE_MAX_PER_BUCKET } = {}) => takeTenantSlot(AGENT_BRAKE_PREFIX, "agent-runs", max);
+
+/**
+ * THE TENANT-WIDE WEB-SEARCH BRAKE (F-407). Same bucket length, same accounting, its own
+ * key and its own refusal. Taken by src/web-search-tool.js immediately before a search
+ * actually leaves the instance — never for a refused or cached-out query, because a brake
+ * that counts refusals brakes the wrong thing.
+ */
+export const takeWebSearchSlot = async ({ max = WEB_SEARCH_BRAKE_MAX_PER_BUCKET } = {}) => takeTenantSlot(WEB_SEARCH_BRAKE_PREFIX, "web-searches", max);
+
+/**
+ * The shared body of both tenant-wide brakes. ONE implementation: the two differ only in
+ * their key prefix, their kind and their cap, and a second copy is how the "bump past the
+ * line" rule below comes to be true of one brake and not the other.
+ */
+const takeTenantSlot = async (prefix, kind, max) => {
   const bucket = Math.floor(Date.now() / BRAKE_BUCKET_MS);
-  const b = await readBrake(`${AGENT_BRAKE_PREFIX}${bucket}`);
+  const b = await readBrake(`${prefix}${bucket}`);
   if (b.count >= max) {
     // Bump past the line too, so the bucket records the real pressure rather than
     // flat-lining at the cap — an operator needs to see HOW far over it went.
     await bumpBrake(b);
-    return { braked: true, kind: "agent-runs", max, count: b.count, reason: brakeRefusalText("agent-runs", max) };
+    return { braked: true, kind, max, count: b.count, reason: brakeRefusalText(kind, max) };
   }
   await bumpBrake(b);
-  return { braked: false, kind: "agent-runs", max, count: b.count + 1 };
+  return { braked: false, kind, max, count: b.count + 1 };
 };
 /**
  * The per-OBJECT brake key (F-320).
@@ -1260,6 +1281,21 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     }
   }
   if (listener.mode === "agent") {
+    // THE TENANT-WIDE AGENT-RUN BRAKE (F-396), taken HERE — before the model call and
+    // before any knowledge read — for the same reason the job run site takes it: the cost
+    // is spent when the model runs. The bucket is the SAME one (`takeAgentRunSlot`, one
+    // home above), so a comment storm that fires listener runs and a sweeping job draw on
+    // one allowance. Wiring it only at the job site left the brake tenant-wide in name and
+    // key while the busiest producer of agent runs walked past it.
+    //
+    // A TEST run takes a slot too: it starts a model and costs the same tokens, and an
+    // installation already over the line is exactly where an operator must not be able to
+    // add more. SCRIPT listeners are untouched — they start no model.
+    const slot = await takeAgentRunSlot();
+    if (slot.braked) {
+      const brake = { kind: "agent-runs", max: slot.max, reason: slot.reason };
+      return { skipped: true, braked: true, brake, gate, log: done({ isValid: false, decision: "SKIP", reason: slot.reason, recommendation: slot.reason, brake }) };
+    }
     const { runAgentTask } = await agentMod();
     // A LISTENER IS AN EXTERNAL TRIGGER, always: an event we did not originate started
     // this run and no human is watching it, so a `dangerous` action (approve code,
@@ -1270,11 +1306,22 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
       : undefined;
     // Knowledge is built by the CALLER (1.4 commit 13b): only here do we know the rule's
     // binding and the run's project. Fail-open — see buildAgentKnowledge.
-    const knowledge = await buildAgentKnowledge(listener.agent, { projectKey: ctx.projectKey || (extraContext && extraContext.projectKey) || null, audience: "agentRun" });
+    // The knowledge builder's "skill too large, not injected" notice needs somewhere to
+    // land (F-405): it was guarded by `&& log` and NO caller passed one, so an author whose
+    // skill did not fit the run's byte budget saw a listener that simply ignored it, with
+    // nothing anywhere to say why. These lines are prepended to the run's log rows below,
+    // because that is the row the operator opens.
+    const knowledgeNotices = [];
+    const knowledge = await buildAgentKnowledge(listener.agent, { projectKey: ctx.projectKey || (extraContext && extraContext.projectKey) || null, audience: "agentRun", log: (line) => knowledgeNotices.push(String(line)) });
     const r = await runAgentTask({
       instructions: listener.agent.instructions, allowedActions: listener.agent.allowedActions, maxRounds: listener.agent.maxRounds,
       issueKey: ctx.issueKey || null, config, contextTitle: "EVENT", contextText: summarizeEventForAi(eventType, event, ctx),
       deadline, cancelToken, extraContext, gate: agentGate, executors, knowledge,
+      // ONE listener run is ONE turn today, so this ceiling is not what stops a listener —
+      // the tenant-wide 5-minute brake is. It is passed anyway so that the run, not the
+      // turn, is where the number lives on BOTH surfaces (F-407): the day a listener grows
+      // a second turn, the ceiling is already the run's.
+      webRunBudget: createRunSearchBudget(),
     });
     return {
       skipped: false, result: r, gate, ...agentResultFields(r),
@@ -1282,7 +1329,7 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
         ...agentResultFields(r),
         isValid: r.success, reason: r.success ? `Agent ${r.outcome}: ${r.summary || "(no summary)"}` : `Agent failed: ${r.error || r.summary || "unknown"}`,
         recommendation: r.success ? undefined : "Open the listener, review the instructions and allowed actions, then use 'Test with an issue' to reproduce.",
-        tokens: r.tokens, aiTimeMs: r.aiTimeMs, changes: (r.changes || []).slice(0, 20), logs: (r.logs || []).slice(-60).map((s) => String(s).slice(0, 300)),
+        tokens: r.tokens, aiTimeMs: r.aiTimeMs, changes: (r.changes || []).slice(0, 20), logs: [...knowledgeNotices, ...(r.logs || [])].slice(-60).map((s) => String(s).slice(0, 300)),
         toolCalls: r.toolCalls, rounds: r.rounds, gateReason: gate ? gate.reason : undefined,
       }),
     };

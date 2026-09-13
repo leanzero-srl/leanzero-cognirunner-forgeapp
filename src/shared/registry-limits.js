@@ -447,9 +447,33 @@ export const JOB_MIN_WRITES_PER_RUN = 0;
  */
 export const AGENT_RUN_BRAKE_MAX_PER_BUCKET = 200;
 
+/**
+ * WEB SEARCHES ONE RUN MAY MAKE (F-407).
+ *
+ * The per-TURN budget (3, src/web-search-tool.js) is per `runAgentTask` call, and a scoped
+ * job calls that once PER ISSUE — so a 100-issue sweep could make 300 searches and nothing
+ * in the product said otherwise. A run is the unit an operator configures and reads about,
+ * so the run is where the ceiling belongs. Ten leaves a scoped job room to check a claim
+ * on a handful of issues and stops the sweep that searches on every one of them.
+ */
+export const WEB_SEARCH_MAX_PER_RUN = 10;
+
+/**
+ * WEB SEARCHES THE WHOLE INSTALLATION MAY MAKE IN ONE 5-MINUTE BUCKET (F-407).
+ *
+ * Same mechanism and same 5-minute bucket as AGENT_RUN_BRAKE_MAX_PER_BUCKET, for the same
+ * reason: the per-run ceiling is per RUN, and forty rules each behaving is only visible at
+ * the installation. Set above the agent-run brake's own reach for ordinary traffic (most
+ * agent runs search zero times) so that this trips on a genuine storm rather than on a
+ * busy afternoon, and it is a hosted third-party service being spent, not just tokens.
+ */
+export const WEB_SEARCH_BRAKE_MAX_PER_BUCKET = 300;
+
 /** The refusal sentence for each brake. ONE home: the log, the job row and the REST answer share it. */
 export const brakeRefusalText = (kind, max) => {
   if (kind === "job-writes") return `Write brake: this run reached its limit of ${max} change${max === 1 ? "" : "s"}. The remaining work was not done. Raise the job's "maximum writes per run", narrow its scope JQL, or split it into several jobs.`;
   if (kind === "agent-runs") return `Agent brake: this installation started more than ${max} AI agent runs in 5 minutes, so this run was skipped. Something is firing far more often than intended — check the listeners and jobs that ran in the last few minutes.`;
+  if (kind === "web-searches-run") return `Search brake: this run has already made ${max} web searches. Work with what those returned, or say plainly that you could not check.`;
+  if (kind === "web-searches") return `Search brake: this installation made more than ${max} web searches in 5 minutes, so this one was refused. Something is searching far more often than intended — check the listeners and jobs that ran in the last few minutes.`;
   return "Run brake tripped.";
 };

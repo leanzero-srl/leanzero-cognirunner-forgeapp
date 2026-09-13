@@ -26,7 +26,7 @@ export async function load(url,ctx,next) {
   return next(url,ctx);
 }`));
 const { normalizeJob, runJob, MAX_SCOPE_ISSUES } = await import("../../src/scheduled-jobs.js");
-const { JOB_DEFAULT_MAX_WRITES_PER_RUN, AGENT_RUN_BRAKE_MAX_PER_BUCKET } = await import("../../src/shared/registry-limits.js");
+const { JOB_DEFAULT_MAX_WRITES_PER_RUN, AGENT_RUN_BRAKE_MAX_PER_BUCKET, brakeRefusalText } = await import("../../src/shared/registry-limits.js");
 const { BRAKE_BUCKET_MS } = await import("../../src/listeners.js");
 
 let pass = 0; let fail = 0;
@@ -166,6 +166,131 @@ const jobWith = (over) => normalizeJob({ name: "Sweep", schedule: { cron: "0 9 *
   const open = createAgentActionDispatcher({ issueKey: "LZPT-1", session: { createApi: () => api2, changes: changes2 }, allowed: ["add_comment"], m, maxWrites: null });
   for (let i = 0; i < 20; i++) await open("add_comment", { text: "x" });
   ok(changes2.length === 20, "maxWrites null = no brake at all (the listener path, unchanged)");
+}
+
+/* ============ the write brake counts GIT writes too (F-403) ============
+
+A commit, a branch and a pull request are writes to somebody's repository, but they are
+made by an executor that cannot reach `session.changes` — so the brake, which counts
+exactly that array, saw none of them. An agent could open forty pull requests under
+maxWritesPerRun: 2 and the run's own change ledger showed nothing at all. */
+
+{
+  const { createAgentActionDispatcher } = await import("../../src/agent-runner.js");
+  const { createSandboxSession } = await import("../../src/index.js");
+  // The REAL session, because `recordChange` is the thing under test and a hand-rolled
+  // stub would prove only that the test author agrees with the test author.
+  const session = createSandboxSession({ issueKey: "LZPT-1", config: {} });
+  let calls = 0;
+  const gitExecutor = {
+    namespace: "git",
+    execute: async (name, args) => { calls++; return { success: true, action: name, repo: args.repo, branch: args.branch, number: 7, url: "https://example.com/pr/7" }; },
+  };
+  const m = { extractTextFromADF: (v) => String(v || "") };
+  const dispatch = createAgentActionDispatcher({
+    issueKey: "LZPT-1", session, executors: { git: gitExecutor }, m, maxWrites: 2,
+    allowed: ["commit_files", "open_pull_request", "get_pull_request"],
+  });
+
+  const one = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [{ path: "a", content: "b" }] });
+  ok(one.success === true && calls === 1, "ALLOW: the first git write goes through");
+  ok(session.changes.length === 1, "…and LANDS ON THE LEDGER — this is the whole of F-403");
+  ok(session.changes[0].namespace === "git" && session.changes[0].action === "commit_files", "…naming the namespace and the action");
+  ok(session.changes[0].repo === "acme/app" && session.changes[0].branch === "main", "…and enough of the target to read the row");
+
+  await dispatch("open_pull_request", { repo: "acme/app", branch: "feat" });
+  ok(session.changes.length === 2 && calls === 2, "ALLOW: the second git write fills the allowance");
+
+  const third = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [{ path: "c", content: "d" }] });
+  ok(third.success === false && third.code === "write_brake", "BLOCK: the THIRD git write is refused by the same brake Jira writes obey");
+  ok(calls === 2, "…and the executor was never called, so nothing reached the repository");
+  ok(/already made 2 changes, which is its limit of 2/.test(third.error), "…with the one sentence, from the one home");
+
+  // A git READ is not a write and is never braked — a braked agent must still see enough
+  // to finish honestly.
+  const read = await dispatch("get_pull_request", { repo: "acme/app", number: 7 });
+  ok(read.success === true && session.changes.length === 2, "a git READ is not braked and does not touch the ledger");
+}
+{
+  // A FAILED git write records nothing: a brake that counts refusals brakes the wrong run,
+  // and a ledger that lists writes that never happened lies to the operator.
+  const { createAgentActionDispatcher } = await import("../../src/agent-runner.js");
+  const { createSandboxSession } = await import("../../src/index.js");
+  const session = createSandboxSession({ issueKey: "LZPT-1", config: {} });
+  const dispatch = createAgentActionDispatcher({
+    issueKey: "LZPT-1", session, m: {}, maxWrites: 5, allowed: ["commit_files"],
+    executors: { git: { namespace: "git", execute: async () => ({ success: false, code: "not_allowed", error: "no" }) } },
+  });
+  const r = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [] });
+  ok(r.success === false && session.changes.length === 0, "a REFUSED git write is not counted as a change");
+}
+{
+  // SIMULATION still counts: a simulated run's job is to show what WOULD happen, and a
+  // simulated run that ignores the brake shows a plan the real run could never execute.
+  const { createAgentActionDispatcher } = await import("../../src/agent-runner.js");
+  const { createSandboxSession } = await import("../../src/index.js");
+  const session = createSandboxSession({ issueKey: "LZPT-1", config: { simulationMode: true } });
+  const dispatch = createAgentActionDispatcher({
+    issueKey: "LZPT-1", session, m: {}, maxWrites: 1, allowed: ["commit_files"],
+    executors: { git: { namespace: "git", execute: async () => ({ success: true, simulated: true, repo: "acme/app" }) } },
+  });
+  await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [] });
+  ok(session.changes.length === 1 && session.changes[0].simulated === true, "a SIMULATED git write is recorded, and says it was simulated");
+  const second = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [] });
+  ok(second.code === "write_brake", "…and it spends the allowance, so a dry run shows the brake the real run would hit");
+}
+
+/* ============ STEP-mode jobs are braked too, and "braked" means STOPPED (F-402) ============ */
+
+{
+  // The cap reached the agent dispatcher and the between-issue check and nothing else, so
+  // one step-mode issue could write a thousand times with the job's own limit set to two.
+  const { createSandboxSession } = await import("../../src/index.js");
+  jira.__reset();
+  jira.__respond(() => jira.__response(204, {}));
+  const session = createSandboxSession({ issueKey: "LZPT-1", config: {}, maxWrites: 2 });
+  const api = session.createApi();
+  await api.addComment("one");
+  await api.addComment("two");
+  ok(session.changes.length === 2, "ALLOW: the sandbox makes its two writes");
+  let refused = null;
+  try { await api.addComment("three"); } catch (e) { refused = e; }
+  ok(session.changes.length === 2, "BLOCK: the THIRD sandbox write never lands on the ledger");
+  ok(session.executionLogs.some((l) => /WRITE BRAKE/.test(l)), "…and the run log says why, in the operator's words");
+  ok(session.executionLogs.some((l) => /remaining work was not done|maximum writes per run/i.test(l)), "…with the sentence from the ONE home");
+
+  // A READ is never braked — a braked run must still be able to report what it found.
+  jira.__respond(() => jira.__response(200, { key: "LZPT-1", fields: { summary: "s" } }));
+  const read = await api.getIssue("LZPT-1");
+  ok(read && read.key === "LZPT-1", "reads keep working past the write brake");
+
+  // No cap = the behaviour every existing surface has (a post-function, a listener).
+  jira.__respond(() => jira.__response(204, {}));
+  const open = createSandboxSession({ issueKey: "LZPT-1", config: {} });
+  const openApi = open.createApi();
+  for (let i = 0; i < 12; i++) await openApi.addComment("x");
+  ok(open.changes.length === 12, "maxWrites null = no brake at all (post-functions and listeners, unchanged)");
+}
+
+{
+  // "BRAKED" MUST MEAN STOPPED. A run that made exactly its allowance and had nothing left
+  // to do was stamped braked, telling the operator "the remaining work was not done" about
+  // a run where none remained.
+  storage.__reset(); jira.__reset();
+  globalThis.__brakeAgent = async () => ({ success: true, outcome: "done", summary: "s", rounds: 1, toolCalls: [], changes: [{ action: "addComment" }, { action: "addComment" }], logs: [], tokens: 0, aiTimeMs: 0 });
+  scopeOf(1);
+  const out = await runJob({ job: jobWith({ maxWritesPerRun: 2, scope: { jql: "project = LZPT", maxIssues: 1 } }), manual: true });
+  ok(out.brake === undefined, "a run that SPENT its allowance with nothing left is NOT reported as braked");
+  ok(out.success === true && !/BRAKED/.test(out.log.reason), "…and its log does not claim work was left undone");
+  ok(out.log.recommendation !== brakeRefusalText("job-writes", 2), "…nor tell the operator to raise a limit that stopped nothing");
+}
+{
+  // …and the run that really IS stopped still says so, with the issues it never reached.
+  storage.__reset(); jira.__reset(); oneWriteAgent();
+  scopeOf(4);
+  const out = await runJob({ job: jobWith({ maxWritesPerRun: 2, scope: { jql: "project = LZPT", maxIssues: 4 } }), manual: true });
+  ok(out.brake && out.brake.kind === "job-writes", "a run that was actually STOPPED is still stamped");
+  ok(out.issues.filter((i) => i.reason === "not processed (write brake)").length === 2, "…and names the issues it never reached");
 }
 
 console.log(`job-brakes: ${pass} passed, ${fail} failed`);

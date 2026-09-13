@@ -33,7 +33,8 @@
  *     and never leaves the instance. The refusal names the KIND ("an issue key"), never
  *     the value — a refusal that echoes the identifier has leaked it into the model's
  *     transcript, the execution log and the operator's screen, which is the whole thing
- *     we were preventing.
+ *     we were preventing. The ISSUE-KEY half is decided by the TENANT'S REAL PROJECT
+ *     KEYS, read once per 30 s (F-395) — see findIdentifierLeak.
  *  2. REDUCTION. At most TOP_RESULTS rows survive, each trimmed to an ALLOW-LIST of
  *     fields, each snippet cut to SNIPPET_MAX_CHARS. The search engine's payload is not
  *     a shape we control and must never be forwarded verbatim into a context window.
@@ -43,14 +44,26 @@
  *  4. THE READING RULE travels WITH the result (RESULT_RULE), not only in the system
  *     prompt, because by round four the system prompt is far away and the tool message
  *     is right there.
- *  5. BUDGET. SEARCHES_PER_TURN per run, counted by the counter the caller creates; past
- *     it the tool refuses with a NAMED reason instead of silently returning nothing.
+ *  5. BUDGETS, three of them, each refusing with a NAMED reason instead of silently
+ *     returning nothing: SEARCHES_PER_TURN per agent turn, WEB_SEARCH_MAX_PER_RUN per JOB
+ *     OR LISTENER RUN (F-407 — a scoped job runs one turn per issue, so the turn budget
+ *     alone let a 100-issue sweep search 300 times), and a tenant-wide 5-minute brake that
+ *     counts every search the installation makes.
  *  6. The MCP toggle is the ONE gate (see AGENT_ACTION_NAMESPACES.web). It is a LIVE
  *     tenant setting, so it is checked HERE, at run time — a rule saved while web search
  *     was on stays saved when an admin turns it off; its web_search calls just refuse.
  */
 
 import { defangFence } from "./memories.js";
+import { WEB_SEARCH_MAX_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
+// THE LEAK TABLE IS NOT OURS (F-419): it lives in src/shared/identifier-leak.js so that the
+// knowledge bake scans for the same identifiers this does. Re-exported here because the
+// agent-side callers and the suite have always reached for it through this module.
+import { findIdentifierLeak } from "./shared/identifier-leak.js";
+export {
+  IDENTIFIER_PATTERNS, IDENTIFIER_KINDS, NON_KEY_PREFIXES, PROJECT_KEY_CAP,
+  normalizeProjectKeys, matchesTenantIssueKey, findIdentifierLeak, createProjectKeysMemo,
+} from "./shared/identifier-leak.js";
 
 const idx = () => import("./index.js");
 
@@ -77,67 +90,6 @@ export const RESULT_RULE =
  */
 export const WEB_SEARCH_SYSTEM_RULE =
   "A version, behaviour or limitation claim that matters must come from a read (Jira, Confluence, a page you fetched), never from memory; when you could not check, say so.";
-
-/**
- * THE ONE REGEX TABLE. Each row is { id, kind, re } where `kind` is the sentence
- * fragment the refusal uses — the refusal says the KIND and never the VALUE.
- *
- * Order matters only for which kind is REPORTED first; every row is evaluated against
- * the raw query, so a query with two kinds is refused for the first one listed.
- */
-export const IDENTIFIER_PATTERNS = Object.freeze([
-  // Atlassian account id: the `712020:` (or any numeric realm) prefix followed by hex.
-  { id: "accountId", kind: "an Atlassian account id", re: /\b\d{6}:[0-9a-fA-F]{8}/ },
-  // Any Atlassian Cloud site host — naming the tenant is naming the customer.
-  { id: "atlassianHost", kind: "an Atlassian site address", re: /\b[A-Za-z0-9][A-Za-z0-9-]*\.atlassian\.net\b/ },
-  { id: "email", kind: "an e-mail address", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/ },
-  { id: "uuid", kind: "a UUID", re: /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/ },
-  // Jira issue key. See NON_KEY_PREFIXES below for why this one needs a deny-list.
-  { id: "issueKey", kind: "a Jira issue key", re: /\b[A-Z][A-Z0-9_]{1,9}-\d{1,6}\b/ },
-]);
-
-/**
- * A Jira issue key and a public standard reference are the SAME SHAPE: `UTF-8`,
- * `CVE-2024`, `RFC-7231`, `ISO-8601` and `PROJ-123` cannot be told apart by a regex.
- *
- * Which way to be wrong is a product decision, and this is it: refusing "what changed in
- * UTF-8" is a useless agent, while sending "PROJ-123" to a search engine is a leak. So
- * the key pattern keeps its breadth and this SMALL, EXPLICIT deny-list of well-known
- * public prefixes is subtracted from it. A prefix belongs here only if it is a public
- * standard or format that nobody would use as a Jira project key. When in doubt, leave
- * it OUT — the cost of an extra refusal is a sentence to the operator, and the cost of
- * an extra allowance is an identifier on somebody else's server.
- */
-export const NON_KEY_PREFIXES = Object.freeze(new Set([
-  "UTF", "ISO", "RFC", "CVE", "CWE", "HTTP", "HTTPS", "TLS", "SSL", "SHA", "MD", "AES", "RSA",
-  "IPV", "IPV4", "IPV6", "PEP", "JSR", "JDK", "JEP", "ES", "ECMA", "CSS", "HTML", "SQL", "ADF",
-  "PDF", "GPT", "LTS", "API", "AWS", "GCP", "OWASP", "NIST", "GDPR", "WCAG", "ARIA", "USB",
-  "PCI", "DSS", "SOC", "PY", "NODE", "PHP", "CVSS", "SPDX", "PNG", "JPEG", "WEBP", "SVG",
-]));
-
-/**
- * Refusal check. Returns `null` when the query is clean, or
- * `{ id, kind, message }` when it is not. NEVER returns the offending text.
- */
-export const findIdentifierLeak = (query) => {
-  const q = String(query == null ? "" : query);
-  for (const row of IDENTIFIER_PATTERNS) {
-    const m = q.match(row.re);
-    if (!m) continue;
-    if (row.id === "issueKey") {
-      // Subtract the public-standard shapes. `m[0]` is examined here and DISCARDED —
-      // it is never put into the refusal, the log or the tool result.
-      const prefix = String(m[0]).split("-")[0].toUpperCase();
-      if (NON_KEY_PREFIXES.has(prefix)) continue;
-    }
-    return {
-      id: row.id,
-      kind: row.kind,
-      message: `Refused: the query contains ${row.kind} from this Jira instance. Nothing was sent to the search engine. Search for the PUBLIC subject only — describe the product, the version, the API or the error text in general terms, with no identifier from this site in it.`,
-    };
-  }
-  return null;
-};
 
 /** Recency → the search MCP's `tbs`-style hint. Unknown values mean "any". */
 const RECENCY = { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" };
@@ -208,13 +160,38 @@ export const cacheFieldsOf = (envelope) => {
 export const createSearchBudget = (max = SEARCHES_PER_TURN) => ({ used: 0, max: Math.max(0, Number(max) || 0) });
 
 /**
+ * THE PER-RUN CEILING (F-407). The counter above is per `runAgentTask` call — and a scoped
+ * job calls that once PER ISSUE, so a 100-issue sweep could make 300 searches while every
+ * individual turn stayed politely inside its three. A RUN is what an operator schedules
+ * and reads a log row about, so a run gets one of these, created by the job or the listener
+ * and carried into every turn of that run.
+ *
+ * Deliberately the same shape as the turn budget: the executor checks both and names which
+ * one it hit, because "this turn has searched enough" and "this run has searched enough"
+ * are different things to tell an operator.
+ */
+export const createRunSearchBudget = (max = WEB_SEARCH_MAX_PER_RUN) => ({ used: 0, max: Math.max(0, Number(max) || 0) });
+
+/**
  * Build the `web` namespace executor for ONE agent run.
  *
  * `budget` is the shared counter above. `log` is the run's execution log — every refusal
  * is logged, because a tool that quietly returns nothing is indistinguishable from a
  * broken one, and an operator who cannot see the refusal cannot fix the query.
+ *
+ * `runBudget` (F-407) is the RUN's ceiling, shared by every turn of one job or listener
+ * run; omitted, only the per-turn budget applies (a caller that has no run to speak of).
+ *
+ * `deps` are the seams to the instance — each an async function, each defaulting to the
+ * real thing in src/index.js / src/listeners.js. They are seams rather than direct imports
+ * so that the parts of this module that must never regress — the leak rule and the three
+ * budgets — stay assertable with no Forge runtime at all:
+ *   projectKeys     () => { ok, keys }  the tenant's real project keys       (F-395)
+ *   mcpEnabled      () => boolean       the live web-search MCP toggle
+ *   webSearchBrake  () => { braked, max, reason }  the tenant 5-minute brake (F-407)
+ *   callBridgeTool  (mcp, tool, args) => string    the hosted MCP call
  */
-export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = () => {}, deadline = null } = {}) => ({
+export const createWebSearchExecutor = ({ budget = createSearchBudget(), runBudget = null, log = () => {}, deadline = null, deps = {} } = {}) => ({
   namespace: "web",
   budget,
   execute: async (name, args) => {
@@ -224,25 +201,68 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
 
     // (1) THE LEAK CHECK RUNS FIRST — before the MCP lookup, before the budget, before
     // anything that could be mistaken for "the request already started".
-    const leak = findIdentifierLeak(query);
+    //
+    // The tenant's project keys decide the issue-key half (F-395). The read is memoised
+    // for 30 s in src/index.js, so this costs one REST call per container per half-minute,
+    // not one per search. If it fails or throws, `ok:false` makes the check fall back to
+    // the SHAPE rule, which REFUSES — a site we could not describe is not a site we guess
+    // about.
+    let projectKeys = { ok: false, keys: [] };
+    try {
+      const read = typeof deps.projectKeys === "function"
+        ? deps.projectKeys
+        : async () => (await idx()).getTenantProjectKeys();
+      const r = await read();
+      if (r && r.ok === true && Array.isArray(r.keys)) projectKeys = r;
+    } catch { projectKeys = { ok: false, keys: [] }; }
+    const leak = findIdentifierLeak(query, { projectKeys });
     if (leak) {
       log(`web_search REFUSED — the query contained ${leak.kind} (the value is not recorded).`);
       return { success: false, code: `identifier_leak:${leak.id}`, error: leak.message, rule: RESULT_RULE };
     }
 
     if (budget.used >= budget.max) {
-      const error = `Refused: this run's web-search budget is spent (${budget.max} search${budget.max === 1 ? "" : "es"} per run). Work with what the previous searches returned, or say plainly that you could not check.`;
-      log(`web_search REFUSED — budget spent (${budget.used}/${budget.max}).`);
+      const error = `Refused: this turn's web-search budget is spent (${budget.max} search${budget.max === 1 ? "" : "es"} per turn). Work with what the previous searches returned, or say plainly that you could not check.`;
+      log(`web_search REFUSED — turn budget spent (${budget.used}/${budget.max}).`);
       return { success: false, code: "budget_spent", error, rule: RESULT_RULE };
     }
 
-    const m = await idx();
-    if (typeof m.mcpEnabled !== "function" || !(await m.mcpEnabled("webSearch"))) {
+    // (2b) THE RUN CEILING (F-407). Named separately from the turn budget: an operator
+    // reading "this run has searched ten times" knows to narrow the scope, and one reading
+    // "this turn has searched three times" knows the agent is looping.
+    if (runBudget && runBudget.used >= runBudget.max) {
+      const error = `Refused: ${brakeRefusalText("web-searches-run", runBudget.max)}`;
+      log(`web_search REFUSED — the RUN's search ceiling is spent (${runBudget.used}/${runBudget.max}).`);
+      return { success: false, code: "run_budget_spent", brake: { kind: "web-searches-run", max: runBudget.max, reason: error }, error, rule: RESULT_RULE };
+    }
+
+    const enabledRead = typeof deps.mcpEnabled === "function"
+      ? deps.mcpEnabled
+      : async () => { const m0 = await idx(); return typeof m0.mcpEnabled === "function" && (await m0.mcpEnabled("webSearch")); };
+    if (!(await enabledRead())) {
       log("web_search REFUSED — the web-search MCP is switched off for this instance.");
       return { success: false, code: "mcp_off", error: "Refused: web search is not enabled on this instance (an admin turns it on in CogniRunner Settings → MCP). Say plainly that you could not check.", rule: RESULT_RULE };
     }
 
+    // (2c) THE TENANT-WIDE SEARCH BRAKE (F-407), taken LAST — after the leak check, both
+    // budgets and the MCP toggle — so that a refused query never spends the installation's
+    // allowance. Same 5-minute bucket mechanism as the agent-run brake, from its one home
+    // in src/listeners.js; a seam, like the project-key read, so this module stays testable
+    // with no Forge runtime. A brake that cannot be read does NOT refuse: the two budgets
+    // above are already hard ceilings, and a KVS hiccup must not silence every agent.
+    try {
+      const take = typeof deps.webSearchBrake === "function"
+        ? deps.webSearchBrake
+        : async () => (await import("./listeners.js")).takeWebSearchSlot();
+      const slot = await take();
+      if (slot && slot.braked) {
+        log(`web_search REFUSED — the installation's 5-minute search brake is tripped (${slot.max}).`);
+        return { success: false, code: "brake:web-searches", brake: { kind: "web-searches", max: slot.max, reason: slot.reason }, error: `Refused: ${slot.reason}`, rule: RESULT_RULE };
+      }
+    } catch { /* the brake could not be read — see above */ }
+
     budget.used++;
+    if (runBudget) runBudget.used++;
     const params = { query };
     const tbs = RECENCY[String((args && args.recency) || "any")];
     if (tbs) params.tbs = tbs;
@@ -252,8 +272,11 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
     let text;
     try {
       const TIMED_OUT = Symbol("web-search-timeout");
+      const call = typeof deps.callBridgeTool === "function"
+        ? deps.callBridgeTool
+        : async (...a) => (await idx()).callBridgeTool(...a);
       const raced = await Promise.race([
-        m.callBridgeTool("webSearch", "get-web-search-summaries", params),
+        call("webSearch", "get-web-search-summaries", params),
         new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), waitMs)),
       ]);
       if (raced === TIMED_OUT) {
@@ -280,7 +303,7 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
     const { rows, raw, envelope } = parseSearchPayload(text);
     const results = reduceResults(rows);
     const cache = cacheFieldsOf(envelope);
-    log(`web_search "${query.slice(0, 120)}" → ${results.length} result(s)${cache.cached ? " (cached)" : ""} [${budget.used}/${budget.max}]`);
+    log(`web_search "${query.slice(0, 120)}" → ${results.length} result(s)${cache.cached ? " (cached)" : ""} [turn ${budget.used}/${budget.max}${runBudget ? `, run ${runBudget.used}/${runBudget.max}` : ""}]`);
 
     if (!results.length) {
       return {
@@ -302,7 +325,7 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
       ...cache,
       rule: RESULT_RULE,
       results: `<<<WEB_RESULTS\n${fenced}\nWEB_RESULTS>>>`,
-      searchesLeft: Math.max(0, budget.max - budget.used),
+      searchesLeft: Math.max(0, Math.min(budget.max - budget.used, runBudget ? runBudget.max - runBudget.used : Infinity)),
     };
   },
 });

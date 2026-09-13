@@ -39,6 +39,7 @@ import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep, armingStamp, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
+import { createRunSearchBudget } from "./web-search-tool.js";
 import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_MIN_WRITES_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -366,6 +367,10 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   // session counts its own (`session.changes`, the one write ledger); this carries the
   // allowance forward, so the brake is a RUN budget and not a per-issue one.
   let writesDone = 0;
+  // THE RUN'S WEB-SEARCH CEILING (F-407), created ONCE and shared by every scope issue —
+  // the same reason `writesDone` is carried across issues rather than reset per issue. A
+  // per-issue counter is not a run budget, and a 100-issue sweep proved it.
+  const webRunBudget = createRunSearchBudget();
   const runOne = async (issue, perDeadline) => {
     const issueKey = issue ? issue.key : null;
     const extraContext = { ...baseCtx, issueKey, projectKey: issue && issue.fields && issue.fields.project ? issue.fields.project.key : null, scopeIssue: issue ? { key: issue.key, summary: issue.fields && issue.fields.summary, status: issue.fields && issue.fields.status && issue.fields.status.name } : null };
@@ -384,14 +389,26 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       // scoped job walks issues from different projects. The skills half is identical
       // across them; paying one extra KVS read per issue is the cost of not injecting
       // project A's learned facts while acting on project B's issue.
-      const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun" });
+      // Same as the listener run site (F-405): the "skill too large, not injected" notice
+      // had no caller passing a log, so it was never written anywhere at all.
+      const knowledgeNotices = [];
+      const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun", log: (line) => knowledgeNotices.push(String(line)) });
       // The allowance the agent gets is what is LEFT of the run's budget.
-      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone) });
-      if ((r.changes || []).length && writesDone + r.changes.length >= maxWrites) brake = brake || { kind: "job-writes", max: maxWrites, reason: brakeRefusalText("job-writes", maxWrites) };
-      return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
+      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone), webRunBudget });
+      // NO STAMP HERE (F-402). Reaching the limit is not the same as being STOPPED by it:
+      // a run that made exactly its allowance and had nothing left to do was reported as
+      // braked, with "the remaining work was not done" on a run where none remained. The
+      // brake is stamped where work is actually SKIPPED — the between-issue check below,
+      // and the dispatcher's own refusal — so the word means what it says.
+      return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: [...knowledgeNotices, ...(r.logs || [])], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
     }
-    const r = await m.runSandboxSteps({ issueKey, config, deadline: perDeadline, cancelToken, extraContext });
-    if ((r.changes || []).length && writesDone + r.changes.length >= maxWrites) brake = brake || { kind: "job-writes", max: maxWrites, reason: brakeRefusalText("job-writes", maxWrites) };
+    // STEP MODE IS BRAKED TOO (F-402). The cap used to reach the agent dispatcher and the
+    // between-issue check and nothing else, so one step-mode issue could write a thousand
+    // times while the job's own "maximum writes per run" said nothing. The sandbox enforces
+    // it at its write boundary, counting the SAME `changes` ledger the agent brake counts —
+    // one number for both modes, and what is left of the run's budget, not a fresh one per
+    // issue.
+    const r = await m.runSandboxSteps({ issueKey, config, deadline: perDeadline, cancelToken, extraContext, maxWrites: Math.max(0, maxWrites - writesDone) });
     return { issueKey, success: r.success, reason: r.success ? `${r.stepsTotal} step(s), ${r.changes.length} change(s)` : `step "${r.failedStep}" failed: ${(r.stepResults.find((s) => s.status === "error") || {}).error || "see logs"}`, recommendation: r.recommendation, changes: r.changes || [], logs: r.logs || [], stepResults: r.stepResults };
   };
 

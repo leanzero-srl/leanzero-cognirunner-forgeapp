@@ -98,22 +98,22 @@ export const FIELD_GUIDE_GUARD_SENTENCE =
 export const PINNED_BUDGET_SHARE = 0.4;
 
 /**
- * Sections pinned per audience — the FALLBACK map, for a runtime that has registered no
- * baked pins (and for tests, which pass `pins` explicitly). The pins that ship are declared
- * in knowledge/sources.json next to the corpus and emitted by the bake.
+ * THE PINS ARE REGISTERED, NOT DECLARED HERE (F-429).
  *
- * Kept deliberately short. A pin is a claim that a section beats anything the scorer could
- * find, and a pin that names no baked section contributes nothing at all.
+ * Pinning used to have two homes: `knowledge/sources.json` declared `packs[].pinned`, the
+ * bake copied it into the index and rendered it in knowledge/MANIFEST.md — the artefact a
+ * human reads before committing packs — and this module pinned from a hardcoded map that
+ * disagreed with it. The MANIFEST described a selector that did not exist.
+ *
+ * One home: sources.json declares `pinned` (section pins) and `pinnedFor` (the audiences
+ * they are pinned for) next to the corpus; the bake validates every pin against the
+ * sections it actually baked and emits `KNOWLEDGE_PINS` into the generated index; the
+ * backend registers that map here beside the sections. The MANIFEST renders the SAME map.
+ *
+ * Still no static import of the generated index — same rule as the sections (see the file
+ * header). An unregistered pin map is a supported state: nothing is pinned and the scorer
+ * decides everything, which is a degraded prompt, never a broken one.
  */
-export const AUDIENCE_PINS = Object.freeze({
-  codegen: Object.freeze([]),
-  fix: Object.freeze([]),
-  coder: Object.freeze(["forge-app-builder#core-concepts"]),
-  va: Object.freeze([]),
-  agent: Object.freeze([]),
-  validator: Object.freeze([]),
-  review: Object.freeze([]),
-});
 
 /**
  * Parse one pin into a matcher, or null when it is not a pin at all.
@@ -136,10 +136,10 @@ export const sectionSlug = (id) => {
   return last.replace(/-\d+$/, "").toLowerCase();
 };
 
-/** The pin list for one audience. ONE lookup, so the fallback lives in one place. */
+/** The pin list for one audience, from the registered map. ONE lookup, one home. */
 export const pinsForAudience = (audience) => {
-  const list = AUDIENCE_PINS[audience];
-  return Array.isArray(list) ? list : [];
+  const list = REGISTERED_PINS[audience];
+  return Array.isArray(list) ? list.slice() : [];
 };
 
 /** Does one parsed pin claim this section? */
@@ -174,6 +174,7 @@ export const STOPWORDS = Object.freeze(new Set([
  * ------------------------------------------------------------------ */
 
 let REGISTERED = [];
+let REGISTERED_PINS = {};
 
 /**
  * Register baked sections (normally every pack the backend wants, once at module load).
@@ -185,8 +186,32 @@ export const registerKnowledgeSections = (sections) => {
   return REGISTERED.length;
 };
 
-/** Drop everything. Exists for tests and for a tenant that switches all packs off. */
-export const clearKnowledgeSections = () => { REGISTERED = []; return 0; };
+/**
+ * Register the baked pin map — `{ audience: ["pack#section-slug", ...] }`, as emitted by
+ * the bake from knowledge/sources.json. Replaces rather than merges: two registrations
+ * that merged would make a removed pin impossible to remove.
+ */
+export const registerKnowledgePins = (pins) => {
+  const out = {};
+  if (pins && typeof pins === "object") {
+    for (const [audience, list] of Object.entries(pins)) {
+      if (!Array.isArray(list)) continue;
+      const clean = list.map((p) => String(p || "").trim()).filter((p) => p && parsePin(p));
+      if (clean.length) out[audience] = clean;
+    }
+  }
+  REGISTERED_PINS = out;
+  return Object.values(out).reduce((n, l) => n + l.length, 0);
+};
+
+/** What pin map is currently registered. A copy. */
+export const getKnowledgePins = () => JSON.parse(JSON.stringify(REGISTERED_PINS));
+
+/**
+ * Drop everything — sections AND pins. Exists for tests and for a tenant that switches all
+ * packs off. Pins without their sections would be claims about a corpus that is not there.
+ */
+export const clearKnowledgeSections = () => { REGISTERED = []; REGISTERED_PINS = {}; return 0; };
 
 /** What is currently registered. A copy — the registry is not a mutable handle. */
 export const getKnowledgeSections = () => REGISTERED.slice();
@@ -296,8 +321,8 @@ const matchesAudience = (section, audience) => {
  * pin the share could not pay for — until the byte budget. The budget comes from
  * `registry-limits.js` — ONE home for the numbers — and an explicit `maxBytes` may only
  * ever LOWER it; a caller cannot talk its way past the audience's ceiling, which is the
- * whole point of having one. `pins` may be passed explicitly; otherwise the registered
- * baked pins are used, falling back to AUDIENCE_PINS.
+ * whole point of having one. `pins` may be passed explicitly; otherwise the pins the bake
+ * emitted and the backend registered are used (none, until a pin map is registered).
  *
  * Returns `{ sections, sectionIds, bytes, pinnedBytes, budget, audience, skipped }`.
  * `skipped` counts

@@ -60,6 +60,10 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runGuardFixtures, loadDenylist, scanText, formatFindings } from "./leak-scan.mjs";
+// The SELECTOR's own pin parser and matcher (F-429). The bake must decide "does this pin
+// match anything?" with the same code the runtime uses, or the MANIFEST goes back to
+// describing a selector that does not exist.
+import { parsePin, pinMatchesSection } from "../src/shared/knowledge-select.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const P = {
@@ -346,12 +350,19 @@ export const SECTIONS = ${JSON.stringify(sections, null, 2)};
 export default SECTIONS;
 `;
 
-const emitIndex = (sections, packs, contentVersion) =>
+const emitIndex = (sections, packs, contentVersion, pins = {}) =>
   `${GENERATED_HEADER("The knowledge INDEX: titles, tags, audiences and provenance — no bodies.\n *\n * This is the module the UI bundles import. Bodies live in the packs and are only ever\n * loaded by the backend, so a Knowledge tab costs kilobytes rather than megabytes.")}
 /** Content fingerprint of the baked corpus. Changes whenever any section changes. */
 export const KNOWLEDGE_CONTENT_VERSION = ${JSON.stringify(contentVersion)};
 
 export const KNOWLEDGE_PACKS = ${JSON.stringify(packs, null, 2)};
+
+/**
+ * The PINS the selector reads — audience -> section pins, from knowledge/sources.json
+ * (\`packs[].pinned\` + \`packs[].pinnedFor\`). ONE home: the backend registers this map
+ * with \`registerKnowledgePins\` and knowledge/MANIFEST.md renders the same object.
+ */
+export const KNOWLEDGE_PINS = ${JSON.stringify(pins, null, 2)};
 
 export const KNOWLEDGE_INDEX = ${JSON.stringify(sections.map((s) => ({
     id: s.id, pack: s.pack, title: s.title, tags: s.tags, audience: s.audience,
@@ -364,6 +375,48 @@ export default KNOWLEDGE_INDEX;
 /* ================================================================== *
  * The run
  * ================================================================== */
+
+/**
+ * THE PIN MAP, from the allow-list (F-429). `packs[].pinned` lists SECTION pins
+ * (`pack#section-slug`, or a full section id) and `packs[].pinnedFor` lists the audiences
+ * they are pinned for. One home: this is emitted into the index the runtime registers AND
+ * rendered in the MANIFEST, so the review artefact and the selector cannot disagree.
+ *
+ * Every pin is checked against the sections that were actually baked. A pin that matches
+ * nothing is dead config — exactly the shape this finding is about — so the bake REFUSES,
+ * unless a `--tier` subset is in play, where a missing pack is expected and it is a warning.
+ */
+export const collectPins = (cfg, sections, { partial = false } = {}) => {
+  const byAudience = {};
+  const rows = [];
+  for (const [pack, meta] of Object.entries((cfg && cfg.packs) || {})) {
+    const pins = Array.isArray(meta && meta.pinned) ? meta.pinned : [];
+    if (!pins.length) continue;
+    const audiences = Array.isArray(meta.pinnedFor) ? meta.pinnedFor.filter(Boolean) : [];
+    if (!audiences.length) {
+      die(`pack "${pack}" declares pinned sections but no "pinnedFor" audiences. A pin nobody reads is dead config.`, 1);
+    }
+    for (const pin of pins) {
+      const matcher = parsePin(pin);
+      if (!matcher) {
+        die(`pack "${pack}": "${pin}" is not a section pin. A pin is "pack#section-slug" or a full section id; a bare pack id pins nothing (F-428).`, 1);
+      }
+      const hits = sections.filter((s) => pinMatchesSection(matcher, s));
+      if (!hits.length) {
+        const msg = `pack "${pack}": pin "${pin}" matches no baked section.`;
+        if (partial) console.log(`  WARNING — ${msg} (tier subset in play)`);
+        else die(`${msg} Fix knowledge/sources.json or the corpus. NOTHING was written.`, 1);
+      }
+      rows.push({ pack, pin, audiences, sections: hits.map((h) => h.id) });
+      for (const a of audiences) {
+        if (!byAudience[a]) byAudience[a] = [];
+        if (!byAudience[a].includes(pin)) byAudience[a].push(pin);
+      }
+    }
+  }
+  for (const a of Object.keys(byAudience)) byAudience[a].sort();
+  return { byAudience, rows };
+};
 
 export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
   const { denylist } = runPreflight();
@@ -483,6 +536,10 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
     if (p.bytes > PACK_MAX_BYTES) die(`pack "${p.id}" is ${p.bytes} B, past the ${PACK_MAX_BYTES} B ceiling. Narrow the allow-list. NOTHING was written.`, 1);
   }
 
+  // The pin map, validated against what was actually baked. Before the emit, because a pin
+  // that matches nothing must stop the bake rather than ship.
+  const pins = collectPins(cfg, sections, { partial: !!tiers });
+
   const contentVersion = sha(sections.map((s) => `${s.id}:${sha(s.body)}`).join("\n")).slice(0, 16);
 
   /* ---- --check: the pinned hashes ------------------------------------ */
@@ -492,7 +549,7 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
       // about negatives that authorise action. 14a ships the pipeline; 14b commits the
       // packs, and from that commit on this check has something real to compare.
       console.log("bake-knowledge --check: NOT A PASS — no baked packs exist yet (14b commits them).");
-      return { sections, packSummaries, contentVersion, checked: false };
+      return { sections, packSummaries, contentVersion, pins, checked: false };
     }
     const current = readFileSync(P.index, "utf8");
     const pinned = (/KNOWLEDGE_CONTENT_VERSION = "([a-f0-9]+)"/.exec(current) || [])[1];
@@ -501,7 +558,7 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
         + "  Run `npm run bake`, review knowledge/MANIFEST.md, and commit the regenerated packs.", 1);
     }
     console.log(`bake-knowledge --check: packs are current (${contentVersion}).`);
-    return { sections, packSummaries, contentVersion, checked: true };
+    return { sections, packSummaries, contentVersion, pins, checked: true };
   }
 
   /* ---- stage 5: emit -------------------------------------------------- */
@@ -510,17 +567,17 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
     for (const [pack, list] of byPack) {
       writeFileSync(path.join(P.packs, `${pack}.js`), emitPack(pack, list));
     }
-    writeFileSync(P.index, emitIndex(sections.slice().sort((a, b) => a.id.localeCompare(b.id)), packSummaries, contentVersion));
-    writeFileSync(P.manifest, renderManifest({ cfg, docs, sections, packSummaries, contentVersion, findings }));
+    writeFileSync(P.index, emitIndex(sections.slice().sort((a, b) => a.id.localeCompare(b.id)), packSummaries, contentVersion, pins.byAudience));
+    writeFileSync(P.manifest, renderManifest({ cfg, docs, sections, packSummaries, contentVersion, findings, pins }));
   }
 
   console.log(`\nbake-knowledge: ${sections.length} sections across ${packSummaries.length} packs · content ${contentVersion}${dryRun ? " (dry run — nothing written)" : ""}`);
   for (const p of packSummaries) console.log(`  ${p.id.padEnd(30)} ${String(p.sections).padStart(4)} sections  ${(p.bytes / 1024).toFixed(1)} KB`);
-  return { sections, packSummaries, contentVersion, findings };
+  return { sections, packSummaries, contentVersion, pins, findings };
 };
 
 /** knowledge/MANIFEST.md — the artefact the owner reads BEFORE any pack is committed. */
-export const renderManifest = ({ cfg, docs, sections, packSummaries, contentVersion, findings }) => {
+export const renderManifest = ({ cfg, docs, sections, packSummaries, contentVersion, findings, pins = { byAudience: {}, rows: [] } }) => {
   const lines = [];
   lines.push("<!-- GENERATED by scripts/bake-knowledge.mjs — the human review artefact. -->");
   lines.push("");
@@ -537,6 +594,27 @@ export const renderManifest = ({ cfg, docs, sections, packSummaries, contentVers
   lines.push("| pack | sections | bytes | pinned |");
   lines.push("|---|---:|---:|---|");
   for (const p of packSummaries) lines.push(`| \`${p.id}\` | ${p.sections} | ${(p.bytes / 1024).toFixed(1)} KB | ${p.pinned.length ? p.pinned.map((x) => `\`${x}\``).join(", ") : "—"} |`);
+  lines.push("");
+  lines.push("## Pins");
+  lines.push("");
+  lines.push("What the SELECTOR reads (`KNOWLEDGE_PINS` in the generated index, registered by");
+  lines.push("the backend). A pin is a SECTION, never a pack, and pins may spend at most 40 % of");
+  lines.push("an audience's byte budget between them — the rest always answers the request.");
+  lines.push("");
+  const audiences = Object.keys(pins.byAudience || {}).sort();
+  if (!audiences.length) {
+    lines.push("No pins. Every audience's field guide is chosen entirely by the scorer.");
+  } else {
+    lines.push("| audience | pin | pack | matched sections |");
+    lines.push("|---|---|---|---|");
+    for (const a of audiences) {
+      for (const pin of pins.byAudience[a]) {
+        const row = (pins.rows || []).find((r) => r.pin === pin) || { pack: "—", sections: [] };
+        const hit = row.sections.length ? row.sections.map((x) => `\`${x}\``).join("<br>") : "**none — dead pin**";
+        lines.push(`| ${a} | \`${pin}\` | \`${row.pack}\` | ${hit} |`);
+      }
+    }
+  }
   lines.push("");
   lines.push("## Sources");
   lines.push("");

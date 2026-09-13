@@ -27,8 +27,9 @@ const limits = await import(pathToFileURL(path.join(sharedDir, "registry-limits.
 const {
   selectKnowledge, buildFieldGuideBlock, resolveFieldGuide, registerKnowledgeSections,
   clearKnowledgeSections, getKnowledgeSections, tokenize, scoreSections,
-  KNOWLEDGE_VERSION, AUDIENCE_PINS, FIELD_GUIDE_MARKER, FIELD_GUIDE_GUARD_SENTENCE, STOPWORDS,
+  KNOWLEDGE_VERSION, FIELD_GUIDE_MARKER, FIELD_GUIDE_GUARD_SENTENCE, STOPWORDS,
   PINNED_BUDGET_SHARE, parsePin, sectionSlug, pinsForAudience,
+  registerKnowledgePins, getKnowledgePins,
 } = mod;
 
 let pass = 0, fail = 0;
@@ -65,7 +66,8 @@ const corpus = [
 
 clearKnowledgeSections();
 
-/* 1. The version contract. */
+/* 1. The version contract, and the pin map's ONE home. */
+ok(mod.AUDIENCE_PINS === undefined, "AUDIENCE_PINS is gone — pins have ONE home (F-429)");
 ok(/^\d+\.\d+\.\d+$/.test(KNOWLEDGE_VERSION), `KNOWLEDGE_VERSION is a semver string (${KNOWLEDGE_VERSION})`);
 
 /* 2. EMPTY INDEX → EMPTY BLOCK. Knowledge is background: its absence degrades the prompt,
@@ -101,11 +103,25 @@ ok(parsePin("") === null && parsePin(null) === null, "an empty pin is not a pin"
 }
 ok(sectionSlug("forge-app-builder/b/manifest-skeleton-1") === "manifest-skeleton",
   "the section slug drops the chunk index");
-for (const [audience, pins] of Object.entries(AUDIENCE_PINS)) {
-  ok(pins.every((p) => parsePin(p) !== null), `${audience}: every declared pin is a real pin (not a pack id)`);
-  ok(JSON.stringify(pinsForAudience(audience)) === JSON.stringify([...pins]),
-    `${audience}: pinsForAudience returns the declared list`);
+/* 4a. THE PIN MAP IS REGISTERED, NOT HARDCODED (F-429). An app that has registered no
+      baked pins pins nothing at all — the scorer decides everything, which is a degraded
+      prompt and never a broken one. */
+ok(JSON.stringify(getKnowledgePins()) === "{}", "no pins are registered until the baked map is");
+ok(pinsForAudience("coder").length === 0, "an unregistered audience has no pins");
+ok(registerKnowledgePins({ coder: ["forge-app-builder#manifest-skeleton"], junk: ["not-a-pin"], nope: "x" }) === 1,
+  "registerKnowledgePins takes the real pins and reports how many");
+ok(JSON.stringify(pinsForAudience("coder")) === '["forge-app-builder#manifest-skeleton"]',
+  "the registered pins are what pinsForAudience answers");
+ok(JSON.stringify(getKnowledgePins().junk || []) === "[]", "a bare pack id never survives registration");
+ok(pinsForAudience("coder") !== pinsForAudience("coder"), "pinsForAudience hands out a copy");
+{
+  const picked = selectKnowledge({ audience: "coder", text: "429 rate limit backoff" });
+  ok(picked.sectionIds[0] === "forge-app-builder/b/manifest-skeleton-1",
+    `a REGISTERED pin reaches the selector (got ${picked.sectionIds[0]})`);
 }
+registerKnowledgePins({});
+ok(JSON.stringify(getKnowledgePins()) === "{}", "registering an empty map clears the pins");
+
 ok(JSON.stringify(pinsForAudience("no-such-audience")) === "[]", "an unknown audience has no pins");
 
 /* 4b. A pin IS taken first when it fits the share. */
@@ -262,8 +278,10 @@ ok(scored.length === corpus.length, "scoreSections returns one row per section")
 ok(scored.every((r) => Number.isFinite(r.score)), "every score is finite");
 ok(scored.every((r) => r.score >= 0), "no score is negative");
 
+registerKnowledgePins({ agent: ["administrator-practice#blast-radius"] });
 clearKnowledgeSections();
 ok(getKnowledgeSections().length === 0, "clearKnowledgeSections empties the registry");
+ok(JSON.stringify(getKnowledgePins()) === "{}", "clearKnowledgeSections drops the pins too");
 
 console.log(`\nknowledge-select: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -212,5 +212,72 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
     `the resume turn keeps the thread's skills (${JSON.stringify(p && p.skillIds)})`);
 }
 
+/* ===== 7. F-550 — ONE FIELD GUIDE PER THREAD, NOT PER TURN ====================
+ *
+ * `runCoderTurn` puts the knowledge messages inside the prompt prefix that
+ * src/coder-engine.js promises is byte-identical "across the turns of one thread", and
+ * the loop freezes its cache breakpoint at everything seeded on entry. The guide used to
+ * be re-scored from THIS turn's message, so turn 2's prefix diverged at message index 1
+ * and nothing of turn 1's prefix — the entire stored history included — could be a cache
+ * hit. What is proven here is the selection half: the SAME thread returns the SAME bytes
+ * no matter what the turn says, and anything new is handed back separately.
+ */
+{
+  const THREAD = "t_guide";
+  const key = coder.coderThreadKey(ISSUE, THREAD);
+  const firstTurn = { issueKey: ISSUE, threadId: THREAD, message: "add a resolver to manifest.yml", skillIds: [] };
+
+  // TURN 1 — no row yet, so the guide is chosen from this (the thread's first) message.
+  const k1 = await __coderKnowledgeInternals.buildCoderKnowledge(firstTurn);
+  ok(typeof k1.fieldGuideBlock === "string" && k1.fieldGuideBlock.includes("<<<FIELD_GUIDE"),
+    `the first turn of a thread selects a field guide (${String(k1.fieldGuideBlock || "").slice(0, 40)})`);
+  ok(Array.isArray(k1.fieldGuideSections) && k1.fieldGuideSections.length > 0,
+    "…and reports the section ids the engine pins on the thread row");
+  ok(k1.fieldGuideExtraBlock === undefined, "a first turn has nothing to ADD to a guide it just chose");
+
+  // The engine writes those ids onto the row. Stand in for it, exactly as it does.
+  await storage.set(key, {
+    issueKey: ISSUE, threadId: THREAD, ownerAccountId: OWNER, messages: [{ role: "user", content: firstTurn.message }],
+    turns: 1, fieldGuideSections: k1.fieldGuideSections,
+  });
+
+  // TURN 2 — a completely different subject. The STABLE block must not move one byte.
+  const k2 = await __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message: "now fix the ADF in the comment and the Confluence page", skillIds: [],
+  });
+  ok(k2.fieldGuideBlock === k1.fieldGuideBlock,
+    "F-550: a later turn re-emits the THREAD's guide byte-for-byte, whatever it is about");
+  ok(JSON.stringify(k2.fieldGuideSections) === JSON.stringify(k1.fieldGuideSections),
+    "…from the ids stored on the row, in the stored order");
+
+  // …and whatever the new subject wanted comes back SEPARATELY, to be placed after the
+  // prefix. It may be empty (the stable guide may already cover it); it may never be
+  // folded into the stable block, and it may never repeat a section already in it.
+  const extraIds = Array.isArray(k2.fieldGuideExtraSections) ? k2.fieldGuideExtraSections : [];
+  ok(!extraIds.some((id) => k1.fieldGuideSections.includes(id)),
+    "an added section is never one the stable block already carries");
+  if (k2.fieldGuideExtraBlock) {
+    ok(extraIds.length > 0 && !k2.fieldGuideBlock.includes(k2.fieldGuideExtraBlock),
+      "the addition is its own block, outside the stable one");
+  } else {
+    ok(extraIds.length === 0, "no addition means no ids either");
+  }
+
+  // A third turn on the same words as turn 2 is still the same stable bytes — the point
+  // is that NOTHING about a turn can move the prefix.
+  const k3 = await __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message: "", skillIds: [],
+  });
+  ok(k3.fieldGuideBlock === k1.fieldGuideBlock, "…even an empty message re-emits the thread's guide unchanged");
+
+  // A DIFFERENT thread on the same issue is free to choose differently: the guarantee is
+  // per thread, and pinning it per issue would be a different (wrong) rule.
+  const kOther = await __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: "t_guide_other", message: "write a Confluence page from this issue", skillIds: [],
+  });
+  ok(typeof kOther.fieldGuideBlock === "string" && kOther.fieldGuideBlock.length > 0,
+    "a new thread selects its own guide");
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

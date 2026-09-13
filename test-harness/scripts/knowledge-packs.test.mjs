@@ -243,6 +243,29 @@ reset();
     ok(picked.sections.length > 0, `${audience}: a broad query selects something`);
     ok(picked.sections.every((s) => !Array.isArray(s.audience) || s.audience.includes(audience)),
       `${audience}: every selected section lists this audience`);
+    // F-551 — THE BUDGET BOUNDS WHAT IS SENT, not the sum of the bodies. The block the
+    // model receives carries the fence, the guard sentence and a `### <title>` per
+    // section; measuring only the bodies shipped every audience OVER its cap (validator
+    // 6144 -> 6393). Asserted on the SHIPPED corpus, because that is the one that pays.
+    const emitted = Buffer.byteLength(buildFieldGuideBlock(picked.sections).block, "utf8");
+    ok(emitted <= budget, `${audience}: the EMITTED block is ${emitted} B, within ${budget} B`);
+    ok(picked.bytes === emitted, `${audience}: reported bytes (${picked.bytes}) are the emitted size`);
+  }
+
+  // F-551 — and with several queries, including the one that first showed the overflow.
+  for (const q of [
+    "description duplicate issue quality forge resolver manifest comment adf",
+    "jql search sprint worklog transition screen",
+    "confluence page storage format space rest v2",
+    "http 400 customfield permission scope webhook",
+    "",
+  ]) {
+    for (const audience of Object.keys(FIELD_GUIDE_BUDGET_BYTES)) {
+      const picked = await selectFieldGuide({ audience, text: q });
+      const emitted = Buffer.byteLength(buildFieldGuideBlock(picked.sections).block, "utf8");
+      ok(emitted <= fieldGuideBudget(audience) && picked.bytes === emitted,
+        `${audience}: "${q.slice(0, 24)}" emits ${emitted} B within ${fieldGuideBudget(audience)} B`);
+    }
   }
 
   // the audiences the plan names, with the numbers the plan names

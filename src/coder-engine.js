@@ -64,7 +64,7 @@ import {
 } from "./shared/agent-actions.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue, buildKnowledgeMessages, logKnowledgeInjection } from "./agent-runner.js";
+import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue, buildKnowledgeMessages, logKnowledgeInjection, reportCrossTurnCacheDefect } from "./agent-runner.js";
 import { createGitActionExecutor } from "./git-actions.js";
 import { createCoderWorkspace } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
@@ -376,6 +376,11 @@ export const getCoderThread = async (issueKey, threadId, { store = storage } = {
  * STABLE PREFIX. This string is built from constants only — no timestamps, no ids, no
  * per-turn text — so that it is byte-identical across the rounds of one turn and across
  * the turns of one thread. That is what makes a provider's prompt cache reachable.
+ *
+ * The same promise binds everything the assembly below puts in front of the user's turn —
+ * the knowledge messages and the stored history — and it is the reason the Coder's field
+ * guide is chosen ONCE per thread and replayed from ids on the row (F-550). Anything that
+ * legitimately varies per turn goes AFTER that prefix, never inside it.
  */
 export const buildCoderSystemPrompt = ({ simulated = false } = {}) => `You are CogniRunner's Coder: an engineer working inside a Jira issue, talking to the person who opened this chat.
 
@@ -524,7 +529,9 @@ export const runCoderTurn = async ({
   gateFacts = null, savedByRole = "editor", deadline = null, cancelToken = null,
   headless = false, allowedActions = null,
   // TRUSTED-BUT-BOUNDED knowledge for this turn: { memoryBlock, skillsBlock,
-  // fieldGuideBlock, fieldGuideSections } (1.4 commits 13b and 14b). Built by
+  // fieldGuideBlock, fieldGuideSections, fieldGuideExtraBlock } (1.4 commits 13b and 14b;
+  // the `Extra` block is F-550 and is the ONE part of knowledge that is allowed to vary
+  // per turn, which is why it is emitted after the prefix and not inside it). Built by
   // `buildCoderKnowledge` (src/async-handler.js); rendered by the ONE builder
   // `buildKnowledgeMessages` (src/agent-runner.js), which is why nothing here changed
   // when the field guide became a third block. (1.4
@@ -781,7 +788,24 @@ const runCoderTurnClaimed = async ({
   // stable cache prefix, and strictly before the fenced issue context the user turn
   // carries (1.4 commit 13b). `buildKnowledgeMessages` is the ONE builder the listener
   // and job agents use.
-  const messages = [{ role: "system", content: system }, ...buildKnowledgeMessages(knowledge), ...history, userTurn];
+  //
+  // THE PREFIX IS EVERYTHING UP TO AND INCLUDING THE HISTORY, and it is the thing the
+  // contract above (`buildCoderSystemPrompt`) promises is byte-identical across the turns
+  // of one thread. That promise is only true because the field guide in `knowledge` is now
+  // chosen ONCE per thread and re-emitted from the ids stored on this row (F-550) — it used
+  // to be re-scored from each turn's message, which moved message index 1 every turn and
+  // cost the whole thread, history included, its cross-turn cache hit.
+  const prefix = [{ role: "system", content: system }, ...buildKnowledgeMessages(knowledge), ...history];
+  // ANYTHING THIS TURN ADDED to the guide goes HERE, after the prefix and before the
+  // user's words: a per-turn block is allowed to exist, it is simply not allowed to sit
+  // inside the bytes the next turn has to match. Rendered by the SAME builder, so it
+  // carries the same header, marker and guard sentence as the stable block.
+  const extraKnowledge = buildKnowledgeMessages({ fieldGuideBlock: knowledge && knowledge.fieldGuideExtraBlock });
+  const messages = [...prefix, ...extraKnowledge, userTurn];
+  // What the previous turn's prefix WAS, in bytes, read before this turn overwrites it.
+  // It is the only thing that can tell a cross-turn cache miss from a healthy turn.
+  const priorPrefixBytes = Number(record.promptPrefixBytes) || 0;
+  const prefixBytes = bytesOf(prefix);
   // THE RECEIPT (F-487). The Coder was the one agent whose injected knowledge left no
   // trace anywhere: no log line, nothing on the thread row, nothing in the task result —
   // so a regression that dropped `skillIds` on the way here was indistinguishable from a
@@ -801,6 +825,13 @@ const runCoderTurnClaimed = async ({
     roundLabel: (n) => `Coder round ${n}`,
     onRound,
   });
+
+  // THE CROSS-TURN CACHE OBSERVATION (F-550). One line, no behaviour: it fires only when
+  // this turn's FIRST round read less than the previous turn's prefix should have given it,
+  // which is the miss the per-turn check in `runAgentLoop` cannot see.
+  try {
+    reportCrossTurnCacheDefect({ provider, usage: loop.usage, priorPrefixBytes, log });
+  } catch (e) { console.warn("[coder] cross-turn cache check skipped:", e && e.message); }
 
   // ── write the thread back ─────────────────────────────────────────────────
   // What this turn ADDED is everything after the seeded prefix (system + history + the
@@ -828,6 +859,20 @@ const runCoderTurnClaimed = async ({
     record.messages = compacted.messages;
     record.turns = Math.max(Number(record.turns) || 0, Number(fresh && fresh.turns) || 0) + 1;
     record.updatedAt = nowIso();
+    // THE THREAD'S FIELD GUIDE, WRITTEN ONCE (F-550). The first turn that was handed a
+    // guide pins its section ids on the row; every later turn asks `buildCoderKnowledge`
+    // for these exact ids and gets the exact bytes back, which is what keeps the prefix
+    // above byte-identical across the turns of this thread. It is never re-written: a
+    // second write would be the per-turn re-selection this finding removed. The EXTRA
+    // sections a later turn selected are deliberately NOT stored — they live after the
+    // prefix and they are a per-turn cost, not part of the thread's identity.
+    if (!Array.isArray(record.fieldGuideSections) &&
+        Array.isArray(knowledge && knowledge.fieldGuideSections) && knowledge.fieldGuideSections.length) {
+      record.fieldGuideSections = knowledge.fieldGuideSections.map((x) => String(x)).slice(0, 40);
+    }
+    // The size of the prefix THIS turn sent, so the next turn can tell a cross-turn cache
+    // miss from a healthy one. A number, never any of the bytes it measured.
+    record.promptPrefixBytes = prefixBytes;
     if (pendingTicket) record.pendingTicketId = pendingTicket.ticketId;
     else delete record.pendingTicketId;
     await store.set(threadKey, record, { ttl: { value: 90, unit: "DAYS" } });

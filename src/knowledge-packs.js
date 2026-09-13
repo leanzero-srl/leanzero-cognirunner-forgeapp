@@ -55,6 +55,7 @@ import {
   registerKnowledgePins,
   registerKnowledgeSections,
   selectKnowledge,
+  fieldGuideBlockBytes,
   KNOWLEDGE_VERSION,
   FIELD_GUIDE_MARKER,
   FIELD_GUIDE_GUARD_SENTENCE,
@@ -231,6 +232,54 @@ export const resolveFieldGuideBlock = async (options = {}) => {
     bytes: picked.bytes,
     budget: picked.budget,
     skipped: picked.skipped,
+    knowledgeVersion: KNOWLEDGE_VERSION,
+    contentVersion: KNOWLEDGE_CONTENT_VERSION,
+  };
+};
+
+/**
+ * REBUILD a block from section ids that were chosen EARLIER (F-550).
+ *
+ * The Coder's field guide is picked once, at the birth of a thread, and stored on the
+ * thread row — because `runCoderTurn` puts the knowledge messages inside the prompt prefix
+ * the engine promises is byte-identical across the turns of one thread, and a guide
+ * re-selected from each turn's message broke that promise at message index 1, costing the
+ * whole thread (system + knowledge + the entire stored history) its cross-turn cache hit.
+ * So later turns come back HERE with the stored ids and get the same bytes again.
+ *
+ * The tenant's pack switches still apply: a pack an admin turned off after the thread
+ * started drops out, which changes the prefix ONCE and is the answer the admin asked for.
+ * Order is the stored order — the emitted bytes must not depend on anything but the ids.
+ * Unknown ids (a pack removed by an upgrade) are dropped, never faked.
+ */
+export const resolveFieldGuideBlockByIds = async (ids, { audience = "coder" } = {}) => {
+  const wanted = (Array.isArray(ids) ? ids : []).map((x) => String(x));
+  const empty = {
+    block: "", sectionIds: [], bytes: 0, budget: fieldGuideBudget(audience), skipped: 0,
+    knowledgeVersion: KNOWLEDGE_VERSION, contentVersion: KNOWLEDGE_CONTENT_VERSION,
+  };
+  if (!wanted.length) return empty;
+  const settings = await getKnowledgeSettings();
+  const pool = new Map(sectionsForSettings(settings).map((sec) => [String(sec.id), sec]));
+  const list = [];
+  let dropped = 0;
+  for (const id of wanted) {
+    const sec = pool.get(id);
+    if (!sec) { dropped++; continue; }
+    list.push(sec);
+  }
+  // THE CEILING IS STILL THE CEILING. The ids fitted when they were chosen, but a content
+  // upgrade can grow a section, so the budget is re-applied here — from the tail, so the
+  // surviving prefix of the list is as stable as it can be.
+  const budget = fieldGuideBudget(audience);
+  while (list.length && fieldGuideBlockBytes(list) > budget) { list.pop(); dropped++; }
+  const built = buildFieldGuideBlock(list);
+  return {
+    block: built.block,
+    sectionIds: built.sectionIds,
+    bytes: fieldGuideBlockBytes(list),
+    budget,
+    skipped: dropped,
     knowledgeVersion: KNOWLEDGE_VERSION,
     contentVersion: KNOWLEDGE_CONTENT_VERSION,
   };

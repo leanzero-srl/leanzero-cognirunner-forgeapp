@@ -35,6 +35,7 @@ const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
+const asRefusals = (r) => (Array.isArray(r && r.refused) ? r.refused : []);
 const has = (o, keys, label) => {
   const missing = keys.filter((k) => !(o && Object.prototype.hasOwnProperty.call(o, k)));
   ok(missing.length === 0, `${label} carries ${keys.join(", ")} (missing: ${missing.join(", ") || "none"}) — got ${JSON.stringify(o).slice(0, 240)}`);
@@ -320,6 +321,65 @@ let agentId = null;
     `a 5xx from Jira does NOT refuse the filter (fail-open, bounded) — got ${blipped.turn && blipped.turn.stepId}`);
   jqlVerdict = { status: 200, body: { issues: [] } };
   await call("vaWizardReset", {});
+}
+
+/* ═════ 5b. THE SAVE DOORS RUN THE DRY SEARCH TOO (F-479) ═════
+ *
+ * §7's dry search used to run in the interview and nowhere else, so the two paths that
+ * actually WRITE a record — the classic form and the REST resource, both through
+ * `prepareVaSave` — accepted a well-shaped, unrunnable filter as standing intake. The
+ * cost of that is a dead sweep every five minutes, for ever, that nobody is watching.
+ */
+{
+  const DEAD_JQL = 'assignee = "someone.who.left@example.com" AND cf[99999] = SUPERSECRET';
+  jqlVerdict = { status: 400, body: { errorMessages: [`Field 'cf[99999]' does not exist for ${DEAD_JQL}`] } };
+  const refusedSave = await call("saveScheduledJob", {
+    job: { mode: "va", va: vaRecord({ intake: { serviceDesks: [], jql: DEAD_JQL, mentionsOf: [] } }) },
+  });
+  // The resolver door surfaces the refusal as `error` + `refused[]` (the REST door adds
+  // `reason` through `vaJson`); both are `prepareVaSave`'s single answer.
+  ok(refusedSave.success === false && /Jira/i.test(String(refusedSave.error || "")),
+    `a save whose filter Jira refuses is REFUSED (got ${JSON.stringify(refusedSave).slice(0, 240)})`);
+  ok(asRefusals(refusedSave).some((x) => x.field === "intake.jql"),
+    `…on intake.jql, where the form can render it (got ${JSON.stringify(refusedSave.refused).slice(0, 240)})`);
+  const saveReasons = `${refusedSave.error || ""} ${asRefusals(refusedSave).map((x) => x.reason).join(" ")}`;
+  ok(!saveReasons.includes("SUPERSECRET") && !saveReasons.includes("someone.who.left"),
+    `…and the refusal echoes neither the JQL nor Jira's body (got "${saveReasons.slice(0, 200)}")`);
+  ok(/Jira/i.test(saveReasons), "…while still naming Jira as the thing that refused it");
+
+  // A filter Jira RUNS saves, and the search it ran was the WRAPPED one — the query the
+  // sweep will actually issue, not the raw string.
+  jqlVerdict = { status: 200, body: { issues: [] } };
+  const before = seenPaths.length;
+  const okSave = await call("saveScheduledJob", {
+    job: { mode: "va", va: vaRecord({ intake: { serviceDesks: [], jql: "resolution = Unresolved", mentionsOf: [] } }) },
+  });
+  ok(okSave.success === true, `an executable filter saves (got ${JSON.stringify(okSave).slice(0, 200)})`);
+  ok(seenPaths.slice(before).some((p) => p.includes("/rest/api/3/search/jql")), "…and the save ran the dry search");
+
+  // A SAVE THAT DOES NOT TOUCH THE FILTER SPENDS NO SEARCH — and, more to the point,
+  // cannot start failing because a field the saved filter names was deleted last week.
+  jqlVerdict = { status: 400, body: { errorMessages: ["gone"] } };
+  const untouched = await call("saveScheduledJob", {
+    job: {
+      id: okSave.job.id, mode: "va",
+      va: vaRecord({
+        intake: { serviceDesks: [], jql: "resolution = Unresolved", mentionsOf: [] },
+        persona: { name: "Ada", voice: { register: "warm", maxSentences: 2 } },
+      }),
+    },
+  });
+  ok(untouched.success === true,
+    `an edit that does not change the filter is not re-checked (got ${JSON.stringify(untouched).slice(0, 200)})`);
+
+  // A TRANSPORT/5xx fault ACCEPTS, exactly as it does in the interview: refusing a valid
+  // filter because Jira blinked would block setup on a transient.
+  jqlVerdict = { status: 503, body: "upstream unavailable" };
+  const blippedSave = await call("saveScheduledJob", {
+    job: { mode: "va", va: vaRecord({ intake: { serviceDesks: [], jql: "labels = escalated", mentionsOf: [] } }) },
+  });
+  ok(blippedSave.success === true, `a 5xx does NOT refuse the save (fail-open, bounded) — got ${JSON.stringify(blippedSave).slice(0, 200)}`);
+  jqlVerdict = { status: 200, body: { issues: [] } };
 }
 
 /* ═════ 6. DRAFTS: approve/reject only in shadow, and NEITHER POSTS ═════ */

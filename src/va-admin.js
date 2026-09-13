@@ -1238,6 +1238,41 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
     }
   }
 
+  /* — 4. THE DRY SEARCH, ON THE SAVE DOORS TOO (F-479) —
+   *
+   * §7's dry search ran in `wizardStep` and NOWHERE ELSE, so it guarded the interview
+   * and neither door that actually writes a record: the classic form and the REST
+   * resource both reach `prepareVaSave`, and a JQL that is well-shaped and unrunnable
+   * (`assignee = "someone who left"` is the canonical one) became standing intake
+   * through either of them. The cost is not a bad save, it is a DEAD SWEEP every five
+   * minutes for ever, which nobody is watching and which reports nothing to the admin.
+   *
+   * ONLY WHEN THE JQL CHANGES. A save that does not touch intake must not spend a Jira
+   * search, and — more importantly — must not start failing because a filter saved
+   * last month refers to a field somebody has since deleted. The agent is already
+   * running that query; refusing an unrelated edit to its voice would be a new failure
+   * invented by this check.
+   *
+   * WRAPPED, BOUNDED AND FAIL-OPEN ON A FAULT — all of that is `dryRunJql`'s, deliberately
+   * unchanged here, including the rule that the refusal names Jira's error CLASS and
+   * never echoes the JQL. The shape check in `normalizeVa` stays exactly where it was;
+   * this answers the one question a shape check cannot.
+   */
+  const nextJql = String((normalized.va.intake && normalized.va.intake.jql) || "").trim();
+  const prevJql = String((existing && existing.va && existing.va.intake && existing.va.intake.jql) || "").trim();
+  if (nextJql && nextJql !== prevJql) {
+    const read = (normalized.va.scope && normalized.va.scope.read) || {};
+    const readProjects = read.site === true ? null : asArray(read.projects).map((k) => String(k).toUpperCase());
+    const dry = await dryRunJql({ jql: nextJql, readProjects }, injected);
+    if (!dry.ok) {
+      return fail(dry.reason || "jql_unexecutable", {
+        message: dry.message,
+        ...(dry.status ? { status: dry.status } : {}),
+        refused: [...refused, { field: dry.field || "intake.jql", reason: dry.message }],
+      });
+    }
+  }
+
   const va = rearmShadow(normalized.va, tickIndexFor(existing, now == null ? deps.now() : now));
   return okv({
     input: {
@@ -1253,6 +1288,11 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
 
 /* ══════════════════════════════════════════════════════════════════════════════
  * 7. F-424 — THE DRY SEARCH
+ *
+ * THREE CALLERS, ONE CHECK (F-479): the wizard step, and both SAVE doors through
+ * `prepareVaSave` — which is the classic form and the REST resource. It used to run in
+ * the interview alone, so the two paths that actually write a record accepted an
+ * unrunnable filter as standing intake.
  *
  * `checkJqlShape` (va-wizard.js) proves a string is well-formed. It proves NOTHING
  * about whether Jira will run it: `assignee = "someone who left"` is perfectly

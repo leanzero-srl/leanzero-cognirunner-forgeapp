@@ -897,6 +897,10 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
                                  its veil are on screen long enough to be asserted.
      window.__CODER_DUPLICATE__- confirmCoderTicket answers { duplicate: true }.
      window.__CODER_NO_RESUME__- the decision is recorded but the follow-up did not enqueue.
+     window.__CODER_SIM_LOCKED__- F-371: the turn is REFUSED by the engine's F-360 arm,
+                                 `reason:"simulation-locked"`, which arrives through the
+                                 QUEUE (the resolver enqueues before the engine reads the
+                                 thread row) and so lands in the poll's result.
    The capability and the connection list reuse __CODE_CAP__ / __CODE_NO_CONNS__ above -
    one flag per product question, not one per surface. */
 const CODER_TICKET_ID = "ct_9f31c0de";
@@ -985,6 +989,15 @@ function coderInvoke(name, payload) {
       const slow = typeof window !== "undefined" && window.__CODER_SLOW__;
       CODER_POLLS++;
       if (slow && CODER_POLLS === 1) return Promise.resolve({ success: true, status: "processing" });
+      if (typeof window !== "undefined" && window.__CODER_SIM_LOCKED__) {
+        return Promise.resolve({
+          success: true, status: "done",
+          result: {
+            success: false, reason: "simulation-locked", simulation: true,
+            error: "This Coder thread is running in SIMULATION \u2014 it cannot be switched to live writes mid-thread. Start a new thread to work for real.",
+          },
+        });
+      }
       const first = payload && payload.taskId === "coder_turn_1";
       const result = first
         ? (scenario === "plain" ? CODER_TURN_PLAIN : CODER_TURN_TICKET)

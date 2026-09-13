@@ -94,6 +94,15 @@ const threadLabel = (id, defaultId) => {
   return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
 };
 
+/* F-371 - THE DRY RUN IS FIXED BY THE THREAD'S FIRST TURN (the F-360 engine half).
+   coder-engine.js refuses a mid-thread flip with `reason:"simulation-locked"` rather than
+   converting a simulated thread into a live-writing one, so the toggle stops being a
+   choice the moment a conversation has a turn. ONE sentence says so, and it is used for
+   BOTH the locked control and the refusal if one still arrives - a control that explains
+   itself and a banner that contradicts it would be two answers to one question. */
+const simulationLockText = (simulated) =>
+  `This conversation runs as a ${simulated ? "dry run" : "live run"}; start a new conversation to change it.`;
+
 /** Plain paragraphs. See rule 2 - this is the whole rendering of model text. */
 const paragraphs = (text) => String(text || "").split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
 
@@ -120,6 +129,10 @@ export default function CoderPanel({ issueKey, accountId }) {
   const defaultThreadId = threadIdFor(accountId);
   const [threadId, setThreadId] = useState(defaultThreadId);
   const [knownThreads, setKnownThreads] = useState([]);
+  /* F-371: how many turns the OPEN conversation has. Read off the thread record, because
+     the record is what the engine locks the simulation flag against - not anything this
+     panel remembers. 0 means the flag is still a choice. */
+  const [turns, setTurns] = useState(0);
   /* The transcript is a scroll box (it has to be - a long thread would push the composer
      off an issue panel), so the NEWEST message is the one off-screen by default. Without
      this the answer to the turn you just took is the one thing you cannot see: caught in
@@ -190,6 +203,12 @@ export default function CoderPanel({ issueKey, accountId }) {
         if (isPermissionRefusal(t)) { setRefusal(t); setCapState("refused"); return; }
         if (t && t.success && t.thread) {
           setMessages(Array.isArray(t.thread.messages) ? t.thread.messages : []);
+          const stored = Number(t.thread.turns) || 0;
+          setTurns(stored);
+          /* Once the thread has a turn, the RECORD owns the flag. Showing the toggle in
+             any other position would be the panel asserting something about writes that
+             the engine has already decided otherwise. */
+          if (stored > 0 && typeof t.thread.simulation === "boolean") setSimulation(t.thread.simulation);
           /* A ticket that outlived the page. The thread record keeps only the ID, so the
              action and its preview are genuinely unknown here - the chip says so rather
              than inventing a name for a write the user is being asked to authorise. */
@@ -222,6 +241,15 @@ export default function CoderPanel({ issueKey, accountId }) {
     if (r.awaiting === "confirm" && r.ticket && r.ticket.id) {
       setTicket({ id: r.ticket.id, action: r.ticket.action || null, argsPreview: r.ticket.argsPreview || null });
       setOutcome(null);
+    } else if (r.reason === "simulation-locked") {
+      /* The engine refused the flip instead of performing it. Say the SAME sentence the
+         locked toggle says, and put the toggle back to what the thread actually runs as,
+         so the panel is not left claiming a mode the conversation does not have. */
+      setTicket(null);
+      setOutcome(null);
+      if (typeof r.simulation === "boolean") setSimulation(r.simulation);
+      setTurns((n) => (n > 0 ? n : 1));
+      setError(simulationLockText(typeof r.simulation === "boolean" ? r.simulation : simulation));
     } else {
       setTicket(null);
       setOutcome({
@@ -242,6 +270,7 @@ export default function CoderPanel({ issueKey, accountId }) {
         if (!mountedRef.current) return;
         if (t && t.success && t.thread && Array.isArray(t.thread.messages)) {
           setMessages(t.thread.messages);
+          setTurns(Number(t.thread.turns) || 0);
           setOutcome((o) => (o ? { ...o, reply: "" } : o));
         }
       })
@@ -287,6 +316,8 @@ export default function CoderPanel({ issueKey, accountId }) {
     setThreadId(id);
     setMessages([]); setTicket(null); setOutcome(null); setError(""); setRounds(0);
     setChangeOpen(false); setChangeText("");
+    // A fresh conversation is where the dry-run choice lives again (F-371).
+    setTurns(0);
   };
 
   const startNewConversation = () => {
@@ -323,7 +354,22 @@ export default function CoderPanel({ issueKey, accountId }) {
       if (isUpgradeRequired(res)) { setRefusal(res); setCapState("upgrade"); setRunning(false); return; }
       if (isPermissionRefusal(res)) { setRefusal(res); setCapState("refused"); setRunning(false); return; }
       if (res && res.agentDisabled) { setCap({ enabled: false, reason: res.reason || "unknown" }); setRunning(false); return; }
-      if (res && res.success && res.async && res.taskId) { pollTask(res.taskId, token); return; }
+      /* The engine answers this from the QUEUE (applyResult below), but the resolver may
+         grow a synchronous arm for it, and a raw reason code on screen is the defect. */
+      if (res && res.reason === "simulation-locked") {
+        if (typeof res.simulation === "boolean") setSimulation(res.simulation);
+        setTurns((n) => (n > 0 ? n : 1));
+        setError(simulationLockText(typeof res.simulation === "boolean" ? res.simulation : simulation));
+        setRunning(false);
+        return;
+      }
+      if (res && res.success && res.async && res.taskId) {
+        // The turn is recorded by the resolver before it is queued, so the conversation's
+        // mode is settled from here on: lock the toggle now rather than after the poll.
+        setTurns((n) => (n > 0 ? n : 1));
+        pollTask(res.taskId, token);
+        return;
+      }
       setError(String((res && res.error) || "The Coder turn could not be started."));
       setRunning(false);
     } catch (e) {
@@ -406,6 +452,8 @@ export default function CoderPanel({ issueKey, accountId }) {
   const connOptions = connections.map((c) => ({ value: c.id, label: c.label || c.id, meta: c.kind }));
   const showPicker = connOptions.length > 1;
   const busy = running || !!deciding;
+  // F-371: one turn is all it takes; after that the engine owns the flag.
+  const simulationLocked = turns > 0;
   /* The chips: the threads this browser remembers, plus the one on screen and the default,
      newest first. Ids are never printed - threadLabel turns each one into a date or into
      "First conversation". */
@@ -548,13 +596,18 @@ export default function CoderPanel({ issueKey, accountId }) {
             role="switch"
             aria-checked={simulation}
             onClick={() => setSimulation((v) => !v)}
-            disabled={busy}
+            disabled={busy || simulationLocked}
+            title={simulationLocked ? simulationLockText(simulation) : undefined}
           >
             <span className="coder-toggle-box" aria-hidden="true" />
             Dry run
           </button>
           <button type="button" className={`coder-btn coder-btn-go${running ? " is-busy busy-solid" : ""}`} onClick={send} disabled={busy || !draft.trim()}>Send</button>
         </div>
+
+        {/* F-371: the locked state says WHY in the same words the refusal would, and names
+            the way out, which is the button F-368 added right above the transcript. */}
+        {simulationLocked && <p className="coder-lock-note">{simulationLockText(simulation)}</p>}
 
         {running && (
           <div className="veil">

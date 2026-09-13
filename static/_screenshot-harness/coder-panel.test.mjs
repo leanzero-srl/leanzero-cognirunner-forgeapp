@@ -383,13 +383,27 @@ try {
       const badDot = await page.locator(".coder-action-bad").evaluate((el) => getComputedStyle(el).backgroundColor);
       ok(badDot === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `${id} the failed dot is solid red (got ${badDot})`);
       ok(/3 rounds/.test(await page.locator(".coder-outcome-foot").innerText()), `${id} the rounds are counted`);
-      // The Dry run switch travels on the wire as `simulation`.
+      /* F-371: the thread has turns, so the Dry run switch is NOT a choice any more -
+         the engine refuses a mid-thread flip, and a control that still looks live would be
+         the panel promising something the engine has already decided. */
+      ok(await page.locator(".coder-toggle").isDisabled(), `${id} Dry run is locked once the conversation has a turn`);
+      const lockNote = await page.locator(".coder-lock-note").innerText();
+      ok(/start a new conversation to change it/i.test(lockNote), `${id} the locked state says how to change it (got "${lockNote}")`);
+      ok(/live run/.test(lockNote), `${id} the locked state names what this conversation runs as`);
+
+      /* The wire, proven where the choice actually lives: a NEW conversation. Dry run must
+         travel as `simulation: true` on its FIRST turn. */
+      await page.locator(".coder-newconv").click();
+      await page.waitForFunction(() => document.querySelectorAll(".coder-msg").length === 0, { timeout: 8000 });
+      ok(!(await page.locator(".coder-toggle").isDisabled()), `${id} a new conversation makes Dry run a choice again`);
+      ok(await page.locator(".coder-lock-note").count() === 0, `${id} and drops the locked sentence`);
       await page.locator(".coder-toggle").click();
       await page.locator("textarea.coder-input").fill("Again, but do not write anything.");
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-outcome").waitFor({ timeout: 20000 });
       const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
       ok(start.simulation === true, `${id} Dry run sends simulation: true (got ${start.simulation})`);
+      ok(await page.locator(".coder-toggle").isDisabled(), `${id} and the first turn locks it again`);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-plain-${theme}.png`) });
     });
@@ -468,6 +482,32 @@ try {
       ok(await page.locator(".coder-newconv").count() === 1, `${id} the panel still renders with unreadable stored threads`);
       ok(await page.locator(".coder-thread-list").count() === 0, `${id} a garbage store lists no conversations`);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+    });
+
+    /* ------------------------------- 9. F-371: the engine's simulation-locked refusal.
+       The F-360 engine half refuses a mid-thread dry-run flip rather than converting a
+       simulated thread into a live-writing one. Before this, the panel had no arm for it
+       and painted the raw reason into a generic red banner. The refusal arrives through
+       the QUEUE, so this drives the whole road: a turn, then the poll's refusal. */
+    await withPanel({ __THEME__: theme, __CODER_SIM_LOCKED__: true }, async (page, errors) => {
+      const id = `sim-locked/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      await page.locator("textarea.coder-input").fill("Do it for real this time.");
+      await page.locator(".coder-composer .coder-btn-go").click();
+      await page.locator(".coder-error").waitFor({ timeout: 20000 });
+      const msg = await page.locator(".coder-error").innerText();
+      ok(/start a new conversation to change it/i.test(msg), `${id} the refusal is told in the app's own sentence (got "${msg}")`);
+      ok(/dry run/i.test(msg), `${id} it names what the conversation actually runs as`);
+      ok(!/simulation-locked/.test(msg), `${id} the raw reason CODE never reaches the screen`);
+      // The toggle is put back to the thread's truth, and locked.
+      ok(await page.locator(".coder-toggle").getAttribute("aria-checked") === "true", `${id} the switch is put back to the thread's real mode`);
+      ok(await page.locator(".coder-toggle").isDisabled(), `${id} and is locked, so the same refusal cannot be provoked twice`);
+      ok(await page.locator(".coder-lock-note").count() === 1, `${id} the locked sentence is on the control as well as in the banner`);
+      ok(await page.locator(".veil").count() === 0, `${id} the panel is not left spinning`);
+      ok(await page.locator(".coder-newconv").count() === 1, `${id} the way out named by the sentence is on screen`);
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-simlocked-${theme}.png`) });
     });
 
     /* --------------------------------------- 7b. a FIRST open: no thread, no empty-state lie.

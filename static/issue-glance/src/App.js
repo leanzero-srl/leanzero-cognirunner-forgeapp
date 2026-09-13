@@ -166,6 +166,9 @@ const injectStyles = () => {
     .coder-composer-row { display: flex; align-items: center; gap: 8px; }
     .coder-composer-row .coder-btn-go { margin-left: auto; }
     .coder-picker { position: relative; }
+    /* F-371: why the Dry run switch is not a choice any more. A plain sentence in the
+       app's own secondary text, never a tinted callout and never a rail. */
+    .coder-lock-note { margin: 0; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
     /* The Dry run switch: a real control, never a native checkbox. Solid when on. */
     .coder-toggle { display: inline-flex; align-items: center; gap: 7px; font: inherit; font-size: 12px; font-weight: 700; color: var(--text-secondary); background: none; border: none; padding: 0; cursor: pointer; }
     .coder-toggle-box { width: 30px; height: 17px; border-radius: 999px; background: #475569; position: relative; transition: background 140ms ease; }

@@ -1455,13 +1455,43 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
      * and the TASK RESULT, which the queue log carries.
      */
     const landed = asArray(session.changes).map(describeChange);
+    /*
+     * F-577 — THE REASON IS THE CARRIER, BECAUSE THE COPY IS KEYED ON IT.
+     *
+     * `agent-purged` reads, on the Agents tab, as "nothing was written". On the THREE
+     * ENTRY checks (:475, :1130, :1889) that is simply true — the tombstone was already
+     * up before the turn touched anything. HERE it can be false: this read happens AFTER
+     * `deps.runLoop`, and the dispatcher writes to Jira/Confluence/git immediately, with
+     * no staging. One string covering both truths is what made the tab promise an admin
+     * that a comment it can see on the issue was never posted.
+     *
+     * So the reason SPLITS, and it splits on the FACT rather than on the seam: a mid-turn
+     * purge that got in before any write landed is honestly `agent-purged`, and only a
+     * turn with writes behind it becomes `agent-purged-after-writes`. Both strings stay
+     * true wherever they are shown, which is the whole point — the tab keeps its existing
+     * copy for the old id and adds one for the new.
+     *
+     * WHERE IT DURABLY LIVES: the TASK RESULT, and only the task result. The health row
+     * would be the natural second home, but `recordTickHealth` sits behind `purgedGuard`
+     * (src/va-ledger.js) and REFUSES under this very tombstone — as does every other
+     * ledger writer, which is F-553's point and not a gap to work around. Calling it here
+     * would write nothing and answer like a refusal. The skip therefore stays
+     * receipt-free BY DESIGN, and the durable carriers are exactly two: this returned
+     * object, which the queue records verbatim as the task result (`executeVaItemTask`,
+     * src/async-handler.js), and the operator log line below — which now leads with the
+     * same id, so the log and the result cannot disagree. Do not add a third carrier by
+     * re-opening a ledger write.
+     */
+    const reason = landed.length ? "agent-purged-after-writes" : "agent-purged";
     if (landed.length) {
-      deps.log(`[va] purged mid-turn: ${landed.length} write${landed.length === 1 ? "" : "s"} already landed on ${landed.join(", ")}`);
+      deps.log(`[va] ${reason}: ${landed.length} write${landed.length === 1 ? "" : "s"} already landed on ${landed.join(", ")}`);
     }
     return {
-      ok: true, ran: true, skipped: true, issueKey, reason: "agent-purged", purgedAt: tombAtWrite.at,
+      ok: true, ran: true, skipped: true, issueKey, reason, purgedAt: tombAtWrite.at,
       endedBy: loop.endedBy, rounds: loop.rounds,
       // What the turn DID before the tombstone appeared, and what it refused after it.
+      // `landedWrites` stays the NAMED LIST (F-571) — the log line quotes it — and
+      // `changes` is its count, which is what a "N change(s)" copy reads.
       changes: landed.length, landedWrites: landed, refusals: outcome.refusals,
     };
   }

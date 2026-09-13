@@ -212,5 +212,79 @@ for (const key of ["git-pr-merged", "git-pr-approved", "git-build-passed", "git-
     "…naming the modified field IDs, which is what a diagnostic actually needs");
 }
 
+/* ══════════ F-567 — THE VALIDATOR LEAVES A FIELD-GUIDE RECEIPT ══════════
+ * The AI validator was the only field-guide consumer that recorded nothing: the call site
+ * destructured `sectionIds` away, so "what knowledge did this refusal carry?" had no answer
+ * on the surface that runs on EVERY transition. It now emits the shared
+ * `Knowledge injected: …` line (agent-runner's ONE emitter) and stamps `fieldGuide` (ids)
+ * plus `fieldGuideBytes` on the execution-log row.
+ *
+ * This lives HERE, next to F-384, on purpose: adding a fact to the log row is exactly the
+ * kind of change that leaks a key into the object crossing the platform boundary, so the
+ * receipt and the shape are asserted in the same breath. The provider is not reachable in
+ * this harness, so the run takes the fail-OPEN path — which is the STRONGER case: the guide
+ * reached the prompt whatever the provider then did, and the receipt must still be there. */
+{
+  const { default: storage } = await import("../lib/mock-kvs.mjs");
+  const { readLogs } = await import("../../src/index.js");
+  await storage.set("COGNIRUNNER_AI_PROVIDER", "openai");
+  await storage.set("COGNIRUNNER_KEY_openai", "sk-offline-field-guide");
+
+  const captured = [];
+  const realLog = console.log;
+  const RULE = "r-fieldguide-567";
+  let out;
+  try {
+    console.log = (...a) => { captured.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ")); };
+    respondWith(FULL_ISSUE);
+    out = await validate({
+      issue: { key: "LZPT-1" },
+      configuration: {
+        ruleId: RULE,
+        fieldId: "description",
+        // Deliberately worded at the packs: the selector is a scorer over the prompt, and a
+        // prompt about nothing selects nothing — which would make this suite pass vacuously.
+        validationPrompt: "Check the Jira REST API issue fields, ADF description format and the JQL used by this automation rule are correct before the transition.",
+      },
+      modifiedFields: {},
+      context: { extension: { type: "jira:workflowValidator", key: "ai-text-field-validator" }, license: { isActive: true }, accountId: "acct-1" },
+    });
+  } finally { console.log = realLog; }
+
+  // 1. The contract is UNCHANGED — this is the F-384 assertion, on the path that grew a field.
+  assertShape(out, "AI validator with a field guide");
+
+  // 2. The row carries the receipt: IDS, never the block.
+  const row = (await readLogs(RULE))[0];
+  ok(!!row, "the validation run wrote an execution-log row");
+  ok(Array.isArray(row?.fieldGuide) && row.fieldGuide.length > 0,
+    `the row carries fieldGuide section IDS (got ${JSON.stringify(row?.fieldGuide)})`);
+  ok(row.fieldGuide.every((s) => typeof s === "string"), "…all of them strings");
+  ok(row.fieldGuide.length <= 20, "…bounded to 20, so a selector cannot grow the stored row");
+  ok(Number.isFinite(row.fieldGuideBytes) && row.fieldGuideBytes > 0,
+    `…and the byte count the validator budget is judged against (got ${row.fieldGuideBytes})`);
+  ok(row.fieldGuideBytes <= 6144, "…within the validator audience budget");
+  const dump = JSON.stringify(row);
+  ok(!/FIELD_GUIDE/.test(dump), "the BLOCK itself never lands on the row");
+
+  // 3. The line comes from the ONE emitter, spelled its way — not re-worded here.
+  ok(captured.some((l) => l === "Knowledge injected: field guide"),
+    `the shared Knowledge injected line is emitted (got ${JSON.stringify(captured.filter((l) => /Knowledge injected/.test(l)))})`);
+
+  // 4. A prompt the packs have nothing to say about leaves NO receipt — an empty array
+  //    stamped unconditionally would read as "the guide was empty" rather than "none matched".
+  {
+    const QUIET = "r-fieldguide-567-quiet";
+    respondWith(FULL_ISSUE);
+    const quiet = await validate({
+      issue: { key: "LZPT-1" },
+      configuration: { ruleId: QUIET, fieldId: "description", validationPrompt: "zzzz" },
+      modifiedFields: {},
+      context: { extension: { type: "jira:workflowValidator", key: "ai-text-field-validator" }, license: { isActive: true }, accountId: "acct-1" },
+    });
+    assertShape(quiet, "AI validator with no field guide");
+  }
+}
+
 console.log(`\nvalidator response shape: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -2031,25 +2031,35 @@ async function fetchProjectsForWorkflow(workflowId) {
  */
 resolver.define("getConfigs", async ({ payload, context }) => {
   try {
-    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    if (configs.length === 0) {
-      return { success: true, configs: [], removedCount: 0 };
-    }
-
-    // Authorize the caller BEFORE the orphan sweep below reads workflows as the
-    // app (AMS-65110). No role at all (not in the roster, not a Jira admin) → no
-    // rules and no sweep. The scope enforcement further down carves out ownerless
-    // rows for scope-"own" EDITORS; without this gate that carve-out applied to
-    // everyone with a licence. (A first-ever caller who IS a Jira admin is
-    // bootstrapped onto the roster by getUserPermissions; a non-admin one is not.)
-    // The meter still reports the shared site-wide state.
+    // Authorize the caller BEFORE anything is read or swept (AMS-65110).
+    //
+    // F-227 — NO PRINCIPAL IS NOT A PASS. The gate used to be `if (accountId &&
+    // !perms)`, so a call arriving with no accountId at all skipped it entirely
+    // and went on to run the app-privileged orphan sweep — reading every
+    // workflow as the app, and deleting registry rows — on behalf of nobody.
+    // "We cannot identify the caller" is the strongest reason to refuse, not a
+    // reason to trust. An anonymous call is now refused outright.
     const accountId = context?.accountId;
-    const perms = accountId ? await getUserPermissions(accountId) : null;
-    if (accountId && !hasRole(perms)) {
+    if (!accountId) return { success: false, error: "Viewer access required", configs: [], removedCount: 0 };
+
+    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+
+    // No role at all (not in the roster, not a Jira admin) → no rules and no
+    // sweep. The scope enforcement further down carves out ownerless rows for
+    // scope-"own" EDITORS; without this gate that carve-out applied to everyone
+    // with a licence. (A first-ever caller who IS a Jira admin is bootstrapped
+    // onto the roster by getUserPermissions; a non-admin one is not.)
+    // The meter still reports the shared site-wide state.
+    const perms = await getUserPermissions(accountId);
+    if (!hasRole(perms)) {
       return {
         success: true, configs: [], removedCount: 0, restricted: true,
         registry: registryPressure(configs.map(slimRegistryRow)),
       };
+    }
+
+    if (configs.length === 0) {
+      return { success: true, configs: [], removedCount: 0 };
     }
 
     const workflowCache = new Map();

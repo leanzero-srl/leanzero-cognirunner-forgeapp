@@ -141,4 +141,31 @@ for (const fn of ["getAppAdmins", "getListeners", "getScheduledJobs", "getLogs"]
   assert.equal(out[0].success, false, `${fn} must refuse an unverifiable caller (fail closed)`);
 }
 
-console.log("permission bootstrap: 9 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed)");
+// ── F-227: getConfigs ran the app-privileged orphan sweep for a caller it could
+// not identify, because the gate read `if (accountId && !perms)`.
+storage.__reset(); forgeApi.__reset();
+storage.__seed("config_registry", [{ id: "r1", type: "validator", createdBy: ADMIN, workflow: { workflowName: "WF", transitionId: "11" } }]);
+scriptJira();
+let anon = await handler({ call: { functionKey: "getConfigs", payload: {} }, context: {} }, {});
+assert.equal(anon.success, false, "an anonymous getConfigs must be refused");
+assert.match(anon.error, /Viewer access required/);
+assert.deepEqual(anon.configs, []);
+assert.equal(forgeApi.__calls.filter((c) => c.path.includes("workflow")).length, 0,
+  "the app-privileged orphan sweep must not run for an anonymous caller");
+assert.deepEqual(await storage.get("config_registry"),
+  [{ id: "r1", type: "validator", createdBy: ADMIN, workflow: { workflowName: "WF", transitionId: "11" } }],
+  "a refused call must not delete registry rows");
+
+// A roleless but IDENTIFIED caller still gets the restricted (not refused) shape,
+// and still no sweep — that arm is unchanged.
+storage.__reset(); forgeApi.__reset();
+storage.__seed("config_registry", [{ id: "r1", type: "validator", workflow: { workflowName: "WF", transitionId: "11" } }]);
+storage.__seed("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
+currentCaller = USER; scriptJira({ adminIds: [], groupMembers: [] });
+const restricted = await handler({ call: { functionKey: "getConfigs", payload: {} }, context: {} }, { principal: { accountId: USER } });
+assert.equal(restricted.success, true);
+assert.equal(restricted.restricted, true);
+assert.deepEqual(restricted.configs, []);
+assert.equal(forgeApi.__calls.filter((c) => c.path.includes("workflow")).length, 0);
+
+console.log("permission bootstrap: 11 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed, F-227 anonymous getConfigs refused)");

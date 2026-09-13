@@ -16,6 +16,10 @@ const rows = Array.from({ length: 500 }, (_, i) => ({
   workflow: { workflowName: `workflow-${i}`, transitionId: "11" },
 }));
 storage.__seed("config_registry", rows);
+// F-227 — getConfigs now refuses a caller it cannot identify, so this suite drives
+// it as a real app admin (the sweep it exercises is app-privileged by design).
+const ADMIN = "acct-registry-admin";
+storage.__seed("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
 storage.__seed("registry_migrations", { discoveredOwnershipV1: true, registrySlimV1: true });
 forgeApi.__respond((path) => {
   const name = new URL(path, "https://jira.test").searchParams.get("queryString");
@@ -29,7 +33,7 @@ let result;
 try {
   console.log = (...args) => logs.push(args);
   console.error = (...args) => logs.push(args);
-  result = await handler({ call: { functionKey: "getConfigs", payload: {} }, context: {} }, {});
+  result = await handler({ call: { functionKey: "getConfigs", payload: {} }, context: {} }, { principal: { accountId: ADMIN } });
 } finally { Object.assign(console, saved); }
 assert.equal(result.success, true);
 assert.deepEqual(result.configs.map((r) => r.id), rows.filter((_, i) => i % 2 === 0).map((r) => r.id));

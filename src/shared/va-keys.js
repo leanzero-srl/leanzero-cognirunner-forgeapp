@@ -53,6 +53,14 @@ export const VA_CAPS_TTL = days(2);
  */
 /** Claims: 2 days. Longer than any retry window, shorter than the item row. */
 export const VA_CLAIM_TTL = days(2);
+/**
+ * A half-finished setup interview: 7 days (`VA_LIMITS.wizardTtlDays`, one home in
+ * `registry-limits.js`). This row is keyed on an ACCOUNT ID, which is the one key part
+ * here that comes from Atlassian rather than from us — account ids carry `:` and `-`
+ * routinely and a connect-era one can carry far worse, so `safeKeyPart` is doing real
+ * work on this builder and not merely satisfying the rule (F-346's exact class).
+ */
+export const VA_WIZARD_TTL = days(VA_LIMITS.wizardTtlDays);
 
 /* ── key builders — every one asserted ─────────────────────────────────────── */
 
@@ -94,6 +102,26 @@ export const capsBuckets = (now = Date.now()) => {
 
 /** `va_health:{agent}` — the banner's OWN consecutive-failure counter (F-426). */
 export const vaHealthKey = (agent) => assertKvsKey(`va_health:${part(agent)}`);
+
+/**
+ * `va_wizard:{accountId}` — ONE half-finished setup interview per admin.
+ *
+ * Keyed on the ADMIN, not on an agent, because the interview exists before the agent
+ * does; there is nothing else it could be named after. One row per admin is deliberate:
+ * two interviews in two tabs would race on the same key and the loser's answers would be
+ * silently overwritten, so the second tab RESUMES the first rather than forking it.
+ */
+export const vaWizardKey = (accountId) => assertKvsKey(`va_wizard:${part(accountId)}`);
+
+/**
+ * The prefix a bounded `query()` scan uses to read one agent's tick receipts and effects
+ * rows for the Agents tab. They are PREFIXES, not keys, so they are not asserted —
+ * `assertKvsKey` checks a whole key and a prefix is by definition a fragment. They live
+ * here anyway so the read side cannot retype the string the write side builds, which is
+ * the failure mode that makes a panel silently show nothing.
+ */
+export const vaTickPrefix = (agent) => `va_tick:${part(agent)}:`;
+export const vaEffectPrefix = (agent) => `va_effect:${part(agent)}:`;
 
 /**
  * `va_exec:{agent}:{key}:{tickId}` — taken by the CONSUMER at the start of the item task,

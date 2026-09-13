@@ -195,7 +195,12 @@ ok(/Skill\(s\) too large for this run's .*-byte budget, not injected/.test(lst),
   ok(/if \(ids\.length\)/.test(ah), "…and from nothing otherwise — nothing is auto-matched here");
   ok(/settings && settings\.injection !== false/.test(ah), "memories follow the INSTANCE injection setting, not a per-rule flag");
   ok(/fetchSkillsBlock/.test(ah) && /buildMemoryBlock/.test(ah), "…built by the same two builders every other surface uses");
-  ok(/catch \(e\) \{ console\.warn\("\[coder\] skills block skipped:/.test(ah) && /catch \(e\) \{ console\.warn\("\[coder\] memory block skipped:/.test(ah),
+  // F-598 moved the memory half into a memoized `liveMemoryBlock()` (one render per turn,
+  // shared by the pin check and the block builder), so its catch arm is no longer a
+  // one-liner. What is gated is the INVARIANT — the fault is warned about and answered with
+  // an absent block — not the line shape it happens to have today.
+  ok(/catch \(e\) \{ console\.warn\("\[coder\] skills block skipped:/.test(ah)
+    && /console\.warn\("\[coder\] memory block skipped:[\s\S]{0,120}?memoryRender = null;/.test(ah),
     "FAIL-OPEN in both halves: a knowledge fault must never become a Coder turn that did not run");
 }
 

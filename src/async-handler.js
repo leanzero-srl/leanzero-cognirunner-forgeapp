@@ -1404,7 +1404,22 @@ export const __coderKnowledgeInternals = { buildCoderKnowledge: (params) => buil
 const buildCoderKnowledge = async (p) => {
   const out = {};
   const budget = knowledgeBudget("coderTurn");
-  const ids = Array.isArray(p && p.skillIds) ? p.skillIds : [];
+  /*
+   * F-594 — WHAT THIS TURN ASKED FOR, which is not always what the THREAD holds.
+   *
+   * Skill selection is per-viewer and lives in the panel's localStorage
+   * (static/issue-glance/src/components/CoderPanel.jsx) — the backend stores no per-thread
+   * binding, so a second browser, a cleared site data, or a colleague continuing the same
+   * thread posts `skillIds: []`. That is an ABSENT SELECTION, not an instruction to run
+   * with none, and the difference only matters on the re-pin path below (see `ids`).
+   *
+   * `skillIdsExplicit` is how a caller says it means the empty list: a turn that wants to
+   * CHANGE a thread's skills passes the flag, and then `[]` clears them. Absent, `[]` falls
+   * back to the pin. Nothing produces the flag yet — no surface offers "unbind" — so the
+   * only direction it can currently take is the safe one.
+   */
+  const skillIdsExplicit = !!(p && p.skillIdsExplicit === true);
+  let ids = Array.isArray(p && p.skillIds) ? p.skillIds : [];
   // WHAT THIS THREAD ALREADY DECIDED, read once for all three blocks: the transcript row
   // (it carries the guide's section ids — F-550) and the pin row beside it (the skills and
   // memory BYTES the first turn rendered — F-574; they are not on the transcript because
@@ -1416,6 +1431,51 @@ const buildCoderKnowledge = async (p) => {
   try { row = await getCoderThread(issueKey, threadId); } catch (e) { row = null; }
   let pinned = null;
   try { pinned = await getCoderPinnedKnowledge(issueKey, threadId); } catch (e) { pinned = null; }
+
+  /*
+   * F-598 — THIS PROJECT'S MEMORY BLOCK, RENDERED AT MOST ONCE PER TURN.
+   *
+   * The epoch is instance-global; `buildMemoryBlock` is PROJECT-scoped. So the counter says
+   * "something in the store changed", never "something THIS thread carries changed", and a
+   * cap-200 eviction or a prune in an unrelated project invalidated every Coder pin on the
+   * instance. With `autoCapture` on and a full store that is one eviction per captured
+   * lesson, each one re-pinning every live thread in every project and re-billing its whole
+   * stored history at write price — F-574's benefit cancelled precisely on the busiest
+   * instances, for a memory no thread's block ever contained.
+   *
+   * The fix does not make the counter cleverer (a per-project counter is a second home for
+   * the same rule, and a memory can move between projects). It makes the counter a TRIGGER:
+   * a bump costs one re-render, and only the rendered BYTES decide. The pin already stores
+   * those bytes, so the comparison is the pin's own block against today's — an exact
+   * comparison, no stored hash, no migration, no collisions to reason about.
+   *
+   * Memoized because both callers want the same answer from the same instant: the pin check
+   * below, and the block builder further down. Rendering it twice is how two halves of one
+   * decision come to disagree about what the store said.
+   *
+   * `null` means the store could not be read at all — fail-open, exactly as before: no
+   * verdict, no block, the turn goes on.
+   */
+  const memoryProjectKey = String((p && p.issueKey) || "").split("-")[0] || null;
+  let memoryRender;
+  const liveMemoryBlock = async () => {
+    if (memoryRender !== undefined) return memoryRender;
+    memoryRender = null;
+    try {
+      const { getMemorySettings, buildMemoryBlock } = await import("./memories.js");
+      const settings = await getMemorySettings();
+      if (settings && settings.injection !== false) {
+        const b = await buildMemoryBlock({ projectKey: memoryProjectKey, capBytes: budget.memories });
+        memoryRender = { injection: true, text: String(b.text || ""), count: Number(b.count) || 0 };
+      } else {
+        memoryRender = { injection: false, text: "", count: 0 };
+      }
+    } catch (e) {
+      console.warn("[coder] memory block skipped:", e && e.message);
+      memoryRender = null;
+    }
+    return memoryRender;
+  };
 
   /*
    * F-578 — A PIN IS REPLAYED ONLY WHILE THE KNOWLEDGE IT FROZE IS STILL TRUE.
@@ -1437,7 +1497,12 @@ const buildCoderKnowledge = async (p) => {
    * repeat — and `repin` asks the engine to re-pin today's bytes.
    *
    * FAIL-OPEN on every fault: a null epoch means "cannot tell", and cannot-tell replays.
-   * A storage hiccup must never move a prompt prefix, and must never cost a turn.
+   * A storage hiccup must never move a prompt prefix, and must never cost a turn. That
+   * promise was only true on paper until F-593: `memoryEpoch()` swallowed its own read
+   * error and returned `0`, a legitimate epoch, so this branch was unreachable by the very
+   * fault it was written for. Both readers now return `null` on a read fault and `null` is
+   * handled HERE, as a non-event: the pin is KEPT, the turn says `epoch unreadable`, and
+   * nothing is treated as a change that was not read as one.
    */
   // Read BEFORE the blocks are built, never after: if a delete lands between this read and
   // `buildMemoryBlock` below, the block already excludes the row while the stamp is the OLD
@@ -1454,14 +1519,34 @@ const buildCoderKnowledge = async (p) => {
     try {
       const { skillEpochFor } = await import("./skills.js");
       const liveSkillEpoch = await skillEpochFor(Array.isArray(pinned.skillIds) ? pinned.skillIds : []);
-      if (liveMemoryEpoch === null) throw new Error("memory epoch unreadable");
+      // F-593 — AN UNREADABLE EPOCH IS NOT A CHANGED EPOCH. Each store is judged on its own
+      // reading: a memory epoch that could not be read leaves the memory comparison out of
+      // the verdict entirely (and the skill one is already guarded the same way below), so a
+      // blip on one store cannot drop a pin whose other store says nothing moved.
+      if (liveMemoryEpoch === null) {
+        console.warn("[coder] memory epoch unreadable — the pin is kept and this turn replays it; a storage fault is never a knowledge change");
+      }
       // A pin written before this finding carries neither epoch. It is invalidated ONCE —
       // its bytes were never validated against anything and may already be the stale ones
       // this finding is about — and the re-pin below stamps both, after which it is stable.
       if (pinned.memoryEpoch === undefined || pinned.skillEpoch === undefined) {
         verdict = "pin predates epoch stamping";
-      } else if (Number(pinned.memoryEpoch) !== Number(liveMemoryEpoch)) {
-        verdict = `memoryEpoch ${Number(pinned.memoryEpoch) || 0}→${liveMemoryEpoch}`;
+      } else if (liveMemoryEpoch !== null && Number(pinned.memoryEpoch) !== Number(liveMemoryEpoch)) {
+        // F-598 — THE BUMP IS A TRIGGER, NOT A VERDICT. The epoch counts writes to the whole
+        // instance; the pin carries one project's rendered lines. Re-render and compare the
+        // bytes: only a block that actually MOVED may move a prompt prefix.
+        const live = await liveMemoryBlock();
+        const moved = Number(pinned.memoryEpoch) || 0;
+        if (live === null) {
+          console.warn(`[coder] memoryEpoch ${moved}→${liveMemoryEpoch}, but the memory store could not be re-read — the pin is kept and this turn replays it`);
+        } else if (live.text === String(pinned.memoryBlock || "")) {
+          console.log(`[coder] memoryEpoch ${moved}→${liveMemoryEpoch} bumped, block unchanged, pin kept — the write was to a memory this thread's project never carried`);
+          // Re-stamp the pin at the epoch we just proved it still matches, so the next turn
+          // does not pay the same re-render again for the same unrelated write.
+          out.pinEpochVerified = true;
+        } else {
+          verdict = `memoryEpoch ${moved}→${liveMemoryEpoch}, and this project's memory block changed with it`;
+        }
       } else if (liveSkillEpoch !== null && String(pinned.skillEpoch) !== String(liveSkillEpoch)) {
         verdict = "skillEpoch changed — a pinned skill was edited, disabled or deleted";
       }
@@ -1473,6 +1558,24 @@ const buildCoderKnowledge = async (p) => {
       console.log(`[coder] pin invalidated: ${verdict} — rebuilding this thread's knowledge (the prompt prefix moves once)`);
       out.pinInvalidated = verdict;
       out.repin = true;
+      /*
+       * F-594 — A REBUILD RE-BUILDS WHAT THE PIN HELD. The pin is the only record of the
+       * skills this thread was given: if this turn carries no selection (a second browser,
+       * the ordinary case — see `skillIdsExplicit` above), the rebuild used to run the
+       * `ids.length` branch with an empty list, leave `out.skillsBlock` unset, and let the
+       * engine overwrite the pin with `skillsBlock: ""`. The thread lost its skills
+       * permanently, mid-conversation, because an admin deleted an unrelated memory — and
+       * the turn log said only "the prompt prefix moves once".
+       *
+       * So the pin's ids are the fallback, and the only way DOWN is an explicit one.
+       */
+      const held = Array.isArray(pinned.skillIds) ? pinned.skillIds.map((x) => String(x)) : [];
+      if (held.length && !ids.length && !skillIdsExplicit) {
+        ids = held;
+        console.log(`[coder] re-pin: this turn carried no skill selection, so the pin's ${held.length} skill(s) are kept and re-rendered (${held.join(", ")})`);
+      } else if (held.length && skillIdsExplicit && !ids.length) {
+        console.log(`[coder] re-pin: this turn asked to run with NO skills, dropping the pinned ${held.length} (${held.join(", ")})`);
+      }
       pinned = null;
     }
   }
@@ -1521,12 +1624,12 @@ const buildCoderKnowledge = async (p) => {
       }
     } catch (e) { console.warn("[coder] skills block skipped:", e && e.message); }
   }
-  try {
-    const { getMemorySettings, buildMemoryBlock } = await import("./memories.js");
-    const settings = await getMemorySettings();
-    if (settings && settings.injection !== false) {
-      const projectKey = String((p && p.issueKey) || "").split("-")[0] || null;
-      const b = await buildMemoryBlock({ projectKey, capBytes: budget.memories });
+  {
+    // ONE RENDER PER TURN (F-598) — the pin check above may already have asked for it, and
+    // both halves must be looking at the same store reading. `null` is the read fault and
+    // is skipped exactly as the old catch arm skipped it.
+    const b = await liveMemoryBlock();
+    if (b && b.injection) {
       if (pinned) {
         // MEMORIES WRITTEN SINCE THIS THREAD STARTED go after the history (F-574). The
         // pinned block is already on `out`; what is new is the lines the live block has
@@ -1541,14 +1644,14 @@ const buildCoderKnowledge = async (p) => {
         if (b.text) out.memoryBlock = b.text;
         if (b.text) out.memoryCount = Number(b.count) || 0;
       }
-    } else if (pinned && out.memoryBlock) {
+    } else if (b && !b.injection && pinned && out.memoryBlock) {
       // The admin turned instance-wide memory injection OFF mid-thread. That is a
       // deliberate instruction and it wins over the prefix: the block is dropped, the
       // prefix moves ONCE, and the thread carries no learned facts from here on.
       delete out.memoryBlock;
       delete out.memoryCount;
     }
-  } catch (e) { console.warn("[coder] memory block skipped:", e && e.message); }
+  }
   // THE BAKED FIELD GUIDE (1.4 commit 14b) — the Coder's turn is the widest budget in the
   // table (16 KB) because it is the surface that writes Forge apps, and the packs are the
   // Forge knowledge it writes them from. Same shape as `buildAgentKnowledge`
@@ -1652,6 +1755,8 @@ const buildCoderKnowledge = async (p) => {
    *
    * Both are advisory: a null one is simply not stamped, the engine pins without it, and the
    * next turn treats the unstamped pin as "cannot tell" in the direction of one rebuild.
+   * `null` here means ONLY "the store could not be read" (F-593) — an epoch of 0 on a store
+   * nothing has ever deleted from is a real reading and is stamped like any other.
    */
   if (liveMemoryEpoch !== null) out.memoryEpoch = liveMemoryEpoch;
   try {

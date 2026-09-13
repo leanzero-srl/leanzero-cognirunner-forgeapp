@@ -1178,6 +1178,41 @@ await check("F-581: the FIRST turn of a thread pins without claiming anything ex
   assert.ok(await store.get(coderPinKey("LZPT-7", "t1")), "…and it still pins");
 });
 
+await check("F-598: a verified epoch is re-stamped onto the pin without moving one byte of the prefix", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+
+  // The builder saw the epoch move, re-rendered THIS project's block, found it identical,
+  // and said so. The engine must carry the new stamp so the thread does not pay the same
+  // re-render on every later turn for one unrelated write elsewhere on the instance.
+  const r = await startTurn(world, {
+    userMessage: "second",
+    knowledge: { ...stable, memoryEpoch: 7, pinEpochVerified: true },
+  });
+  const pin = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin.memoryEpoch, 7, "THE FINDING: the pin is re-stamped at the epoch its bytes were proven against");
+  assert.equal(pin.memoryBlock, MEM, "…and the memory bytes did not move");
+  assert.equal(pin.skillsBlock, SKILLS, "…nor the skills");
+  assert.ok(!(r.logs || []).some((l) => /prefix moves once/.test(l)),
+    "…and the turn claims no prefix move, because there was none");
+  const t1 = world.requests[0].messages;
+  const t2 = world.requests[1].messages;
+  assert.equal(JSON.stringify(t2.slice(0, t1.length - 1)), JSON.stringify(t1.slice(0, t1.length - 1)),
+    "…the shared prefix is byte-identical");
+});
+
+await check("F-598: an UNVERIFIED epoch on a living pin changes nothing — the stamp only moves on proof", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  await startTurn(world, { userMessage: "second", knowledge: { ...stable, memoryEpoch: 9 } });
+  const pin = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin.memoryEpoch, 1, "a refresh without `pinEpochVerified` leaves the stamp exactly as it was");
+});
+
 await check("F-550: the cross-turn cache miss gets its own observation line", async () => {
   const { reportCrossTurnCacheDefect, CACHE_BYTES_PER_TOKEN } = await import("../../src/agent-runner.js");
   const lines = [];

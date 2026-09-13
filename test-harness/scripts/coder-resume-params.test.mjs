@@ -518,5 +518,222 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
     "…and the turn carries the edited skill, once, in the prefix");
 }
 
+/* ===== 10. F-593 — A STORAGE BLIP IS NOT A KNOWLEDGE CHANGE ========================
+ *
+ * F-578 wrote, in three docblocks, "a null epoch means cannot tell, and cannot-tell
+ * replays… a storage hiccup must never move a prompt prefix". `memoryEpoch()` then
+ * swallowed its own read error and answered `0` — a LEGITIMATE epoch — so the branch those
+ * comments describe could not be reached by the fault it was written for. On an instance at
+ * epoch 5 one transient KVS read fault read as `5 → 0`: the pin was dropped, the thread's
+ * whole stored history was re-billed at write price, the pin was re-stamped at `0`, and the
+ * NEXT turn read `5` again and moved the prefix a second time — twice, for a memory edit
+ * that never happened, with the turn log blaming the admin.
+ *
+ * Proven here against the real store, on the fault itself and on the two things around it:
+ * the reader distinguishes "could not read" from "nothing has ever been deleted", the
+ * builder keeps the pin on a fault, and a bump that cannot READ the counter does not WRITE
+ * a broken one (`null + 1` is `NaN`, which would invalidate every pin on the instance for
+ * ever after).
+ */
+{
+  const THREAD = "t_epoch_blip";
+  const { memoryEpoch, MEMORY_EPOCH_KEY, loadMemories, saveMemories, saveMemoryCandidate } =
+    await import("../../src/memories.js");
+  const { buildKnowledgeMessages } = await import("../../src/agent-runner.js");
+  const failEpochRead = () => storage.__failGetWhen((key) => key === MEMORY_EPOCH_KEY);
+
+  // THE READER, on its own. An absent or zero counter is a READING; a fault is not.
+  const settled = await memoryEpoch();
+  ok(typeof settled === "number", `the epoch reads as a number when the store answers (${settled})`);
+  failEpochRead();
+  ok((await memoryEpoch()) === null, "THE FINDING: a read fault answers null — 'cannot tell' — and never 0");
+  ok((await memoryEpoch()) === settled, "…and the very next read is the real value again");
+
+  // THE BUILDER. Turn 1 pins; turn 2 hits the blip.
+  await storage.set(coder.coderThreadKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "turn one" }], turns: 1,
+  });
+  const turn = (message) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message, skillIds: ["skill_house"],
+  });
+  const b1 = await turn("turn one");
+  ok(typeof b1.memoryEpoch === "number", `turn 1 stamps the epoch it rendered under (${b1.memoryEpoch})`);
+  await storage.set(coder.coderPinKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD,
+    skillsBlock: b1.skillsBlock || "", memoryBlock: b1.memoryBlock || "",
+    skillIds: b1.skillIds || [], memoryCount: b1.memoryCount || 0,
+    memoryEpoch: b1.memoryEpoch, skillEpoch: b1.skillEpoch, at: new Date().toISOString(),
+  });
+
+  failEpochRead();
+  const b2 = await turn("turn two");
+  ok(b2.repin === undefined && b2.pinInvalidated === undefined,
+    `THE FINDING: a blip on the epoch read KEEPS the pin (repin=${b2.repin}, reason=${b2.pinInvalidated})`);
+  ok(JSON.stringify(buildKnowledgeMessages(b2)) === JSON.stringify(buildKnowledgeMessages(b1)),
+    "…and the prompt prefix does not move");
+  ok(b2.memoryEpoch === undefined, "…an epoch that was never read is not stamped onto the pin either");
+
+  // AND THE TURN AFTER THE BLIP is ordinary — the pin was never re-stamped at 0, so there
+  // is no second prefix move chasing the first.
+  const b3 = await turn("turn three");
+  ok(b3.repin === undefined, "the turn after the blip does not invalidate either");
+  ok(Number(b3.memoryEpoch) === settled, `…and stamps the store's real epoch again (${b3.memoryEpoch})`);
+
+  // THE WRITER. A bump that cannot read the counter leaves it alone rather than storing NaN.
+  await saveMemoryCandidate({ content: "Blip probe: the CI runner image is pinned to 22.04.", source: "user" });
+  const before = storage.__raw(MEMORY_EPOCH_KEY);
+  const rows = await loadMemories();
+  failEpochRead();
+  await saveMemories(rows.slice(0, -1));
+  const after = storage.__raw(MEMORY_EPOCH_KEY);
+  ok(after === before, `an unreadable counter is not advanced (${JSON.stringify(before)} → ${JSON.stringify(after)})`);
+  ok(Number.isFinite(Number(await memoryEpoch())),
+    "…and the epoch is still a readable number, not NaN, for every thread on the instance");
+}
+
+/* ===== 11. F-594 — A REBUILD MAY NOT SILENTLY STRIP A THREAD'S SKILLS ===============
+ *
+ * The F-578 rebuild had no fallback to the pin: with `ids.length === 0` the skills branch
+ * never ran, `out.skillsBlock` was never set, and the engine overwrote the pin with an
+ * empty skills block. Skill selection is per-viewer localStorage and the backend stores no
+ * per-thread binding, so an empty `skillIds` on a later turn of the same thread is the
+ * ORDINARY case — a second browser, cleared site data, or a colleague continuing the
+ * thread. One unrelated memory delete anywhere on the instance was therefore enough to
+ * strip a thread's skills for good, mid-conversation, with the turn log saying only "the
+ * prompt prefix moves once".
+ *
+ * Both directions are proven: the absent selection keeps the pin's skills, and an EXPLICIT
+ * empty selection still clears them.
+ */
+{
+  const { loadMemories, saveMemories, saveMemoryCandidate } = await import("../../src/memories.js");
+  const pinFor = async (thread, k) => storage.set(coder.coderPinKey(ISSUE, thread), {
+    issueKey: ISSUE, threadId: thread,
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+    memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch, at: new Date().toISOString(),
+  });
+  // Bump the MEMORY epoch — the invalidation this finding rides in on is always about the
+  // other store, which is exactly why it must not touch this thread's skills.
+  const bumpMemories = async () => {
+    await saveMemoryCandidate({ content: `Rebuild probe ${Math.random().toString(36).slice(2)} for the epoch bump.`, source: "user" });
+    const rows = await loadMemories();
+    await saveMemories(rows.slice(0, -1));
+  };
+  const build = (thread, extra) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: thread, message: "carry on", ...extra,
+  });
+
+  /* --- the absent selection --- */
+  const KEEP = "t_skill_keep";
+  await storage.set(coder.coderThreadKey(ISSUE, KEEP), {
+    issueKey: ISSUE, threadId: KEEP, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "build me a resolver" }], turns: 1,
+  });
+  const s1 = await build(KEEP, { skillIds: ["skill_house"], message: "build me a resolver" });
+  ok(Array.isArray(s1.skillIds) && s1.skillIds.includes("skill_house") && !!s1.skillsBlock,
+    "turn 1 binds a skill and renders it into the thread's block");
+  await pinFor(KEEP, s1);
+
+  await bumpMemories();
+  const s2 = await build(KEEP, { skillIds: [] });
+  ok(s2.repin === true, "an unrelated memory delete still invalidates the pin (F-578 is intact)");
+  ok(Array.isArray(s2.skillIds) && s2.skillIds.includes("skill_house"),
+    `THE FINDING: the rebuild keeps the pin's skills when the turn carries no selection (${JSON.stringify(s2.skillIds)})`);
+  ok(typeof s2.skillsBlock === "string" && /indent/.test(s2.skillsBlock),
+    "…and re-renders them INTO the prefix, so the re-pin cannot store an empty skills block");
+  ok(s2.skillsExtraBlock === undefined, "…with nothing hanging off the back of a rebuilt prefix");
+
+  // And the pin the engine would now write still carries them on the turn after.
+  await pinFor(KEEP, s2);
+  const s3 = await build(KEEP, { skillIds: [] });
+  ok(s3.repin === undefined && /indent/.test(String(s3.skillsBlock || "")),
+    "the next turn replays a pin that still has its skills");
+
+  /* --- the explicit clear --- */
+  const DROP = "t_skill_drop";
+  await storage.set(coder.coderThreadKey(ISSUE, DROP), {
+    issueKey: ISSUE, threadId: DROP, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "build me a resolver" }], turns: 1,
+  });
+  const d1 = await build(DROP, { skillIds: ["skill_house"], message: "build me a resolver" });
+  await pinFor(DROP, d1);
+  await bumpMemories();
+  const d2 = await build(DROP, { skillIds: [], skillIdsExplicit: true });
+  ok(d2.repin === true, "the explicit turn rebuilds too");
+  ok(!d2.skillsBlock && (!d2.skillIds || d2.skillIds.length === 0),
+    `a turn that MEANS the empty list still clears the thread's skills (${JSON.stringify(d2.skillIds)})`);
+}
+
+/* ===== 12. F-598 — AN EPOCH BUMP IS A TRIGGER, NOT A VERDICT =======================
+ *
+ * The memory epoch is instance-GLOBAL; `buildMemoryBlock` is project-SCOPED. So the counter
+ * could only ever say "something in the store changed", never "something this thread
+ * carries changed" — and a cap-200 eviction or a prune in an unrelated project invalidated
+ * every Coder pin on the instance, in every project. With `autoCapture` on and a full store
+ * that is one eviction per captured lesson, each one re-pinning every live thread and
+ * re-billing its whole stored history at write price, for a memory no thread's block ever
+ * contained: F-574's benefit cancelled precisely on the busiest instances.
+ *
+ * A bump now costs one RE-RENDER and the rendered bytes decide. Proven on the pair that
+ * matters — the write this thread cannot see keeps the pin, the write it CAN see drops it.
+ */
+{
+  const { loadMemories, saveMemories, saveMemoryCandidate } = await import("../../src/memories.js");
+  const { buildKnowledgeMessages } = await import("../../src/agent-runner.js");
+  const THREAD = "t_project_scope";
+
+  // ONE memory this project's block carries, and one it cannot: `buildMemoryBlock` admits a
+  // row only when it is unscoped or scoped to THIS project.
+  const MINE = "The LZPT deploy job needs the release label before it will run.";
+  const THEIRS = "The OTHER project keeps its runbooks in Confluence, not the repo.";
+  const mine = await saveMemoryCandidate({ content: MINE, source: "user" });
+  await saveMemoryCandidate({ content: THEIRS, source: "user", projectKey: "OTHER" });
+
+  await storage.set(coder.coderThreadKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "turn one" }], turns: 1,
+  });
+  const turn = (message) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message, skillIds: ["skill_house"],
+  });
+  const pinIt = async (k) => storage.set(coder.coderPinKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD,
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+    memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch, at: new Date().toISOString(),
+  });
+
+  const p1 = await turn("turn one");
+  ok(p1.memoryBlock.includes(MINE), "turn 1's block carries this project's memory");
+  ok(!p1.memoryBlock.includes(THEIRS), "…and not the other project's — the block is project-scoped");
+  await pinIt(p1);
+
+  /* --- the write this thread cannot see --- */
+  const rows = await loadMemories();
+  const theirs = rows.find((m) => m.content === THEIRS);
+  ok(!!theirs, "the other project's memory is in the store");
+  await saveMemories(rows.filter((m) => m.id !== theirs.id));
+  const p2 = await turn("turn two");
+  ok(p2.repin === undefined && p2.pinInvalidated === undefined,
+    `THE FINDING: a delete in another project does NOT invalidate this thread's pin (repin=${p2.repin})`);
+  ok(p2.pinEpochVerified === true,
+    "…the epoch moved, the block was re-rendered and matched, and the turn says so for the re-stamp");
+  ok(JSON.stringify(buildKnowledgeMessages(p2)) === JSON.stringify(buildKnowledgeMessages(p1)),
+    "…and the prompt prefix is byte-identical");
+
+  /* --- the write it CAN see --- */
+  const rows2 = await loadMemories();
+  await saveMemories(rows2.filter((m) => m.id !== mine.id));
+  const p3 = await turn("turn three");
+  ok(p3.repin === true, "deleting a memory the thread's own block carries still invalidates it");
+  ok(typeof p3.pinInvalidated === "string" && /memory block changed/.test(p3.pinInvalidated),
+    `…and the reason names the block, not merely the counter (${p3.pinInvalidated})`);
+  ok(!JSON.stringify(buildKnowledgeMessages(p3)).includes(MINE),
+    "…the deleted memory is gone from the prefix");
+  ok(p3.pinEpochVerified === undefined, "…and nothing claims the bytes were verified unchanged");
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

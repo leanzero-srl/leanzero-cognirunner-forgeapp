@@ -26,6 +26,7 @@
 
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
+import { pushed as pushedEvents } from "../lib/mock-forge-api.mjs";
 
 const conns = await import("../../src/git-connections.js");
 const { handler } = await import("../../src/index.js");
@@ -355,30 +356,127 @@ const applyHuge = await conns.applyCredentialRotation({ target: { kind: "connect
 ok(applyHuge.ok === false && /implausibly long/i.test(String(applyHuge.error)), "applyCredentialRotation caps before the side effect");
 ok(storage.__raw(conns.gitConnSecretKey(rotId)).token === "ghp_GOOD", "the oversized apply wrote nothing");
 
-// F-293 — a rotation of the FORGE IDENTITY records ITS OWN consent.
-// `{...prev}` used to carry the original admin's accountId and timestamp onto a
-// token a DIFFERENT admin handed over later, so the stored provenance was false.
+// F-303 — A ROTATION NEVER FABRICATES A CONSENT.
+// F-293 fixed one defect and created its mirror image: `{...prev}` used to carry
+// admin A's consent onto a token admin B handed over later (a STALE record), so the
+// fix stamped a fresh consent naming B — a record asserting that B sat through a
+// consent screen they were never shown. There is no consent flag on the rotation
+// path at all; `saveForgeIdentity` refuses without an explicit `consent:true`, so
+// the rotation path CANNOT have collected one. Two facts, two fields: the original
+// `consent` is kept verbatim, and who replaced the token is recorded under
+// `rotation`.
 reset();
 const idA = await call("saveForgeIdentity", { email: "a@leanzero.net", token: FORGE_TOKEN, consent: true }, ADMIN);
 ok(idA.success === true, `the identity saves (${JSON.stringify(idA).slice(0, 120)})`);
 const consentA = (await conns.getForgeIdentityStatus()).consent;
 ok(consentA.accountId === ADMIN, "the first consent names the admin who gave it");
 await new Promise((r) => setTimeout(r, 5));
+const ROT_AT = new Date(Date.now() + 1000).toISOString();
 const rotId2 = await conns.applyCredentialRotation({
-  target: { kind: "forge-identity" }, secret: { token: "ATATT_ROTATED_TOKEN" }, requestedBy: "acct-admin-b",
+  target: { kind: "forge-identity" }, secret: { token: "ATATT_ROTATED_TOKEN" },
+  requestedBy: "acct-admin-b", enqueuedAt: ROT_AT, taskId: "rot_1",
 });
 ok(rotId2.ok === true, "the identity rotation applies");
-const consentB = (await conns.getForgeIdentityStatus()).consent;
-ok(consentB.accountId === "acct-admin-b",
-  `the consent record names the admin who ROTATED, not the one who first consented (got ${JSON.stringify(consentB)})`);
-ok(consentB.at !== consentA.at, "and the moment is the rotation's, not the original's");
+const statusB = await conns.getForgeIdentityStatus();
+ok(statusB.consent.accountId === ADMIN && statusB.consent.at === consentA.at,
+  `the ORIGINAL consent record survives a rotation verbatim (got ${JSON.stringify(statusB.consent)})`);
+ok(statusB.rotation && statusB.rotation.requestedBy === "acct-admin-b",
+  `who replaced the token is recorded SEPARATELY, under rotation (got ${JSON.stringify(statusB.rotation)})`);
+ok(statusB.rotation.at === ROT_AT,
+  "…and `at` is the moment the ADMIN asked (enqueuedAt), not the consumer's clock");
 ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_ROTATED_TOKEN", "the new token is stored");
-const anon = await conns.applyCredentialRotation({ target: { kind: "forge-identity" }, secret: { token: "ATATT_ANON" } });
-ok(anon.ok === true && (await conns.getForgeIdentityStatus()).consent.accountId === null,
-  "an unattributed rotation records NO consenter — it never inherits somebody else's name");
-const idHuge = await conns.applyCredentialRotation({ target: { kind: "forge-identity" }, secret: { token: huge } });
-ok(idHuge.ok === false && /implausibly long/i.test(String(idHuge.error)), "the identity arm caps the token too");
-ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_ANON", "and the oversized identity rotation wrote nothing");
+ok(!JSON.stringify(statusB).includes("ATATT_"), "and the status still emits no token");
+
+// F-304 — AT-LEAST-ONCE DELIVERY MUST NOT RESURRECT AN OLDER CREDENTIAL.
+// A redelivery of the SAME event does nothing…
+const replay = await conns.applyCredentialRotation({
+  target: { kind: "forge-identity" }, secret: { token: "ATATT_REPLAYED" },
+  requestedBy: "acct-admin-b", enqueuedAt: ROT_AT, taskId: "rot_1",
+});
+ok(replay.ok === true && replay.duplicate === true,
+  `a redelivered rotation is a no-op, not an error (got ${JSON.stringify(replay)})`);
+ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_ROTATED_TOKEN",
+  "…and the stored token is untouched by the replay");
+ok(storage.__raw(conns.gitRotateClaimKey("forge-identity", "rot_1")), "the claim key is git_rotate:<target>:<taskId>");
+
+// …and a LATE delivery of an OLDER rotation never overwrites a newer one. This is
+// the scenario in the finding: an admin mistypes a token, rotates again to fix it,
+// and Forge redelivers the first event afterwards.
+const late = await conns.applyCredentialRotation({
+  target: { kind: "forge-identity" }, secret: { token: "ATATT_MISTYPED" },
+  requestedBy: "acct-admin-b", enqueuedAt: new Date(Date.parse(ROT_AT) - 60000).toISOString(), taskId: "rot_0",
+});
+ok(late.ok === false && late.code === "stale",
+  `an older rotation arriving late is REFUSED (got ${JSON.stringify(late)})`);
+ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_ROTATED_TOKEN",
+  "…and the newer token survives — nothing reverts");
+
+// A rotation that does NOT complete puts its claim back, or the platform's retry
+// would be swallowed and the admin's change lost for good.
+const failed = await conns.applyCredentialRotation({
+  target: { kind: "forge-identity" }, secret: { token: huge },
+  requestedBy: ADMIN, enqueuedAt: new Date(Date.now() + 5000).toISOString(), taskId: "rot_retry",
+});
+ok(failed.ok === false && /implausibly long/i.test(String(failed.error)), "the identity arm caps the token too");
+ok(!storage.__raw(conns.gitRotateClaimKey("forge-identity", "rot_retry")),
+  "a refused rotation RELEASES its claim, so the retry is not seen as a duplicate");
+const retried = await conns.applyCredentialRotation({
+  target: { kind: "forge-identity" }, secret: { token: "ATATT_RETRIED" },
+  requestedBy: ADMIN, enqueuedAt: new Date(Date.now() + 5000).toISOString(), taskId: "rot_retry",
+});
+ok(retried.ok === true, "…and the retry applies");
+ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_RETRIED", "the retried token is stored");
+
+// An unattributed rotation records no requester and still never invents a consent.
+const anon = await conns.applyCredentialRotation({
+  target: { kind: "forge-identity" }, secret: { token: "ATATT_ANON" },
+  enqueuedAt: new Date(Date.now() + 10000).toISOString(), taskId: "rot_anon",
+});
+const statusAnon = await conns.getForgeIdentityStatus();
+ok(anon.ok === true && statusAnon.rotation.requestedBy === null,
+  "an unattributed rotation records NO requester — it never inherits somebody else's name");
+ok(statusAnon.consent.accountId === ADMIN, "…and the original consent is STILL the one on file");
+ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_ANON", "the anonymous rotation wrote its token");
+
+// The CONNECTION arm carries the same two guards.
+reset();
+fetchQueue = [whoamiOk()];
+const cSaved = await call("saveGitConnection", { kind: "github", label: "rot", token: GH_TOKEN });
+const cId = cSaved.connection.id;
+const CONN_AT = new Date(Date.now() + 1000).toISOString();
+fetchQueue = [whoamiOk()];
+const cRot = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: cId }, secret: { token: "ghp_ROTATED" },
+  requestedBy: ADMIN, enqueuedAt: CONN_AT, taskId: "crot_1",
+});
+ok(cRot.ok === true, `the connection rotation applies (${JSON.stringify(cRot)})`);
+const cReplay = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: cId }, secret: { token: "ghp_REPLAY" },
+  requestedBy: ADMIN, enqueuedAt: CONN_AT, taskId: "crot_1",
+});
+ok(cReplay.duplicate === true && storage.__raw(conns.gitConnSecretKey(cId)).token === "ghp_ROTATED",
+  "a redelivered CONNECTION rotation is a no-op too");
+const cLate = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: cId }, secret: { token: "ghp_OLD" },
+  requestedBy: ADMIN, enqueuedAt: new Date(Date.parse(CONN_AT) - 60000).toISOString(), taskId: "crot_0",
+});
+ok(cLate.ok === false && cLate.code === "stale" && storage.__raw(conns.gitConnSecretKey(cId)).token === "ghp_ROTATED",
+  `a late older CONNECTION rotation is refused and nothing reverts (got ${JSON.stringify(cLate)})`);
+ok(fetchCalls.length === 2,
+  "a refused-by-ordering rotation never even probes the provider — the guard is BEFORE the side effect");
+
+// The queued request carries the idempotency key the consumer needs.
+reset();
+fetchQueue = [whoamiOk()];
+const qSaved = await call("saveGitConnection", { kind: "github", label: "q", token: GH_TOKEN });
+const qReq = await conns.requestCredentialRotation(
+  { kind: "connection", id: qSaved.connection.id }, { token: "ghp_QUEUED" }, { accountId: ADMIN });
+ok(qReq.ok === true && typeof qReq.taskId === "string", "requestCredentialRotation enqueues");
+const rotEvent = pushedEvents[pushedEvents.length - 1];
+ok(rotEvent.body.params.taskId === qReq.taskId,
+  "the taskId rides the PARAMS — the consumer is handed `params` only, and the claim needs the key");
+ok(typeof rotEvent.body.params.enqueuedAt === "string",
+  "…and so does enqueuedAt, which is what orders two rotations");
 
 /* ===================== 10. the security model is data, and it is asserted ===================== */
 ok(conns.PIPELINE_SETUP_IS_ADMIN_RESOLVER === true,

@@ -85,6 +85,13 @@ export const FORGE_IDENTITY_KEY = "COGNIRUNNER_FORGE_IDENTITY";
 
 /** Task type for the rotation job on the EXISTING `async-ai-queue`. */
 export const CREDENTIAL_ROTATION_TASK = "gitcredrotate";
+/**
+ * F-304 — the idempotency claim for ONE rotation delivery. The queue is
+ * at-least-once, and `applyCredentialRotation` is the only writer that replaces a
+ * secret in place, so a redelivered event must not run the write twice.
+ * `forge-identity` has no id of its own and uses the literal as its slot.
+ */
+export const gitRotateClaimKey = (targetId, taskId) => `git_rotate:${targetId || "forge-identity"}:${taskId}`;
 
 /* ===== CAPS — checked BEFORE the side effect, always (commitImportCore) ===== */
 
@@ -727,12 +734,19 @@ export async function clearForgeIdentity() {
  */
 export function forgeIdentityStatus(row) {
   if (!row || typeof row !== "object") {
-    return { hasIdentity: false, email: null, consent: null, createdAt: null, updatedAt: null };
+    return { hasIdentity: false, email: null, consent: null, rotation: null, createdAt: null, updatedAt: null };
   }
   return {
     hasIdentity: !!row.token || row.hasIdentity === true,
     email: row.email || null,
     consent: row.consent ? { accountId: row.consent.accountId || null, at: row.consent.at || null } : null,
+    // F-303 — the two facts an auditor must be able to tell apart: who CONSENTED to
+    // this identity being stored (above, collected once, never re-stamped), and who
+    // last REPLACED the token (here). A rotation that silently refreshed `consent`
+    // read as a consent screen nobody was ever shown.
+    rotation: row.rotation
+      ? { requestedBy: row.rotation.requestedBy || null, at: row.rotation.at || null }
+      : null,
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null,
   };
@@ -793,7 +807,12 @@ export async function requestCredentialRotation(target, secret, { accountId } = 
     body: {
       taskType: CREDENTIAL_ROTATION_TASK,
       taskId,
-      params: { target, secret, requestedBy: accountId || null, enqueuedAt: nowIso() },
+      // `taskId` rides the PARAMS as well as the envelope: the consumer handler is
+      // called with `params` only, and F-304's idempotency claim needs a key that is
+      // stable across a redelivery of THIS event. `enqueuedAt` is the moment the admin
+      // asked, and it is what orders two rotations — never the consumer's clock, which
+      // is the moment a redelivery happened to arrive.
+      params: { target, secret, requestedBy: accountId || null, enqueuedAt: nowIso(), taskId },
     },
   });
   return { ok: true, taskId, queued: true };
@@ -807,6 +826,20 @@ export async function requestCredentialRotation(target, secret, { accountId } = 
  * old one — a rotation to a dead token would lock the tenant out of their own
  * connection, so the check happens BEFORE the side effect, like every other cap
  * in this app.
+ *
+ * F-304 — AT-LEAST-ONCE IS THE PLATFORM'S PROMISE, SO THE GUARD IS OURS. Two
+ * guards, both BEFORE the write:
+ *   1. An idempotency CLAIM on `git_rotate:<target>:<taskId>` (FAIL_IF_EXISTS,
+ *      24 h). A redelivery of the same event does nothing and says so.
+ *   2. An ORDERING check: a rotation is refused when the row already carries a
+ *      `rotatedAt` NEWER than this request's `enqueuedAt`. Without it, a late
+ *      redelivery of rotation A overwrites the newer token stored by rotation B —
+ *      an admin who fixed a mistyped token watches it silently revert, and the
+ *      next deploy 401s with nobody having asked for a change.
+ * The claim is RELEASED whenever the rotation does not complete, because a claim
+ * that outlives a failed attempt turns the platform's retry into a silent drop.
+ * Ordering uses `enqueuedAt` — when the ADMIN asked — never the consumer's clock,
+ * which is only when a redelivery happened to arrive.
  *
  * FORGE-IDENTITY arm: NOT verified, and that is PARKED, not an oversight (F-293).
  * Proving an Atlassian API token means calling `/rest/api/3/myself` with Basic
@@ -823,31 +856,77 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
   const secret = params && params.secret;
   if (!target || !secret) return { ok: false, error: "Nothing to rotate", code: "invalid" };
 
+  // The moment the ADMIN asked. Missing (a pre-F-304 event still on the queue)
+  // means "unknown", and an unknown moment never wins an ordering comparison.
+  const requestedAtMs = params && params.enqueuedAt ? Date.parse(params.enqueuedAt) : NaN;
+  const isStale = (rotatedAt) => {
+    if (!rotatedAt || Number.isNaN(requestedAtMs)) return false;
+    const appliedMs = Date.parse(rotatedAt);
+    return !Number.isNaN(appliedMs) && requestedAtMs < appliedMs;
+  };
+  const claimKey = params && params.taskId
+    ? gitRotateClaimKey(target.kind === "connection" ? target.id : "forge-identity", params.taskId)
+    : null;
+  const releaseClaim = async () => {
+    if (!claimKey) return;
+    try { await storage.delete(claimKey); } catch (_) { /* best-effort: the real answer is the caller's */ }
+  };
+  if (claimKey) {
+    try {
+      await storage.set(claimKey, { at: nowIso(), target: target.kind }, {
+        keyPolicy: "FAIL_IF_EXISTS",
+        ttl: { value: 24, unit: "HOURS" },
+      });
+    } catch (e) {
+      // Already claimed: this exact delivery has been handled. Not an error — the
+      // rotation the admin asked for did happen, once.
+      return { ok: true, rotated: null, duplicate: true };
+    }
+  }
+
   if (target.kind === "forge-identity") {
     const prev = await storage.get(FORGE_IDENTITY_KEY);
-    if (!prev) return { ok: false, error: "No Forge deploy identity is configured", code: "not_found" };
+    if (!prev) { await releaseClaim(); return { ok: false, error: "No Forge deploy identity is configured", code: "not_found" }; }
     const idTokenErr = tokenValueError(secret.token, "A replacement token is required");
-    if (idTokenErr) return { ok: false, error: idTokenErr, code: "invalid" };
+    if (idTokenErr) { await releaseClaim(); return { ok: false, error: idTokenErr, code: "invalid" }; }
+    if (isStale(prev.rotatedAt)) {
+      // A newer rotation is already stored. Applying this one would REVERT it.
+      return { ok: false, error: "A newer rotation has already been applied — nothing was changed", code: "stale" };
+    }
     await storage.set(FORGE_IDENTITY_KEY, {
       ...prev,
       email: secret.email || prev.email,
       token: String(secret.token),
-      // F-293 — the CONSENT record belongs to the credential that is stored NOW.
-      // `{...prev}` carried admin A's accountId and A's timestamp onto a token
-      // admin B handed over later, so getForgeIdentityStatus reported a consent
-      // that never happened for the credential in the box. The rotation's own
-      // requester and moment replace it; an unattributed rotation records null
-      // rather than inheriting somebody else's name.
-      consent: { accountId: (params && params.requestedBy) || null, at: nowIso() },
+      // F-303 — CONSENT IS COLLECTED, NEVER SYNTHESISED. `saveForgeIdentity` refuses
+      // without an explicit `consent: true`; the rotation path has no consent flag at
+      // all, so it cannot produce one. The F-293 cut stamped a fresh consent naming
+      // the ROTATION's requester, which made the record assert that admin B sat
+      // through a consent screen they were never shown — a fabricated audit trail is
+      // worse than a stale one.
+      //
+      // So: the ORIGINAL consent record is kept verbatim (it is the consent that was
+      // actually given, for this identity), and who replaced the token is recorded
+      // SEPARATELY under `rotation`. Two facts, two fields, neither pretending to be
+      // the other. `at` is the moment the ADMIN asked (`enqueuedAt`), not the moment
+      // the consumer got round to it.
+      consent: prev.consent || null,
+      rotation: {
+        requestedBy: (params && params.requestedBy) || null,
+        at: (params && params.enqueuedAt) || nowIso(),
+      },
+      rotatedAt: (params && params.enqueuedAt) || nowIso(),
       updatedAt: nowIso(),
     });
     return { ok: true, rotated: "forge-identity" };
   }
 
   const row = await getConnection(target.id);
-  if (!row) return { ok: false, error: "Unknown git connection", code: "not_found" };
+  if (!row) { await releaseClaim(); return { ok: false, error: "Unknown git connection", code: "not_found" }; }
   const connTokenErr = tokenValueError(secret.token, "A replacement token is required");
-  if (connTokenErr) return { ok: false, error: connTokenErr, code: "invalid" };
+  if (connTokenErr) { await releaseClaim(); return { ok: false, error: connTokenErr, code: "invalid" }; }
+  if (isStale(row.rotatedAt)) {
+    return { ok: false, error: "A newer rotation has already been applied — nothing was changed", code: "stale" };
+  }
   try {
     const probe = createGitProvider({
       kind: row.kind,
@@ -857,7 +936,9 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
     await probe.whoami();
   } catch (e) {
     const code = e instanceof GitProviderError ? e.code : "network";
-    // Nothing was written. The old credential is untouched and still works.
+    // Nothing was written. The old credential is untouched and still works — and the
+    // claim goes back, so the platform's retry of this delivery is not swallowed.
+    await releaseClaim();
     return { ok: false, error: "The replacement credential was rejected — nothing was changed", code };
   }
   await storage.set(gitConnSecretKey(target.id), {
@@ -871,6 +952,10 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
     authDeadAt: null,
     authDeadReason: null,
     lastCheckedAt: nowIso(),
+    // F-304's ordering mark: the moment the ADMIN asked for the credential that is
+    // now in the box. A later delivery carrying an EARLIER `enqueuedAt` is refused.
+    rotatedAt: (params && params.enqueuedAt) || nowIso(),
+    rotatedBy: (params && params.requestedBy) || null,
     updatedAt: nowIso(),
   });
   return { ok: true, rotated: "connection", id: target.id };

@@ -23,6 +23,8 @@
 //
 // Each seedBuiltinSkills scenario dynamic-imports a fresh skills.js (cache-bust query) so the module-level
 // _skillsSeeded flag resets ("cold container"); all instances share the ONE mock-kvs store.
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import {
   saveSkillInternal, fetchSkillsBlock,

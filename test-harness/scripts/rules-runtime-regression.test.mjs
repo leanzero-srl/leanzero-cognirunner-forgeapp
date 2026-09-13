@@ -7,6 +7,8 @@
 
 // Actual listener/job modules, mocked platform and sandbox boundary only.
 // Run: node --import ./lib/register-mocks.mjs scripts/rules-runtime-regression.test.mjs
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import { register } from "node:module";
 import assert from "node:assert/strict";
 import storage from "../lib/mock-kvs.mjs";

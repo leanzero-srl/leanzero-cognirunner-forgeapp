@@ -62,10 +62,6 @@ const fired = new Set(); // events we believe we fired
 async function main() {
   console.log(`LISTENERS E2E on ${BASE} (run ${RUN})`);
   const me = must(await jira("GET", "/rest/api/3/myself"), "myself");
-  // Mention events only fire when the mentioned user is notified — a self-mention is not. Pick another active human.
-  const others = (await jira("GET", "/rest/api/3/users/search?maxResults=50")).body || [];
-  const mentionee = (Array.isArray(others) ? others : []).find((u) => u.active && u.accountType === "atlassian" && u.accountId !== me.accountId) || me;
-  if (mentionee === me) note("no other active user on the site — mentions target the API user itself (mention events will not fire)");
   const who = await rulesApi.whoami();
   ok(who.ok && who.body.token, `REST API auth works (token ${who.body && who.body.token && who.body.token.prefix}…)`);
   const cat = await rulesApi.events();
@@ -78,6 +74,20 @@ async function main() {
   const proj = await disposableProject(jira, env);
   if (!proj) throw new Error("no project available on the site");
   console.log(`  using project ${proj.key} (${proj.name}, ${proj.projectTypeKey})`);
+
+  // MENTION EVENTS NEED A MENTIONEE WHO IS ACTUALLY NOTIFIED (F-449). Jira raises
+  // `avi:jira:mentioned:*` from the NOTIFICATION, not from the ADF node: a self-mention raises
+  // nothing, and neither does mentioning a human who cannot BROWSE this project — Jira drops the
+  // notification and the event with it. The old pick came from `/users/search`, which is
+  // site-wide and ordered by nothing useful: on wolfaenpak it returned an account with no access
+  // to the rules test project, so both mention events sat unproven at 24/25 for the whole suite.
+  // Ask the project instead: `/user/permission/search` answers exactly "who may browse HERE".
+  // This must run AFTER `proj` is known, which is why it is not up with `myself`.
+  const permSearch = await jira("GET", `/rest/api/3/user/permission/search?permissions=BROWSE_PROJECTS&projectKey=${encodeURIComponent(proj.key)}&maxResults=50`);
+  const browsers = (Array.isArray(permSearch.body) ? permSearch.body : []).filter((u) => u.active && u.accountType === "atlassian" && u.accountId !== me.accountId);
+  const mentionee = browsers[0] || me;
+  if (mentionee === me) note(`no other active human can browse ${proj.key} — mentions would target the API user itself; mention events will not fire`);
+  else console.log(`  mentionee ${mentionee.displayName} (browses ${proj.key})`);
   const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask && /task/i.test(t.name)) || types.find((t) => !t.subtask);
   const subType = types.find((t) => t.subtask);
@@ -189,7 +199,17 @@ async function main() {
   must(await jira("PUT", `/rest/api/3/version/${ver.id}`, { archived: false }), "version unarchive"); fired.add("avi:jira:unarchived:version");
   const ver2 = must(await jira("POST", "/rest/api/3/version", { name: `${TAG}-v2`, projectId: Number(proj.id) }), "version2"); created.versions.push(ver2.id);
   const mv = await jira("POST", `/rest/api/3/version/${ver2.id}/move`, { position: "First" }); if (mv.ok) fired.add("avi:jira:moved:version"); else note(`version move → ${mv.status}`);
-  const mg = await jira("POST", `/rest/api/3/version/${ver2.id}/removeAndSwap`, { moveFixIssuesTo: Number(ver.id), moveAffectedIssuesTo: Number(ver.id) }); if (mg.ok || mg.status === 204) { fired.add("avi:jira:merged:version"); fired.add("avi:jira:deleted:version"); created.versions = created.versions.filter((v) => v !== ver2.id); } else note(`version merge (removeAndSwap) → ${mg.status} ${JSON.stringify(mg.body).slice(0, 120)}`);
+  // A VERSION MERGE DELIVERS `deleted:version`, NOT `merged:version` (F-449). This fires the real
+  // merge endpoint — `PUT /version/{id}/mergeto/{target}`, which moves every fixVersion/affectedVersion
+  // onto the target and removes the source — not the delete-with-move `removeAndSwap` the suite used
+  // to call. Jira STILL raises only `avi:jira:deleted:version` for it. Proven on wolfaenpak
+  // 2026-09-14 with a listener subscribed to both: `mergeto` → 204, the version is gone (GET 404),
+  // the log carries `deleted:version` and `?resource=samples&eventType=avi:jira:merged:version`
+  // answers 404. `captureSample` runs before every filter, slice and brake, so "no run AND no
+  // sample" means the trigger was never invoked — Jira never sent it (the F-006 tell). So
+  // `merged:version` is NOT expected below: it is a catalogued event Jira does not deliver over
+  // REST, not an app defect, and claiming it kept the suite at 24/25 for ever.
+  const mg = await jira("PUT", `/rest/api/3/version/${ver2.id}/mergeto/${ver.id}`); if (mg.ok || mg.status === 204) { fired.add("avi:jira:deleted:version"); created.versions = created.versions.filter((v) => v !== ver2.id); } else note(`version merge (mergeto) → ${mg.status} ${JSON.stringify(mg.body).slice(0, 120)}`);
   const vd = await jira("POST", `/rest/api/3/version/${ver.id}/removeAndSwap`, {}); if (vd.ok || vd.status === 204) { fired.add("avi:jira:deleted:version"); created.versions = created.versions.filter((v) => v !== ver.id); } else note(`version delete → ${vd.status} ${JSON.stringify(vd.body).slice(0, 120)}`);
   // components
   const comp = must(await jira("POST", "/rest/api/3/component", { name: `${TAG}-comp`, project: proj.key }), "component"); created.components.push(comp.id); fired.add("avi:jira:created:component");
@@ -352,6 +372,10 @@ async function main() {
   for (const e of JIRA_EVENT_IDS) { const f = fired.has(e); const s = seen.has(e); if (f && s) hit++; if (f && !s) missed.push(e); console.log(`    ${s ? "✓" : f ? "✗" : "·"} ${e}${!f ? "  (not fired by this script)" : ""}`); }
   const extra = [...seen].filter((e) => !fired.has(e));
   if (extra.length) console.log(`    (also caught, fired implicitly by Jira: ${extra.join(", ")})`);
+  // Say out loud why this catalogued event is not in `fired`, so "· not fired" is never read as a
+  // gap in the app. It is a Jira-side limit, proven by a listener + an empty `?resource=samples`.
+  console.log("    NOT DELIVERABLE OVER REST (Jira-side, not an app defect):");
+  console.log("      · avi:jira:merged:version — `PUT /version/{id}/mergeto/{target}` is a real merge and still raises only deleted:version (F-449)");
   ok(missed.length === 0, `catch-all caught ${hit}/${fired.size} fired event types${missed.length ? ` — missing: ${missed.join(", ")}` : ""} (+${extra.length} caught implicitly, ${seen.size} distinct total)`);
 }
 

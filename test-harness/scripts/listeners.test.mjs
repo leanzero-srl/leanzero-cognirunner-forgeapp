@@ -9,6 +9,8 @@
 // validation/normalisation (the REST contract), static event matching, the
 // scheduler's tick planner, and the trigger's cheap early exits against a mocked
 // KVS/@forge/api. Run: node --import ../lib/register-mocks.mjs scripts/listeners.test.mjs
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import { register } from "node:module";
 import storage from "../lib/mock-kvs.mjs";
 import forgeApi, { pushed } from "../lib/mock-forge-api.mjs";

@@ -1157,6 +1157,109 @@ reset();
       "F-585.GRADING — scan_unavailable still clears; only scan_truncated blocks");
   }
 
+  /* ── F-596. THE SCAN WAS 5.8x UNDER ITS OWN WORST CASE ───────────────────────
+   *
+   * F-585's budget is 2000 rows per prefix. `va_exec` rows live `VA_CLAIM_TTL` (two days)
+   * and are NOT released on success, so at the DEFAULT 5 items per 5-minute tick a
+   * continuously working agent leaves 5 x 288 x 2 = 2 880 of them. Truncation BLOCKS the
+   * clear, so a deleted-and-re-created BUSY agent — the documented recovery for a
+   * mis-scoped one — truncated on every tick and stayed mute for up to two days, told only
+   * "purge still settling".
+   *
+   * The successor answers the same question in ONE read: the claim taker stamps
+   * `va_running:{agent}.newestTakeAt`, and a newest take older than the settle window
+   * means nothing it started can still be running. BOTH PATHS are asserted, because the
+   * fallback is the thing that keeps legacy agents correct. */
+  {
+    const AG6 = "job_f596";
+    const SETTLE = K.VA_PURGE_SETTLE_MS;
+
+    /* (a) THE FINDING. 2 880 retained claim rows — past the page budget, so the SCAN can
+     *     only say `scan_truncated` — and a marker whose newest take is long finished.
+     *     Before this, every tick blocked; now it clears on the first settled tick. */
+    reset();
+    const T0 = Date.now() - SETTLE - 60000;
+    const NOW = Date.now();
+    const CREATED = new Date(T0 + 5000).toISOString();
+    await L.markAgentPurged(kvs, AG6, { now: T0 });
+    for (let i = 0; i < 2880; i++) {
+      await kvs.set(K.vaExecClaimKey(AG6, `SUP-A${String(i).padStart(5, "0")}`, "t-old"), { at: new Date(T0 - 3600000).toISOString() });
+    }
+    eq((await L.liveClaimFor(kvs, AG6, { now: NOW })).reason, "scan_truncated",
+      "F-596.BUSY — an ordinary busy agent's 2 880 retained rows really do exceed the page budget");
+    await kvs.set(K.vaRunningKey(AG6), { newestTakeAt: new Date(NOW - SETTLE - 3600000).toISOString(), agent: AG6 });
+    const byMarker = await L.clearPurgeTombstone(kvs, AG6, { createdAt: CREATED, now: NOW });
+    eq(byMarker.cleared, true,
+      `F-596.BUSY — THE FINDING: the marker clears what the scan could only truncate on (got ${JSON.stringify(byMarker)})`);
+    eq(byMarker.claimScan, "marker", "F-596.BUSY — …and says which of the two answered");
+
+    /* (b) AND IT STILL BLOCKS WHEN A TURN IS REALLY RUNNING. Same 2 880 rows; this time
+     *     the marker is written by the REAL taker, so the field name the test hand-wrote
+     *     above is the field name the engine writes — a test that spelled its own would
+     *     pass against a marker nobody reads. */
+    const taken = await L.takeItemClaim(kvs, AG6, "SUP-LIVE", "t-now");
+    eq(taken.ok, true, "F-596.LIVE — the claim taker takes the claim as before");
+    const marker = await kvs.get(K.vaRunningKey(AG6));
+    ok(marker && typeof marker.newestTakeAt === "string",
+      `F-596.LIVE — …and stamps the newest take, in the shape the reader reads (got ${JSON.stringify(marker)})`);
+    await L.markAgentPurged(kvs, AG6, { now: T0 });
+    const blocked6 = await L.clearPurgeTombstone(kvs, AG6, { createdAt: CREATED, now: NOW });
+    eq(blocked6.cleared, false, "F-596.LIVE — a take inside the settle window keeps the tombstone standing");
+    eq(blocked6.settling, "claim", "F-596.LIVE — …under the gate name the tick already skips on");
+    eq(blocked6.claimSource, "marker", "F-596.LIVE — …attributed to the marker, so an operator can tell it from a scan hit");
+
+    /* (c) THE MARKER NEVER MOVES BACKWARDS. A marker that reads OLDER than the truth is
+     *     the one error that can authorise a clear while a turn is running, so a second
+     *     take cannot lower it. */
+    const future = new Date(NOW + 600000).toISOString();
+    await kvs.set(K.vaRunningKey(AG6), { newestTakeAt: future, agent: AG6 });
+    await L.takeItemClaim(kvs, AG6, "SUP-LATER", "t-now2");
+    eq((await kvs.get(K.vaRunningKey(AG6))).newestTakeAt, future,
+      "F-596.MONOTONIC — a take never moves the newest-take marker backwards");
+
+    /* (d) AN UNDATED MARKER BLOCKS, for the reason an undated claim row does: a take we
+     *     cannot date is a take we cannot prove is finished. */
+    reset();
+    await L.markAgentPurged(kvs, AG6, { now: T0 });
+    await kvs.set(K.vaRunningKey(AG6), { agent: AG6 });
+    eq((await L.clearPurgeTombstone(kvs, AG6, { createdAt: CREATED, now: NOW })).cleared, false,
+      "F-596.UNDATED — a marker with no instant cannot prove a turn finished, so it blocks");
+
+    /* (e) THE FALLBACK. No marker at all — a legacy agent, or one whose marker write
+     *     failed on purpose — is answered by the paginated scan, with F-585's truncation
+     *     rule INTACT. This is the half that must not regress. */
+    reset();
+    await L.markAgentPurged(kvs, AG6, { now: T0 });
+    for (let i = 0; i < 2001; i++) {
+      await kvs.set(K.vaExecClaimKey(AG6, `SUP-A${String(i).padStart(5, "0")}`, "t-old"), { at: new Date(T0 - 3600000).toISOString() });
+    }
+    ok((await kvs.get(K.vaRunningKey(AG6))) == null, "F-596.FALLBACK — a legacy agent has no marker");
+    const legacy = await L.clearPurgeTombstone(kvs, AG6, { createdAt: CREATED, now: NOW });
+    eq(legacy.cleared, false, "F-596.FALLBACK — …so the SCAN answers, and a truncated scan still blocks");
+    eq(legacy.settling, "scan_truncated", "F-596.FALLBACK — …by the name F-585 gave it");
+
+    // …and a legacy agent whose claim rows are all settled and inside the budget still
+    // clears through the scan, exactly as before.
+    reset();
+    await L.markAgentPurged(kvs, AG6, { now: T0 });
+    await kvs.set(K.vaExecClaimKey(AG6, "SUP-1", "t-old"), { at: new Date(T0 - 3600000).toISOString() });
+    const legacyClear = await L.clearPurgeTombstone(kvs, AG6, { createdAt: CREATED, now: NOW });
+    eq(legacyClear.cleared, true, "F-596.FALLBACK — a legacy agent with settled claims clears through the scan as before");
+    eq(legacyClear.claimScan, "clear", "F-596.FALLBACK — …and still reports an exhausted scan as the thing that answered");
+
+    /* (f) A MARKER THAT CANNOT BE WRITTEN IS DELETED, so the reader falls back rather than
+     *     trusting a stale instant. A confident wrong answer is the failure mode this
+     *     whole area exists to avoid. */
+    reset();
+    await kvs.set(K.vaRunningKey(AG6), { newestTakeAt: new Date(NOW - 1000).toISOString(), agent: AG6 });
+    kvs.__failSetWhen((k) => k === K.vaRunningKey(AG6), new Error("kvs throttled"));
+    await L.takeItemClaim(kvs, AG6, "SUP-2", "t-fault");
+    ok((await kvs.get(K.vaRunningKey(AG6))) == null,
+      "F-596.WRITE_FAULT — a marker that could not be refreshed is REMOVED, so the reader asks the scan instead of trusting it");
+    eq((await L.liveTakeFor(kvs, AG6, { now: NOW })).reason, "no_marker",
+      "F-596.WRITE_FAULT — …which is exactly what the reader reports");
+  }
+
   // THE GUARD FAILS OPEN ON A READ FAULT — stated in the source, asserted here, because a
   // blip that refused every write would silently mute a LIVE agent.
   reset();

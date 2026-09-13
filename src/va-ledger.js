@@ -48,6 +48,8 @@ import {
   VA_COMPACT_BACKOFF_TTL, VA_PURGED_TTL, VA_PURGED_TURNS_MAX, VA_PURGED_WRITES_PER_TURN,
   // F-575 — the settle window and the three claim prefixes a running turn holds.
   VA_PURGE_SETTLE_MS, vaClaimPrefixes,
+  // F-596 — the newest-take marker, which answers the same question in one read.
+  vaRunningKey,
 } from "./shared/va-keys.js";
 
 const nowIso = (now) => new Date(now == null ? Date.now() : now).toISOString();
@@ -225,9 +227,22 @@ export const recordPurgedTurnWrites = async (store, agent, { issueKey = null, la
 /** One KVS page. 100 is the page size every other paginated scan in this repo uses. */
 const SETTLE_SCAN_PAGE = 100;
 /**
- * Per prefix. 20 pages = up to 2000 rows, against a worst case of `maxItemsPerTick` (20)
- * x 288 ticks/day x 2 days of retained `va_exec` rows. It is a DEADLINE bound, not a
- * correctness one: hitting it is reported, never silently rounded down to "nothing here".
+ * Per prefix. 20 pages = up to 2000 rows. It is a DEADLINE bound, not a correctness one:
+ * hitting it is reported, never silently rounded down to "nothing here".
+ *
+ * F-596 — AND IT IS NOT BIG ENOUGH TO BE THE PRIMARY ANSWER, WHICH IS WHY IT NO LONGER IS.
+ * The note that used to sit here computed the worst case as `maxItemsPerTick` (20) x 288
+ * ticks/day x 2 days = 11 520 rows and then set the bound at 2000, presenting truncation
+ * as the exotic case. It is not: even at the DEFAULT 5 items per tick a continuously
+ * working agent leaves 2 880 retained `va_exec` rows inside `VA_CLAIM_TTL`, so an ordinary
+ * busy agent truncated — and truncation BLOCKS the clear, which meant a re-created agent
+ * stayed mute for up to two days. Raising the number would only move the horizon and pay
+ * for it in sequential `getMany`s inside a tick's deadline.
+ *
+ * So `clearPurgeTombstone` asks `liveTakeFor` first, which reads ONE row that carries the
+ * newest take, and this walk is the FALLBACK for agents with no marker yet. The bound
+ * stays where it is: as a fallback it runs rarely, and its honesty about truncation is
+ * the property that matters, not its reach.
  */
 const SETTLE_SCAN_MAX_PAGES = 20;
 
@@ -376,17 +391,41 @@ export const clearPurgeTombstone = async (store, agent, { createdAt = null, now 
   if (!(age >= settleMs)) {
     return { ok: false, cleared: false, reason: "purge-settling", settling: "window", ageMs: age, settleMs };
   }
-  /* — 3. THE CLAIM SCAN (F-575). Corroboration; "could not tell" does not block. — */
-  const claim = await liveClaimFor(store, agent, { now, window: settleMs });
+  /* — 3. THE CLAIM CHECK (F-575). Corroboration; "could not tell" does not block. —
+   *
+   * F-596 — THE MARKER FIRST, THE SCAN ONLY WHEN THERE IS NO MARKER.
+   *
+   * `liveClaimFor` enumerates a space to answer a question about its MAXIMUM, and F-585's
+   * page budget (2000 rows/prefix) is ~5.8x under the volume an ordinary busy agent leaves
+   * behind (5 items/tick x 288 ticks/day x 2 days of retained `va_exec` rows = 2 880). So
+   * the truncation arm below — which BLOCKS, correctly — was reachable on a normal agent,
+   * and a deleted-and-re-created busy one truncated on every tick and stayed mute for up
+   * to two days. `va_running:{agent}` carries that maximum directly, so the common path is
+   * now ONE read; the scan remains for agents that have taken no claim since this shipped,
+   * with its truncation rule untouched.
+   */
+  const marker = await liveTakeFor(store, agent, { now, window: settleMs });
+  const claim = marker.ok ? marker : await liveClaimFor(store, agent, { now, window: settleMs });
   if (claim.ok && claim.live) {
-    return { ok: false, cleared: false, reason: "purge-settling", settling: "claim", claimKey: claim.key || null };
+    // The same `settling:"claim"` the tick already knows how to skip on — one gate, one
+    // name — with `claimSource` saying which of the two answered, so an operator reading
+    // the receipt can tell an O(1) marker hit from a scan hit.
+    return {
+      ok: false, cleared: false, reason: "purge-settling", settling: "claim",
+      claimKey: claim.key || null, claimSource: claim.source || "scan",
+    };
   }
   // F-585 — the scan ran against THIS agent and could not finish. Rows we never read
   // cannot be reported as rows that are not there, so this is a refusal, not a clear.
   if (!claim.ok && claim.reason === "scan_truncated") {
     return { ok: false, cleared: false, reason: "purge-settling", settling: "scan_truncated", prefix: claim.prefix || null, checked: claim.checked };
   }
-  try { await store.delete(vaPurgedKey(agent)); return { ok: true, cleared: true, claimScan: claim.ok ? "clear" : claim.reason }; }
+  try {
+    await store.delete(vaPurgedKey(agent));
+    // WHAT ANSWERED, always said out loud: `marker` (F-596's one read), `clear` (an
+    // exhausted scan) or the name of the corroboration that was NOT obtained.
+    return { ok: true, cleared: true, claimScan: claim.ok ? (claim.source === "marker" ? "marker" : "clear") : claim.reason };
+  }
   catch (e) { return { ok: false, cleared: false, reason: "tombstone_clear_failed", detail: String((e && e.message) || e) }; }
 };
 
@@ -894,14 +933,72 @@ export const diffCandidates = (sweep = [], rows = {}, { maxItemsPerTick = VA_LIM
  * `isKeyConflict` (kvs-keys.js) is the ONLY predicate allowed to read a conflict as
  * "already claimed": a 429 is infrastructure, not a duplicate.
  */
-const takeClaim = async (store, key, source) => {
+/**
+ * F-596 — THE NEWEST-TAKE MARKER, WRITTEN BY WHOEVER WON THE CLAIM.
+ *
+ * One row per agent summarising the three claim prefixes: the instant this agent last
+ * BEGAN anything. `liveTakeFor` reads it instead of enumerating the claim space (see
+ * `vaRunningKey` in src/shared/va-keys.js for why the enumeration could not hold).
+ *
+ * `max(existing, now)` rather than a bare `set`: two takes racing, a redelivery, or clock
+ * slop between containers must never move the marker BACKWARDS, because a marker that
+ * reads older than the truth is the one error that can authorise a clear while a turn is
+ * running. The extra read costs one `get` on a path that is already writing.
+ *
+ * FAIL-SOFT WITH A DELIBERATE FALLBACK: if the marker cannot be written it is DELETED, so
+ * the reader finds nothing and falls back to the paginated scan. A stale marker would be
+ * a confident wrong answer; an absent one is an honest "ask the slow way".
+ */
+const touchRunningMarker = async (store, agent, now) => {
+  const at = nowIso(now);
+  try {
+    let prior = null;
+    try { prior = await store.get(vaRunningKey(agent)); } catch (e) { prior = null; }
+    const priorAt = isObj(prior) ? Date.parse(prior.newestTakeAt || "") : NaN;
+    const newest = (Number.isFinite(priorAt) && priorAt > Date.parse(at)) ? prior.newestTakeAt : at;
+    await store.set(vaRunningKey(agent), { newestTakeAt: newest, agent: String(agent) }, VA_CLAIM_TTL);
+    return { ok: true, newestTakeAt: newest };
+  } catch (e) {
+    try { await store.delete(vaRunningKey(agent)); } catch (e2) { /* the reader falls back either way */ }
+    return fail("running_marker_write_failed", { detail: String((e && e.message) || e) });
+  }
+};
+
+const takeClaim = async (store, agent, key, source, now = Date.now()) => {
   try {
     const won = await claimRuleExecution(store, key, VA_CLAIM_TTL, source, { failClosed: true });
+    // F-596 — only the WINNER stamps it. A take that lost the race did not begin anything,
+    // and the winner's own stamp already covers the instant.
+    if (won) await touchRunningMarker(store, agent, now);
     return won ? { ok: true, claimed: true, key } : { ok: false, claimed: false, reason: "already_claimed", key };
   } catch (e) {
     if (isKeyConflict(e)) return { ok: false, claimed: false, reason: "already_claimed", key };
     return { ok: false, claimed: false, reason: "storage_fault", detail: String((e && e.message) || e), key };
   }
+};
+
+/**
+ * F-596 — "COULD A TURN OF THIS AGENT STILL BE RUNNING?", in one read.
+ *
+ * Same three answers as `liveClaimFor` and the same contract: `ok:false` means COULD NOT
+ * TELL, never a negative. Here there is only one flavour of it — `no_marker`, which is a
+ * legacy agent (or a marker write that failed on purpose, see `touchRunningMarker`) and
+ * which sends `clearPurgeTombstone` to the paginated scan.
+ *
+ * AN UNPARSEABLE `newestTakeAt` COUNTS AS LIVE, for the reason an undated claim row does:
+ * a take we cannot date is a take we cannot prove is finished, and this is the decision
+ * where doubt must block rather than pass.
+ */
+export const liveTakeFor = async (store, agent, { now = Date.now(), window = VA_PURGE_SETTLE_MS } = {}) => {
+  let row = null;
+  try { row = await store.get(vaRunningKey(agent)); }
+  catch (e) { return { ok: false, live: false, reason: "marker_read_failed", detail: String((e && e.message) || e) }; }
+  if (!isObj(row)) return { ok: false, live: false, reason: "no_marker" };
+  const at = Date.parse(row.newestTakeAt || "");
+  if (!Number.isFinite(at)) return { ok: true, live: true, reason: "take_undated", source: "marker" };
+  return (Number(now) - at < window)
+    ? { ok: true, live: true, at: row.newestTakeAt, source: "marker" }
+    : { ok: true, live: false, at: row.newestTakeAt, source: "marker" };
 };
 
 const releaseClaim = async (store, key) => {
@@ -910,11 +1007,11 @@ const releaseClaim = async (store, key) => {
 };
 
 export const takeItemClaim = (store, agent, issueKey, tickId) =>
-  takeClaim(store, vaExecClaimKey(agent, issueKey, tickId), "va-item");
+  takeClaim(store, agent, vaExecClaimKey(agent, issueKey, tickId), "va-item");
 export const releaseItemClaim = (store, agent, issueKey, tickId) =>
   releaseClaim(store, vaExecClaimKey(agent, issueKey, tickId));
 export const takePostClaim = (store, agent, issueKey, stagedAt) =>
-  takeClaim(store, vaPostClaimKey(agent, issueKey, stagedAt), "va-post");
+  takeClaim(store, agent, vaPostClaimKey(agent, issueKey, stagedAt), "va-post");
 export const releasePostClaim = (store, agent, issueKey, stagedAt) =>
   releaseClaim(store, vaPostClaimKey(agent, issueKey, stagedAt));
 
@@ -925,7 +1022,7 @@ export const releasePostClaim = (store, agent, issueKey, stagedAt) =>
  * duplicate trigger delivery for one 5-minute tick must buy exactly one of them.
  */
 export const takeCompactClaim = (store, agent, tickId) =>
-  takeClaim(store, vaCompactClaimKey(agent, tickId), "va-compact");
+  takeClaim(store, agent, vaCompactClaimKey(agent, tickId), "va-compact");
 export const releaseCompactClaim = (store, agent, tickId) =>
   releaseClaim(store, vaCompactClaimKey(agent, tickId));
 

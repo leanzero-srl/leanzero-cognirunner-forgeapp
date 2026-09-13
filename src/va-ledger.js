@@ -121,10 +121,10 @@ export const markAgentPurged = async (store, agent, { now = Date.now() } = {}) =
 /**
  * F-575 — "IS A TURN OF THE DELETED AGENT STILL HOLDING A CLAIM?"
  *
- * A bounded `BEGINS_WITH` scan of the three claim prefixes (`src/shared/va-keys.js` lists
- * them; this file retypes none of them). The rows are `{at}` written by
- * `claimRuleExecution`, so a claim is treated as LIVE only when its `at` is inside the
- * settle window — and that qualification is the whole reason this is usable at all:
+ * A `BEGINS_WITH` scan of the three claim prefixes (`src/shared/va-keys.js` lists them;
+ * this file retypes none of them). The rows are `{at}` written by `claimRuleExecution`,
+ * so a claim is treated as LIVE only when its `at` is inside the settle window — and that
+ * qualification is the whole reason this is usable at all:
  *
  *   `withItemClaim` DOES NOT RELEASE ON SUCCESS, deliberately, so that a queue
  *   redelivery cannot repeat a finished turn. The row therefore survives for
@@ -132,32 +132,101 @@ export const markAgentPurged = async (store, agent, { now = Date.now() } = {}) =
  *   "a turn is running"; testing mere existence would mean no tombstone could ever be
  *   cleared inside two days, which is the three-day lockout with extra steps.
  *
- * It answers `{ok, live, checked}` and NEVER throws. `ok:false` means "could not tell" —
- * an unavailable `query()` (the production `lazyStore` only grew one for this) or a scan
- * fault — and the caller treats that as corroboration it did not get, NOT as proof of a
- * live turn, because the settle window above it is the actual guarantee.
+ * ── F-585. THE RULE FOR EVERY "IS ANYTHING STILL RUNNING" SCAN IN THIS FILE ──────────
+ *
+ * THIS FUNCTION SHIPPED WITH A BOUND IT COULD NOT SEE PAST, AND THE BOUND ATE THE ANSWER.
+ * It took `limit(25)` of ONE page per prefix and never followed the cursor. Because those
+ * two-day-lived rows accumulate (`va_exec:{agent}:{issueKey}:{tickId}` — hundreds on any
+ * agent that has done work) and because the keys sort by ISSUE KEY, not by time, a live
+ * claim on a late-alphabet issue sat past the end of page one and was simply unreachable.
+ * The function then answered `live:false` — and `clearPurgeTombstone` read that as PROOF
+ * the agent was quiet and deleted the tombstone. That is the proven-negative trap: an
+ * empty result from a query that could not see the whole space is not a negative, it is
+ * an ABSENCE OF EVIDENCE, and it must never be allowed to authorise a destructive step.
+ *
+ * So, for this scan AND FOR ANY LIVENESS SCAN ADDED HERE LATER (use `scanForLiveRow`):
+ *
+ *   1. FOLLOW THE CURSOR TO EXHAUSTION. A single page is never an answer about a space
+ *      whose size you do not control.
+ *   2. BOUND IT ANYWAY, because a tick has a deadline — but when the bound is reached,
+ *      SAY `scan_truncated`. NEVER `live:false`. A truncated scan did not finish, and a
+ *      scan that did not finish has not proven anything.
+ *   3. THE CALLER TREATS TRUNCATION AS "STILL RUNNING", not as "clear". See the note on
+ *      `clearPurgeTombstone` condition 3 for why truncation is graded differently from
+ *      `scan_unavailable`, and for the lockout that choice can cost.
+ *
+ * It answers `{ok, live, checked}` and NEVER throws. `ok:false` means "COULD NOT TELL" in
+ * all three of its flavours — `scan_unavailable` (the store has no `query()` at all),
+ * `scan_failed` (the scan threw) and `scan_truncated` (the page budget ran out) — and it
+ * is the CALLER, not this function, that decides which of those may authorise a clear.
+ * This function's only promise is that it never dresses a non-answer up as a negative.
  */
-const SETTLE_SCAN_LIMIT = 25;
+/** One KVS page. 100 is the page size every other paginated scan in this repo uses. */
+const SETTLE_SCAN_PAGE = 100;
+/**
+ * Per prefix. 20 pages = up to 2000 rows, against a worst case of `maxItemsPerTick` (20)
+ * x 288 ticks/day x 2 days of retained `va_exec` rows. It is a DEADLINE bound, not a
+ * correctness one: hitting it is reported, never silently rounded down to "nothing here".
+ */
+const SETTLE_SCAN_MAX_PAGES = 20;
+
+/**
+ * The paginated liveness primitive. Walks one prefix to exhaustion or to the page cap and
+ * returns the FIRST row `decide()` calls live. Every future "is anything still running"
+ * scan in this file goes through here, so that F-585 cannot be re-introduced by writing a
+ * second `getMany()` by hand.
+ *
+ * `{done:false, truncated:true}` is the load-bearing case: it means the walk stopped early
+ * and the caller has NOT been told the prefix is quiet.
+ */
+const scanForLiveRow = async (store, prefix, decide, { maxPages = SETTLE_SCAN_MAX_PAGES, pageSize = SETTLE_SCAN_PAGE } = {}) => {
+  let cursor; let pages = 0; let checked = 0;
+  while (pages < maxPages) {
+    let page = null;
+    try {
+      let q = store.query().where("key", { condition: "BEGINS_WITH", values: [prefix] }).limit(pageSize);
+      if (cursor) q = q.cursor(cursor);
+      page = await q.getMany();
+    } catch (e) {
+      return { done: false, failed: true, checked, pages, detail: String((e && e.message) || e) };
+    }
+    pages += 1;
+    for (const row of (page && Array.isArray(page.results) ? page.results : [])) {
+      checked += 1;
+      const verdict = decide(row);
+      if (verdict) return { done: true, hit: { row, verdict }, checked, pages };
+    }
+    cursor = page && page.nextCursor;
+    // NO CURSOR = THE PREFIX IS EXHAUSTED. This is the only path that earns `done:true`
+    // without a hit, and therefore the only path that may be read as a proven negative.
+    if (!cursor) return { done: true, hit: null, checked, pages };
+  }
+  return { done: false, truncated: true, checked, pages };
+};
+
 export const liveClaimFor = async (store, agent, { now = Date.now(), window = VA_PURGE_SETTLE_MS } = {}) => {
   const q = typeof store.query === "function" ? store.query() : null;
   if (!q) return { ok: false, live: false, checked: 0, reason: "scan_unavailable" };
   let checked = 0;
   for (const prefix of vaClaimPrefixes(agent)) {
-    let page = null;
-    try {
-      page = await store.query().where("key", { condition: "BEGINS_WITH", values: [prefix] }).limit(SETTLE_SCAN_LIMIT).getMany();
-    } catch (e) {
-      return { ok: false, live: false, checked, reason: "scan_failed", detail: String((e && e.message) || e) };
-    }
-    for (const row of (page && Array.isArray(page.results) ? page.results : [])) {
-      checked += 1;
+    const res = await scanForLiveRow(store, prefix, (row) => {
       const v = row && row.value;
       const at = Date.parse((isObj(v) && v.at) || "");
       // AN UNPARSEABLE `at` COUNTS AS LIVE. A claim row we cannot date is a claim we
-      // cannot prove is finished, and this is the one place in the function where doubt
+      // cannot prove is finished, and this is the one place in the decision where doubt
       // must block rather than pass.
-      if (!Number.isFinite(at)) return { ok: true, live: true, checked, key: row && row.key, reason: "claim_undated" };
-      if (now - at < window) return { ok: true, live: true, checked, key: row && row.key, at: v.at };
+      if (!Number.isFinite(at)) return { undated: true };
+      return (now - at < window) ? { at: v.at } : null;
+    });
+    checked += res.checked;
+    if (res.failed) return { ok: false, live: false, checked, reason: "scan_failed", detail: res.detail };
+    // F-585 — the cap was reached with the prefix unread. NOT a negative. Say so.
+    if (res.truncated) return { ok: false, live: false, checked, reason: "scan_truncated", prefix, pages: res.pages };
+    if (res.hit) {
+      const { row, verdict } = res.hit;
+      return verdict.undated
+        ? { ok: true, live: true, checked, key: row && row.key, reason: "claim_undated" }
+        : { ok: true, live: true, checked, key: row && row.key, at: verdict.at };
     }
   }
   return { ok: true, live: false, checked };
@@ -199,6 +268,30 @@ export const liveClaimFor = async (store, agent, { now = Date.now(), window = VA
  *    making an unavailable scan mean "refuse" would restore the three-day lockout on any
  *    store without a query builder.
  *
+ *    F-585 — A TRUNCATED SCAN IS GRADED DIFFERENTLY, AND BLOCKS. The three "could not
+ *    tell" answers are not equally ignorant, and the difference decides who pays:
+ *      · `scan_unavailable` — the STORE has no query builder. No agent on such a store can
+ *        ever be corroborated, so refusing would lock out an entire class of store for
+ *        nothing. Does not block.
+ *      · `scan_failed` — a transient blip. The next tick retries; condition 2 holds now.
+ *        Does not block.
+ *      · `scan_truncated` — the scan RAN, against THIS agent, and found more claim rows
+ *        than its page budget could read. That is not a store limitation, it is a
+ *        statement about this agent's own claim space: there are rows we did not look at,
+ *        and any one of them could be the live turn. Deleting the tombstone on the back of
+ *        that is the exact proven-negative trap F-585 names. It BLOCKS, with
+ *        `settling:"scan_truncated"`.
+ *
+ *    WHAT TRUNCATION COSTS, STATED PLAINLY. Unlike the other refusals this one does not
+ *    necessarily clear on the next tick: if the dead agent really did leave more than
+ *    `SETTLE_SCAN_MAX_PAGES` x `SETTLE_SCAN_PAGE` rows under a prefix, every tick truncates
+ *    and the re-created agent stays locked out until those rows age out (`VA_CLAIM_TTL`,
+ *    two days). That is the worse of two bad days and it is chosen deliberately: a lockout
+ *    is LOUD (`purge-settling` / `settling:"scan_truncated"` lands in the tick receipt, so
+ *    an operator can see it and why), bounded, and costs an agent its voice; the
+ *    alternative is a dead agent's in-flight turn writing into the live agent's ledger —
+ *    silent, unbounded and unrecoverable. Loud and inert beats quiet and wrong.
+ *
  * The refusal reason for 2 and 3 is `purge-settling`, and it is not an error: the tick that
  * gets it skips, and the NEXT tick clears. The cost of the whole fix is one extra tick for a
  * re-created agent.
@@ -226,6 +319,11 @@ export const clearPurgeTombstone = async (store, agent, { createdAt = null, now 
   const claim = await liveClaimFor(store, agent, { now, window: settleMs });
   if (claim.ok && claim.live) {
     return { ok: false, cleared: false, reason: "purge-settling", settling: "claim", claimKey: claim.key || null };
+  }
+  // F-585 — the scan ran against THIS agent and could not finish. Rows we never read
+  // cannot be reported as rows that are not there, so this is a refusal, not a clear.
+  if (!claim.ok && claim.reason === "scan_truncated") {
+    return { ok: false, cleared: false, reason: "purge-settling", settling: "scan_truncated", prefix: claim.prefix || null, checked: claim.checked };
   }
   try { await store.delete(vaPurgedKey(agent)); return { ok: true, cleared: true, claimScan: claim.ok ? "clear" : claim.reason }; }
   catch (e) { return { ok: false, cleared: false, reason: "tombstone_clear_failed", detail: String((e && e.message) || e) }; }

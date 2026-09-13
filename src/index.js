@@ -4987,7 +4987,7 @@ resolver.define("addAppAdmin", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
     return needRole("admin");
   }
-  const { accountId, displayName, role, scope } = payload;
+  const { accountId, displayName, role, scope, emailAddress } = payload;
   if (!accountId) return { success: false, error: "Account ID required" };
   const assignRole = VALID_ROLES.includes(role) ? role : "viewer";
   const assignScope = assignRole === "admin" ? "all" : (VALID_SCOPES.includes(scope) ? scope : "own");
@@ -4996,7 +4996,16 @@ resolver.define("addAppAdmin", async ({ payload, context }) => {
   if (users.some((a) => (typeof a === "string" ? a : a.accountId) === accountId)) {
     return { success: false, error: "User already has a role" };
   }
-  users.push({ accountId, displayName: displayName || accountId, role: assignRole, scope: assignScope });
+  // F-647 — the roster card must be able to show the SAME discriminator the admin
+  // clicked in the picker, so the email the search row carried is persisted with the
+  // grant (clamped and length-bounded; the key is OMITTED, never stored empty, when
+  // there is none, which is the signal the UI falls back to the account id segment).
+  // It is stored for display only and is never written to an execution log.
+  const email = typeof emailAddress === "string" ? emailAddress.trim().slice(0, 254) : "";
+  users.push({
+    accountId, displayName: displayName || accountId, role: assignRole, scope: assignScope,
+    ...(email ? { emailAddress: email } : {}),
+  });
   await storage.set(APP_ADMINS_KEY, users);
   return { success: true };
 });
@@ -5102,6 +5111,13 @@ resolver.define("searchUsers", async ({ payload, context }) => {
         accountId: u.accountId,
         displayName: u.displayName,
         avatarUrl: u.avatarUrls?.["24x24"],
+        // F-647 — Jira returns emailAddress only when the caller is allowed to see it
+        // (profile visibility / GDPR strict mode), so the key is ABSENT rather than
+        // empty when it is not available. Never logged: it only ever goes to the admin
+        // picker as a discriminator between namesakes.
+        ...(typeof u.emailAddress === "string" && u.emailAddress.trim()
+          ? { emailAddress: u.emailAddress.trim() }
+          : {}),
       })),
     };
   } catch (e) {

@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// F-648 — THE USER PICKER THAT BACKS A ROLE GRANT.
+// F-648 / F-647 — THE USER PICKER THAT BACKS A ROLE GRANT.
 //
 // F-648: `searchUsers` used to answer EVERY Jira-side failure with
 // `{ success: true, users: [] }`, which the Permissions tab renders as "No users
@@ -14,6 +14,11 @@
 // complete result set would have disambiguated. The resolver now fails CLOSED for
 // the whole transport class, with `reason: "jira_unavailable"` kept DISTINCT from
 // the admin-gate refusal (`reason: "no-permission"`, + needsRole/hint).
+//
+// F-647 (backend half): both surfaces must be able to show the SAME discriminator,
+// so `searchUsers` maps `emailAddress` through when Jira returns one (it is absent,
+// not empty, when the caller may not see it) and `addAppAdmin` persists it on the
+// roster row so the roster read carries it back.
 //
 // Run: node scripts/search-users.test.mjs (auto-discovered by run-offline.mjs)
 
@@ -74,6 +79,42 @@ for (const status of [403, 429, 500]) {
   const refused = await call("searchUsers", { query: "mihai" }, VIEWER);
   ok(refused && refused.success === false && refused.reason === "no-permission" && refused.needsRole === "admin",
     `a non-admin still gets the F-257 refusal, not the transport one (got ${JSON.stringify(refused).slice(0, 160)})`);
+}
+
+/* ===== 4. F-647 — emailAddress rides the search row when Jira returns one ===== */
+{
+  forgeApi.__respond(() => forgeApi.__response(200, [
+    { accountId: "8888", displayName: "Mihai Perdum", emailAddress: " mihai.a@example.com ", avatarUrls: { "24x24": "a.png" } },
+    { accountId: "9999", displayName: "Mihai Perdum", avatarUrls: { "24x24": "b.png" } },
+    { accountId: "7777", displayName: "Mihai Perdum", emailAddress: "" },
+  ]));
+  const r = await call("searchUsers", { query: "mihai" });
+  ok(r.success === true && r.users.length === 3, "a 200 maps every row through");
+  ok(r.users[0].emailAddress === "mihai.a@example.com", "an available email is carried (and trimmed)");
+  ok(!("emailAddress" in r.users[1]), "a row Jira gave no email for OMITS the key rather than sending an empty string");
+  ok(!("emailAddress" in r.users[2]), "an empty-string email is treated as absent, not as a blank discriminator");
+  ok(r.users[0].accountId === "8888" && r.users[0].displayName === "Mihai Perdum" && r.users[0].avatarUrl === "a.png",
+    "the pre-existing row fields are unchanged");
+}
+
+/* ===== 5. F-647 — the roster row stores the email and the roster READ carries it ===== */
+{
+  const added = await call("addAppAdmin", {
+    accountId: "8888", displayName: "Mihai Perdum", role: "editor", scope: "own",
+    emailAddress: "mihai.a@example.com",
+  });
+  ok(added && added.success === true, `the grant succeeds (got ${JSON.stringify(added).slice(0, 160)})`);
+  const stored = (await storage.get("app_admins")).find((a) => a.accountId === "8888");
+  ok(stored && stored.emailAddress === "mihai.a@example.com", "the persisted roster row keeps the discriminator");
+  const roster = await call("getAppAdmins", {});
+  const row = roster.admins.find((a) => a.accountId === "8888");
+  ok(row && row.emailAddress === "mihai.a@example.com",
+    "the roster READ hands the SAME string back, so both surfaces can show one discriminator");
+
+  const noEmail = await call("addAppAdmin", { accountId: "9999", displayName: "Mihai Perdum", role: "viewer" });
+  const stored2 = (await storage.get("app_admins")).find((a) => a.accountId === "9999");
+  ok(noEmail.success === true && !("emailAddress" in stored2),
+    "a grant with no email stores NO key, so the UI falls back to the account id segment");
 }
 
 console.log(`\nsearch-users: ${pass} passed, ${fail} failed`);

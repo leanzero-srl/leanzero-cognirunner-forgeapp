@@ -1011,6 +1011,12 @@ export async function testStateTrigger(req) {
      * tick. The KEY and the TTL come from `src/shared/va-keys.js`, the module that owns
      * them; nothing is retyped here.
      *
+     * F-628 — a plant may additionally carry `turns`, the writes that landed while the
+     * agent was being deleted. They are written through the PRODUCT's own writer
+     * (`recordPurgedTurnWrites`, src/va-ledger.js), one turn per call, never by a second
+     * writer in this file — see the block below for why that distinction is the whole
+     * value of the door.
+     *
      * WHY IT IS NOT A PLANTABLE PERMISSION (the objection the old driver recorded when
      * it refused to add `va_purged:*` to `kvSet`'s allow-list). A tombstone GRANTS
      * nothing: every writer that reads one REFUSES under it. Planting one can only take
@@ -1037,6 +1043,10 @@ export async function testStateTrigger(req) {
       if (op === "read") return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
       if (op === "clear") { await storage.delete(key); return json(200, { ok: true, key, row: (await storage.get(key)) ?? null }); }
       if (op === "plant" || op === "age") {
+        // F-628 — a write body may never name a credential. One home, shared with the
+        // F-627 pipeline door, and asked BEFORE anything is read or written.
+        const leak = findPlantedSecret(body);
+        if (leak) return json(400, { error: SECRET_PLANT_REFUSAL, harnessRefusal: "secret-field", field: leak.field, why: leak.why });
         const { getJob } = await import("./scheduled-jobs.js");
         const job = await getJob(agent);
         // A tombstone for an id that is not a live row would be unreachable litter, and
@@ -1048,13 +1058,70 @@ export async function testStateTrigger(req) {
         const createdMs = Date.parse((job.createdAt == null ? "" : job.createdAt));
         const wanted = Date.now() - ageMs;
         const at = Number.isFinite(createdMs) ? Math.min(wanted, createdMs - 1000) : wanted;
-        const row = { at: new Date(at).toISOString(), agent, plantedBy: "harness" };
+        const row = {
+          at: new Date(at).toISOString(),
+          agent,
+          plantedBy: "harness",
+          // F-628 — `age` rewrites the row, so without this an age would silently ERASE
+          // the turns a plant had recorded. The carrier survives its own timestamp move.
+          ...(existing && Array.isArray(existing.turns) && existing.turns.length ? { turns: existing.turns } : {}),
+        };
         await storage.set(key, row, VA_PURGED_TTL);
+
+        /* ── F-628 — THE TURNS THAT LANDED WHILE THE AGENT WAS BEING DELETED ────────
+         * F-608's "recently deleted agents that wrote during deletion" panel returns a
+         * row ONLY when `turns[].landedWrites` is non-empty, and the sole producer of
+         * that field is `recordPurgedTurnWrites` running inside a turn that is writing
+         * to Jira at the moment the agent is deleted — a race no driver can schedule. So
+         * the panel could only ever be proven EMPTY live, and an empty list is not
+         * evidence that a populated one would render.
+         *
+         * THE WRITE GOES THROUGH THE PRODUCT'S OWN WRITER, ONE TURN PER CALL. That is
+         * the whole point: a second writer here would produce a row that merely RESEMBLES
+         * what a real race produces, and the panel would then be proven against the
+         * harness's idea of the shape rather than the engine's. `recordPurgedTurnWrites`
+         * applies its own caps, refuses when no tombstone stands, and is the thing whose
+         * output `listRecentPurges` projects.
+         *
+         * CLAMPED HERE FIRST, well inside the product's own bounds: at most five turns of
+         * at most five writes each, every string 64 characters. A tombstone GRANTS
+         * nothing — every ledger writer refuses under one — so its CONTENT grants nothing
+         * either, which is why the objection that keeps `va_purged:*` out of `kvSet` does
+         * not reach this. `at` is clamped to the last seven days and never to the future. */
+        let noted = null;
+        if (body.turns !== undefined) {
+          if (!Array.isArray(body.turns)) return json(400, { error: "turns must be an array" });
+          const { recordPurgedTurnWrites } = await import("./va-ledger.js");
+          const results = [];
+          for (const t of body.turns.slice(0, 5)) {
+            if (!t || typeof t !== "object") return json(400, { error: "each turn must be an object" });
+            const writes = (Array.isArray(t.writes) ? t.writes : [])
+              .slice(0, 5)
+              .map((w) => String(w == null ? "" : w).slice(0, 64))
+              .filter(Boolean);
+            if (!writes.length) return json(400, { error: "each turn needs at least one write string" });
+            let issueKey = null;
+            if (t.issueKey !== undefined && t.issueKey !== null && String(t.issueKey) !== "") {
+              issueKey = String(t.issueKey);
+              if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(issueKey)) return json(400, { error: `turn issueKey must be an issue key (got ${issueKey.slice(0, 40)})` });
+            }
+            const wantedAt = Date.parse(t.at == null ? "" : String(t.at));
+            const now = Number.isFinite(wantedAt)
+              ? Math.max(Date.now() - 7 * 24 * 3600 * 1000, Math.min(Date.now(), wantedAt))
+              : Date.now();
+            results.push(await recordPurgedTurnWrites(storage, agent, { issueKey, landedWrites: writes, now }));
+          }
+          noted = results;
+        }
+
         return json(200, {
-          ok: true, key, row, op,
+          ok: true, key, row: (await storage.get(key)) ?? row, op,
           jobCreatedAt: job.createdAt || null,
           effectiveAgeMs: Date.now() - at,
           clampedToCreatedAt: Number.isFinite(createdMs) && wanted > createdMs - 1000,
+          // What the PRODUCT's writer said about each turn — `{ok:true, turns, writes}`
+          // or its own refusal reason. A driver grades on the writer's answer, not on ours.
+          ...(noted ? { noted } : {}),
         });
       }
       return json(400, { error: `unknown op "${op}" for vaTombstone (plant|age|read|clear)` });

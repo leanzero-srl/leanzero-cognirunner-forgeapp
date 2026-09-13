@@ -561,7 +561,7 @@ try {
   }
   /* ---------------- M2 — admin Memories tab: store FULL banner (F-167), both themes ----------------
    * Same storeFull signal as the config-ui Knowledge panel, same wording (MemoryFullBanner is
-   * imported, not re-typed), rendered above the admin table where pruning actually happens. */
+   * imported, not re-typed), rendered above the admin table where deleting actually happens. */
   for (const theme of ["light", "dark"]) {
     console.log(`M2 admin memories store-full banner — ${theme}`);
     const env = await openAdmin(browser, theme, { __MEMORY_FULL__: true });
@@ -573,6 +573,14 @@ try {
       const btxt = await banner.innerText();
       ok(/Memory store is full/i.test(btxt), `M2 ${theme} banner renders in the admin Memories tab`);
       ok(/not being kept since/i.test(btxt) && /resume learning/i.test(btxt), `M2 ${theme} banner carries the full wording`);
+      // F-179 — the admin twin imports MemoryFullBanner from the config-ui MemoriesTab, so it
+      // can only ever show the same words. Assert the policy sentence here TOO: this is the
+      // surface an admin reads when the AI has gone quiet, and it is the one place where
+      // "just archive them" is the wrong instinct to leave unchallenged.
+      ok(/Archived memories still count toward the cap/i.test(btxt),
+        `M2 ${theme} admin banner says archiving does NOT free capacity`);
+      ok(/delete some to resume learning/i.test(btxt), `M2 ${theme} admin banner names deleting as the escape`);
+      ok(!/merge/i.test(btxt) && !/prune/i.test(btxt), `M2 ${theme} admin banner drops "merge"/"prune"`);
       const style = await banner.evaluate((el) => {
         const c = getComputedStyle(el);
         return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth };
@@ -581,6 +589,29 @@ try {
       ok(rgb[0] > 180 && rgb[1] < 90 && rgb[2] < 90, `M2 ${theme} solid red fill — got ${style.bg}`);
       ok(/255,\s*255,\s*255/.test(style.fg), `M2 ${theme} white text — got ${style.fg}`);
       ok(style.bl === style.bt, `M2 ${theme} no left accent rail`);
+
+      /* F-182 — the banner is not the only place the wrong instinct gets acted on. An admin
+         staring at a full store reaches for Archive, because it is the non-destructive
+         button sitting right there. It frees nothing: the app evicts only NON-archived
+         auto-captured rows, so an archived memory keeps its slot and still counts toward
+         the cap. Both the affordance and the archived section must say so. */
+      const archivedRow = page.locator("tr.memories-admin-archived-row").first();
+      await archivedRow.waitFor({ timeout: 6000 });
+      ok(await archivedRow.locator("button", { hasText: "Restore" }).count() === 1,
+        `M2 ${theme} an archived memory renders with Restore (the archived branch is exercised)`);
+      const hint = page.locator(".memories-admin-archived-hint").first();
+      await hint.waitFor({ timeout: 6000 });
+      ok(/Archived memories stay out of prompts but still count toward the cap/i.test(await hint.innerText()),
+        `M2 ${theme} the Archived section says archiving does not reclaim capacity`);
+      // Readable in BOTH themes — a hint nobody can read is a hint that was never written.
+      const hintColor = await hint.evaluate((el) => getComputedStyle(el).color);
+      ok(/^rgba?\(/.test(hintColor) && !/rgba\(0,\s*0,\s*0,\s*0\)/.test(hintColor),
+        `M2 ${theme} the hint resolves a real colour (got ${hintColor})`);
+      // And the Archive button itself carries the same caveat where it is clicked.
+      const archiveTitle = await page.locator("button", { hasText: /^Archive$/ }).first().getAttribute("title");
+      ok(/still count toward the cap/i.test(archiveTitle || ""),
+        `M2 ${theme} the Archive button's tooltip names the cap caveat (got: ${archiveTitle})`);
+
       await shot(page, `m2-memories-full-${theme}`);
     } catch (e) { fail++; console.log(`  ✗ M2 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);

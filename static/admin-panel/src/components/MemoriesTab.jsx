@@ -33,22 +33,62 @@ const SOURCE_CLASS = {
 };
 
 /**
+ * F-179 — the ONE home for the store-full BANNER copy, in the UI layer.
+ *
+ * Why here and not in src/shared/registry-limits.js: that module is the
+ * backend's single source for the CAP POLICY — the constants and the refusal
+ * sentence the addMemory resolver returns. Banner copy is not policy, it is
+ * this app's chrome, and it is rendered by exactly two React surfaces (the
+ * config-ui Memories tab below, and the admin twin which imports
+ * MemoryFullBanner from this file). Putting presentation text in the backend's
+ * limits module would give the sentence a second owner; putting it in one
+ * exported function here gives it one, on the side that renders it.
+ *
+ * The copy must match the EVICTION POLICY the backend actually implements
+ * (F-176/F-177): the app evicts only NON-ARCHIVED auto-captured rows, so
+ * hand-authored AND archived rows are never evicted — and archived rows still
+ * occupy their slot and still count toward the cap. That makes archiving a
+ * non-remedy for a full store, and DELETING the only escape valve. The old
+ * wording said "Delete or merge memories", which named an action the app has
+ * never offered (there is no merge control; `merged` is a dedup outcome of a
+ * save, not something a user can do) and stayed silent about archived rows —
+ * so the obvious recovery a user reaches for, archiving, frees nothing and the
+ * banner never said so. "prune" went the same way: not a word any control in
+ * this app uses.
+ *
+ * Deliberately NOT branched on `storeFull.reason`. The reason-aware sentence
+ * is the backend's refusal (memoryCapRefusalMessage), which renders INLINE
+ * under the add form the moment a save is refused. This banner answers a
+ * different question — "why has the AI stopped learning, and what do I do" —
+ * and the answer is the same for a row-cap and a byte-cap store: delete some.
+ *
+ * Returns { title, body } so the banner can weight the two spans differently
+ * without either caller retyping a word of it.
+ */
+export function memoryStoreFullCopy(storeFull) {
+  const at = storeFull && storeFull.at ? new Date(storeFull.at) : null;
+  const when = at && !isNaN(at.getTime()) ? at.toLocaleDateString() : "recently";
+  return {
+    title: "Memory store is full",
+    body: `New lessons are not being kept since ${when}. Archived memories still count toward the cap; delete some to resume learning.`,
+  };
+}
+
+/**
  * F-167 — the store is FULL and the backend has stopped keeping new lessons.
  * `storeFull` ({ at, reason }) rides getMemorySettings, so it reaches every
  * surface that already reads settings. This is a hard stop, not a hint: solid
  * red, white text, no rail and no tint (owner design law), dark override in
- * injectStyles(). Exported so the admin tab renders the identical wording.
+ * injectStyles(). Exported so the admin tab renders the identical wording —
+ * both surfaces take their words from memoryStoreFullCopy() above.
  */
 export function MemoryFullBanner({ storeFull }) {
   if (!storeFull) return null;
-  const at = storeFull.at ? new Date(storeFull.at) : null;
-  const when = at && !isNaN(at.getTime()) ? at.toLocaleDateString() : "recently";
+  const { title, body } = memoryStoreFullCopy(storeFull);
   return (
     <div className="memory-full-banner" role="alert">
-      <span className="memory-full-title">Memory store is full</span>
-      <span className="memory-full-text">
-        {`New lessons are not being kept since ${when}. Delete or merge memories to resume learning.`}
-      </span>
+      <span className="memory-full-title">{title}</span>
+      <span className="memory-full-text">{body}</span>
     </div>
   );
 }

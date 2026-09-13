@@ -722,11 +722,24 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               // "couldn't save" — wrong: the call worked, the store is simply full) and never
               // produces a badge claiming a memory that does not exist, with a veto that has
               // no id behind it.
+              // F-181 — the resolver's OWN sentence wins. `error` is the backend's one-home
+              // refusal (memoryCapRefusalMessage, src/shared/registry-limits.js): it names the
+              // real cap number and the real reason (row cap vs byte guard), and it is the
+              // same sentence the Memories tabs render inline. Retyping a second sentence here
+              // meant this surface drifted from the policy twice over — it said "prune it",
+              // a word no control in this app uses, and it hid a byte-limit refusal behind
+              // row-cap wording. The literal below is now only the fallback for a resolver
+              // that answered `stored: false` with no `error` to show.
               if (memRes && (memRes.stored === false || memRes.reason === "cap")) {
                 setMemoryNotKept(
-                  memRes.reason === "cap"
-                    ? "Nothing was kept — the memory store is full; prune it in the Memories tab."
-                    : "Nothing was kept — this fix's lesson was not stored.",
+                  // Joined with a full stop, not a dash: the backend sentence carries its own
+                  // em-dashes, and chaining a third made one unreadable run-on. This keeps the
+                  // resolver's words VERBATIM, which is the point of a single-home sentence.
+                  memRes.error
+                    ? `Nothing was kept. ${memRes.error}`
+                    : memRes.reason === "cap"
+                      ? "Nothing was kept — the memory store is full. Delete memories in the Memories tab to resume learning."
+                      : "Nothing was kept — this fix's lesson was not stored.",
                 );
                 showToast(memRes.reason === "cap" ? "Fix verified. Nothing was learned — the memory store is full." : "Fix verified. Nothing was learned from it.");
               } else if (memRes && memRes.success && memRes.id) {

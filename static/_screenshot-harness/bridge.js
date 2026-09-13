@@ -31,11 +31,16 @@ import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES } from "../../
 import { emptyState, monthKey, allowanceUsdForSeats, forgeLlmAllowanceStatus } from "../../src/shared/usage-meter.js";
 /* F-175: the memory caps and the cap REFUSAL SENTENCE come from the ONE home for them
    (src/shared/registry-limits.js), exactly as the addMemory resolver does. The mock used
-   to hand-type its own near-miss of that sentence ("...prune in the Memories tab.") while
-   the backend said "...archive or delete some in the Memories tab to make room." — so the
-   Memories tabs, which render this `error` verbatim, were photographed and asserted
+   to hand-type its own near-miss of that sentence ("...prune in the Memories tab.") — so
+   the Memories tabs, which render this `error` verbatim, were photographed and asserted
    against words no tenant ever sees. A retyped cap number or sentence is the N-copies
-   defect this file's other imports exist to prevent. */
+   defect this file's other imports exist to prevent.
+   F-182: an earlier revision of this note quoted the backend as offering "archive or
+   delete" as the way to make room. That was true of neither the sentence nor the policy:
+   the app evicts ONLY non-archived auto-captured rows, so an archived memory keeps its
+   slot and still counts toward the cap. Archiving takes a memory out of prompts; it does
+   not reclaim capacity, and DELETING is the only thing that does. The sentence this mock
+   now serves is imported, not quoted, so it cannot drift from that policy again. */
 import { MAX_MEMORIES, memoryCapRefusalMessage } from "../../src/shared/registry-limits.js";
 
 const ACCT = "557058:11111111-1111-1111-1111-111111111111";
@@ -934,6 +939,11 @@ function invoke(name, payload) {
       { id: "m3", content: "Transitions to Done require a non-empty resolution.", source: "user", createdAt: "2026-06-10T08:00:00Z" },
       { id: "m4", content: "The Risk Level field options are Low, Medium, High, Critical.", source: "learned", createdAt: "2026-06-09T08:00:00Z" },
       { id: "m5", content: "Bugs use the 'Software Simplified Workflow'.", source: "user", createdAt: "2026-06-08T08:00:00Z" },
+      /* F-182 — one ARCHIVED row. The admin tab has rendered archived memories (muted row,
+         "Archived" divider, Restore button) since F-176 and no scenario ever produced one,
+         so that whole branch was unphotographed and unasserted. It is also the only way to
+         see the hint that archiving does not free capacity, which is the point of F-182. */
+      { id: "m6", content: "The old Severity field was retired in March; do not write to it.", source: "learned", createdAt: "2026-05-02T08:00:00Z", disabled: true },
     ] });
     /* listeners + scheduled jobs + API tokens (admin) */
     case "getListeners": return Promise.resolve({ success: true, listeners: LISTENER_ROWS });

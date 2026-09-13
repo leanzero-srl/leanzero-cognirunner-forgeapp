@@ -1248,10 +1248,17 @@ try {
         ok(await b.locator(".memory-saved-badge button").count() === 0,
           `F-158 ${T} no veto — there is no id to delete`);
         const note = await b.locator(".memory-not-kept").first().innerText();
-        ok(/Nothing was kept/.test(note) && /memory store is full/.test(note),
+        ok(/Nothing was kept/.test(note) && /memory store is full/i.test(note),
           `F-158 ${T} the note says nothing was kept and why (got: ${note})`);
-        ok(/prune it in the Memories tab/.test(note),
-          `F-158 ${T} and where to fix it`);
+        // F-181 — the note must be the BACKEND'S sentence, verbatim, not a second one
+        // retyped in the component. The mock answers addMemory with the shared
+        // memoryCapRefusalMessage(), so asserting against that same import proves the
+        // words travelled end to end instead of two surfaces happening to agree.
+        ok(note.includes(memoryCapRefusalMessage("cap")),
+          `F-158/F-181 ${T} the note carries the resolver's own refusal verbatim (got: ${note})`);
+        // The words the app does not use, and must never retype here again.
+        ok(!/prune/i.test(note), `F-181 ${T} the note never says "prune" — no control in this app prunes`);
+        ok(!/merge/i.test(note), `F-181 ${T} the note never offers "merge" — there is no merge control`);
         // Slate, never the teal "learned" hue — and it must resolve in BOTH themes.
         const color = await b.locator(".memory-not-kept").first().evaluate((el) => getComputedStyle(el).color);
         ok(color === (theme === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)"),
@@ -1453,7 +1460,15 @@ try {
       const btxt = await banner.innerText();
       ok(/Memory store is full/i.test(btxt), `M1 ${theme} banner names the condition`);
       ok(/not being kept since/i.test(btxt), `M1 ${theme} banner says learning has STOPPED, with a date`);
-      ok(/Delete or merge memories to resume learning/i.test(btxt), `M1 ${theme} banner says how to recover`);
+      // F-179 — the banner must state the EVICTION POLICY the backend implements: archived
+      // rows are never evicted and still occupy their slot, so archiving frees nothing and
+      // DELETING is the only escape. The old copy ("Delete or merge memories") named a merge
+      // control that does not exist and let a user believe archiving would recover the store.
+      ok(/Archived memories still count toward the cap/i.test(btxt),
+        `M1 ${theme} banner says archiving does NOT free capacity`);
+      ok(/delete some to resume learning/i.test(btxt), `M1 ${theme} banner names deleting as the escape`);
+      ok(!/merge/i.test(btxt), `M1 ${theme} banner never offers "merge" — there is no such control`);
+      ok(!/prune/i.test(btxt), `M1 ${theme} banner never says "prune"`);
       ok(await banner.getAttribute("role") === "alert", `M1 ${theme} banner is announced as an alert`);
 
       // Owner design law: solid saturated fill with white text, and NEVER a left rail.
@@ -2026,6 +2041,62 @@ try {
     } catch (e) { fail++; console.log("  ✗ R7 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+  /* ---------------- F-179/F-181 — the retired wording may not come back ----------------
+   * A browser assertion proves the two surfaces we drove say the right thing TODAY. It
+   * cannot stop a third surface — a toast, an empty state, a tooltip — from being written
+   * next month with the old words, which is exactly how this defect spread: the banner and
+   * the fix-tail each carried their own copy of a policy sentence and each drifted from it
+   * separately. So scan the SOURCE of all three apps.
+   *
+   * Retired, and why:
+   *   "prune"          — no control in this app prunes anything; the verb is Delete.
+   *   "Delete or merge" — there is no merge control. `merged` is an outcome of a dedup on
+   *                      save, not an action a user can take to reclaim capacity.
+   * Comments are stripped first: the docblocks that RECORD this decision necessarily quote
+   * the retired words, and a scan that cannot tell a quotation from a regression would
+   * force the reasoning to be deleted to stay green. */
+  {
+    console.log("F-179/F-181 no .jsx retypes the retired memory-cap wording");
+    const RETIRED = [
+      { re: /prune/i, why: 'the verb is "Delete" — nothing in this app prunes' },
+      { re: /delete or merge/i, why: "there is no merge control to offer" },
+    ];
+    // Strip block comments, then line comments. The `(^|[^:])` guard keeps `https://` in a
+    // string literal from being read as the start of a comment and silently eating the rest
+    // of the line (which would turn this scan into a false PASS).
+    const stripComments = (src) => src
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+    const jsxFiles = [];
+    for (const app of ["config-ui", "config-view", "admin-panel"]) {
+      const root = path.join(STATIC, app, "src");
+      if (!fs.existsSync(root)) continue;
+      const walk = (dir) => {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          const f = path.join(dir, e.name);
+          if (e.isDirectory()) walk(f);
+          else if (/\.(jsx|js)$/.test(e.name)) jsxFiles.push(f);
+        }
+      };
+      walk(root);
+    }
+    ok(jsxFiles.length > 0, `F-179 the scan actually found source to read (${jsxFiles.length} files)`);
+    // Positive control: prove the scan CAN see live code text, so an empty result means
+    // "clean" rather than "the walk or the stripper quietly read nothing".
+    const canSee = jsxFiles.some((f) => /Memory store is full/.test(stripComments(fs.readFileSync(f, "utf8"))));
+    ok(canSee, "F-179 the scan can see live UI copy (positive control: the banner title)");
+
+    const offenders = [];
+    for (const f of jsxFiles) {
+      const code = stripComments(fs.readFileSync(f, "utf8"));
+      for (const { re, why } of RETIRED) {
+        if (re.test(code)) offenders.push(`${path.relative(STATIC, f)} matches ${re} — ${why}`);
+      }
+    }
+    ok(offenders.length === 0,
+      `F-179/F-181 no app source retypes the retired wording${offenders.length ? " — " + offenders.join("; ") : ""}`);
+  }
+
 } finally {
   await browser.close();
 }

@@ -2178,6 +2178,17 @@ const injectStyles = () => {
       letter-spacing: 0.5px;
     }
     .memories-admin-archived-row td { color: var(--text-muted); }
+    /* F-182 — the "archiving does not free capacity" hint, sat next to the Archived
+       divider badge. Deliberately the SAME --text-muted token the archived rows already
+       use (it themes in both modes on its own), so this adds no new hue to keep a dark
+       override in sync for. 600 weight keeps it readable as a statement of policy rather
+       than decorative small print; it is a clarification beside the badge, not an accent. */
+    .memories-admin-archived-hint {
+      margin-left: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
 
     .memories-admin-reinforced {
       margin-left: 6px;

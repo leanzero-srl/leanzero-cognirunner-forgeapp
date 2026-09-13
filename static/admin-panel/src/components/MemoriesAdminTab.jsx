@@ -242,10 +242,18 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
             {editingId !== mem.id && (
               <button className="btn-small" onClick={() => startEdit(mem)} disabled={!!working}>Edit</button>
             )}
+            {/* F-182 — Archive is a PROMPT control, not a capacity control, and the button
+                alone reads like the polite way to clean up a full store. It is not: the app
+                evicts only non-archived auto-captured rows, so an archived memory keeps its
+                slot and still counts toward the cap. Say so on the affordance itself, where
+                the wrong instinct is acted on, rather than only in the store-full banner. */}
             <button
               className={`btn-small${working === `archive:${mem.id}` ? " is-busy" : ""}`}
               onClick={() => handleArchive(mem)}
               disabled={!!working}
+              title={mem.disabled
+                ? "Put this memory back into prompts."
+                : "Archived memories stay out of prompts but still count toward the cap."}
             >
               {mem.disabled ? "Restore" : "Archive"}
             </button>
@@ -427,6 +435,12 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
                 <tr className="memories-admin-divider">
                   <td colSpan={colCount}>
                     <span className="memories-admin-archived-badge">Archived</span>
+                    {/* F-182 — the section header is where an admin counts up what they have
+                        "cleaned up". Without this they read a long archived list as recovered
+                        headroom and cannot understand why the store is still refusing. */}
+                    <span className="memories-admin-archived-hint">
+                      Archived memories stay out of prompts but still count toward the cap.
+                    </span>
                   </td>
                 </tr>
               )}

@@ -356,7 +356,12 @@ const bridgeExecutor = (payload, extra = {}) => createWebSearchExecutor({
 /* the refusal CODE is stored on the run-row action record, not left for the model to quote */
 {
   const runnerSrc = await (await import("node:fs/promises")).readFile(new URL("../../src/agent-runner.js", import.meta.url), "utf8");
-  ok(/typeof res\.code === "string"/.test(runnerSrc) && /out\.actions\.push\(\{ name, args: argsShort, ok, ms: Date\.now\(\) - ts, \.\.\.\(code \? \{ code \} : \{\}\) \}\)/.test(runnerSrc),
+  // F-448 — assert what the action record CARRIES, not the order of its keys.
+  const actionRec = (runnerSrc.match(/out\.actions\.push\(\{([\s\S]*?)\}\);/) || [, ""])[1];
+  ok(/typeof res\.code === "string"/.test(runnerSrc)
+    && /\bname\b/.test(actionRec) && /\bargs:\s*argsShort\b/.test(actionRec)
+    && /\bok\b/.test(actionRec) && /\bms:\s*Date\.now\(\) - ts\b/.test(actionRec)
+    && /\.\.\.\(code \? \{ code \} : \{\}\)/.test(actionRec),
     "F-444: a refused tool call records its `code` on the action row (identifier_leak:<kind> is visible without the model quoting it)");
   ok(/code\?/.test(runnerSrc), "…and the documented result shape says so");
 }

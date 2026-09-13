@@ -29,6 +29,15 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
 const asyncSrc = readFileSync(path.join(here, "../../src/async-handler.js"), "utf8");
 
+// F-448 — the no-provider guard is asserted PER HANDLER, never by counting occurrences
+// in the file. A count of 5 passes when one body carries the guard twice and another
+// carries none, and it fails for a sixth, correctly guarded handler. Name the bodies.
+const AI_TASK_BODIES = ["executeReview", "executeCodegen", "executeFixcode", "executeSkillDistill", "executeMemoryDistill"];
+const aiTaskBody = (name) => {
+  const m = asyncSrc.match(new RegExp("const " + name + " = async \\([\\s\\S]*?\\n\\};"));
+  return m ? m[0] : null;
+};
+
 // --- fs+eval extract the two un-exported classifiers from src/index.js ---
 const mStep = indexSrc.match(/const isTransientStepError = \(error = ""\) => \{[\s\S]*?\n\};/);
 if (!mStep) { console.log("FAIL: could not extract isTransientStepError"); process.exit(1); }
@@ -265,8 +274,12 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "…and that refusal precedes the Forge LLM arm");
   // Each AI task fails with one clear error instead of routing anywhere.
   ok(/const NO_PROVIDER_ERROR = /.test(asyncSrc), "one message for the no-provider task failure");
-  ok((asyncSrc.match(/if \(!provider\) return \{ success: false, error: NO_PROVIDER_ERROR \};/g) || []).length === 5,
-    "all five AI task bodies (review/codegen/fixcode/skilldistill/memory_distill) bail on a null provider");
+  for (const name of AI_TASK_BODIES) {
+    const tb = aiTaskBody(name);
+    ok(!!tb, `found the ${name} task body`);
+    ok(!!tb && /if \(!provider\) return \{ success: false, error: NO_PROVIDER_ERROR \};/.test(tb),
+      `${name} bails on a null provider with the one shared message`);
+  }
 }
 
 // =====================================================================================
@@ -331,7 +344,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const m = asyncSrc.match(/const currentEditionFresh = async \(\) => \{[\s\S]*?\n\};/);
   ok(!!m, "found the consumer's thin wrapper currentEditionFresh");
   const b = m ? m[0] : "";
-  ok(/currentEdition\(undefined, \{ fresh: true \}\)/.test(b),
+  // F-448 — the property is "no context, fresh:true", not "fresh is the LAST option".
+  ok(/currentEdition\(undefined,\s*\{[^}]*\bfresh:\s*true\b[^}]*\}\)/.test(b),
     "it calls THE ladder with no context and fresh:true — the consumer caches nothing");
   ok(/\.edition/.test(b), "…and unwraps `.edition`, the shape the call sites expect");
   ok(/return EDITION_IDS\.STANDARD;/.test(b), "Standard is the floor (from the one id home, not a re-typed literal)");
@@ -398,8 +412,14 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/ALSO FAIL OPEN/.test(doc), "…it states the real contract: the non-transient class fails OPEN too");
   ok(/UNVALIDATED/.test(doc), "…and names the actual harm (transitions pass unvalidated), not a block");
   // Both non-ok returns carry the flag; the ok:true return must NOT (nothing is failing).
-  ok((body.match(/failOpen: true/g) || []).length === 3,
-    "all three non-ok returns (no-provider, provider error, probe throw) carry failOpen:true");
+  // F-448 — the property is "EVERY non-ok return carries the flag", which a count of 3
+  // does not state: it passes when one return carries it twice and another not at all.
+  {
+    const returns = [...body.matchAll(/return \{[\s\S]*?\};/g)].map((m) => m[0]);
+    const nonOk = returns.filter((r) => /\bok:\s*false\b/.test(r));
+    ok(nonOk.length >= 3, `found ${nonOk.length} non-ok returns (no-provider, provider error, probe throw)`);
+    ok(nonOk.every((r) => /failOpen:\s*true/.test(r)), "every non-ok return carries failOpen:true");
+  }
   ok(!/ok: true,[^\n]*failOpen/.test(body), "the healthy return carries no failOpen flag");
   // And the validator branches this flag describes still fail OPEN — if one of them ever
   // flips, this assertion is what makes the flag a lie loudly instead of quietly.
@@ -455,11 +475,15 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // The dropped-PF return now carries an error so it takes the same path.
   ok(/return \{ success: false, error: "Queued post-function was delivered without an issue key or a rule config/.test(asyncSrc),
     "the dropped-PF early return carries an error string (it used to be a bare success:false → green DONE)");
-  // And the guard's own message is still the one constant.
-  // Counted on the RETURN shape specifically: F-121 added two more uses of the same
-  // constant in the budget gate (a poll row + a job row), which must not shift this count.
-  ok((asyncSrc.match(/return \{ success: false, error: NO_PROVIDER_ERROR \};/g) || []).length === 5,
-    "the five no-provider task-body bails still return the one shared message constant");
+  // And the guard's own message is still the one constant — asserted in EACH task body.
+  // F-448: a file-wide count of the return shape says nothing about WHICH body has it,
+  // and F-121's two extra uses of the same constant in the budget gate showed how easily
+  // such a count drifts for reasons that have nothing to do with the property.
+  for (const name of AI_TASK_BODIES) {
+    const tb = aiTaskBody(name);
+    ok(!!tb && /return \{ success: false, error: NO_PROVIDER_ERROR \};/.test(tb),
+      `${name} returns the one shared message constant, not a retyped string`);
+  }
 }
 
 // =====================================================================================
@@ -642,7 +666,24 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "…and a failed job row");
   ok(/!UNPOLLED_TASKS\.has\(taskType\)/.test(helperSrc), "…and the poll row only for the polled one (scheduledjob)");
   // F-134 — every write in the helper is individually wrapped.
-  ok((helperSrc.match(/try \{/g) || []).length >= 5, "every write on the refusal path sits in its OWN try");
+  // F-448 — "its OWN try" is a relationship between the writes and the blocks, not a
+  // count of `try {`. Assert each named write lives in exactly one try block and that no
+  // block holds two of them (which is what "own" means, and what a count cannot see).
+  {
+    const blocks = [...helperSrc.matchAll(/try \{([\s\S]*?)\} catch/g)].map((m) => m[1]);
+    const WRITES = {
+      "poll row": /storage\.set\(`\$\{TASK_PREFIX\}/,
+      "refusal claim": /claimRuleExecution\(/,
+      "stats receipt": /statsReceipt\(/,
+      "execution log": /storeLog\(entry/,
+      "job row": /updateAsyncJob\(taskId/,
+    };
+    for (const [what, re] of Object.entries(WRITES)) {
+      ok(blocks.filter((blk) => re.test(blk)).length === 1, `the ${what} write sits in exactly one try block`);
+    }
+    ok(blocks.every((blk) => Object.values(WRITES).filter((re) => re.test(blk)).length <= 1),
+      "no try block on the refusal path holds two of those writes — each one fails alone");
+  }
   // F-135 — the row is NOT re-read here.
   ok(!/getListener\(|getJob\(/.test(helperSrc), "the helper never re-reads the rule row (it is passed in)");
   ok(/ruleRow \?\.?/.test(helperSrc) || /ruleRow\?\./.test(helperSrc), "…it uses the row the budget gate already read");
@@ -1006,9 +1047,16 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 {
   ok(/const longQueue = LONG_QUEUE_EVENTS\.has\(event\) \|\| LONG_QUEUE_ONLY_TASKS\.has\(taskType\);/.test(asyncSrc),
     "F-358: handler derives the deferral queue from the long-queue mark AND the long-only set");
-  ok(/runGatedTask\(event, \{ ttl, jobRow, enqAt, budgetDeferrals, longQueue \}\)/.test(asyncSrc),
-    "F-358: …and passes it to the ONE gate");
-  ok(/const queue = new Queue\(\{ key: queueKey \}\);/.test(asyncSrc),
+  // F-448 — assert the keys the gate call CARRIES, not their order or that they are the
+  // last ones in the literal.
+  {
+    const call = (asyncSrc.match(/runGatedTask\(event,\s*\{([^}]*)\}\)/) || [, null])[1];
+    ok(call !== null, "F-358: handler passes an options literal to the ONE gate");
+    for (const k of ["ttl", "jobRow", "enqAt", "budgetDeferrals", "longQueue"]) {
+      ok(!!call && new RegExp("\\b" + k + "\\b").test(call), `F-358: …carrying ${k} into the gate`);
+    }
+  }
+  ok(/new Queue\(\{[^}]*\bkey:\s*queueKey\b[^}]*\}\)/.test(asyncSrc),
     "F-358: the re-push builds its queue from the caller's key, never a hard-coded literal");
   ok((asyncSrc.split('new Queue({ key: "async-ai-queue" })').length - 1) === 0,
     "F-358: no hard-coded async-ai-queue producer is left in the deferral path");
@@ -1301,8 +1349,13 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/\{ status: "error", cancelled: true, error: "Cancelled" \}/.test(asyncSrc),
     "the consumer's cancel checkpoint writes cancelled:true on the poll row");
   ok(/status: "cancelled", cancelled: true, finishedAt/.test(asyncSrc), "…and on the job row");
-  ok(/status: "error", error: result\.error, \.\.\.\(result\.cancelled === true \? \{ cancelled: true \} : \{\}\)/.test(indexSrc),
-    "getAsyncTaskResult forwards the flag and KEEPS status 'error' (every existing poller has an error arm)");
+  // F-448 — the property is what the forwarded row CARRIES, not the order of its keys.
+  {
+    const fwdSrc = (indexSrc.match(/return \{[^{}]*\.\.\.\(result\.cancelled === true \? \{ cancelled: true \} : \{\}\)[^{}]*\}/) || [null])[0];
+    ok(!!fwdSrc, "getAsyncTaskResult forwards the cancelled flag only when the row carries it");
+    ok(!!fwdSrc && /status:\s*"error"/.test(fwdSrc) && /error:\s*result\.error/.test(fwdSrc),
+      "…and KEEPS status 'error' plus the message (every existing poller has an error arm)");
+  }
   // EXECUTED: the forward, over both shapes.
   const fwd = (row) => ({ success: true, status: "error", error: row.error, ...(row.cancelled === true ? { cancelled: true } : {}) });
   ok(fwd({ status: "error", cancelled: true, error: "Cancelled" }).cancelled === true, "EXECUTED: a cancel is flagged");

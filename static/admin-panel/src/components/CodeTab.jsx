@@ -176,7 +176,10 @@ const PIPELINE_CODE_COPY = {
   confirmation_required: "A deploy needs an explicit confirmation.",
 };
 
-const PIPE_STATUS_LABEL = { queued: "QUEUED", running: "RUNNING", installed: "INSTALLED", partial: "PARTIAL" };
+/* F-605: "stuck" is not a stored status - it is the derived state of a run that was
+   queued or started and never reported again. It earns its own label because QUEUED reads
+   as "any moment now" and this one never will be. */
+const PIPE_STATUS_LABEL = { queued: "QUEUED", running: "RUNNING", installed: "INSTALLED", partial: "PARTIAL", stuck: "SETUP DID NOT FINISH" };
 const STEP_STATUS_LABEL = { pending: "waiting", running: "running", done: "done", failed: "failed" };
 
 const POLL_MS = 5000;
@@ -285,6 +288,20 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
   const timerRef = useRef(null);
   const readRef = useRef(null);
 
+  /* Called from inside the READ, not from an effect on `row`: the fields then commit in
+     the same render as the row, so the form is never painted with the scaffold's defaults
+     for a frame and then corrected. */
+  const seedFormFrom = (r) => {
+    if (!r || seededRef.current === repoId) return;
+    seededRef.current = repoId;
+    const vars = r.scaffoldVars || {};
+    if (vars.APP_NAME) { appNameTouched.current = true; setAppName(vars.APP_NAME); }
+    if (vars.UI_DIR) setUiDir(vars.UI_DIR);
+    if (r.developerSpaceId) setDeveloperSpaceId(r.developerSpaceId);
+    if (r.appId) setAppId(r.appId);
+    if (r.branch) setBranch(r.branch);
+  };
+
   readRef.current = async (token, tries) => {
     let r = null;
     try {
@@ -297,10 +314,12 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
     if (r && r.success) {
       setReadFailed(false); setRefusal(null);
       setRow(r.status || null);
+      seedFormFrom(r.status || null);
       setDeploy(r.deploy || null);
       setDeployError(r.deployError || null);
-      const st = r.status && r.status.status;
-      if (st === "queued" || st === "running") {
+      /* F-605: poll while the BACKEND says the run is live. Polling on the raw status kept
+         a dead run's card re-reading for ten minutes and then declaring itself stalled. */
+      if (r.status && r.status.live) {
         if (tries < POLL_MAX) {
           timerRef.current = setTimeout(() => { if (tokenRef.current === token) readRef.current(token, tries + 1); }, POLL_MS);
         } else {
@@ -340,16 +359,6 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
      permissions again. */
   const seededRef = useRef(null);
   useEffect(() => { seededRef.current = null; }, [conn.id, repoId]);
-  useEffect(() => {
-    if (!row || seededRef.current === repoId) return;
-    seededRef.current = repoId;
-    const vars = row.scaffoldVars || {};
-    if (vars.APP_NAME) { appNameTouched.current = true; setAppName(vars.APP_NAME); }
-    if (vars.UI_DIR) setUiDir(vars.UI_DIR);
-    if (row.developerSpaceId) setDeveloperSpaceId(row.developerSpaceId);
-    if (row.appId) setAppId(row.appId);
-    if (row.branch) setBranch(row.branch);
-  }, [row, repoId]);
 
   const restartPolling = () => {
     const token = ++tokenRef.current;
@@ -465,7 +474,14 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
   }
 
   const status = (row && row.status) || null;
-  const live = status === "queued" || status === "running";
+  /* F-605 - LIVENESS IS THE BACKEND'S ANSWER, not "status says queued". The status field
+     is written by the run, so a run that dies leaves "queued" on the row forever; this
+     screen then polled, said it had stopped watching, and hid BOTH the outdated banner and
+     the setup form on every later visit, for a repository whose committed workflow was
+     still the broken one. `live` and `stuck` are derived in src/git-pipeline.js against the
+     claim's own TTL, and the tab renders them. */
+  const live = !!(row && row.live);
+  const stuck = !!(row && row.stuck);
   /* F-583 - the row is OUTDATED when the scaffold committed to the repository is older
      than the one this build installs. `outdated`/`outdatedReason`/`currentScaffoldVersion`
      are DERIVED by publicPipelineRow (F-579) against the shipped SCAFFOLD_VERSION, so the
@@ -487,8 +503,8 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
             byte-for-byte what a healthy install reports, while every dispatch 422s. The
             green badge is the single most load-bearing thing on this screen, so the state
             that contradicts it has to TAKE ITS PLACE rather than sit underneath it. */}
-        <span className={`code-pipe-status ${outdated ? "code-pipe-outdated" : `code-pipe-${status || "none"}`}`}>
-          {outdated ? "PIPELINE OUTDATED" : status ? PIPE_STATUS_LABEL[status] || String(status).toUpperCase() : "NOT SET UP"}
+        <span className={`code-pipe-status ${outdated ? "code-pipe-outdated" : stuck ? "code-pipe-stuck" : `code-pipe-${status || "none"}`}`}>
+          {outdated ? "PIPELINE OUTDATED" : stuck ? PIPE_STATUS_LABEL.stuck : status ? PIPE_STATUS_LABEL[status] || String(status).toUpperCase() : "NOT SET UP"}
         </span>
         {row && row.installedAt && (
           <span className="code-fact"><span className="code-fact-k">Installed</span><span className="code-fact-v">{new Date(row.installedAt).toLocaleString()}</span></span>
@@ -562,6 +578,17 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
         <div className="code-pipe-warn" role="alert">
           <span className="code-pipe-err-title">This setup stopped at {row.failedStep}</span>
           <span className="code-pipe-err-text">Everything before it is done. Fix the cause and set it up again.</span>
+        </div>
+      )}
+
+      {stuck && (
+        /* The sentence the admin needs is what was and was NOT done: the setup never ran,
+           so nothing was written to the repository, and the remedy is the form below - which
+           this state unlocks, because the form's gate is `!live`. */
+        <div className="code-pipe-warn" role="alert">
+          <span className="code-pipe-err-title">This setup never finished</span>
+          <span className="code-pipe-err-text">It was queued{row && row.queuedAt ? ` at ${new Date(row.queuedAt).toLocaleString()}` : ""} and the run stopped reporting. Nothing new was committed to the repository.</span>
+          <span className="code-pipe-err-text">Set it up again below. A setup is safe to repeat: every step writes the same values.</span>
         </div>
       )}
 

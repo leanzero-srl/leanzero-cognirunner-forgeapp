@@ -949,6 +949,93 @@ try {
     await close(env);
   }
 
+  /* ---------------- C16d - F-605: a setup that never finished says so, and offers the form
+     `scaffoldVersion` was stamped when the setup was QUEUED, so a run that died before the
+     commit left a row claiming the current version: outdated went false, live stayed true
+     (status is written by the run, and a dead run never writes again), and the card showed
+     QUEUED for ever with no banner and no setup form - for a repository whose committed
+     workflow was still the broken one. Liveness is now derived against the claim's TTL. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C16d a setup that never finished (${theme})`);
+    const env = await openAdmin(browser, theme, { __PIPE_SCENARIO__: "stuck" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe-warn").waitFor({ timeout: 8000 });
+
+      const badge = row.locator(".code-pipe-status").first();
+      const badgeText = (await badge.innerText()).trim();
+      ok(!/QUEUED/.test(badgeText), `C16d ${theme} the badge no longer reads QUEUED for a run that is gone (got "${badgeText}")`);
+      /* On a repo that HAS installed before, OUTDATED is the badge: the committed bytes
+         are the admin's problem and the remedy is the same form. The dead run is said in
+         the box below it. The badge for a stuck FIRST install is C16e. */
+      ok(/PIPELINE OUTDATED/.test(badgeText), `C16d ${theme} the badge names the stale repository (got "${badgeText}")`);
+
+      const warn = await row.locator(".code-pipe-warn").innerText();
+      ok(/never finished/i.test(warn), `C16d ${theme} the box says the setup never finished`);
+      ok(/Nothing new was committed/i.test(warn), `C16d ${theme} …and what was NOT done to the repository`);
+      ok(/safe to repeat/i.test(warn), `C16d ${theme} …and that the remedy can be run again`);
+      ok(!/\u2014/.test(warn), `C16d ${theme} no em-dash in the stuck copy`);
+
+      /* THE REMEDY RETURNS. Both gates read `live`, so a row stuck in "queued" used to hide
+         the banner AND the form; the repository could not be repaired from this screen. */
+      ok(await row.locator(".code-pipe-outdated-box").count() === 1,
+        `C16d ${theme} the OUTDATED banner is back - the repo still holds the old scaffold`);
+      ok(await row.locator(".code-pipe-form").count() === 1,
+        `C16d ${theme} and the setup form is reachable again`);
+      ok(await row.locator(".code-pipe-deploy").count() === 0,
+        `C16d ${theme} no deploy is offered on a pipeline in this state`);
+      ok(await row.locator(".code-pipe-live").count() === 0,
+        `C16d ${theme} the card does not claim it is still watching a run that is gone`);
+
+      await shot(page, `C16d-pipeline-stuck-${theme}`);
+      ok(env.errors.length === 0, `C16d ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C16d threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C16e - F-605: the same dead run on a repo that never installed -------
+     Nothing was committed, so there is nothing stale: the badge is the state itself and the
+     outdated banner must NOT appear. This is also where the new badge's design is asserted. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C16e a first setup that never finished (${theme})`);
+    const env = await openAdmin(browser, theme, { __PIPE_SCENARIO__: "stuckfresh" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe-warn").waitFor({ timeout: 8000 });
+
+      const badge = row.locator(".code-pipe-status").first();
+      const badgeText = (await badge.innerText()).trim();
+      ok(/DID NOT FINISH/.test(badgeText), `C16e ${theme} the badge names the state (got "${badgeText}")`);
+      ok(await row.locator(".code-pipe-outdated-box").count() === 0,
+        `C16e ${theme} nothing was committed, so nothing is called outdated`);
+      ok(await row.locator(".code-pipe-form").count() === 1, `C16e ${theme} the setup form is reachable`);
+      ok(await row.locator(".code-pipe-live").count() === 0, `C16e ${theme} the card is not claiming to watch a dead run`);
+
+      const st = await badge.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bg: cs.backgroundColor, color: cs.color, rail: cs.borderLeftWidth, weight: cs.fontWeight };
+      });
+      ok(st.rail === "0px", `C16e ${theme} the badge has no left accent rail`);
+      ok(/^rgb\(\d+, \d+, \d+\)$/.test(st.bg), `C16e ${theme} the fill is SOLID, not an alpha tint (got ${st.bg})`);
+      ok(st.color === "rgb(255, 255, 255)", `C16e ${theme} white ink (got ${st.color})`);
+      ok(Number(st.weight) >= 600, `C16e ${theme} the 600-700 emphasis weight (got ${st.weight})`);
+      ok(st.bg === (theme === "light" ? "rgb(217, 119, 6)" : "rgb(245, 158, 11)"),
+        `C16e ${theme} amber with a dark-mode override (got ${st.bg})`);
+
+      await shot(page, `C16e-pipeline-stuck-first-${theme}`);
+      ok(env.errors.length === 0, `C16e ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C16e threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- C16b - the CURRENT pipeline is left alone --------------------------
      The other half of the same rule: a row installed at the shipped scaffold version must
      show none of this. Without this arm a renderer that flagged every installed pipeline

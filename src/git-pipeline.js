@@ -58,6 +58,11 @@
 import storage from "@forge/kvs";
 import { createHash } from "node:crypto";
 import { renderScaffold, buildPermissionLock, scaffoldVarError, scaffoldVarNames, SCAFFOLD_VERSION, scaffoldOutdatedReason } from "./shared/git-scaffolds.js";
+/* F-605/F-611 - the two DERIVED answers about a row ("are the committed files stale",
+   "is a run in flight") live in a dependency-free module so the admin panel's fixture can
+   import them instead of re-stating them. Re-exported here because every caller already
+   imports this module, and a second import path is how one home becomes two. */
+import { pipelineOutdated, pipelineLive, pipelineStuck, PIPELINE_CLAIM_TTL_MINUTES } from "./shared/git-pipeline-state.js";
 import { assertCommitWithinCaps, GitProviderError } from "./git-providers.js";
 import {
   getConnection,
@@ -92,6 +97,7 @@ import { pipelineStepNames } from "./shared/git-pipeline-steps.js";
  * the queue's retry is never swallowed — see `runPipelineSetup`.
  */
 export { gitPipelineKey, gitPipelineClaimKey };
+export { pipelineOutdated, pipelineLive, pipelineStuck, PIPELINE_CLAIM_TTL_MINUTES };
 /* F-557 — the two Forge id shapes live in the same dependency-free module, because the
    Code tab form checks them too; re-exported because every caller imports them here. */
 export { normalizeDeveloperSpaceId, normalizeForgeAppId };
@@ -104,7 +110,11 @@ export const PIPELINE_SCAFFOLD = "forge-pipeline";
 export const PIPELINE_LOCK_PATH = ".cognirunner/forge-permissions.lock";
 /** Installs are development-only; the rendered workflow enforces it, we set the var. */
 export const PIPELINE_FORGE_ENV = "development";
-const CLAIM_TTL = { ttl: { value: 10, unit: "MINUTES" } };
+/* The concurrency claim's life, from the SAME constant the liveness rule uses: once the
+   claim has expired a run that has not reported in is not coming back, and calling the row
+   "live" past that point is what hid the outdated banner for ever (F-605). One constant,
+   so the two answers cannot drift apart. */
+const CLAIM_TTL = { ttl: { value: PIPELINE_CLAIM_TTL_MINUTES, unit: "MINUTES" } };
 
 /**
  * THE SCOPE ALLOW-LIST. A lock may only carry scopes from this list.
@@ -480,7 +490,14 @@ export async function requestPipelineSetup({
     repoId,
     kind: conn.kind,
     scaffold: PIPELINE_SCAFFOLD,
-    scaffoldVersion: SCAFFOLD_VERSION,
+    /* F-605 — THE VERSION DESCRIBES THE COMMITTED BYTES, SO IT IS STAMPED BY THE COMMIT.
+       It used to be written here, when the setup was QUEUED. A run that never reached the
+       commit step then left a row saying "current" for a repository still holding the old
+       workflow: `outdated` went false, `live` stayed true, and the Code tab showed neither
+       the banner nor the setup form again. The queued row therefore keeps the PREVIOUS
+       version (or none for a first install) and runPipelineSetup stamps the new one with
+       the commit. */
+    scaffoldVersion: existing ? existing.scaffoldVersion ?? null : null,
     steps: freshSteps(conn.kind, { developerSpaceId: carriedSpaceId, appId: carriedAppId }),
     // F-604 — what this run will RENDER with, stored on the row so the Code tab can
     // prefill a later re-setup from it instead of from the scaffold's defaults.
@@ -560,7 +577,7 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
   // idempotent (F-533: secrets and variables are PUT, the commit is a fresh tree), so
   // running the chain again is safe and is the only remedy the product has.
   if (row.installedAt && row.lockHash === lockHash && row.status === "installed" &&
-      scaffoldOutdatedReason(row.scaffoldVersion) === null) {
+      !pipelineOutdated(row)) {
     return finish({ ok: true, duplicate: true, status: publicPipelineRow(row) });
   }
   if (row.lockHash && lockHash && row.lockHash !== lockHash) {
@@ -706,9 +723,15 @@ export function publicPipelineRow(row) {
     // carries, so a row goes stale the moment the app ships a new scaffold, without a
     // migration touching a single row. `outdatedReason` is the changelog line for the
     // version the repo is stuck on - the Code tab shows it verbatim.
-    outdated: scaffoldOutdatedReason(row.scaffoldVersion) !== null,
-    outdatedReason: scaffoldOutdatedReason(row.scaffoldVersion),
+    outdated: pipelineOutdated(row),
+    outdatedReason: pipelineOutdated(row) ? scaffoldOutdatedReason(row.scaffoldVersion) : null,
     currentScaffoldVersion: SCAFFOLD_VERSION,
+    /* F-605 - DERIVED, and the Code tab reads it rather than re-deriving "queued means
+       busy". `live` is a run still inside the claim's window; `stuck` is a run that was
+       queued or started and never reported again, which is the state that used to be
+       indistinguishable from a healthy one. */
+    live: pipelineLive(row),
+    stuck: pipelineStuck(row),
     status: row.status || null,
     steps: (Array.isArray(row.steps) ? row.steps : []).map((s) => ({
       name: String(s && s.name).slice(0, 40),

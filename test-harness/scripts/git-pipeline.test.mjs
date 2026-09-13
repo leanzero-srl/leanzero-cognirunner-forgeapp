@@ -773,5 +773,61 @@ reset();
     "…and clearing one field does not disturb the ones the payload said nothing about");
 }
 
+/* ===== 18. F-605 — THE VERSION IS STAMPED BY THE COMMIT, AND A DEAD RUN IS NOT LIVE =====
+ * `scaffoldVersion` was written on the QUEUED row, so a run that never reached the commit
+ * step left a repository holding the old workflow while the row claimed the current
+ * version: `outdated` went false, `live` stayed true (status is written by the run, and a
+ * dead run never updates it), and the Code tab showed neither the banner nor the form. */
+reset();
+{
+  const connId = await seedConnection();
+  await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  const key = pipe.gitPipelineKey(connId, REPO);
+  const queued = storage.__raw(key);
+  ok(queued.status === "queued" && (queued.scaffoldVersion === null || queued.scaffoldVersion === undefined),
+    `a QUEUED first setup carries no scaffold version - nothing is committed yet (got ${JSON.stringify(queued.scaffoldVersion)})`);
+  fetchQueue = githubSetupChain();
+  await runQueued(lastParams());
+  ok(storage.__raw(key).scaffoldVersion === scaf.SCAFFOLD_VERSION,
+    "…and the COMMIT is what stamps it");
+
+  // The defect, exactly: an installed-and-stale row is re-set-up and the run dies.
+  const installed = storage.__raw(key);
+  storage.__seed(key, { ...installed, scaffoldVersion: 1 });
+  await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  const requeued = storage.__raw(key);
+  ok(requeued.status === "queued" && requeued.scaffoldVersion === 1,
+    `a re-setup QUEUES on the PREVIOUS version - the repo still holds the old bytes (got ${JSON.stringify(requeued.scaffoldVersion)})`);
+
+  // Fresh queue: live, and deliberately not reported as outdated while it is about to run.
+  const fresh = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(fresh.status.live === true && fresh.status.stuck === false,
+    `a run inside the claim's window is LIVE (got ${JSON.stringify({ l: fresh.status.live, s: fresh.status.stuck })})`);
+
+  // Now the run never happens. Age the row past the claim TTL.
+  const longAgo = new Date(Date.now() - (pipe.PIPELINE_CLAIM_TTL_MINUTES + 5) * 60 * 1000).toISOString();
+  storage.__seed(key, { ...requeued, queuedAt: longAgo, updatedAt: longAgo });
+  const dead = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(dead.status.live === false && dead.status.stuck === true,
+    `a run that stopped reporting past the claim TTL is NOT live (got ${JSON.stringify({ l: dead.status.live, s: dead.status.stuck })})`);
+  ok(dead.status.outdated === true && dead.status.outdatedReason === scaf.SCAFFOLD_CHANGELOG[2],
+    `…and the repository is still reported OUTDATED, which is the signal the defect erased (got ${JSON.stringify(dead.status.outdatedReason).slice(0, 80)})`);
+
+  // A run that DID install is never stuck and never live.
+  const done = pipe.publicPipelineRow(installed);
+  ok(done.live === false && done.stuck === false, "an installed row is neither live nor stuck");
+
+  // A first setup that dies in the queue is stuck, but NOT outdated: nothing was committed,
+  // so there are no stale bytes to replace and the banner would be a false sentence.
+  const neverInstalled = { ...requeued, installedAt: null, scaffoldVersion: null, queuedAt: longAgo, updatedAt: longAgo };
+  const never = pipe.publicPipelineRow(neverInstalled);
+  ok(never.stuck === true && never.outdated === false && never.outdatedReason === null,
+    `a first setup that never ran is stuck, not outdated (got ${JSON.stringify({ s: never.stuck, o: never.outdated })})`);
+
+  // A row with no usable timestamp fails to LIVE: the claim refuses a second setup anyway.
+  ok(pipe.publicPipelineRow({ status: "queued" }).live === true,
+    "a queued row that cannot be dated is treated as live, not as abandoned");
+}
+
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

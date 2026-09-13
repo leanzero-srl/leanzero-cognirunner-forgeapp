@@ -425,7 +425,15 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   return (
     <div className="pr-form">
       {/* Build from a description (NL-to-rule) — collapsed by default; applies a
-          reviewable draft to the form below, never saves. */}
+          reviewable draft to the form below, never saves.
+
+          F-398 — NOT on the POST-FUNCTION half. `validateBuiltRule` (src/shared/build-rule.js)
+          resolves every non-condition build against the VALIDATOR catalogue, so a draft built
+          here could only ever name a rule key this picker does not contain: the form would set
+          a ruleType it cannot render, `findRule("postfunction", key)` would answer null, and
+          the whole thing would read as broken. A control whose only outcome is a dead form is
+          worse than no control. It comes back the day the builder learns this half. */}
+      {mode !== "postfunction" && (
       <div className="br-bar">
         <button type="button" className={`br-toggle${brOpen ? " open" : ""}`} onClick={() => setBrOpen((o) => !o)}>
           <span className="br-toggle-caret">▸</span> Build from a description
@@ -473,6 +481,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
           </div>
         )}
       </div>
+      )}
 
       <div className="form-group">
         <label className="label">Rule <span className="required">*</span></label>

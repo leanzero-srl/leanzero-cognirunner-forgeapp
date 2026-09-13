@@ -1233,3 +1233,18 @@ html[data-color-mode="dark"] .pr-seg-btn.active { background: #3b82f6; }
 .pr-coder-count-full { color: #b45309; font-weight: 700; }
 html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #f59e0b; color: #1c1207; }
 html[data-color-mode="dark"] .pr-coder-count-full { color: #f59e0b; }
+
+/* F-398 - the premade post-function (Coder) arms. Mirror of App.js injectStyles, which is
+   the LIVE source; this file is the convention mirror. Solid fills, no rails, no tints; the
+   dark amber keeps the app's dark ink for that hue (F-298), never white. */
+.cpf-cap { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; padding: 11px 13px; border-radius: var(--r-md, 8px); color: #fff; }
+.cpf-cap-on { background: #16a34a; }
+.cpf-cap-off { background: #b45309; }
+.cpf-cap-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+.cpf-cap-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+.cpf-gate { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
+.cpf-gate strong { font-size: 12.5px; font-weight: 800; }
+.cpf-gate span { font-size: 12px; font-weight: 500; line-height: 1.45; }
+html[data-color-mode="dark"] .cpf-cap-on { background: #22c55e; color: #0a2a12; }
+html[data-color-mode="dark"] .cpf-cap-off { background: #f59e0b; color: #2a1602; }
+html[data-color-mode="dark"] .cpf-gate { background: #f59e0b; color: #2a1602; }

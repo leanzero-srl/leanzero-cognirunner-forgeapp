@@ -3661,6 +3661,26 @@ const RULE_KEY_MAP = {
   "postfunction-static": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-static-post-function" },
 };
 
+/* F-398 - THE PREMADE POST-FUNCTIONS JOIN THE MAP FROM THE CATALOGUE, NOT BY HAND.
+ *
+ * A premade post-function (today: the Coder) rides the SEMANTIC module's slot, exactly like
+ * every other config-type-dispatched post-function above it. There is no new manifest module
+ * and there must not be: `resolvePfType` routes a premade row on `ruleKind` + `ruleType`
+ * BEFORE it ever looks at the module key, and `isHeavyPf` then takes it out to the long
+ * queue. Without a row here `injectWorkflowRule` answers "Unknown rule type" and the admin
+ * wizard writes a registry row for a rule that is not on the transition.
+ *
+ * Derived rather than typed because `src/shared/premade-rules-catalog.js` is the one home
+ * for which premade post-functions exist; a literal here would be the second list that
+ * disagrees the first time one is added. Only `available` entries: `registerPostFunction`
+ * refuses the rest, so injecting one could only produce a rule that cannot be saved.
+ */
+for (const r of getPremadeCatalog("postfunction")) {
+  if (r.availability === "available") {
+    RULE_KEY_MAP[r.key] = { ruleKey: "forge:workflow-post-function", moduleKey: "ai-semantic-post-function" };
+  }
+}
+
 /**
  * Discover the environment ID from existing CogniRunner rules on any workflow.
  * The envId is part of the extension ARI in rule parameters.key.

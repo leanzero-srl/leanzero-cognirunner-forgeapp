@@ -15,6 +15,8 @@
  *   cfg-condition    -> config-ui condition form
  *   cfg-semantic     -> config-ui semantic post-function
  *   cfg-static       -> config-ui static post-function (CodeMirror)
+ *   cfg-premade-pf   -> config-ui PREMADE post-function slot (the Coder, F-398)
+ *   view-premade-coder -> config-view read-only summary of a saved Coder post-function
  *   view-active      -> config-view rule summary (active) + logs
  *   view-disabled    -> config-view rule summary (disabled) + logs
  *   view-premade-git -> config-view read-only summary of a saved GIT premade rule (F-380)
@@ -297,6 +299,15 @@ const CFG_PREMADE_GIT = {
   workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
   ruleKind: "premade", ruleType: "",
 };
+/* F-398 - a PREMADE POST-FUNCTION opened with NO ruleType yet, in the SEMANTIC post-function
+   slot (which is the slot RULE_KEY_MAP puts the Coder in). The journey picks the Coder itself
+   and drives mode + connection + repository from empty, so the fixture must not pre-answer
+   any of it - a fixture that carried a mode would hide the very refusal the finding is about. */
+const CFG_PREMADE_PF = {
+  id: "postfunction-coder::Software Simplified Workflow::21::i-premade-pf",
+  workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
+  ruleKind: "premade", ruleType: "",
+};
 const CFG_SEMANTIC = {
   id: "postfunction-semantic::Software Simplified Workflow::21::i-d4e5f6",
   type: "postfunction-semantic",
@@ -495,6 +506,13 @@ function getContext() {
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_PREMADE_COND) } };
   if (s === "cfg-premade-git")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "ai-text-field-validator", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, validatorConfig: JSON.stringify(CFG_PREMADE_GIT) } };
+  if (s === "cfg-premade-pf")
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_PREMADE_PF) } };
+  if (s === "view-premade-coder")
+    /* F-398 - a SAVED Coder post-function in the READ-ONLY view. The module signal is the
+       post-function one, which is what the summary identity must read: before the fix this
+       config rendered as "Premade Validator". */
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "In Review" } }, postFunctionConfig: JSON.stringify({ ...CFG_PREMADE_PF, type: "postfunction-coder", ruleType: "postfunction-coder", mode: "build", instructions: "Follow the repository's CONTRIBUTING.md and keep the diff small.", connectionId: "gc_1", repo: "acme/web", strict: true }) } };
   if (s === "cfg-semantic")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_SEMANTIC) } };
   if (s === "cfg-managed") {

@@ -32,6 +32,8 @@ import SubtaskConfig from "./SubtaskConfig";
 import LinkConfig from "./LinkConfig";
 import FunctionBuilder from "./FunctionBuilder";
 import PremadeRuleForm from "./PremadeRuleForm";
+import { getCatalog as getPremadeCatalog, findRule as findPremadeRule } from "../../../../src/shared/premade-rules-catalog.js";
+import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 
 const RULE_TYPE_OPTIONS = [
   { value: "validator", label: "Validator", desc: "Block transition if validation fails" },
@@ -49,7 +51,25 @@ const RULE_TYPE_OPTIONS = [
   { value: "postfunction-subtask", label: "Create Sub-task", desc: "AI drafts & creates a sub-task under the issue" },
   { value: "postfunction-link", label: "Link Related Issues", desc: "AI finds related issues & creates issue links" },
   { value: "postfunction-static", label: "Static Post Function", desc: "Run custom code after transition" },
+  /* F-398 - the PREMADE post-functions, read from the catalogue rather than retyped.
+     `src/shared/premade-rules-catalog.js` owns which ones exist, what each is called and
+     which instance capability it needs; a hand-written row here would be a second list that
+     drifts the first time a mode or a label changes. Only `available` entries are offered:
+     `registerPostFunction` REFUSES anything else, so an unavailable row would be a control
+     whose save can only fail. */
+  ...getPremadeCatalog("postfunction")
+    .filter((r) => r.availability === "available")
+    .map((r) => ({ value: r.key, label: r.label, desc: r.help, premade: true })),
 ];
+
+/* F-398 - is this rule type a premade POST-FUNCTION, and does it need the Coder?
+   Both questions are the catalogue's, asked once here. An unknown key answers "needs it",
+   the restrictive side, which is the same answer the backend gives a key it does not know. */
+const isPremadePfType = (t) => !!t && !!findPremadeRule("postfunction", t);
+const premadePfNeedsCoder = (t) => {
+  if (!isPremadePfType(t)) return false;
+  return findPremadeRule("postfunction", t).requiresCapability === "git";
+};
 
 /**
  * The wizard's frame: a real modal dialog, the way Jira's own "Create issue" works.
@@ -132,6 +152,19 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
   const [prompt, setPrompt] = useState("");
   // Premade (non-AI) rule state — for the validator/condition rule types.
   const [ruleKind, setRuleKind] = useState("ai"); // "ai" | "premade"
+  /* F-398 - the Coder verdict for a premade post-function. READ from getAgentCapability,
+     never derived from the edition (a BYOK site is on while Standard, a Coder site on Haiku
+     is off). null = NOT YET ANSWERED, and a null refuses the save exactly like an OFF
+     verdict: an unanswered question is not a yes. */
+  const [coderCapability, setCoderCapability] = useState(null);
+  useEffect(() => {
+    if (!premadePfNeedsCoder(ruleType) || coderCapability) return;
+    let live = true;
+    invoke("getAgentCapability")
+      .then((r) => { if (live) setCoderCapability(r && r.success ? r : { enabled: false, reason: "unknown" }); })
+      .catch(() => { if (live) setCoderCapability({ enabled: false, reason: "unknown" }); });
+    return () => { live = false; };
+  }, [ruleType, coderCapability, invoke]);
   const [premadeConfig, setPremadeConfig] = useState({});
   const [premadeValid, setPremadeValid] = useState(false);
   const [conditionPrompt, setConditionPrompt] = useState("");
@@ -324,6 +357,22 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
       return;
     }
     if (ruleType === "postfunction-static" && !functions.some((f) => f.code)) return;
+    /* F-398 - the premade post-function's two refusals, in the reader's order. The form's
+       own validity covers the mode (a Coder rule with no mode ERRORS on every transition in
+       both strict columns, so there is no "save it and pick later"), and the capability
+       verdict decides whether this instance can run it at all. Refusing here is the point of
+       the finding: a rule that cannot run must not be created. */
+    if (isPremadePfType(ruleType)) {
+      if (!premadeValid) {
+        setError("Complete the post-function's details before creating the rule - pick what the Coder should do, a connection and a repository.");
+        return;
+      }
+      if (premadePfNeedsCoder(ruleType) && !(coderCapability && coderCapability.enabled === true)) {
+        const copy = agentCapabilityCopy(coderCapability ? coderCapability.reason : "unknown");
+        setError(`${copy.title}. ${copy.remedy}`);
+        return;
+      }
+    }
 
     setSaving(true);
     setError(null);
@@ -356,7 +405,15 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
       // here makes the saved config self-identifying and removes a class of bugs
       // (e.g. workflow editor labeling the rule wrong, runtime dispatch confusion).
       const configPayload = isPostFunction
-        ? ruleType === "postfunction-static"
+        ? isPremadePfType(ruleType)
+          /* F-398 - a premade POST-FUNCTION config. `ruleKind` + `ruleType` are what
+             `resolvePfType` (src/index.js) routes on, and `type` is what every badge and
+             summary reads, so all three carry the catalogue key. `fieldId` is synthetic:
+             this rule gates on a repository, not on a field, and the registry's `!fieldId`
+             guard still has to pass. */
+          ? { type: ruleType, ruleKind: "premade", ...premadeConfig, ruleType,
+              fieldId: `premade:${ruleType}`, prompt: "", workflow: workflowData }
+        : ruleType === "postfunction-static"
           ? { type: ruleType, fieldId: "static-code", prompt: functions[0]?.operationPrompt || "", functions, workflow: workflowData }
           : ruleType === "postfunction-generate-doc"
             ? { type: ruleType, fieldId: fieldId || "description", prompt: contentPrompt, contentPrompt, docFormat, docTitlePrompt, attachComment, selectedDocIds, workflow: workflowData }
@@ -421,6 +478,10 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
           id: ruleId,
           type: ruleType,
           ...configPayload,
+          // F-398 - the key `registerPostFunction` validates the premade save against. The
+          // rest of the params ride in `configPayload` and are re-clamped server-side after
+          // the catalogue lookup; the client is trusted with none of them.
+          premadeRuleType: isPremadePfType(ruleType) ? ruleType : undefined,
           functions: ruleType === "postfunction-static" ? functions : [],
           workflow: workflowData,
           requestCodeOffload: wantOffload,
@@ -478,6 +539,10 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
               id: ruleId,
               type: ruleType,
               ...configPayload,
+              // F-398 - the id patch is a RE-SAVE through the same resolver, so it must
+              // carry the premade key too. Without it the second write would land as an AI
+              // row and undo the first one's routing.
+              premadeRuleType: isPremadePfType(ruleType) ? ruleType : undefined,
               ...(isPostFunction ? { functions: ruleType === "postfunction-static" ? functions : [] } : {}),
               workflow: workflowData,
               ruleInstanceId: injectResult.ruleId,
@@ -850,6 +915,45 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
         {/* Step 5: Config */}
         {step === 5 && (
           <div style={{ marginTop: "12px", borderTop: "1px solid var(--border-color)", paddingTop: "12px" }}>
+            {/* F-398 - PREMADE POST-FUNCTION config (the Coder). The SAME catalogue form the
+                workflow editor mounts, with the capability verdict above it and the save gate
+                below it, so both surfaces say the same thing in the same words. */}
+            {isPremadePfType(ruleType) && (
+              <>
+                {premadePfNeedsCoder(ruleType) && (
+                  coderCapability && coderCapability.enabled === true ? (
+                    <div className="cpf-cap cpf-cap-on" role="note">
+                      <span className="cpf-cap-title">{agentCapabilityCopy(coderCapability.reason).title}</span>
+                      <span className="cpf-cap-text">{agentCapabilityCopy(coderCapability.reason).remedy}</span>
+                    </div>
+                  ) : (
+                    <div className="cpf-cap cpf-cap-off" role="note">
+                      <span className="cpf-cap-title">{agentCapabilityCopy(coderCapability ? coderCapability.reason : "unknown").title}</span>
+                      <span className="cpf-cap-text">{agentCapabilityCopy(coderCapability ? coderCapability.reason : "unknown").remedy}</span>
+                      <span className="cpf-cap-text">This rule cannot be created while the Coder is off: it would sit on the transition doing nothing.</span>
+                    </div>
+                  )
+                )}
+                {/* `initial` HYDRATES the form to the rule the wizard already chose at step 4.
+                    The validator/condition path passes null because its rule is picked INSIDE
+                    the form; here the type step is the picker, so handing the form null would
+                    make the reader choose the same rule twice - and the second choice could
+                    disagree with the first, which is the row the registry would then refuse. */}
+                <PremadeRuleForm
+                  mode="postfunction"
+                  fields={fields}
+                  initial={{ ruleType }}
+                  onChange={(cfg, valid) => { setPremadeConfig(cfg); setPremadeValid(valid); }}
+                />
+                {!premadeValid && (
+                  <div className="cpf-gate" role="note">
+                    <strong>Pick what the Coder should do before creating the rule.</strong>
+                    <span>A post-function with no mode fails on every transition, so the wizard refuses to create one. The connection and the repository are required too.</span>
+                  </div>
+                )}
+              </>
+            )}
+
             {/* Validator / Condition config */}
             {(ruleType === "validator" || ruleType === "condition") && (
               <>

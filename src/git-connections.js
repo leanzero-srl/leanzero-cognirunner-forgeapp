@@ -1115,7 +1115,8 @@ export async function setupRepoWebhook(connId, repoId, { triggerUrl, fetchImpl }
 }
 
 /**
- * NEW SIGNING SECRET for one repo's hook. THREE STEPS, IN THIS ORDER (F-481):
+ * NEW SIGNING SECRET for one repo's hook. THREE STEPS, IN THIS ORDER (F-481),
+ * preceded by a RECONCILE of any half-done rotation (F-491, step 0 in the body):
  *
  *   1. STORE the new secret in the row's `pending` slot, current secret untouched.
  *   2. PATCH the provider to sign with the new secret.
@@ -1135,7 +1136,9 @@ export async function setupRepoWebhook(connId, repoId, { triggerUrl, fetchImpl }
  *     window, so deliveries keep arriving, and the connection is stamped
  *     `hookState:"rotation-failed"` so the Code tab says so out loud and names the
  *     remedy. Pressing "Set up webhook" re-installs the stored current secret and
- *     clears both the slot and the banner.
+ *     clears both the slot and the banner. Pressing "Rotate secret" AGAIN is also
+ *     safe (F-491): step 0 promotes the installed pending secret first, so the
+ *     provider's secret is never evicted from both slots.
  *
  * The secret is never returned — there is no read path for it anywhere.
  */
@@ -1153,11 +1156,51 @@ export async function rotateGitHookSecret(connId, repoId, { triggerUrl, fetchImp
   const events = GIT_HOOK_EVENTS[t.row.kind] || [];
   const secret = generateWebhookSecret();
 
+  // ---- 0. RECONCILE A HALF-DONE ROTATION BEFORE MINTING ANYTHING (F-491).
+  //
+  // The row has TWO slots, so a rotation started on top of a live pending slot would
+  // rebuild the row as `{secret: OLD, pending: NEW2}` and EVICT the secret the
+  // provider is actually signing with — every delivery 401s from that instant, and
+  // the retry the `rotation-failed` banner invites is precisely when that happens.
+  // A rotate therefore reconciles first and mints second.
+  //
+  // WHICH secret the provider holds is not a guess, and it is NOT always the pending
+  // one: the pending slot is written BEFORE the PATCH, so a pending slot that
+  // survived a FAILED PATCH (because the compensating `clearPendingHookSecret` threw)
+  // holds a secret the provider never accepted. The two cases are told apart by
+  // `hookState`, which is stamped `"rotation-failed"` on exactly one path — the
+  // promotion failure, i.e. after the PATCH SUCCEEDED:
+  //
+  //   - hookState === "rotation-failed" → the provider signs the PENDING secret.
+  //     PROMOTE it (it becomes `secret`, the slot closes), then rotate from there.
+  //     The old secret is dropped deliberately: the provider stopped honouring it at
+  //     the PATCH, so keeping it would spend the one spare slot on a dead secret.
+  //   - otherwise → the pending slot was never confirmed installed; the provider
+  //     still signs `secret`. The slot is simply dropped, which step 1's write does
+  //     on its own (no `pending` passed means the slot closes).
+  //
+  // If the promotion write here fails, nothing has changed: the row still carries
+  // both secrets and the candidates list still covers the provider. Refusing with
+  // `storage` is the same "nothing was changed" refusal as step 1's.
+  const before = await readHookSecretRow(connId, t.repo);
+  let current = (before && before.secret) || null;
+  if (current && pendingIsLive(before) && recorded.hookState === "rotation-failed") {
+    try {
+      await writeHookSecret(connId, t.repo, before.pending, { rotated: true });
+      current = before.pending;
+    } catch (e) {
+      return {
+        ok: false,
+        error:
+          "The previous rotation could not be finished, so nothing was changed — the webhook still works. Try again, or press “Set up webhook” for this repository.",
+        code: "storage",
+      };
+    }
+  }
+
   // ---- 1. the new secret becomes DURABLE (as `pending`) before the provider hears
   // about it. A connection with no stored secret at all has no window to open and no
   // old secret to keep working, so the new one goes straight in as current.
-  const before = await readHookSecretRow(connId, t.repo);
-  const current = (before && before.secret) || null;
   try {
     await writeHookSecret(connId, t.repo, current || secret, current ? { pending: secret } : { rotated: true });
   } catch (e) {

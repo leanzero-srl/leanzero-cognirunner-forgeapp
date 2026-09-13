@@ -2608,6 +2608,200 @@ try {
     }
   }
 
+
+  /* ---------------- J16p — F-398: the CODER post-function, created from the rule editor ----
+     The finding: `postfunction-coder` could not be created from any surface. The form was
+     ready (F-388) and the resolver learned the shape (cdf9476), but nothing mounted it - the
+     post-function slot offered semantic and static and nothing else, so a designer who wanted
+     "Coder: build" on a transition had no door.
+
+     The journey walks that door: pick the premade kind, pick the Coder, prove the save is
+     REFUSED while no mode is chosen, then pick one and assert the exact config the editor
+     hands Jira AND the exact payload it hands `registerPostFunction`. A rendered picker that
+     does not reach the saved config is the same silent pass wearing a form. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16p premade CODER post-function (cfg-premade-pf, ${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-pf", theme);
+    const { page } = env;
+    try {
+      // The slot offers the premade catalogue BESIDE the AI post-function.
+      const kindBtn = page.locator(".rulekind-opt", { hasText: "Premade post-function" }).first();
+      ok(await kindBtn.count() > 0, `J16p (${theme}) the post-function slot offers a premade kind`);
+      ok(await page.locator(".rulekind-opt", { hasText: "AI post-function" }).count() > 0, `J16p (${theme}) the AI post-function is still offered beside it`);
+      // The hydrated fixture already carries ruleKind:"premade", so the form is mounted.
+      await page.waitForSelector(".pr-form", { timeout: 8000 });
+      ok(await page.locator("select").count() === 0, `J16p (${theme}) no native <select> anywhere on the premade post-function editor`);
+
+      // The catalogue's one entry is on offer, by its catalogue label.
+      const rulePicker = page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first();
+      await rulePicker.click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const coderOpt = page.locator(".dropdown-panel .dropdown-item", { hasText: "Coder: build" }).first();
+      ok(await coderOpt.count() > 0, `J16p (${theme}) the catalogue offers the Coder post-function`);
+      await coderOpt.click();
+
+      // The Coder's controls render, and the prMatch control the executor ignores does NOT.
+      await page.waitForSelector(".pr-seg-coder", { timeout: 6000 });
+      ok(await page.locator(".pr-seg-coder .pr-seg-btn").count() === 5, `J16p (${theme}) all five Coder modes render as a segmented control`);
+      ok(await page.locator(".pr-seg:not(.pr-seg-coder)").count() === 0, `J16p (${theme}) the prMatch control (switched off by the catalogue) is not drawn`);
+      // F-398 — the NL builder is not offered on this half: it can only ever build a validator.
+      ok(await page.locator(".br-toggle").count() === 0, `J16p (${theme}) "Build from a description" is not offered for a post-function`);
+
+      // MODE IS REQUIRED. Before one is chosen the editor says so in its own words...
+      ok(await page.locator(".cpf-gate").count() === 1, `J16p (${theme}) the save gate is shown while no mode is chosen`);
+      const gateBg = await page.locator(".cpf-gate").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(gateBg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"), `J16p (${theme}) the gate is a SOLID agents-hue block, not a tint - got ${gateBg}`);
+      ok(await page.locator(".cpf-gate").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J16p (${theme}) the gate has no left accent rail`);
+      // ...and the save is actually REFUSED, not merely discouraged.
+      const refused = await page.evaluate(async () => await window.__ON_CONFIGURE__());
+      ok(refused === undefined, `J16p (${theme}) onConfigure REFUSES the save while no mode is chosen`);
+      ok(!(await page.evaluate(() => (window.__CALLS__ || []).some((c) => c.name === "registerPostFunction"))), `J16p (${theme}) nothing was registered by the refused save`);
+
+      // Now complete the rule: mode, connection, repository, strict, a note.
+      await page.locator(".pr-seg-coder .pr-seg-btn", { hasText: "Build the change" }).first().click();
+      ok(await page.locator(".pr-seg-coder .pr-seg-btn.active", { hasText: "Build the change" }).count() === 1, `J16p (${theme}) the chosen mode is marked active`);
+      await page.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).first().click();
+      await page.locator(".dropdown-trigger", { hasText: "Choose a repository" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+      await page.locator(".pr-git-toggle-row input[type=checkbox]").first().check();
+      await page.locator("textarea").last().fill("Keep the diff small.");
+      ok(await page.locator(".cpf-gate").count() === 0, `J16p (${theme}) the gate clears once the rule is complete`);
+
+      // THE POINT: the config Jira is handed, and the registry payload beside it.
+      const saved = await page.evaluate(async () => JSON.parse(await window.__ON_CONFIGURE__()));
+      ok(saved.ruleKind === "premade", `J16p (${theme}) saved config is a premade rule`);
+      ok(saved.ruleType === "postfunction-coder" && saved.type === "postfunction-coder",
+        `J16p (${theme}) BOTH ruleType and type carry the catalogue key (resolvePfType reads ruleType, every badge reads type)`);
+      ok(saved.mode === "build", `J16p (${theme}) saved config carries the Coder mode`);
+      ok(saved.connectionId === "gc_1" && saved.repo === "acme/web", `J16p (${theme}) saved config carries the connection and the repository`);
+      ok(saved.strict === true, `J16p (${theme}) saved config carries strict`);
+      ok(saved.instructions === "Keep the diff small.", `J16p (${theme}) saved config carries the admin's note`);
+      ok(!("prMatch" in saved), `J16p (${theme}) the saved config stores NO prMatch - the Coder ignores it and the catalogue switches it off`);
+      const reg = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "registerPostFunction").at(-1).payload);
+      ok(reg.ruleKind === "premade" && reg.premadeRuleType === "postfunction-coder",
+        `J16p (${theme}) registerPostFunction is told this is a premade save (the key it validates against)`);
+      ok(reg.type === "postfunction-coder", `J16p (${theme}) the registry row is typed as the catalogue key`);
+      ok(reg.mode === "build" && reg.repo === "acme/web" && reg.connectionId === "gc_1" && reg.strict === true,
+        `J16p (${theme}) the registry payload carries the params the backend re-clamps`);
+      ok(!("prMatch" in reg), `J16p (${theme}) the registry payload carries no prMatch either`);
+    } catch (e) { fail++; console.log(`  ✗ J16p (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J16q — F-398: the Coder is OFF, so the rule cannot be saved -----------
+     The decision the cut made explicit: a rule that CANNOT RUN is not saved. A Coder
+     post-function on an instance whose capability is off would sit on the transition writing
+     SKIP or ERROR rows forever while reading as configured. The arm names the reason and the
+     remedy from the ONE table (AGENT_CAPABILITY_REASONS, src/shared/edition.js), and the save
+     is refused - not merely discouraged. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16q Coder capability OFF on the premade post-function (${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-pf", theme, { __CODE_CAP__: "needs-coder-edition" });
+    const { page } = env;
+    try {
+      await page.waitForSelector(".pr-form", { timeout: 8000 });
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Coder: build" }).first().click();
+      await page.waitForSelector(".cpf-cap-off", { timeout: 8000 });
+      const capText = await page.locator(".cpf-cap-off").first().innerText();
+      ok(/this site is on CogniRunner Standard/i.test(capText), `J16q (${theme}) the OFF arm names the reason in the shared table's words`);
+      ok(/Upgrade the app's edition|switch to any BYOK provider/i.test(capText), `J16q (${theme}) the OFF arm names the remedy`);
+      ok(/cannot be saved/i.test(capText), `J16q (${theme}) the OFF arm says the rule cannot be saved`);
+      const bg = await page.locator(".cpf-cap-off").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(bg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"), `J16q (${theme}) the OFF arm is a SOLID block - got ${bg}`);
+      ok(await page.locator(".cpf-cap-off").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J16q (${theme}) the OFF arm has no left accent rail`);
+
+      // Complete the rule anyway - the refusal must survive a form that is otherwise valid.
+      await page.locator(".pr-seg-coder .pr-seg-btn", { hasText: "Build the change" }).first().click();
+      await page.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).first().click();
+      await page.locator(".dropdown-trigger", { hasText: "Choose a repository" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+      const refused = await page.evaluate(async () => await window.__ON_CONFIGURE__());
+      ok(refused === undefined, `J16q (${theme}) the save is REFUSED while the Coder is off, even with a complete form`);
+      ok(!(await page.evaluate(() => (window.__CALLS__ || []).some((c) => c.name === "registerPostFunction"))), `J16q (${theme}) nothing reached the registry`);
+      ok(/CogniRunner Standard/i.test(await page.locator(".alert-error").first().innerText()), `J16q (${theme}) the refusal banner says why`);
+    } catch (e) { fail++; console.log(`  ✗ J16q (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J16r — F-398: the admin wizard offers the same row -------------------- */
+  {
+    console.log("J16r admin wizard offers the Coder post-function (admin)");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator("button", { hasText: /Add Rule/ }).first().click();
+      const wiz = page.locator(".wizard");
+      await wiz.waitFor({ timeout: 10000 });
+      await wiz.locator("button", { hasText: "Demo Project" }).first().click();
+      await wiz.locator("button", { hasText: "Software Simplified Workflow" }).first().click();
+      await wiz.locator("button", { hasText: "Submit for Review" }).first().click();
+      const row = wiz.locator("button", { hasText: "Coder: build" }).first();
+      ok(await row.count() > 0, "J16r the rule-type step offers the Coder post-function row");
+      await row.click();
+      await wiz.locator(".pr-seg-coder").first().waitFor({ timeout: 12000 });
+      ok(await wiz.locator(".pr-seg-coder .pr-seg-btn").count() === 5, "J16r step 5 mounts the same catalogue form (five modes)");
+      // The rule is chosen ONCE, at the type step: the form arrives hydrated to it.
+      ok(await wiz.locator(".dropdown-trigger", { hasText: "Coder: build" }).count() === 1, "J16r the form is hydrated to the rule the type step already chose");
+      ok(await wiz.locator(".cpf-cap-on").count() === 1, "J16r the capability verdict is shown (Coder ON in the default fixture)");
+      ok(await wiz.locator(".cpf-gate").count() === 1, "J16r the save gate is shown while no mode is chosen");
+      // Mode required: Create is refused and nothing is registered or injected.
+      await page.locator("button", { hasText: "Create Rule" }).first().click();
+      await page.waitForTimeout(400);
+      const calls = await page.evaluate(() => (window.__CALLS__ || []).map((c) => c.name));
+      ok(!calls.includes("injectWorkflowRule"), "J16r the wizard refuses to create a modeless Coder rule");
+      // Complete it and create for real.
+      await wiz.locator(".pr-seg-coder .pr-seg-btn", { hasText: "Review the pull request" }).first().click();
+      await wiz.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).first().click();
+      await wiz.locator(".dropdown-trigger", { hasText: "Choose a repository" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+      await page.locator("button", { hasText: "Create Rule" }).first().click();
+      await page.waitForFunction(() => (window.__CALLS__ || []).some((c) => c.name === "injectWorkflowRule"), { timeout: 8000 });
+      const reg = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "registerPostFunction").at(-1).payload);
+      ok(reg.ruleKind === "premade" && reg.premadeRuleType === "postfunction-coder" && reg.type === "postfunction-coder",
+        "J16r the wizard registers a premade post-function row typed as the catalogue key");
+      ok(reg.mode === "review" && reg.repo === "acme/web", "J16r the wizard's payload carries the mode and the repository");
+      const inj = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "injectWorkflowRule").at(-1).payload);
+      ok(inj.ruleType === "postfunction-coder", "J16r the injected rule type is the catalogue key (RULE_KEY_MAP routes it to the semantic slot)");
+      ok(JSON.parse(inj.config).ruleKind === "premade", "J16r the injected config is the premade one resolvePfType routes on");
+    } catch (e) { fail++; console.log("  ✗ J16r threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J23c — F-398: config-view renders a saved Coder post-function ---------
+     The read-only surface already had the ROWS (premadeSummaryRows renders the mode, the
+     note and the git group), but its IDENTITY could only answer validator-vs-condition, so a
+     saved Coder rule opened here announced itself as a "Premade Validator". */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J23c config-view coder post-function summary (view-premade-coder, ${theme})`);
+    const env = await openEditor(browser, "config-view", "view-premade-coder", theme);
+    const { page } = env;
+    try {
+      await page.locator(".cv-summary-card").first().waitFor({ timeout: 8000 });
+      const title = await page.locator(".cv-summary-card").first().innerText();
+      ok(/Premade Post Function/i.test(title), `J23c (${theme}) the summary names it a post-function, not a validator`);
+      ok(!/Premade Validator/i.test(title), `J23c (${theme}) it is no longer labelled a validator`);
+      const body = await page.locator("body").innerText();
+      ok(/Coder: build/.test(body), `J23c (${theme}) the catalogue label renders`);
+      ok(/What the Coder does:/.test(body) && /Build the change/.test(body), `J23c (${theme}) the mode renders by LABEL, not by id`);
+      ok(/CONTRIBUTING\.md/.test(body), `J23c (${theme}) the admin's extra instructions render`);
+      ok(/Acme engineering/.test(body) && /acme\/web/.test(body), `J23c (${theme}) the connection label and the repository render`);
+      ok(/BLOCKS the transition|Strict:/.test(body), `J23c (${theme}) the strict sentence renders`);
+      ok(!/Match pull request by/.test(body), `J23c (${theme}) no prMatch row - the Coder has no such control`);
+    } catch (e) { fail++; console.log(`  ✗ J23c (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J24 — jira:issueContext "CogniRunner on this issue" glance ---------------- */
   {
     console.log("J24 issue-context glance (issue-glance)");

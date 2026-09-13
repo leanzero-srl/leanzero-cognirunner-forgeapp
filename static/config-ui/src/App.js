@@ -26,7 +26,12 @@ import DocRepository from "./components/DocRepository";
 import ReviewPanel from "./components/ReviewPanel";
 import AILoadingState from "./components/AILoadingState";
 import { ConfigSkeleton } from "./components/Skeleton";
-import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
+import { resolveEdition, EDITION_IDS, agentCapabilityCopy } from "../../../src/shared/edition.js";
+// F-398 - the premade POST-FUNCTION catalogue. Which rules exist, what each one is
+// called and which instance capability it needs are the CATALOGUE's answers, never
+// this file's: a second list here is how a rule ships with a gate in one place and
+// not the other.
+import { getCatalog as getPremadeCatalog, findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
 
 // Static-PF code offload: the workflow editor caps a rule's embedded config at
 // ~32KB. Above the threshold the step code moves to app storage (KVS) and the
@@ -38,6 +43,20 @@ const SLIM_CONFIG_MAX_BYTES = 30720;
 const stepMeta = (fns) => (fns || []).map((f) => ({
   id: f.id, name: f.name, operationType: f.operationType, variableName: f.variableName,
 }));
+
+/* F-398 - DOES THIS PREMADE POST-FUNCTION NEED THE CODER CAPABILITY?
+ *
+ * The catalogue entry declares `requiresCapability`, so the question is asked ONCE here and
+ * answered from there. Today every premade post-function is the Coder and every one of them
+ * answers yes; the day one does not, this returns false for it without a line changing.
+ * An UNKNOWN rule key answers true - the restrictive side, the same discipline the backend's
+ * own catalogue lookup applies when it refuses a key it does not know.
+ */
+const premadePfNeedsCoder = (ruleType) => {
+  if (!ruleType) return false;
+  const def = findPremadeRule("postfunction", ruleType);
+  return def ? def.requiresCapability === "git" : true;
+};
 
 // Inject styles directly - more reliable in Forge iframe
 const injectStyles = () => {
@@ -3055,6 +3074,26 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #f59e0b; color: #1c1207; }
     html[data-color-mode="dark"] .pr-coder-count-full { color: #f59e0b; }
 
+    /* ── F-398 — THE PREMADE POST-FUNCTION (Coder) ARMS ──────────────────────────────
+       Two blocks, both SOLID: the capability verdict and the save gate. No left rail, no
+       low-alpha tint, white text on the saturated fill. The OFF arm carries the AGENTS hue
+       (#b45309 light) because this rule hands a transition to the Coder, and the whole
+       feature is named in that colour everywhere else (.pr-seg-coder above).
+       DARK: amber-500 (#f59e0b) under WHITE text measures ~2.1:1, so the dark override
+       pairs it with the dark ink this app already uses for that hue (F-298). Do not
+       "fix" it back to white. */
+    .cpf-cap { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; padding: 11px 13px; border-radius: var(--r-md, 8px); color: #fff; }
+    .cpf-cap-on { background: #16a34a; }
+    .cpf-cap-off { background: #b45309; }
+    .cpf-cap-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+    .cpf-cap-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    .cpf-gate { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
+    .cpf-gate strong { font-size: 12.5px; font-weight: 800; }
+    .cpf-gate span { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    html[data-color-mode="dark"] .cpf-cap-on { background: #22c55e; color: #0a2a12; }
+    html[data-color-mode="dark"] .cpf-cap-off { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .cpf-gate { background: #f59e0b; color: #2a1602; }
+
     /* NL-to-rule builder ("Build from a description") — solid accent button, inset
        result card. Existing tokens only (dark variants present); no left rail/tint. */
     .br-bar { margin-bottom: 14px; }
@@ -3187,6 +3226,17 @@ let currentEmbeddedDisabled = false;
 let currentRuleKind = "ai"; // "ai" | "premade"
 let currentPremadeConfig = {}; // { ruleType, ...params } produced by PremadeRuleForm
 let currentPremadeValid = false;
+/* F-398 - THE PREMADE POST-FUNCTION REFS.
+   The post-function slot has its own kind switch, separate from `currentRuleKind`: that one
+   belongs to the validator/condition editor (a condition is FORCED to premade, which a
+   post-function must never inherit). Same module-level-ref discipline as every other value
+   onConfigure reads - the callback captures its closure at registration, so state alone
+   would hand Jira a stale config. Kept in sync by a useEffect, never refactored away.
+   `currentCoderCapability` starts null = NOT YET ANSWERED, and a null refuses the save the
+   same as an OFF verdict: a rule that cannot run must not be saved, and an unanswered
+   capability read is not a yes. */
+let currentPfKind = "ai"; // "ai" | "premade" - the POST-FUNCTION slot's kind
+let currentCoderCapability = null; // the getAgentCapability answer, or null while unknown
 
 function App() {
   const [fieldId, setFieldId] = useState("");
@@ -3279,6 +3329,9 @@ function App() {
   const [premadeInitial, setPremadeInitial] = useState(null); // saved premade config to hydrate
   const [premadeConfig, setPremadeConfig] = useState({});
   const [premadeValid, setPremadeValid] = useState(false);
+  // F-398 - the post-function slot's own kind switch and the Coder capability verdict.
+  const [pfKind, setPfKind] = useState("ai"); // "ai" | "premade"
+  const [coderCapability, setCoderCapability] = useState(null); // null = not yet answered
   const [postFunctionType, setPostFunctionType] = useState(null); // null | "semantic" | "static"
   const [conditionPrompt, setConditionPrompt] = useState("");
   const [actionPrompt, setActionPrompt] = useState("");
@@ -3326,6 +3379,24 @@ function App() {
   useEffect(() => { currentRuleKind = ruleKind; }, [ruleKind]);
   useEffect(() => { currentPremadeConfig = premadeConfig; }, [premadeConfig]);
   useEffect(() => { currentPremadeValid = premadeValid; }, [premadeValid]);
+  useEffect(() => { currentPfKind = pfKind; }, [pfKind]);
+  useEffect(() => { currentCoderCapability = coderCapability; }, [coderCapability]);
+
+  /* F-398 - READ the Coder verdict, never derive it. The premade post-function catalogue's
+     one entry declares `requiresCapability: "git"`, and `agentCapability` (src/shared/edition.js)
+     is the ONE predicate that answers whether this instance may run it - a frontend that
+     inferred it from the edition would be wrong for three of the five reasons. Fetched only
+     when the premade post-function kind is actually on screen, so no other slot provokes a
+     read it has no use for. A throw is transport, which is still "we do not know", which is
+     still refused. */
+  useEffect(() => {
+    if (!isPostFunction || pfKind !== "premade" || coderCapability) return;
+    let live = true;
+    invoke("getAgentCapability")
+      .then((r) => { if (live) setCoderCapability(r && r.success ? r : { enabled: false, reason: "unknown" }); })
+      .catch(() => { if (live) setCoderCapability({ enabled: false, reason: "unknown" }); });
+    return () => { live = false; };
+  }, [isPostFunction, pfKind, coderCapability]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -3545,6 +3616,13 @@ function App() {
               setRuleKind("premade");
               currentRuleKind = "premade";
               setPremadeInitial(config);
+              // F-398 - a premade POST-FUNCTION hydrates the post-function slot's own
+              // switch. `ruleKind` above is the validator/condition editor's and is left
+              // set for the shared PremadeRuleForm mount below it.
+              if (extType === "jira:workflowPostFunction") {
+                setPfKind("premade");
+                currentPfKind = "premade";
+              }
             }
             // A CONDITION saved by an older version carries an AI prompt. Conditions
             // are evaluated by Jira as a Jira expression and never could run that
@@ -3622,8 +3700,12 @@ function App() {
             //    and post-function shared a transition — disabling one muted the others)
             // 3. ext.entryPoint / ext.key — Forge-provided per-instance identifier
             // 4. Date.now() — last resort; warn so we can spot bad embeds in field reports
+            // F-398 - a premade post-function is namespaced by its CATALOGUE KEY, so two
+            // rules of different premade types on one transition never share a registry row.
+            const premadePfType = (isPostFn && currentPfKind === "premade" && currentPremadeConfig?.ruleType) || "";
             const idTypePrefix = isPostFn
-              ? ((currentManagedConfig && currentManagedConfig.type)
+              ? (premadePfType
+                  || (currentManagedConfig && currentManagedConfig.type)
                   || (currentPostFunctionType === "static" ? "postfunction-static" : "postfunction-semantic"))
               : (ext.type === "jira:workflowCondition" ? "condition" : "validator");
             let ruleId = currentExistingRuleId;
@@ -3673,7 +3755,45 @@ function App() {
 
             // Validate based on module type. Return undefined to signal "invalid" — Forge then
             // shows its built-in field-error UI and the save is blocked.
-            if (isPostFn && currentPostFunctionType === "semantic") {
+            if (isPostFn && currentPfKind === "premade") {
+              /* F-398 - THE PREMADE POST-FUNCTION (the Coder).
+                 Three refusals, in the order a reader would meet them, each returning
+                 undefined so Forge blocks the save and the banner says why:
+
+                 1. The form is incomplete. Its own validity covers the mode - a Coder rule
+                    with no mode ERRORS on every transition in both strict columns, so there
+                    is no such thing as saving it and picking later.
+                 2. The instance cannot run the Coder. A rule that cannot run must not be
+                    saved: it would sit on the transition writing SKIP or ERROR rows forever
+                    while reading as configured. The verdict is READ (getAgentCapability),
+                    and a read that has not answered yet is refused the same as an OFF one -
+                    an unanswered question is not a yes (the same rule agentGateFacts applies
+                    on the backend).
+                 3. Nothing else: connection, repository and strict are the form's business
+                    and the backend re-clamps every one of them after its own catalogue
+                    lookup, because the client is trusted with none of it. */
+              if (!currentPremadeValid) {
+                setError("Complete the post-function's details before saving - pick what the Coder should do, a connection and a repository.");
+                return undefined;
+              }
+              if (premadePfNeedsCoder(currentPremadeConfig.ruleType)) {
+                const cap = currentCoderCapability;
+                if (!cap || cap.enabled !== true) {
+                  const copy = agentCapabilityCopy(cap ? cap.reason : "unknown");
+                  setError(`${copy.title}. ${copy.remedy}`);
+                  return undefined;
+                }
+              }
+              delete config.prompt;
+              delete config.fieldId;
+              Object.assign(config, currentPremadeConfig);
+              config.ruleKind = "premade";
+              // `type` AND `ruleType` both carry the catalogue key: `resolvePfType`
+              // (src/index.js) routes on ruleKind+ruleType, and every badge and summary in
+              // the app reads `type`. A premade post-function that carried only one of them
+              // would either run as a semantic rule or render as one.
+              config.type = currentPremadeConfig.ruleType;
+            } else if (isPostFn && currentPostFunctionType === "semantic") {
               if (!currentConditionPrompt.trim()) {
                 console.warn("[CogniRunner] Save blocked: semantic PF requires a condition prompt");
                 setError("Add a Condition before saving.");
@@ -3773,11 +3893,28 @@ function App() {
             let registryResult;
             try {
               if (isPostFn) {
-                const moduleType = currentPostFunctionType === "static"
-                  ? "postfunction-static" : "postfunction-semantic";
+                const moduleType = premadePfType
+                  || (currentPostFunctionType === "static"
+                    ? "postfunction-static" : "postfunction-semantic");
                 registryResult = await invoke("registerPostFunction", {
                   id: ruleId,
                   type: moduleType,
+                  /* F-398 - the premade half of the payload. `registerPostFunction` reads
+                     `ruleKind` + `premadeRuleType` and REFUSES a key the catalogue does not
+                     have available; every param below is re-coerced and re-clamped there, so
+                     this is a proposal, not a decision. `prMatch` is deliberately absent -
+                     the Coder locates its own pull request and the catalogue switches that
+                     sub-control off, so sending one would store a key nothing reads. */
+                  ...(premadePfType ? {
+                    ruleKind: "premade",
+                    premadeRuleType: premadePfType,
+                    mode: config.mode,
+                    instructions: config.instructions || "",
+                    connectionId: config.connectionId || "",
+                    repo: config.repo || "",
+                    strict: config.strict === true,
+                    simulationMode: config.simulationMode === true,
+                  } : {}),
                   fieldId: config.fieldId,
                   prompt: config.prompt,
                   conditionPrompt: config.conditionPrompt || "",
@@ -4074,18 +4211,114 @@ function App() {
                   <polyline points="8 6 2 12 8 18" />
                 </svg>
               )}
-              <strong>{postFunctionType === "semantic" ? "Semantic Post Function" : "Static Post Function"}</strong>
+              <strong>{pfKind === "premade" ? "Premade Post Function" : postFunctionType === "semantic" ? "Semantic Post Function" : "Static Post Function"}</strong>
             </div>
             <p className="pf-type-desc">
-              {postFunctionType === "semantic"
+              {pfKind === "premade"
+                ? "A ready-made post-function you pick and parameterise. No prompt to write, and no AI judgement on the transition itself."
+                : postFunctionType === "semantic"
                 ? "AI runs on every transition to evaluate a condition and update a target field. Best for decisions requiring judgment."
                 : "AI generates code once during setup. That code runs on every transition with zero AI cost at runtime."}
               {" "}This rule's type is determined by the workflow slot it's installed in — to switch types, remove this rule and add the other variant from the workflow editor.
             </p>
-            {isByok && (
+            {isByok && pfKind !== "premade" && (
               <span className={`pf-type-tag ${postFunctionType === "semantic" ? "pf-tag-semantic" : "pf-tag-static"}`}>
                 {postFunctionType === "semantic" ? "AI cost per run" : "No AI cost at runtime"}
               </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* F-398 — THE POST-FUNCTION KIND SWITCH.
+          Only in the SEMANTIC slot, and only for a rule this editor owns. Two reasons, both
+          load-bearing. The premade post-function is injected into `ai-semantic-post-function`
+          (RULE_KEY_MAP, src/index.js), so that is the slot a designer will be standing in;
+          and the STATIC slot's whole purpose is the code builder, which a premade rule has no
+          use for. A managed flavor (comment/subtask/doc/research/link) is read-only here and
+          must not be offered a switch that would rewrite it. */}
+      {isPostFunction && postFunctionType === "semantic" && !managedType && (
+        <div className="card">
+          <div className="form-group" style={{ margin: 0, padding: "14px 16px" }}>
+            <label className="label">Post-function kind</label>
+            <div className="rulekind-toggle">
+              <button
+                type="button"
+                className={`rulekind-opt${pfKind === "ai" ? " active" : ""}`}
+                onClick={() => { setPfKind("ai"); currentPfKind = "ai"; }}
+              >
+                <span className="rulekind-opt-title">AI post-function</span>
+                <span className="rulekind-opt-sub">Describe a condition and an action; AI evaluates each transition</span>
+              </button>
+              <button
+                type="button"
+                className={`rulekind-opt${pfKind === "premade" ? " active" : ""}`}
+                onClick={() => { setPfKind("premade"); currentPfKind = "premade"; }}
+              >
+                <span className="rulekind-opt-title">Premade post-function</span>
+                <span className="rulekind-opt-sub">
+                  {getPremadeCatalog("postfunction").length === 1
+                    ? getPremadeCatalog("postfunction")[0].label
+                    : "Pick a ready-made post-function and fill in its details"}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* The premade post-function editor: the catalogue form, the capability verdict above
+          it, and the save gate below it. */}
+      {isPostFunction && postFunctionType === "semantic" && !managedType && pfKind === "premade" && (
+        <div className="card">
+          <div style={{ padding: "14px 16px" }}>
+            {/* THE CAPABILITY ARM. Rendered whatever the verdict, because a reader whose
+                instance cannot run the Coder needs to learn that here rather than from a
+                skipped transition a week later. The words come from the ONE table
+                (AGENT_CAPABILITY_REASONS, src/shared/edition.js) — four surfaces, one wording. */}
+            {premadePfNeedsCoder(premadeConfig.ruleType) && (
+              coderCapability && coderCapability.enabled === true ? (
+                <div className="cpf-cap cpf-cap-on" role="note">
+                  <span className="cpf-cap-title">{agentCapabilityCopy(coderCapability.reason).title}</span>
+                  <span className="cpf-cap-text">{agentCapabilityCopy(coderCapability.reason).remedy}</span>
+                </div>
+              ) : (
+                <div className="cpf-cap cpf-cap-off" role="note">
+                  <span className="cpf-cap-title">{agentCapabilityCopy(coderCapability ? coderCapability.reason : "unknown").title}</span>
+                  <span className="cpf-cap-text">{agentCapabilityCopy(coderCapability ? coderCapability.reason : "unknown").remedy}</span>
+                  <span className="cpf-cap-text">
+                    This rule cannot be saved while the Coder is off: it would sit on the transition doing nothing.
+                    {agentCapabilityCopy(coderCapability ? coderCapability.reason : "unknown").link === "settings"
+                      ? " Open the CogniRunner admin app and fix it under Settings, then reopen this rule."
+                      : ""}
+                  </span>
+                </div>
+              )
+            )}
+            <PremadeRuleForm
+              mode="postfunction"
+              fields={fields}
+              initial={premadeInitial}
+              onChange={(cfg, valid) => {
+                setPremadeConfig(cfg);
+                setPremadeValid(valid);
+                currentPremadeConfig = cfg;
+                currentPremadeValid = valid;
+              }}
+            />
+            {/* THE SAVE GATE, in the app's own words. Jira's Add/Update button lives outside
+                this iframe and cannot be disabled from here, so the affordance this editor
+                DOES own is the sentence that says the save will be refused and what to do
+                about it — the same shape the AI validator's pristine-form hint uses. The
+                refusal itself is enforced in onConfigure, never only here. */}
+            {!premadeValid && (
+              <div className="cpf-gate" role="note">
+                <strong>Pick what the Coder should do before clicking Add.</strong>
+                <span>
+                  A post-function with no mode fails on every transition, so this editor refuses to save one.
+                  The connection and the repository are required too.
+                </span>
+              </div>
             )}
           </div>
         </div>
@@ -4130,7 +4363,7 @@ function App() {
           these rule types are fully editable here, and a wizard-only flag would be
           unreachable for editor-created rules. Standard card, not the amber
           warning style. */}
-      {isPostFunction && !managedType && (postFunctionType === "semantic" || postFunctionType === "static") && (
+      {isPostFunction && !managedType && pfKind === "ai" && (postFunctionType === "semantic" || postFunctionType === "static") && (
         <div className="card">
           <div style={{ padding: "12px 16px" }}>
             <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "13px", fontWeight: 600 }}>
@@ -4169,7 +4402,7 @@ function App() {
         </div>
       )}
 
-      {isPostFunction && postFunctionType === "semantic" && !managedType && (
+      {isPostFunction && postFunctionType === "semantic" && !managedType && pfKind === "ai" && (
         <div className="card">
           {!providerReady && providerWarningPf}
           {isByok && (

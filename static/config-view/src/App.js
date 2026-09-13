@@ -18,7 +18,7 @@
 import React, { useState, useEffect } from "react";
 import { confirmDialog } from "./confirmDialog";
 import { isPermissionRefusal, permissionRefusalText } from "./refusal";
-import { findRule } from "../../../src/shared/premade-rules-catalog.js";
+import { findRule, getCatalog as getPremadeCatalog } from "../../../src/shared/premade-rules-catalog.js";
 import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
 import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
@@ -1885,6 +1885,12 @@ function App() {
   // ai-semantic-post-function module and are dispatched by config.type (index.js), so config-view must name
   // + render EACH — otherwise a comment/subtask/doc/research/link rule was mislabelled "AI Validator" with
   // an empty body. (Static PF is separate; premade/AI validators & conditions are the non-postfunction path.)
+  /* F-398 - does this premade rule live in the POST-FUNCTION half of the catalogue?
+     Read from the catalogue (one home), with the module signal preferred when Jira gave us
+     one: `extension.type` is authoritative and a config key is not. */
+  const isPremadePostFunction = config.ruleKind === "premade"
+    && (ruleModule === "postfunction"
+      || getPremadeCatalog("postfunction").some((r) => r.key === (config.ruleType || config.premadeRuleType || config.type)));
   const PF_TITLES = {
     "postfunction-semantic": "Semantic Post Function",
     "postfunction-comment": "Comment Post Function",
@@ -1901,7 +1907,17 @@ function App() {
     : config.type === "postfunction-static"
       ? { cls: "cv-rule-static", eyebrow: "§ POST-FUNCTION", title: "Static Post Function" }
     : config.ruleKind === "premade"
-      ? { cls: "cv-rule-premade", eyebrow: "§ RULE", title: `Premade ${isCondition ? "Condition" : "Validator"}` }
+      /* F-398 - a premade POST-FUNCTION is not a validator. The premade half of the
+         catalogue has three modes now, and `isCondition` above can only answer
+         validator-vs-condition, so a saved Coder rule opened here read "Premade Validator"
+         with a "§ RULE" eyebrow - a sentence about a rule that does not exist. The
+         catalogue is asked which half the key belongs to, exactly like `isCondition` asks
+         it, so a premade rule is never labelled a type nothing can back up. The summary
+         BODY (mode, instructions, connection, repository, strict) already renders from
+         `premadeSummaryRows`; only the identity was wrong. */
+      ? (isPremadePostFunction
+          ? { cls: "cv-rule-premade", eyebrow: "§ POST-FUNCTION", title: "Premade Post Function" }
+          : { cls: "cv-rule-premade", eyebrow: "§ RULE", title: `Premade ${isCondition ? "Condition" : "Validator"}` })
     : { cls: isCondition ? "cv-rule-condition" : "cv-rule-validator", eyebrow: "§ RULE", title: `AI ${isCondition ? "Condition" : "Validator"}` };
 
   return (
@@ -2059,9 +2075,15 @@ function App() {
         </>
       )}
 
-      {/* Validator / Condition (original) */}
-      {!config.type?.includes("postfunction") && (
-        config.ruleKind === "premade" ? (
+      {/* F-398 - A PREMADE RULE'S ROWS ARE NOT GATED ON ITS MODULE.
+         This block used to open with `!config.type?.includes("postfunction")`, which is true
+         of a validator and a condition and FALSE of `postfunction-coder` - so a saved Coder
+         post-function rendered its identity and then an empty body: no mode, no note, no
+         connection, no repository, no strict sentence. `premadeSummaryRows` is the one home
+         for a premade rule's rows in ANY slot (it already knew about the Coder's mode and
+         note), so the question this asks is "is it premade", and the module test survives only
+         where it belongs: on the AI validator/condition rows below. */}
+      {config.ruleKind === "premade" ? (
           <>
             {premadeSummaryRows(config, gitConnections).map((r, i) => (
               <div className="config-item" key={i}>
@@ -2072,7 +2094,7 @@ function App() {
               </div>
             ))}
           </>
-        ) : (
+        ) : !config.type?.includes("postfunction") ? (
         <>
           {config.fieldId && (
             <div className="config-item">
@@ -2103,8 +2125,7 @@ function App() {
             </div>
           )}
         </>
-        )
-      )}
+        ) : null}
 
       {(() => {
         const explainKind = ruleKindEnum(config, ruleModule, isCondition);

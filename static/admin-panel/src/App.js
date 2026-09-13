@@ -1719,6 +1719,25 @@ const injectStyles = () => {
     .wizard-title { font-size: 15px; font-weight: 700; margin: 0; }
     .wizard-subtitle { font-size: 11px; color: var(--text-muted); margin: 2px 0 0 0; }
     .wizard-body { padding: 16px 20px; }
+    /* ── F-398 — THE PREMADE POST-FUNCTION (Coder) ARMS ──────────────────────────────
+       Two blocks, both SOLID: the capability verdict and the save gate. No left rail, no
+       low-alpha tint, white text on the saturated fill. The OFF arm carries the AGENTS hue
+       (#b45309 light) because this rule hands a transition to the Coder, and the whole
+       feature is named in that colour everywhere else (.pr-seg-coder above).
+       DARK: amber-500 (#f59e0b) under WHITE text measures ~2.1:1, so the dark override
+       pairs it with the dark ink this app already uses for that hue (F-298). Do not
+       "fix" it back to white. */
+    .cpf-cap { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; padding: 11px 13px; border-radius: var(--r-md, 8px); color: #fff; }
+    .cpf-cap-on { background: #16a34a; }
+    .cpf-cap-off { background: #b45309; }
+    .cpf-cap-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+    .cpf-cap-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    .cpf-gate { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
+    .cpf-gate strong { font-size: 12.5px; font-weight: 800; }
+    .cpf-gate span { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    html[data-color-mode="dark"] .cpf-cap-on { background: #22c55e; color: #0a2a12; }
+    html[data-color-mode="dark"] .cpf-cap-off { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .cpf-gate { background: #f59e0b; color: #2a1602; }
     .wizard-breadcrumb {
       display: flex; gap: 12px; margin-bottom: 16px; font-size: 12px; color: var(--text-secondary);
       padding: 8px 0; border-bottom: 1px solid var(--border-color);

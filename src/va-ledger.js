@@ -43,7 +43,7 @@ import { defangFence } from "./memories.js";
 import { VA_LIMITS } from "./shared/va-config.js";
 import {
   vaItemKey, vaIndexKey, vaMemoryKey, vaTickKey, vaEffectKey, vaCapsKey, vaHealthKey,
-  vaExecClaimKey, vaPostClaimKey, capsBuckets, tickIdFor,
+  vaExecClaimKey, vaPostClaimKey, vaCompactClaimKey, capsBuckets, tickIdFor,
   VA_ITEM_TTL, VA_INDEX_TTL, VA_TICK_TTL, VA_EFFECT_TTL, VA_CAPS_TTL, VA_CLAIM_TTL, VA_HEALTH_TTL,
 } from "./shared/va-keys.js";
 
@@ -51,6 +51,7 @@ const nowIso = (now) => new Date(now == null ? Date.now() : now).toISOString();
 /** Every free-text field is defanged AT WRITE TIME, never at injection (F-423). */
 const safeText = (v, max) => clampChars(defangFence(v == null ? "" : v), max);
 const fail = (reason, extra = {}) => ({ ok: false, reason, ...extra });
+const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const bytesOf = (v) => { try { return new TextEncoder().encode(JSON.stringify(v) ?? "").length; } catch (e) { return Number.MAX_SAFE_INTEGER; } };
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -578,6 +579,17 @@ export const releasePostClaim = (store, agent, issueKey, stagedAt) =>
   releaseClaim(store, vaPostClaimKey(agent, issueKey, stagedAt));
 
 /**
+ * F-494 — the MEMORY COMPACTION claim, one per tick. Same fail-closed contract as the
+ * other two: `already_claimed` and `storage_fault` both mean DO NOT PROCEED, and the step
+ * that cannot take it makes no model call at all. A compaction turn is a spend, and a
+ * duplicate trigger delivery for one 5-minute tick must buy exactly one of them.
+ */
+export const takeCompactClaim = (store, agent, tickId) =>
+  takeClaim(store, vaCompactClaimKey(agent, tickId), "va-compact");
+export const releaseCompactClaim = (store, agent, tickId) =>
+  releaseClaim(store, vaCompactClaimKey(agent, tickId));
+
+/**
  * Run `fn` holding the item claim, releasing it IF `fn` THROWS — the `git_delivery` shape
  * after F-335/F-367. The release is what makes a crashed turn retryable: without it the
  * item is claimed by a task that never ran and stays silent until the TTL expires.
@@ -612,7 +624,16 @@ export const withItemClaim = async (store, agent, issueKey, tickId, fn) => {
  * `skipped[]` carries `{key, reason}` for every candidate that did not run. A receipt
  * with an empty `skipped` and fewer staged than candidates is a bug, not a quiet tick.
  */
-export const recordTick = async (store, agent, { tickId, phase = "prepare", started = null, candidates = 0, staged = 0, skipped = [], next = null, error = null } = {}) => {
+/**
+ * `compacted` (F-494) is OPTIONAL and PRESENT ONLY WHEN A COMPACTION TURN RAN — `{before,
+ * after}` in stored bytes. Absent means "the memory was under the threshold and nothing
+ * was spent", which is the common case and must not look like a compaction that achieved
+ * nothing. It rides the prepare receipt rather than getting a receipt of its own because,
+ * unlike the post phase (F-421), the compaction step runs INSIDE the prepare tick and has
+ * no separate task that could deliver without it; a second key here would be a row that is
+ * always written in lockstep with this one.
+ */
+export const recordTick = async (store, agent, { tickId, phase = "prepare", started = null, candidates = 0, staged = 0, skipped = [], next = null, error = null, compacted = null } = {}) => {
   const receipt = {
     agent: String(agent),
     phase: phase === "post" ? "post" : "prepare",
@@ -633,6 +654,19 @@ export const recordTick = async (store, agent, { tickId, phase = "prepare", star
       })),
     next: next == null ? null : String(next),
     error: error == null ? null : safeText(error, 300),
+    ...(isObj(compacted)
+      ? {
+        compacted: {
+          before: Math.max(0, Math.trunc(Number(compacted.before) || 0)),
+          after: Math.max(0, Math.trunc(Number(compacted.after) || 0)),
+          // A compaction that FELL BACK (the summariser failed and the old prose was kept
+          // and cut instead) is still a compaction that ran and spent a claim. It reads
+          // very differently from a clean one, so the receipt says which.
+          ...(compacted.reason ? { reason: safeText(compacted.reason, 120) } : {}),
+          ...(compacted.fellBack === true ? { fellBack: true } : {}),
+        },
+      }
+      : {}),
   };
   try {
     await store.set(vaTickKey(agent, tickIdFor(receipt.phase, tickId)), receipt, VA_TICK_TTL);
@@ -1039,8 +1073,10 @@ export const readMemory = async (store, agent) => {
  * comment close the agent's fence and speak as the operator. A row that cannot contain a
  * fence marker is safe at every site, for ever.
  *
- * The byte ceiling is `memoryCapBytes`; over it the PROSE is clamped and the pinned
- * constraints are kept whole, because the constraints are the part a human typed.
+ * The byte ceiling is `memoryCapBytes`; over it UNPINNED PROSE LINES are dropped oldest
+ * first and the pinned constraints are kept whole, because the constraints are the part a
+ * human typed. When the pinned half alone exceeds the cap the write REFUSES — see F-494
+ * below; it does not cut human-pinned text and it does not store an over-cap row.
  */
 /**
  * `constraints[]` IS HUMAN-PINNED, AND ONLY HUMAN-PINNED (F-456).
@@ -1083,6 +1119,51 @@ export const memoryBytes = (memory) => bytesOf({
   updatedAt: (memory && memory.updatedAt) || "",
 });
 
+/**
+ * F-494 — THE CUT IS MADE TO UNPINNED PROSE, BY WHOLE LINES, OLDEST FIRST; NEVER TO PINNED
+ * TEXT, AND WHEN THERE IS NO UNPINNED ROOM LEFT THE WRITE REFUSES LOUDLY.
+ *
+ * Three things were wrong with clamping the envelope by bytes:
+ *
+ *  1. IT CUT THE WRONG END. The prose is an APPEND-ONLY note log — `memory_note` joins the
+ *     new line onto the end (src/va-ledger-actions.js) — so a tail clamp throws away the
+ *     agent's NEWEST notes and keeps its oldest. An agent that learns something today and
+ *     forgets it at the next write, while still reciting a note from March, is worse than
+ *     one with no memory: it is confidently stale.
+ *  2. IT CUT MID-SENTENCE. A byte clamp lands wherever the budget lands, so a surviving
+ *     note could read "always assign to the on-c" — a half-decision, injected into every
+ *     later turn as if it were whole. Dropping WHOLE LINES is the difference between
+ *     forgetting a note and corrupting one.
+ *  3. IT WENT ON WRITING WHEN IT COULD NOT KEEP ITS PROMISE. If the pinned constraints
+ *     alone overflow the cap, no amount of cutting prose helps; the old code stored the
+ *     over-cap row anyway and set a flag nobody read. The cap exists to respect KVS's
+ *     240 KiB ceiling, and a silent breach of it is the quiet failure law 8 forbids.
+ *     Over the cap on pinned text alone, this REFUSES — `reason: "memory-full"` — and
+ *     writes nothing. Both callers already handle a failed write and say so out loud:
+ *     `memory_note` tells the model it could not be remembered, `saveMemory` fails the
+ *     admin's save. An administrator who has pinned 8 KB of constraints must delete some.
+ *
+ * So the order is: refuse if the PINNED half alone will not fit; otherwise drop whole
+ * UNPINNED lines from the FRONT (oldest) until the stored envelope fits, marking that
+ * something was dropped; and only a single remaining line that alone overflows is clamped
+ * by bytes, because at that point the alternative is to store nothing of it at all.
+ *
+ * `[older notes dropped]` is a MARKER, not decoration: a memory that silently shrank reads
+ * to the next turn exactly like a memory that was never written.
+ */
+const MEMORY_DROP_MARKER = "[older notes dropped]";
+
+/**
+ * The row as it would be stored for a given set of prose lines. `marked` prepends the
+ * drop marker, and it is part of the MEASUREMENT rather than added afterwards — a marker
+ * appended after the fit check is a marker that can push the row back over the cap.
+ */
+const memoryRowFor = (lines, marked, pinned, updatedAt) => ({
+  text: (marked ? [MEMORY_DROP_MARKER, ...lines] : lines).join("\n"),
+  constraints: pinned,
+  updatedAt,
+});
+
 export const writeMemory = async (store, agent, { text = "", constraints = [] } = {}, { now = Date.now() } = {}) => {
   const pinned = normalizeConstraints(constraints);
   const updatedAt = nowIso(now);
@@ -1090,31 +1171,73 @@ export const writeMemory = async (store, agent, { text = "", constraints = [] } 
   // The room the prose has is the cap MINUS everything else the envelope costs — the
   // pinned constraints, the key names, the quoting, `updatedAt`. Measured, not estimated.
   const overhead = memoryBytes({ text: "", constraints: pinned, updatedAt });
-  let budget = Math.max(256, cap - overhead);
-  let clamped = clampUtf8Bytes(defangFence(text == null ? "" : text), budget, "\n[memory clamped]");
-  let memory = { text: clamped.text, constraints: pinned, updatedAt };
 
-  // THE CLAMP IS VERIFIED AGAINST THE ENVELOPE, NOT ASSUMED FROM THE PROSE. Clamping the
-  // raw string to N bytes does not make its JSON form N bytes: a prose full of quotes,
-  // backslashes or newlines escapes to roughly twice its size. So the row is MEASURED as
-  // it will be stored and the budget is reduced by the real overflow until it fits.
-  // Bounded: each pass shrinks the budget by at least the overflow, so it converges, and
-  // the loop stops regardless after a few passes.
-  for (let pass = 0; pass < 8 && memoryBytes(memory) > cap && clamped.text; pass++) {
-    const over = memoryBytes(memory) - cap;
-    budget = Math.max(0, budget - Math.max(over, 32));
-    clamped = clampUtf8Bytes(clamped.text, budget, "\n[memory clamped]");
-    memory = { text: clamped.text, constraints: pinned, updatedAt };
+  // THE REFUSAL, BEFORE ANY CUTTING. There is no unpinned room to give back, so the only
+  // way to write this row is to cut human-pinned text, and that is the one thing this
+  // function will not do. Loud, named, and nothing is stored.
+  if (overhead > cap) {
+    return fail("memory-full", { pinnedBytes: overhead, capBytes: cap, wrote: false });
   }
-  // A LAST RESORT that keeps the promise rather than the prose. If the PINNED constraints
-  // alone overflow the cap, no amount of clamping the prose can help — and the constraints
-  // are what a human typed, so they are the part that survives. The row still goes to
-  // storage (240 KiB is far above this cap, so it is writable), and the caller is told.
-  const overCap = memoryBytes(memory) > cap;
+
+  const defanged = defangFence(text == null ? "" : text);
+  let lines = defanged === "" ? [] : defanged.split("\n");
+  let dropped = 0;
+  // Oldest first, whole lines, re-measuring the row THAT WOULD BE STORED (F-459) — marker
+  // included — after every drop. Bounded by the line count; a single line is never dropped
+  // to nothing here, because the residual clamp below handles that case with a marker.
+  while (lines.length > 1 && memoryBytes(memoryRowFor(lines, dropped > 0, pinned, updatedAt)) > cap) {
+    lines.shift();
+    dropped++;
+  }
+
+  let memory = memoryRowFor(lines, dropped > 0, pinned, updatedAt);
+  let truncated = false;
+  // THE RESIDUAL, AND ONLY THE RESIDUAL: one unpinned line that alone overflows the cap.
+  // Verified against the ENVELOPE, not assumed from the prose — clamping a raw string to
+  // N bytes does not make its JSON form N bytes, since quotes, backslashes and newlines
+  // each escape to two. Bounded: the budget shrinks by at least the overflow each pass.
+  let budget = Math.max(1, cap - overhead);
+  for (let pass = 0; pass < 8 && memoryBytes(memory) > cap && memory.text; pass++) {
+    const c = clampUtf8Bytes(memory.text, budget, "\n[memory clamped]");
+    truncated = truncated || c.truncated;
+    memory = { text: c.text, constraints: pinned, updatedAt };
+    if (memoryBytes(memory) <= cap) break;
+    budget = Math.max(0, budget - Math.max(memoryBytes(memory) - cap, 32));
+  }
+  // THE INVARIANT IS ABSOLUTE, not best-effort. `overhead <= cap` was proven above, so an
+  // empty prose always fits; if the loop somehow has not converged, the prose goes rather
+  // than the cap being breached. Unreachable in practice, and cheaper than a stored row
+  // that is over a platform limit.
+  if (memoryBytes(memory) > cap) {
+    memory = { text: dropped > 0 ? MEMORY_DROP_MARKER : "", constraints: pinned, updatedAt };
+    truncated = true;
+    if (memoryBytes(memory) > cap) memory = { text: "", constraints: pinned, updatedAt };
+  }
 
   try { await store.set(vaMemoryKey(agent), memory); }
   catch (e) { return fail("memory_write_failed", { detail: String((e && e.message) || e) }); }
-  return { ok: true, memory, clamped: clamped.truncated, bytes: memoryBytes(memory), overCap };
+  // `clamped` is "something of what you asked to store is not stored" — a dropped line
+  // counts, because to the caller it is the same loss and the admin surface shows it.
+  return { ok: true, memory, clamped: truncated || dropped > 0, droppedLines: dropped, bytes: memoryBytes(memory) };
+};
+
+/**
+ * F-494 — THE PINNED LINES SURVIVED A PROPOSED REPLACEMENT, asked as a QUESTION.
+ *
+ * `compactMemory` carries `constraints[]` across by code, so its own output cannot drop
+ * one. This exists because the compaction STEP does not have to believe that: it holds a
+ * `before` and an `after` and can check, and a property that is checked at the point of
+ * the write survives a future refactor of the thing that produces it. It is the same
+ * reason `recordEffect` re-reads rather than trusting the turn (F-437): a guarantee
+ * asserted in prose and enforced nowhere is law 2.
+ *
+ * Returns the MISSING constraints, so the refusal can name them.
+ */
+export const pinnedSurvived = (before, after) => {
+  const was = normalizeConstraints(before && before.constraints);
+  const kept = new Set(normalizeConstraints(after && after.constraints));
+  const missing = was.filter((c) => !kept.has(c));
+  return { ok: missing.length === 0, missing };
 };
 
 /**

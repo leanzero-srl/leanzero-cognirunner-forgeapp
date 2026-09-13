@@ -106,6 +106,15 @@ modules:
         config.ruleType == "probe-git-build" ?
           (issue.properties?.["cognirunner.git"]?.build?.conclusion == null ? true :
            issue.properties?.["cognirunner.git"]?.build?.conclusion == "success") :
+        config.ruleType == "git-pr-merged" ?
+          (config.repo == null || issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.merged == null ? true :
+           issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr.merged) :
+        config.ruleType == "git-pr-approved" ?
+          (config.repo == null || issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.approved == null ? true :
+           issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr.approved) :
+        config.ruleType == "git-build-passed" ?
+          (config.repo == null || issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.build == null ? true :
+           issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr.build.toLowerCase().match("^(failure|failed|timed_out|cancelled|canceled|action_required|startup_failure|stale|stopped)$") == null) :
         true
       create:
         resource: config-ui-resource

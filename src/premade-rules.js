@@ -395,6 +395,16 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
       const ids = Array.isArray(u) ? u.map((x) => x && x.accountId) : [u && u.accountId];
       return ids.includes(actingUser);
     }
+    // Git conditions are evaluated by JIRA, as branches of the manifest expression
+    // (they read the advisory cognirunner.git property; a missing property is TRUE).
+    // runCondition is never the live evaluator for them — this branch exists only so
+    // the belt-and-suspenders path SHOWS the transition instead of logging an
+    // "unrecognized rule type" warning. The VALIDATORS with these same keys are the
+    // ones that verify live, in runGitValidator.
+    case "git-pr-merged":
+    case "git-pr-approved":
+    case "git-build-passed":
+      return true;
     case "user-in-group": {
       if (cfg.groupName == null || !actingUser) return true;
       const groups = await readUserGroups(actingUser);

@@ -54,6 +54,7 @@ const {
   CODER_MAX_ROUNDS, CODER_CLAIM_TTL_MINUTES, repairTranscript,
 } = await import("../../src/coder-engine.js");
 const { runAgentTask, runAgentLoop, createAgentActionDispatcher } = await import("../../src/agent-runner.js");
+const { AGENT_ACTIONS } = await import("../../src/shared/agent-actions.js");
 const { createGitActionExecutor } = await import("../../src/git-actions.js");
 
 let passed = 0, failed = 0;
@@ -582,6 +583,44 @@ await check("the args preview is an allow-list: file CONTENT never reaches the u
   assert.ok(!blob.includes("should-not-appear"), "an unknown field must not be previewed");
   assert.equal(preview.files[0].path, "a.js");
   assert.ok(preview.files[0].bytes > 0);
+});
+
+await check("F-363: EVERY declared argument of EVERY confirmable action appears in its preview", async () => {
+  // ONE HOME: the preview is derived from the action's own parameter schema, so this
+  // loop covers actions that do not exist yet. A sample value per declared type.
+  const sample = (name, schema) => {
+    switch (schema.type) {
+      case "boolean": return false;                 // the value the old hand list DROPPED
+      case "integer": case "number": return 7;
+      case "array": return [{ path: "a.js", content: "x" }];
+      case "object": return { environment: "production" };
+      default: return `v-${name}`;
+    }
+  };
+  const confirmable = AGENT_ACTIONS.filter((a) => a.confirm === true);
+  assert.ok(confirmable.length >= 7, "the git namespace's confirm actions are under test");
+  for (const a of confirmable) {
+    const args = {};
+    for (const [name, schema] of Object.entries(a.parameters.properties)) args[name] = sample(name, schema);
+    const preview = buildArgsPreview(a.id, args);
+    for (const name of Object.keys(a.parameters.properties)) {
+      assert.ok(Object.prototype.hasOwnProperty.call(preview, name),
+        `${a.id}: the executor acts on "${name}" but the consent preview never shows it`);
+    }
+  }
+});
+
+await check("F-363: the fields that change the blast radius are previewed with their real values", async () => {
+  const repo = buildArgsPreview("create_repo", { name: "acme-internal", private: false, org: "acme", description: "d" });
+  assert.equal(repo.private, false, "a PUBLIC repository must be visible in the preview");
+  assert.equal(repo.org, "acme");
+  const deploy = buildArgsPreview("trigger_deploy", { repo: "acme/app", workflow: "deploy.yml", ref: "main", inputs: { environment: "production" } });
+  assert.equal(deploy.inputs.environment, "production", "the deployment's environment must be visible");
+  const comment = buildArgsPreview("add_pr_comment", { repo: "acme/app", number: 4, body: "b", path: "src/a.js", line: 12 });
+  assert.equal(comment.path, "src/a.js");
+  assert.equal(comment.line, 12);
+  const pr = buildArgsPreview("open_pull_request", { repo: "acme/app", title: "t", sourceBranch: "s", draft: true });
+  assert.equal(pr.draft, true);
 });
 
 /* ═════════ 9. the dispatcher is shared, not copied ═════════ */

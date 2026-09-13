@@ -335,31 +335,79 @@ const buildIssueContext = async (issueKey, m) => {
 /* ───────────────────────────── consent tickets ───────────────────────────── */
 
 /**
- * What the USER is shown for a pending confirmation. An ALLOW-LIST, built field by field
- * — never a dump of the model's arguments, because those can carry whole file contents
- * and a diff is attacker-authored text on a public repo.
+ * What the USER is shown for a pending confirmation — DERIVED FROM THE ACTION'S OWN
+ * PARAMETER SCHEMA (src/shared/agent-actions.js), never from a hand-kept field list.
+ *
+ * F-363: the hand list omitted arguments that change the BLAST RADIUS of the very action
+ * being confirmed, while `confirmCoderTicket` executes `ticket.args` verbatim.
+ * `create_repo {name, private:false}` previewed as `{name}` and the user confirmed what
+ * looked like an ordinary repo into a PUBLIC one; `trigger_deploy` previewed without
+ * `inputs.environment`, so "deploy to production" read as "deploy". THE PREVIEW MUST SHOW
+ * EVERY FIELD THE EXECUTOR WILL ACT ON, and the only way that stays true as actions are
+ * added is to read the schema — one home, asserted by the engine's own suite for every
+ * git action.
+ *
+ * It is still not a dump of the model's arguments: the fields are the DECLARED ones
+ * (anything else the model invented is dropped), and every value is clamped. Long text
+ * inside an array item — a file's whole content, which on a public repo is
+ * attacker-authored — is replaced by its byte count rather than shown.
  */
+const PREVIEW_TEXT_MAX = 250;
+/** Fields whose meaning IS the prose (a commit message, a PR body). Clamped wider. */
+const PREVIEW_LONG_TEXT_MAX = 400;
+const PREVIEW_LONG_TEXT_FIELDS = new Set(["message", "body", "description"]);
+/** Inside an array item, a string longer than this is summarised as bytes, never shown. */
+const PREVIEW_ITEM_TEXT_MAX = 255;
+const PREVIEW_MAX_ITEMS = 20;
+const PREVIEW_MAX_OBJECT_KEYS = 20;
+const PREVIEW_OBJECT_VALUE_MAX = 120;
+
+const previewItem = (value) => {
+  if (value == null || typeof value !== "object") return String(value).slice(0, PREVIEW_ITEM_TEXT_MAX);
+  const out = {};
+  let omittedBytes = 0;
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === "string") {
+      if (v.length > PREVIEW_ITEM_TEXT_MAX) { omittedBytes += Buffer.byteLength(v, "utf8"); continue; }
+      out[k] = v;
+    } else if (typeof v === "number" || typeof v === "boolean") out[k] = v;
+  }
+  // The size of what was NOT shown — the user still learns how big the payload is.
+  if (omittedBytes) out.bytes = omittedBytes;
+  return out;
+};
+
+const previewValue = (name, schema, value) => {
+  const type = (schema && schema.type) || (typeof value === "object" ? "object" : "string");
+  if (type === "boolean") return value === true;
+  if (type === "integer" || type === "number") return Number(value) || 0;
+  if (type === "array") {
+    const rows = Array.isArray(value) ? value : [];
+    return rows.slice(0, PREVIEW_MAX_ITEMS).map(previewItem);
+  }
+  if (type === "object") {
+    const src = value && typeof value === "object" ? value : {};
+    const out = {};
+    for (const [k, v] of Object.entries(src).slice(0, PREVIEW_MAX_OBJECT_KEYS)) {
+      out[String(k).slice(0, 80)] = typeof v === "boolean" || typeof v === "number" ? v : String(v == null ? "" : typeof v === "object" ? JSON.stringify(v) : v).slice(0, PREVIEW_OBJECT_VALUE_MAX);
+    }
+    return out;
+  }
+  const max = PREVIEW_LONG_TEXT_FIELDS.has(name) ? PREVIEW_LONG_TEXT_MAX : PREVIEW_TEXT_MAX;
+  return String(value == null ? "" : value).slice(0, max);
+};
+
 export const buildArgsPreview = (action, args) => {
-  const a = args && typeof args === "object" ? args : {};
-  const s = (v, n = 200) => (v == null ? undefined : String(v).slice(0, n));
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const def = getAgentAction(action);
+  const props = (def && def.parameters && def.parameters.properties) || {};
   const preview = {};
-  if (a.repo) preview.repo = s(a.repo, 200);
-  if (a.branch) preview.branch = s(a.branch, 200);
-  if (a.fromBranch) preview.fromBranch = s(a.fromBranch, 200);
-  if (a.sourceBranch) preview.sourceBranch = s(a.sourceBranch, 200);
-  if (a.targetBranch) preview.targetBranch = s(a.targetBranch, 200);
-  if (a.title) preview.title = s(a.title, 250);
-  if (a.message) preview.message = s(a.message, 400);
-  if (a.body) preview.body = s(a.body, 400);
-  if (a.number != null) preview.number = Number(a.number) || 0;
-  if (a.workflow) preview.workflow = s(a.workflow, 200);
-  if (a.ref) preview.ref = s(a.ref, 200);
-  if (a.name) preview.name = s(a.name, 200);
-  if (Array.isArray(a.files)) {
-    preview.files = a.files.slice(0, 20).map((f) => ({
-      path: s(f && f.path, 255),
-      bytes: Buffer.byteLength(String((f && f.content) || ""), "utf8"),
-    }));
+  // Schema order, so the preview reads the same way the action is documented. A field the
+  // model did not supply is absent (the executor will not act on it either); a field it
+  // supplied that the schema does not declare is dropped (the executor ignores it too).
+  for (const [name, schema] of Object.entries(props)) {
+    if (!Object.prototype.hasOwnProperty.call(a, name) || a[name] === undefined || a[name] === null) continue;
+    preview[name] = previewValue(name, schema, a[name]);
   }
   return preview;
 };

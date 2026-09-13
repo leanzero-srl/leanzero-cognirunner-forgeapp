@@ -54,7 +54,10 @@ import {
   isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE,
 } from "./refusal";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
-import { GIT_PROVIDER_KINDS, gitProviderKindMeta, parseRepoList, formatRepoList } from "../../../../src/shared/git-ids.js";
+import {
+  GIT_PROVIDER_KINDS, gitProviderKindMeta, parseRepoList, formatRepoList,
+  APP_ID_ARI_PREFIX, normalizeDeveloperSpaceId, normalizeForgeAppId,
+} from "../../../../src/shared/git-ids.js";
 import { SCAFFOLDS, scaffoldVarError, SCAFFOLD_VAR_LABELS, scaffoldHasCustomUi } from "../../../../src/shared/git-scaffolds.js";
 
 const KIND_OPTIONS = GIT_PROVIDER_KINDS.map((k) => ({ value: k, label: gitProviderKindMeta(k).label }));
@@ -87,31 +90,29 @@ const DEFAULT_UI_DIR = PIPELINE_VAR_DEFAULTS.UI_DIR || "";
  * on cannot exist, and a wording change reaches both sides at once.
  *
  * THE TWO FORGE IDS ARE A DIFFERENT RULE. They are not scaffold variables; they are
- * repository variables, and they are checked here against the shapes src/git-pipeline.js
- * enforces (normalizeDeveloperSpaceId / normalizeForgeAppId). That module imports
- * @forge/kvs and can never be pulled into a browser bundle, so the shapes are stated
- * once here and the BACKEND stays the gate: anything this form lets through is still
- * refused with `invalid_developer_space` / `invalid_app_id`, and those refusals are
- * rendered on the field they belong to rather than as a nameless setup failure.
+ * repository variables. Their shapes used to be RETYPED here, justified by "that module
+ * imports @forge/kvs and can never be pulled into a browser bundle" — true of
+ * src/git-pipeline.js and beside the point: `src/shared/git-ids.js` is dependency-free,
+ * this file already imports it, and so does git-pipeline.js. F-557 gave them one home
+ * there; this screen imports the same normalisers and only supplies the SENTENCES.
+ *
+ * The BACKEND stays the gate: anything this form lets through is still refused with
+ * `invalid_developer_space` / `invalid_app_id`, and those refusals are rendered on the
+ * field they belong to rather than as a nameless setup failure.
  * ========================================================================= */
-const DEVELOPER_SPACE_RE = /^[0-9a-f-]{36}$/;
-const APP_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const APP_ID_ARI_PREFIX = "ari:cloud:ecosystem::app/";
 
-/** Both ids are OPTIONAL, so empty is usable. null when usable, else the sentence. */
+/** Both ids are OPTIONAL, so empty is usable. null when usable, else the sentence.
+ *  `false` is the shared normaliser's "present and malformed". */
 function developerSpaceError(raw) {
-  const v = String(raw == null ? "" : raw).trim().toLowerCase();
-  if (!v) return null;
-  if (!DEVELOPER_SPACE_RE.test(v)) return "A developer space id is 36 characters of hex and dashes.";
-  return null;
+  return normalizeDeveloperSpaceId(raw) === false
+    ? "A developer space id is 36 characters of hex and dashes."
+    : null;
 }
 
 function forgeAppIdError(raw) {
-  let v = String(raw == null ? "" : raw).trim().toLowerCase();
-  if (!v) return null;
-  if (v.startsWith(APP_ID_ARI_PREFIX)) v = v.slice(APP_ID_ARI_PREFIX.length);
-  if (!APP_ID_UUID_RE.test(v)) return "An app id is ari:cloud:ecosystem::app/ followed by a uuid, or the bare uuid.";
-  return null;
+  return normalizeForgeAppId(raw) === false
+    ? `An app id is ${APP_ID_ARI_PREFIX} followed by a uuid, or the bare uuid.`
+    : null;
 }
 
 /** Which FIELD a backend refusal belongs to, told by its machine code and never by a

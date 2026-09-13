@@ -234,6 +234,27 @@ const lastParams = () => pushedEvents[pushedEvents.length - 1].body.params;
       `${label} does not re-state the step list — it imports src/shared/git-pipeline-steps.js`);
     ok(/git-pipeline-steps\.js/.test(text), `…and it really imports it`);
   }
+
+  /* F-557 — THE TWO FORGE ID SHAPES HAVE ONE HOME TOO. The backend and the Code tab's
+   * form both check `FORGE_DEVELOPER_SPACE` and `FORGE_APP_ID`, and both used to carry
+   * their own literal copy of the three regexes, with nothing reading the JSX. The home
+   * is src/shared/git-ids.js — dependency-free, and already imported by both sides.
+   * What is held: the backend's exports ARE the shared module's functions, and NEITHER
+   * file declares a regex or the ARI prefix locally. */
+  const ids = await import("../../src/shared/git-ids.js");
+  ok(pipe.normalizeDeveloperSpaceId === ids.normalizeDeveloperSpaceId
+    && pipe.normalizeForgeAppId === ids.normalizeForgeAppId,
+    "src/git-pipeline.js re-exports the shared normalisers rather than owning a second copy");
+  const codeTab = readFileSync(new URL("static/admin-panel/src/components/CodeTab.jsx", here), "utf8");
+  for (const [label, text] of [["src/git-pipeline.js", srcPipeline], ["CodeTab.jsx", codeTab]]) {
+    ok(!/(DEVELOPER_SPACE_RE|APP_ID_UUID_RE|APP_ID_ARI_PREFIX)\s*=/.test(text),
+      `${label} does not declare the Forge id shapes locally — it imports src/shared/git-ids.js`);
+    // A refusal SENTENCE may name the prefix; what must not come back is a second
+    // constant holding it.
+    ok(!/=\s*["'`]ari:cloud:ecosystem::app\//.test(text),
+      `…and it does not assign the ARI prefix to a local constant (${label})`);
+    ok(/git-ids\.js/.test(text), `…and it really imports git-ids.js (${label})`);
+  }
 }
 
 /* ===================== 1. the ADMIN gate ===================== */

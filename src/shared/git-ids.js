@@ -194,3 +194,63 @@ export const reviewClaimKey = (connectionId, repoId, prNumber, headSha) =>
 /** One slot of the reviews-per-repo-per-clock-hour ledger (F-285). */
 export const reviewRateKey = (connectionId, repoId, nowMs = Date.now(), slot = 0) =>
   assertKvsKey(`${REVIEW_RATE_PREFIX}${part(connectionId) || "none"}:${repoKeyPart(repoId)}:${Math.floor(nowMs / 3600000)}:${slot}`);
+
+/* =========================================================================
+ * F-557 — THE TWO FORGE IDS THE PIPELINE COLLECTS, IN ONE HOME.
+ *
+ * `FORGE_DEVELOPER_SPACE` (F-527) and `FORGE_APP_ID` (F-528) are repository
+ * variables, not scaffold variables, and TWO sides check their shape: the backend
+ * (`src/git-pipeline.js`, the gate) and the Code tab's form
+ * (`static/admin-panel/src/components/CodeTab.jsx`, which refuses in words before
+ * anything is queued so a bad paste is not a nameless setup failure).
+ *
+ * They used to be two literal copies of three regexes. The comment that justified
+ * the copy said git-pipeline.js "imports @forge/kvs and can never be pulled into a
+ * browser bundle" — true of that module, and irrelevant: THIS module is
+ * dependency-free, browser-safe, and already imported by both sides. LAW 1.
+ *
+ * The shapes are validated rather than trusted because the developer-space id is
+ * interpolated into a shell word in the rendered workflow.
+ * ========================================================================= */
+
+/**
+ * F-527 — `forge register` asks for a Developer Space and no flag short of `-s <id>`
+ * answers it, so a pipeline whose repo has no `FORGE_DEVELOPER_SPACE` variable can never
+ * bootstrap: the runner sits on a prompt it cannot render and dies. CogniRunner collects
+ * the id (optional — a repo whose app is already registered does not need one).
+ *
+ * 36 characters of hex and dashes — the shape the live offshoot run proved.
+ */
+export const DEVELOPER_SPACE_RE = /^[0-9a-f-]{36}$/;
+
+/**
+ * F-528 — the bare uuid an app id reduces to once the ARI prefix is stripped.
+ *
+ * The scaffold used to register the app and then `gh variable set FORGE_APP_ID`; that can
+ * never work, because repository variables are an `administration` resource GITHUB_TOKEN
+ * cannot hold (live 2026-09-13, HTTP 403, while a PAT accepted the identical call on the
+ * identical repository seconds later). So the runner registers and PRINTS the id, and the
+ * product stores it with the connection's own token.
+ */
+export const APP_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The prefix the Forge CLI prints, and the form the id is always STORED in, because
+ *  `.cognirunner/inject-app-id.js` refuses anything else. */
+export const APP_ID_ARI_PREFIX = "ari:cloud:ecosystem::app/";
+
+/** `null` when absent, the trimmed id when valid, `false` when present and malformed. */
+export const normalizeDeveloperSpaceId = (value) => {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const v = String(value).trim().toLowerCase();
+  return DEVELOPER_SPACE_RE.test(v) ? v : false;
+};
+
+/** `null` when absent, the full ARI when valid, `false` when present and malformed.
+ *  Accepts either form an admin is likely to have in the clipboard — the full ARI or
+ *  the bare uuid — and always returns the full ARI. */
+export const normalizeForgeAppId = (value) => {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  let v = String(value).trim().toLowerCase();
+  if (v.startsWith(APP_ID_ARI_PREFIX)) v = v.slice(APP_ID_ARI_PREFIX.length);
+  return APP_ID_UUID_RE.test(v) ? APP_ID_ARI_PREFIX + v : false;
+};

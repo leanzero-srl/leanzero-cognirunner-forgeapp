@@ -59,6 +59,9 @@ import {
   APP_ID_ARI_PREFIX, normalizeDeveloperSpaceId, normalizeForgeAppId,
 } from "../../../../src/shared/git-ids.js";
 import { SCAFFOLDS, scaffoldVarError, SCAFFOLD_VAR_LABELS, scaffoldHasCustomUi } from "../../../../src/shared/git-scaffolds.js";
+/* F-611: the remedy sentence for a stale pipeline, from the same module the backend's
+   refusal reads it from. The screen and the API say the one thing. */
+import { PIPELINE_OUTDATED_REMEDY } from "../../../../src/shared/git-pipeline-state.js";
 
 const KIND_OPTIONS = GIT_PROVIDER_KINDS.map((k) => ({ value: k, label: gitProviderKindMeta(k).label }));
 
@@ -174,6 +177,10 @@ const PIPELINE_CODE_COPY = {
   security_model: "Pipeline setup is refused by the app's own security model check.",
   not_installed: "There is no installed pipeline for this repository yet.",
   confirmation_required: "A deploy needs an explicit confirmation.",
+  /* F-611: the backend refuses a deploy on an outdated pipeline. The tab hides the button
+     in that state (F-602), so this is the copy for the race - the row went stale between
+     the render and the press - and for anything else that reaches the resolver. */
+  pipeline_outdated: "The workflow committed to this repository is not the one this version of CogniRunner installs, so a deploy would be refused by the provider. Set the pipeline up again first.",
 };
 
 /* F-605: "stuck" is not a stored status - it is the derived state of a run that was
@@ -221,6 +228,18 @@ function PipelineError({ err, onNeedIdentity }) {
           {scopes.map((sc) => <span key={sc} className="code-diff code-diff-rem">{sc}</span>)}
         </span>
         <span className="code-pipe-err-text">Remove them from the manifest, or deploy this app by hand.</span>
+      </>
+    );
+  } else if (code === "pipeline_outdated") {
+    /* F-611: this one is a DEPLOY refusal, not a setup refusal, so it does not borrow the
+       generic title. The version pair rides the refusal because the backend sends it. */
+    body = (
+      <>
+        <span className="code-pipe-err-title">This pipeline is outdated</span>
+        <span className="code-pipe-err-text">{PIPELINE_CODE_COPY.pipeline_outdated}</span>
+        {err.currentScaffoldVersion != null && (
+          <span className="code-pipe-outdated-ver">Installed scaffold v{Number(err.scaffoldVersion) >= 1 ? Math.floor(Number(err.scaffoldVersion)) : 1} to v{err.currentScaffoldVersion}</span>
+        )}
       </>
     );
   } else {
@@ -549,7 +568,10 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
           {toVersion != null && (
             <span className="code-pipe-outdated-ver">Installed scaffold v{fromVersion} to v{toVersion}</span>
           )}
-          <span className="code-pipe-err-text">Use "Set up pipeline" below to commit the current workflow to this repository.</span>
+          {/* F-611: the remedy sentence has ONE home, shared with the refusal
+              triggerGitDeploy answers a script with, so the screen and the API cannot
+              describe the same state in two different ways. */}
+          <span className="code-pipe-err-text">{PIPELINE_OUTDATED_REMEDY}</span>
         </div>
       )}
 

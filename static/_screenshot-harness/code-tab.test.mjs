@@ -1036,6 +1036,40 @@ try {
     await close(env);
   }
 
+  /* ---------------- C16f - F-611: the deploy REFUSAL is rendered, not swallowed ----------
+     F-602 hid the button on an outdated row, so this is the race it cannot cover: the row
+     goes stale between the render and the press (or a script calls the resolver). The
+     backend answers `pipeline_outdated` with the changelog line and the shared remedy, and
+     the screen has to say that rather than "the deploy could not be started". */
+  {
+    console.log("C16f deploy refused on an outdated pipeline");
+    const env = await openAdmin(browser, "light", {
+      __PIPE_SCENARIO__: "installed",
+      __PIPE_DEPLOY_REFUSE__: "pipeline_outdated",
+    });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe-installed").waitFor({ timeout: 8000 });
+      await row.locator("button", { hasText: "Trigger deploy" }).click();
+      await page.locator(".cr-confirm").waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-small", { hasText: "Start deploy" }).click();
+      await row.locator(".code-pipe-err").waitFor({ timeout: 8000 });
+      const err = await row.locator(".code-pipe-err").innerText();
+      ok(/Set the pipeline up again/i.test(err) || /Set up the pipeline again/i.test(err),
+        `C16f the refusal tells the admin what to do (got "${err.replace(/\s+/g, " ").trim()}")`);
+      ok(!/could not be started/i.test(err), "C16f and it is not the nameless failure sentence");
+      ok(await row.locator(".code-run").count() === 0, "C16f no run is shown for a deploy that never started");
+      ok(!/\u2014/.test(err), "C16f no em-dash in the refusal copy");
+      await shot(page, "C16f-deploy-refused-outdated");
+      ok(env.errors.length === 0, "C16f no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C16f threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- C16b - the CURRENT pipeline is left alone --------------------------
      The other half of the same rule: a row installed at the shipped scaffold version must
      show none of this. Without this arm a renderer that flagged every installed pipeline

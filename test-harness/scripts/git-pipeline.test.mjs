@@ -29,6 +29,7 @@ import { pushed as pushedEvents } from "../lib/mock-forge-api.mjs";
 const conns = await import("../../src/git-connections.js");
 const pipe = await import("../../src/git-pipeline.js");
 const scaf = await import("../../src/shared/git-scaffolds.js");
+const state = await import("../../src/shared/git-pipeline-state.js");
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -827,6 +828,61 @@ reset();
   // A row with no usable timestamp fails to LIVE: the claim refuses a second setup anyway.
   ok(pipe.publicPipelineRow({ status: "queued" }).live === true,
     "a queued row that cannot be dated is treated as live, not as abandoned");
+}
+
+/* ===== 19. F-611 — THE DEPLOY DOOR CONSULTS THE SAME PREDICATE THE SCREEN DOES =====
+ * F-602 removed the "Trigger deploy" button from an outdated pipeline's card, which closes
+ * the half a reader sees. The resolver still forwarded the dispatch, so a script - or the
+ * race where the row goes stale between the render and the press - still reached the 422,
+ * surfaced as a generic provider failure instead of the refusal that names the cause. */
+reset();
+{
+  const connId = await seedConnection();
+  await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  fetchQueue = githubSetupChain();
+  await runQueued(lastParams());
+  const key = pipe.gitPipelineKey(connId, REPO);
+  const installed = storage.__raw(key);
+
+  // A CURRENT pipeline still deploys — the refusal must not take the feature away.
+  fetchCalls = [];
+  fetchQueue = [res(204, {})];
+  const okRun = await call("triggerGitDeploy", { connectionId: connId, repo: REPO, confirm: true });
+  ok(okRun.success === true, `a current pipeline still deploys (got ${JSON.stringify(okRun).slice(0, 160)})`);
+
+  // Age it to the offshoot's state: installed, 6/6, stuck on v1. The row carries the run
+  // the successful deploy just recorded, which is what proves the refusal writes nothing.
+  storage.__seed(key, { ...storage.__raw(key), scaffoldVersion: 1 });
+  const beforeRefusal = storage.__raw(key);
+  fetchCalls = [];
+  fetchQueue = [];
+  const refused = await call("triggerGitDeploy", { connectionId: connId, repo: REPO, confirm: true });
+  ok(refused.success === false && refused.code === "pipeline_outdated",
+    `an OUTDATED pipeline refuses the deploy by machine code (got ${JSON.stringify(refused).slice(0, 200)})`);
+  ok(fetchCalls.length === 0,
+    "…and nothing was dispatched: the refusal happens before the provider is touched");
+  ok(refused.error.includes(scaf.SCAFFOLD_CHANGELOG[2]),
+    `…carrying the changelog line the Code tab shows, verbatim (got ${JSON.stringify(refused.error).slice(0, 120)})`);
+  ok(refused.error.includes(state.PIPELINE_OUTDATED_REMEDY),
+    "…and the one shared remedy sentence, so the screen and the API say the same thing");
+
+  // The row is untouched by a refusal: the run recorded by the SUCCESSFUL deploy above is
+  // still the last one, so nothing was written on the way out.
+  const after = storage.__raw(key);
+  ok(after.lastRun && after.lastRun.ref === "main" && after.lastRun.at === beforeRefusal.lastRun.at,
+    `the refusal records no new run on the row (got ${JSON.stringify(after.lastRun)})`);
+
+  // ONE PREDICATE. The projection the tab renders and the deploy gate answer the same way
+  // for the same row — that is the whole point of naming it.
+  const pub = pipe.publicPipelineRow(storage.__raw(key));
+  ok(pub.outdated === pipe.pipelineOutdated(storage.__raw(key)) && pub.outdated === true,
+    "the row the screen renders and the gate the deploy asks are the same predicate");
+
+  // A row that never installed refuses as not_installed, not as outdated: nothing is stale.
+  storage.__seed(key, { ...installed, installedAt: null, status: "partial", scaffoldVersion: 1 });
+  const notSetUp = await call("triggerGitDeploy", { connectionId: connId, repo: REPO, confirm: true });
+  ok(notSetUp.code === "not_installed",
+    `a repo that never installed is refused as not_installed (got ${JSON.stringify(notSetUp.code)})`);
 }
 
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);

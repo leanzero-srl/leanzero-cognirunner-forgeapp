@@ -44,7 +44,7 @@ import { SCAFFOLD_VERSION, scaffoldOutdatedReason } from "../../src/shared/git-s
 /* F-605: `live`, `stuck` and `outdated` are DERIVED by publicPipelineRow from the one
    dependency-free module, so the fixture calls the same functions instead of restating
    them - a fixture that re-states a rule only ever agrees with itself (F-600). */
-import { pipelineLive, pipelineStuck, pipelineOutdated, PIPELINE_CLAIM_TTL_MINUTES } from "../../src/shared/git-pipeline-state.js";
+import { pipelineLive, pipelineStuck, pipelineOutdated, PIPELINE_CLAIM_TTL_MINUTES, PIPELINE_OUTDATED_REMEDY } from "../../src/shared/git-pipeline-state.js";
 /* F-090: the allowance block the mock serves is COMPUTED by the same function the
    backend calls (forgeLlmAllowanceStatus), from the same seat->dollars rule
    (allowanceUsdForSeats). It used to be hand-written, and it hand-wrote `pct: 46`
@@ -1140,6 +1140,9 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
      window.__PIPE_VARS__      - the scaffoldVars the installed row carries (F-604); set
                                  it to null for a row installed before the field existed.
      window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed.
+     window.__PIPE_DEPLOY_REFUSE__ - the machine `code` triggerGitDeploy refuses with;
+                                 "pipeline_outdated" is F-611's, carrying the changelog
+                                 line and the shared remedy sentence.
      window.__PIPE_SETUP__     - WRITTEN BY the mock: the last setupGitPipeline payload
                                  (F-526, the scaffoldVars assertion reads it). */
 /* F-465: the step ids are IMPORTED from the one home now
@@ -1284,6 +1287,15 @@ const PIPE_REFUSALS = {
   identity_required: {
     success: false, code: "identity_required",
     error: "No Forge deploy identity is configured", hint: "configure-forge-identity",
+  },
+  /* F-611: the deploy refusal for a stale pipeline. Built from the two shared homes the
+     backend builds it from - the changelog line for the version the repo is stuck on, and
+     the one remedy sentence - so a fixture cannot describe a refusal the product does not
+     send. Reachable through __PIPE_DEPLOY_REFUSE__, because it answers triggerGitDeploy. */
+  pipeline_outdated: {
+    success: false, code: "pipeline_outdated",
+    error: `${scaffoldOutdatedReason(SCAFFOLD_VERSION - 1)} ${PIPELINE_OUTDATED_REMEDY}`,
+    scaffoldVersion: SCAFFOLD_VERSION - 1, currentScaffoldVersion: SCAFFOLD_VERSION,
   },
   /* F-527/F-528/F-541 refusals, in the shape src/git-pipeline.js returns them. Each is a
      refusal ABOUT ONE FIELD, which is the whole reason the code exists: rendered as a
@@ -2233,6 +2245,11 @@ function invoke(name, payload) {
       if (payload && payload.confirm !== true) return Promise.resolve({ success: false, error: "Starting a deploy needs an explicit confirmation", code: "confirmation_required" });
       if (typeof window !== "undefined" && window.__PIPE_DEPLOY_FAIL__) {
         return Promise.resolve({ success: false, error: "No installed pipeline for that repository", code: "not_installed" });
+      }
+      /* F-611: the backend consults `outdated` now, so the mock does too - a fixture that
+         always said yes would let a UI that cannot render the refusal pass. */
+      if (typeof window !== "undefined" && window.__PIPE_DEPLOY_REFUSE__) {
+        return Promise.resolve(PIPE_REFUSALS[window.__PIPE_DEPLOY_REFUSE__] || { success: false, code: window.__PIPE_DEPLOY_REFUSE__, error: "refused" });
       }
       PIPE_STATE.run = { id: null, ref: "main", workflow: "forge-deploy.yml", at: new Date().toISOString(), by: ACCT };
       return Promise.resolve({ success: true, run: PIPE_STATE.run });

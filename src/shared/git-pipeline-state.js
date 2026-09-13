@@ -54,6 +54,17 @@ export function pipelineOutdated(row) {
 }
 
 /**
+ * THE REMEDY, in one sentence, for a repository whose committed scaffold is stale.
+ *
+ * F-611 - the Code tab and the deploy refusal must say the same thing, because they are
+ * about the same fact: what is committed is not what this build installs, and re-running
+ * the setup is the only way to replace it. The REASON is the scaffold changelog line for
+ * the version the repo is stuck on (`scaffoldOutdatedReason`); this is what to do about it.
+ */
+export const PIPELINE_OUTDATED_REMEDY =
+  "Set up the pipeline again to commit the current workflow to this repository.";
+
+/**
  * Is a run actually in flight? Derived from the clock, never from `status` alone.
  *
  * F-605 - `status` is written BY the run, so a run that dies leaves "queued" behind for

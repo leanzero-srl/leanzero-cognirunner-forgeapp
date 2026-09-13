@@ -62,7 +62,7 @@ import { renderScaffold, buildPermissionLock, scaffoldVarError, scaffoldVarNames
    "is a run in flight") live in a dependency-free module so the admin panel's fixture can
    import them instead of re-stating them. Re-exported here because every caller already
    imports this module, and a second import path is how one home becomes two. */
-import { pipelineOutdated, pipelineLive, pipelineStuck, PIPELINE_CLAIM_TTL_MINUTES } from "./shared/git-pipeline-state.js";
+import { pipelineOutdated, pipelineLive, pipelineStuck, PIPELINE_CLAIM_TTL_MINUTES, PIPELINE_OUTDATED_REMEDY } from "./shared/git-pipeline-state.js";
 import { assertCommitWithinCaps, GitProviderError } from "./git-providers.js";
 import {
   getConnection,
@@ -97,7 +97,7 @@ import { pipelineStepNames } from "./shared/git-pipeline-steps.js";
  * the queue's retry is never swallowed — see `runPipelineSetup`.
  */
 export { gitPipelineKey, gitPipelineClaimKey };
-export { pipelineOutdated, pipelineLive, pipelineStuck, PIPELINE_CLAIM_TTL_MINUTES };
+export { pipelineOutdated, pipelineLive, pipelineStuck, PIPELINE_CLAIM_TTL_MINUTES, PIPELINE_OUTDATED_REMEDY };
 /* F-557 — the two Forge id shapes live in the same dependency-free module, because the
    Code tab form checks them too; re-exported because every caller imports them here. */
 export { normalizeDeveloperSpaceId, normalizeForgeAppId };
@@ -832,6 +832,20 @@ export async function triggerPipelineDeploy({
   const row = await readPipelineRow(connectionId, repoId);
   if (!row || row.status !== "installed") {
     return invalid("No installed pipeline for that repository — set it up first", "not_installed");
+  }
+  /* F-611 — AN OUTDATED PIPELINE MUST NOT BE DISPATCHED. F-602 removed the button from
+     the Code tab, which is the half a reader sees; this is the half that answers the
+     resolver and any script that calls it. The workflow committed to the repository is
+     the invalid one, so the dispatch cannot do anything but 422, and a refusal that names
+     the cause is worth more than the provider's error. The SENTENCE is the same one the
+     tab shows, from the same two homes: the scaffold changelog line for the version the
+     repo is stuck on, plus the shared remedy. */
+  if (pipelineOutdated(row)) {
+    return invalid(
+      `${scaffoldOutdatedReason(row.scaffoldVersion)} ${PIPELINE_OUTDATED_REMEDY}`,
+      "pipeline_outdated",
+      { scaffoldVersion: row.scaffoldVersion ?? null, currentScaffoldVersion: SCAFFOLD_VERSION }
+    );
   }
   const branch = ref || row.branch || null;
   if (!branch) return invalid("A branch to deploy is required", "invalid");

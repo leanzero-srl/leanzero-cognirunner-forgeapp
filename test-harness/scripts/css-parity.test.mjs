@@ -21,8 +21,11 @@ import path from "node:path";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 // F-236 — `.memory-source-badge` and `.doc-empty` belong to copied components
 // (MemoriesTab, DocRepository) and so must exist, identically, in all four homes.
+// F-350 — `.pr-git*` and `.pr-seg*` are PremadeRuleForm's git-param-group CSS. The
+// component is byte-copied into admin-panel, so its CSS has the same four homes and the
+// same drift risk; these two tokens cover every class in the block.
 const SHARED_CSS_CLASSES = [".hard-stop", ".step-busy-note", ".async-error-note", ".memory-card",
-  ".memory-source-badge", ".doc-empty"];
+  ".memory-source-badge", ".doc-empty", ".pr-git", ".pr-seg"];
 
 const read = (rel) => readFileSync(path.join(repo, rel), "utf8");
 

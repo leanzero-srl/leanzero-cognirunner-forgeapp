@@ -286,6 +286,16 @@ const CFG_PREMADE_COND = {
   workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "31" },
   ruleKind: "premade", ruleType: "issue-type-is", issueTypeName: "",
 };
+// F-350 — a premade VALIDATOR opened in premade mode with NO ruleType yet, so the
+// journey picks a git rule ("PR merged") itself and drives the whole group from empty:
+// connection → repository (narrowed to that connection's allow-list) → prMatch → strict.
+// A validator, not a condition: the `git` param GROUP only exists on the validator half
+// of the catalogue (conditions carry a single `repo` picker instead).
+const CFG_PREMADE_GIT = {
+  id: "validator::Software Simplified Workflow::21::i-premade-git",
+  workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
+  ruleKind: "premade", ruleType: "",
+};
 const CFG_SEMANTIC = {
   id: "postfunction-semantic::Software Simplified Workflow::21::i-d4e5f6",
   type: "postfunction-semantic",
@@ -482,6 +492,8 @@ function getContext() {
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_CONDITION) } };
   if (s === "cfg-premade")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_PREMADE_COND) } };
+  if (s === "cfg-premade-git")
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "ai-text-field-validator", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, validatorConfig: JSON.stringify(CFG_PREMADE_GIT) } };
   if (s === "cfg-semantic")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_SEMANTIC) } };
   if (s === "cfg-managed") {

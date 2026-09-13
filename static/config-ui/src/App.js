@@ -3010,6 +3010,39 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .pr-note { background: #f59e0b; color: #2a1602; }
     .pr-foot { font-style: italic; }
 
+    /* GIT param group (F-350) — solid chips, a solid segmented control, and a solid red
+       dead-credential block. Same visual language as the admin Code tab's .code-* rules;
+       separate class NAMES because PremadeRuleForm is byte-copied into admin-panel, where
+       .code-dead / .code-kind already have a home in injectStyles() and a second copy
+       would be one rule living in two places. FOUR HOMES, kept equal by
+       css-parity.test.mjs on the .pr-git and .pr-seg tokens: config-ui injectStyles(),
+       admin-panel injectCopiedComponentStyles(), and both styles.css mirrors. */
+    .pr-git-chosen { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    .pr-git-chosen-label { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
+    .pr-git-kind { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }
+    .pr-git-kind-github { background: #0f172a; }
+    .pr-git-kind-bitbucket { background: #0052cc; }
+    .pr-git-dead { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
+    .pr-git-dead-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+    .pr-git-dead-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    .pr-git-toggle-row { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+    .pr-git-toggle-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: #2563eb; cursor: pointer; margin: 0; }
+    .pr-git-toggle-label { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+    html[data-color-mode="dark"] .pr-git-kind { background: #64748b; }
+    html[data-color-mode="dark"] .pr-git-kind-github { background: #334155; }
+    html[data-color-mode="dark"] .pr-git-kind-bitbucket { background: #2684ff; }
+    html[data-color-mode="dark"] .pr-git-dead { background: #ef4444; }
+    html[data-color-mode="dark"] .pr-git-toggle-row input[type="checkbox"] { accent-color: #3b82f6; }
+
+    /* The app's own segmented radio group — the prMatch choice is three named options,
+       which a native <select> would hide behind a click and this repo forbids anyway. */
+    .pr-seg { display: inline-flex; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+    .pr-seg-btn { appearance: none; background: transparent; border: none; border-right: 1px solid var(--border-color); padding: 7px 14px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer; }
+    .pr-seg-btn:last-child { border-right: none; }
+    .pr-seg-btn:hover { color: var(--text-primary); }
+    .pr-seg-btn.active { background: #2563eb; color: #fff; font-weight: 700; }
+    html[data-color-mode="dark"] .pr-seg-btn.active { background: #3b82f6; }
+
     /* NL-to-rule builder ("Build from a description") — solid accent button, inset
        result card. Existing tokens only (dark variants present); no left rail/tint. */
     .br-bar { margin-bottom: 14px; }

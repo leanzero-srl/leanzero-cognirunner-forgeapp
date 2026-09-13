@@ -71,10 +71,12 @@
  *                                  a dead token or "no pull request found" does
  *                                  (see the fail-open/fail-closed table beside
  *                                  runGitValidator in src/premade-rules.js).
- *                 NOTE — PremadeRuleForm.jsx does NOT render this group yet; it
- *                 renders field/opValue/regex/allowed/value/lengthBounds/dateRel/
- *                 picker only. The executor, the catalogue and the tests are the
- *                 backend half (commit 10); the form renderer is a UI cut.
+ *                 F-350 — PremadeRuleForm.jsx now RENDERS this group: connection and
+ *                 repository are CustomSelects (the repo list narrows to the chosen
+ *                 connection's allow-list), prMatch is the app's own segmented radio
+ *                 group, and strict is a checkbox whose helper text is the two rows of
+ *                 that table it actually flips. Both ids are picked, never typed,
+ *                 because the two ways they can be wrong fail CLOSED at the transition.
  */
 
 export const COMPARE_OPS = [

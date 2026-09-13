@@ -41,7 +41,10 @@ const exercise = async (calls, { issueKey = "LZPT-2", allowedActions = AGENT_ACT
       return { ok: true, data: { choices: [{ message: { role: "assistant", tool_calls } }], usage: { total_tokens: 1 } } };
     },
   };
-  const result = await runAgentTask({ issueKey, allowedActions, maxRounds, instructions: "Only run the requested tool", config: { simulationMode: true } });
+  // `writeScope: null` — UNSCOPED, the pre-1.5 behaviour (F-411). This suite asserts the
+  // ISSUE-REFERENCE rules, so the write-scope gate is explicitly set out of the way;
+  // omitting it would refuse every write and the suite would pass for the wrong reason.
+  const result = await runAgentTask({ issueKey, allowedActions, maxRounds, instructions: "Only run the requested tool", config: { simulationMode: true }, writeScope: null });
   return { state, result };
 };
 const validArgs = name => ({

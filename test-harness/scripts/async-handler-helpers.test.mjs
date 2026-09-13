@@ -164,11 +164,14 @@ const UNPOLLED_TASKS = new Set(eval(unpolledLiteral));
 // LONG_QUEUE_ONLY_TASKS assertions further down.
 // "probe-confluence" (1.5 §5 P3/P4) is the 15th: a DEV-ONLY reach probe whose handler
 // refuses unless HARNESS_SECRET is set, so it is registered everywhere and inert in prod.
-const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate", "gitpipeline", "coder", "probe-confluence"];
+// "va-tick" / "va-item" / "va-post" (1.5 commit 3) are the 16th to 18th. `va-item` is
+// deliberately NOT long-queue-only: the PRODUCER picks its queue from the agent's powers
+// (`itemQueueFor`), so a plain item stays on the 120 s consumer.
+const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate", "gitpipeline", "coder", "probe-confluence", "va-tick", "va-item", "va-post"];
 for (const t of expectedHandlers) ok(handlerKeys.includes(t), `TASK_HANDLERS registers "${t}"`);
 ok(handlerKeys.length === expectedHandlers.length, `TASK_HANDLERS has exactly ${expectedHandlers.length} task types (no orphans)`);
-ok(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", "gitpipeline", "probe-confluence"].every((t) => UNPOLLED_TASKS.has(t)) && UNPOLLED_TASKS.size === 8,
-   "UNPOLLED_TASKS = { postfunction, memory_distill, listener, probe, gitreview, git-event, gitpipeline, probe-confluence } (scheduledjob is polled by Run now, gitcredrotate by the Code tab; gitpipeline is watched through getGitPipelineStatus, which reads the bounded row rather than an async_task row; both probes are dev-only and read via the test hook)");
+ok(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", "gitpipeline", "probe-confluence", "va-tick", "va-item", "va-post"].every((t) => UNPOLLED_TASKS.has(t)) && UNPOLLED_TASKS.size === 11,
+   "UNPOLLED_TASKS = { postfunction, memory_distill, listener, probe, gitreview, git-event, gitpipeline, probe-confluence, va-tick, va-item, va-post } (scheduledjob is polled by Run now, gitcredrotate by the Code tab; gitpipeline is watched through getGitPipelineStatus, which reads the bounded row rather than an async_task row; both probes are dev-only and read via the test hook; the three VA tasks are produced by the scheduler and evidenced by their own va_tick receipts, so nothing polls them)");
 // Invariant: every unpolled type MUST be a registered handler (an unpolled type absent from the
 // registry could never run yet would skip its status-row write — a silent dead task).
 ok([...UNPOLLED_TASKS].every((t) => handlerKeys.includes(t)), "every UNPOLLED task is a registered TASK_HANDLER");

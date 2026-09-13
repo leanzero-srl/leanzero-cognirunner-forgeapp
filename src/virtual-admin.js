@@ -51,16 +51,19 @@
  * module offline costs nothing and reaches no Forge API.
  */
 import {
-  readItem, saveItem, bumpAttempt,
+  readItem, saveItem, bumpAttempt, listItemIds,
   fingerprintOf, diffCandidates,
-  withItemClaim,
-  recordTick, recordTickHealth,
+  withItemClaim, takePostClaim,
+  recordTick, recordTickHealth, recordEffect,
+  readCaps, capsAllow, bumpCaps,
   readMemory, writeMemory, memoryPromptBlock,
 } from "./va-ledger.js";
 import {
   VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX,
   renderGuardrailSentences, vaWriteScope,
 } from "./shared/va-config.js";
+import { lintVoice } from "./shared/voice-lint.js";
+import { assertWriteScope } from "./shared/agent-actions.js";
 import { clampChars } from "./shared/text-clamp.js";
 
 const nowIso = (ms) => new Date(ms == null ? Date.now() : ms).toISOString();
@@ -390,6 +393,11 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
         reason: candidate.reason,
       }, { now: deps.now() });
       if (!saved.ok) { skipped.push({ key: candidate.key, reason: saved.reason }); continue; }
+      // F-430 — the index can PARK rows to make room, and it names which and why. Those
+      // rows are items this agent has silently stopped tracking, so they belong in the
+      // receipt: an agent quietly forgetting work is exactly what the receipt is for.
+      for (const p of asArray(saved.parkedRows)) skipped.push({ key: p.key, reason: `index_parked:${p.reason}` });
+      if (saved.indexRefused) skipped.push({ key: candidate.key, reason: `index_refused:${saved.indexRefused}` });
       try {
         await deps.pushTask(queueKey, {
           taskType: "va-item",
@@ -879,6 +887,493 @@ export const lastCommentAuthorOf = (issue) => {
 };
 
 /* ══════════════════════════════════════════════════════════════════════════════
+ * 6. THE POST PHASE — the eleven gates, in order, each its own predicate
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * WHY EVERY GATE IS A SEPARATE EXPORTED FUNCTION.
+ *
+ * A gate written inline inside a 200-line loop is a gate that can only be tested by
+ * driving the whole loop, which means it is tested for the happy path and asserted
+ * nowhere. Each of these is pure (or takes an injected store), each answers
+ * `{ok, reason}`, and each has a BLOCK test and an ALLOW test named after it. The ORDER
+ * they are called in is asserted separately, because the order is itself the design:
+ * the cheap checks first, the CLAIM after them and immediately before the write, the
+ * read-back after.
+ *
+ * EVERY refusal is written into the item's `history` with its reason. A draft that
+ * disappears with no row saying why is the failure §3.14 law 8 exists to prevent.
+ */
+
+/** The app's own accountId, when the caller knows it. Null means "we cannot tell ours apart". */
+const isSelf = (accountId, selfAccountId) => selfAccountId != null && String(accountId) === String(selfAccountId);
+
+/** The comments of an issue, oldest first. */
+const commentsOf = (issue) => {
+  const f = isObj(issue && issue.fields) ? issue.fields : {};
+  return (isObj(f.comment) && Array.isArray(f.comment.comments)) ? f.comment.comments : [];
+};
+
+/** The last comment NOT written by us — "the human side of the thread". */
+export const lastOtherComment = (issue, selfAccountId) => {
+  const list = commentsOf(issue);
+  for (let i = list.length - 1; i >= 0; i--) {
+    const c = list[i];
+    const author = isObj(c.author) ? c.author.accountId : null;
+    if (!isSelf(author, selfAccountId)) return c;
+  }
+  return null;
+};
+
+/** The last comment we wrote, or null. */
+export const lastOwnComment = (issue, selfAccountId) => {
+  const list = commentsOf(issue);
+  const last = list.length ? list[list.length - 1] : null;
+  if (!last) return null;
+  const author = isObj(last.author) ? last.author.accountId : null;
+  return isSelf(author, selfAccountId) ? last : null;
+};
+
+/**
+ * IS A HUMAN WAITING ON US? — derived from the THREAD, not from a flag.
+ *
+ * "Owed" is a fact about the conversation: we spoke at some point, and the last word is
+ * somebody else's. Deriving it from a fresh read rather than from a field on the staged
+ * draft is deliberate, and it is not merely tidier. The moment an item is staged its
+ * ledger state becomes `staged`, so any `owed` recorded at stage time is a snapshot of
+ * something that can change in the fifteen minutes before the post — a human replying in
+ * that window is EXACTLY the case owed exists for, and a snapshot would miss it. The
+ * ledger's `owed` STATE is still honoured, because an item the sweep classified as owed
+ * on an earlier tick is owed whatever the thread looks like now.
+ *
+ * It feeds gate 6's OWN counter (F-412): owed is cheaper than ordinary speech, never free.
+ */
+export const isOwed = ({ row, issue, selfAccountId = null } = {}) => {
+  if (row && row.state === "owed") return true;
+  const list = commentsOf(issue);
+  if (!list.length) return false;
+  const weSpoke = list.some((c) => isSelf(isObj(c.author) ? c.author.accountId : null, selfAccountId));
+  if (!weSpoke) return false;
+  const last = list[list.length - 1];
+  return !isSelf(isObj(last.author) ? last.author.accountId : null, selfAccountId);
+};
+
+/**
+ * THE DOUBLE WALL-CLOCK FLOOR (§3.14 law 5). TWO conditions, deliberately.
+ *
+ * `minPostGapMinutes` alone can be satisfied INSIDE ONE LONG TICK — a 900 s item turn
+ * followed by a post in the same invocation clears a 15-minute gap if the clock is read
+ * once at entry and once at exit. `stagedTickId !== currentTickId` alone can be satisfied
+ * by TWO TICKS THIRTY SECONDS APART, which is exactly what happens after a missed run
+ * replays. Each condition covers the other's hole, so both are required and neither is
+ * redundant.
+ */
+export const postFloorOk = ({ staged, currentTickId, minPostGapMinutes, now }) => {
+  if (!staged) return { ok: false, reason: "nothing_staged" };
+  if (staged.tickId != null && String(staged.tickId) === String(currentTickId)) return { ok: false, reason: "same_tick" };
+  const at = Date.parse(String(staged.stagedAt || ""));
+  if (!Number.isFinite(at)) return { ok: false, reason: "staged_at_unreadable" };
+  const gapMs = Math.max(0, Number(minPostGapMinutes) || 0) * 60000;
+  if (now - at < gapMs) return { ok: false, reason: "inside_gap" };
+  return { ok: true };
+};
+
+/** GATE 1 — paused, shadow mode, kill switch. Agent-level, checked once per post run. */
+export const gatePausedShadow = ({ va, tickIndex = 0, killSwitchActive = false } = {}) => {
+  if (killSwitchActive) return { ok: false, reason: "kill_switch" };
+  const status = isObj(va && va.status) ? va.status : {};
+  if (status.paused === true) return { ok: false, reason: "paused" };
+  // SHADOW MODE: the agent runs, stages and shows its drafts, and posts NOTHING until it
+  // has been watched for `shadowUntilTick` ticks. It is a gate and not a flag on the
+  // prompt because the whole value of shadow mode is that it holds when the model is
+  // wrong about whether it is in shadow mode.
+  const until = Number(status.shadowUntilTick);
+  if (Number.isFinite(until) && Number(tickIndex) < until) return { ok: false, reason: "shadow", shadowUntilTick: until, tickIndex: Number(tickIndex) };
+  return { ok: true };
+};
+
+/** GATE 2 (item-level, F-414) — attempts. A parked item costs nothing and says so. */
+export const gateAttempts = (row) => {
+  if (!row) return { ok: false, reason: "no_row" };
+  if (row.state === "parked") return { ok: false, reason: "parked" };
+  if (Number(row.attempts || 0) >= VA_LIMITS.attemptsCap) return { ok: false, reason: "attempts_exhausted" };
+  return { ok: true };
+};
+
+/**
+ * GATE 3 — FRESHNESS. Re-read the thread: has a human spoken since we decided what to say?
+ *
+ * THE DRAFT IS DROPPED AND THE ITEM RE-QUEUED, NOT DISCARDED. A human comment after the
+ * baseline means the reply we wrote is answering a question that has moved on — posting
+ * it is worse than saying nothing, and throwing the item away is worse than both. It
+ * goes back to `queued` and the next item turn writes a reply to what was actually said.
+ */
+export const gateFreshness = ({ staged, issue, selfAccountId = null } = {}) => {
+  const latest = lastOtherComment(issue, selfAccountId);
+  const latestId = latest && latest.id != null ? String(latest.id) : "";
+  const baseline = staged && staged.baseline != null ? String(staged.baseline) : "";
+  if (latestId !== baseline) return { ok: false, reason: "thread_moved", latestId, baseline };
+  return { ok: true };
+};
+
+/** GATE 4 — OTHER-WRITER QUIET. Somebody else is mid-conversation; do not interrupt. */
+export const gateQuiet = ({ issue, now, quietMinutes, selfAccountId = null } = {}) => {
+  const other = lastOtherComment(issue, selfAccountId);
+  if (!other || !other.created) return { ok: true, reason: "no_other_writer" };
+  const at = Date.parse(String(other.created));
+  if (!Number.isFinite(at)) return { ok: true, reason: "other_write_time_unreadable" };
+  const windowMs = Math.max(0, Number(quietMinutes) || 0) * 60000;
+  const since = now - at;
+  if (since < windowMs) return { ok: false, reason: "recent_other_writer", sinceMs: since };
+  return { ok: true };
+};
+
+/**
+ * GATE 5 — ANTI-PILE-UP. We spoke last, recently, and nobody is waiting on us.
+ *
+ * `owed` OVERRIDES it, and that is the whole point of `owed` being a state: a human
+ * replied to us and is waiting, so "we spoke last" is not a reason to stay quiet — it is
+ * the reason to answer. F-412 dropped `owedUncapped`, so owed is cheaper, never free:
+ * it still passes through the caps gate, against its own counter.
+ */
+export const gatePileUp = ({ row, issue, now, antiPileUpDays, selfAccountId = null } = {}) => {
+  if (row && row.state === "owed") return { ok: true, reason: "owed_overrides" };
+  const own = lastOwnComment(issue, selfAccountId);
+  if (!own || !own.created) return { ok: true, reason: "we_did_not_speak_last" };
+  const at = Date.parse(String(own.created));
+  if (!Number.isFinite(at)) return { ok: true, reason: "own_write_time_unreadable" };
+  const windowMs = Math.max(0, Number(antiPileUpDays) || 0) * 86400000;
+  if (now - at < windowMs) return { ok: false, reason: "we_spoke_last", sinceMs: now - at };
+  return { ok: true };
+};
+
+/**
+ * Is `now` inside the agent's post window?
+ *
+ * The window is a product decision, not a gate against a mistake: an agent that answers
+ * at 03:00 reads as a robot however good the sentence is. Days are 0-6 with 0 = Sunday,
+ * matching `Date#getDay` and the record's own vocabulary; a window whose `to` is before
+ * its `from` WRAPS past midnight, which is what "18:00 to 02:00" plainly means.
+ */
+export const inPostWindow = (va, nowMs, { timeZone = null } = {}) => {
+  const cadence = isObj(va && va.cadence) ? va.cadence : {};
+  const w = isObj(cadence.postWindow) ? cadence.postWindow : null;
+  if (!w) return { ok: true, reason: "no_window" };
+  const zone = timeZone || cadence.timeZone || "UTC";
+  let day; let minutes;
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone: zone, weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date(nowMs));
+    const get = (t) => (parts.find((p) => p.type === t) || {}).value;
+    day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(get("weekday"));
+    minutes = Number(get("hour")) * 60 + Number(get("minute"));
+  } catch (e) {
+    // An unreadable time zone must not become "post at any hour": the window is a
+    // restriction, and a restriction that evaporates on a bad input is not one.
+    return { ok: false, reason: "post_window_unreadable" };
+  }
+  const days = asArray(w.days).map(Number);
+  if (days.length && !days.includes(day)) return { ok: false, reason: "outside_post_window_day" };
+  const toMin = (hhmm) => { const m = /^(\d{2}):(\d{2})$/.exec(String(hhmm || "")); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+  const from = toMin(w.from);
+  const to = toMin(w.to);
+  if (from == null || to == null) return { ok: true, reason: "no_window_hours" };
+  const inside = from <= to ? (minutes >= from && minutes <= to) : (minutes >= from || minutes <= to);
+  return inside ? { ok: true } : { ok: false, reason: "outside_post_window_hours" };
+};
+
+/**
+ * GATE 9 — THE VOICE LINT, and it fails CLOSED.
+ *
+ * `voiceLint` is pure and has no I/O, so it should not be able to throw — which is
+ * exactly why a throw here is treated as a refusal rather than ignored. A lint that
+ * cannot run has not approved anything, and the post path's whole contract is that
+ * nothing goes out unchecked. (The wizard's preview fails OPEN on the same function,
+ * deliberately: a sample that will not lint still renders, labelled. Two surfaces, two
+ * directions, both written down.)
+ */
+export const gateVoice = (body, voice) => {
+  try {
+    const r = lintVoice(String(body == null ? "" : body), isObj(voice) ? voice : {});
+    if (r && r.ok) return { ok: true, warnings: (r.warnings || []).map((w) => w.rule) };
+    return { ok: false, reason: "voice_lint", blocks: ((r && r.blocks) || []).map((b) => b.rule) };
+  } catch (e) {
+    return { ok: false, reason: "voice_lint_threw", detail: String((e && e.message) || e).slice(0, 120) };
+  }
+};
+
+/**
+ * `va-post` — the second phase. Its OWN task, its OWN receipt (F-421).
+ *
+ * THE ELEVEN GATES, IN ORDER. 1-9 run BEFORE the write, 10 immediately before, 11 after:
+ *
+ *   1  paused / shadow / kill switch          (agent-level, once)
+ *   2  attempts                               (F-414)
+ *      the double wall-clock floor            (§3.14 law 5 — both conditions)
+ *   3  freshness: has a human spoken since?   (draft dropped, item RE-QUEUED)
+ *   4  other-writer quiet
+ *   5  anti-pile-up                           (owed overrides)
+ *   6  audience                               (F-415, the SAME function that staged it)
+ *   7  caps                                   (F-412 — owed has its OWN counter)
+ *   8  write scope                            (F-410/F-411)
+ *   9  voice lint                             (fails CLOSED)
+ *   10 the post claim                         (failClosed — a double reply is the worst
+ *                                              thing this product can do)
+ *   11 read-back                              (the comment id AND `jsdPublic` equal to
+ *                                              what gate 6 decided; a mismatch is
+ *                                              REPAIRED and an ERROR receipt written)
+ *
+ * WHY THE CLAIM IS TENTH AND NOT FIRST. A claim taken before the cheap gates is spent by
+ * every refusal, so a draft the freshness gate dropped could never be retried under its
+ * own identity — the gate-before-ticket lesson (F-359). And why the CAPS gate SPENDS its
+ * slot before the write rather than after it: `bumpCaps` after a successful post cannot
+ * be undone if it faults, and a counter that fails to increment is a counter that lets
+ * the whole allowance be spent twice (F-431). Over-counting by one on a failed post is
+ * the safe direction; under-counting is not.
+ */
+export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = {}) => {
+  const deps = withDeps(injected);
+  const job = isObj(agent) ? agent : await deps.getJob(agent);
+  const va = vaOf(job);
+  if (!va) return { ok: false, reason: "not_a_va_job" };
+  const agentId = job.id;
+  const tick = String(tickId || deps.tickId(job));
+  const now = deps.now();
+  const started = nowIso(now);
+  const skipped = [];
+  let posted = 0;
+  let errors = 0;
+
+  const note = (key, reason) => { skipped.push({ key, reason }); };
+  const finish = async (error = null) => {
+    await recordTick(deps.store, agentId, { tickId: tick, phase: "post", started, candidates: skipped.length + posted, staged: posted, skipped, error });
+    return { ok: !error, posted, errors, skipped };
+  };
+
+  try {
+    /* — GATE 1, once, for the whole run — */
+    const g1 = gatePausedShadow({ va, tickIndex: deps.tickIndex ? deps.tickIndex(job, tick) : 0, killSwitchActive: await deps.isKillSwitchActive(job) });
+    if (!g1.ok) { note("(agent)", `gate.${g1.reason}`); return await finish(); }
+    const window = inPostWindow(va, now);
+    if (!window.ok) { note("(agent)", `gate.${window.reason}`); return await finish(); }
+
+    /* — the BOUNDED scan for staged rows (F-421: bounded and recorded, like any tick) — */
+    const index = await listItemIds(deps.store, agentId);
+    if (!index.ok) { note("(agent)", "index_read_failed"); return await finish("index_read_failed"); }
+    const selfAccountId = await deps.selfAccountId();
+    const voice = isObj(va.persona) && isObj(va.persona.voice) ? va.persona.voice : {};
+    const writeScope = vaWriteScope(va);
+    const minGap = guard(va, "minPostGapMinutes");
+    // THE POST SCAN IS BOUNDED BY THE AGENT'S OWN PER-TICK BUDGET (F-421). The same
+    // number the prepare tick uses, and deliberately not a second one: "how much work
+    // this agent does in one tick" is one decision the operator makes, and splitting it
+    // into a prepare budget and a post budget would let an agent stage five and post
+    // twenty without anything in the UI saying so.
+    const cap = Math.max(0, Math.trunc(guard(va, "maxItemsPerTick")));
+
+    let considered = 0;
+    for (const issueKey of index.ids) {
+      if (considered >= cap) { note(issueKey, "over_post_budget"); continue; }
+      const read = await readItem(deps.store, agentId, issueKey);
+      if (read.readFailed) { note(issueKey, "item_read_failed"); continue; }
+      const row = read.row;
+      if (!row || row.state !== "staged" || !row.staged) continue;
+      considered++;
+
+      const refuse = async (reason, patch = {}) => {
+        note(issueKey, reason);
+        await saveItem(deps.store, agentId, issueKey, { event: "post_skipped", reason, ...patch }, { now });
+      };
+
+      /* — GATE 2: attempts — */
+      const g2 = gateAttempts(row);
+      if (!g2.ok) { await refuse(`gate.${g2.reason}`); continue; }
+
+      /* — THE DOUBLE FLOOR — */
+      const floor = postFloorOk({ staged: row.staged, currentTickId: tick, minPostGapMinutes: minGap, now });
+      if (!floor.ok) { note(issueKey, `floor.${floor.reason}`); continue; }
+
+      /* — the FRESH read. Every gate below judges THIS, not the staged snapshot. — */
+      let issue;
+      try { issue = await deps.getIssue(issueKey); }
+      catch (e) { await refuse("issue_reread_failed"); continue; }
+
+      /* — GATE 3: freshness — */
+      const g3 = gateFreshness({ staged: row.staged, issue, selfAccountId });
+      if (!g3.ok) {
+        // DROPPED AND RE-QUEUED, not discarded: the next turn answers what was said.
+        note(issueKey, "gate.thread_moved");
+        await saveItem(deps.store, agentId, issueKey, { state: "queued", staged: null, event: "dropped", reason: "a human commented after the draft's baseline" }, { now });
+        continue;
+      }
+
+      /* — GATE 4: other-writer quiet — */
+      const g4 = gateQuiet({ issue, now, quietMinutes: guard(va, "otherWriterQuietMinutes"), selfAccountId });
+      if (!g4.ok) { note(issueKey, `gate.${g4.reason}`); continue; }
+
+      /* — GATE 5: anti-pile-up — */
+      const g5 = gatePileUp({ row, issue, now, antiPileUpDays: guard(va, "antiPileUpDays"), selfAccountId });
+      if (!g5.ok) { note(issueKey, `gate.${g5.reason}`); continue; }
+
+      /* — GATE 6: audience, re-decided from the SAME function that staged it (F-415) — */
+      const decided = decideAudience({
+        requested: row.staged.audience === "public" ? "public" : "internal",
+        va, issue, addresseeAccountId: lastCommentAuthorOf(issue),
+      });
+      if (row.staged.audience === "public" && decided.audience !== "public") {
+        // The draft was WRITTEN for a customer and may no longer go to one. It is not
+        // silently posted internally: the words differ, so it goes back for a rewrite.
+        note(issueKey, `gate.audience.${decided.reason}`);
+        await saveItem(deps.store, agentId, issueKey, { state: "queued", staged: null, event: "dropped", reason: `the audience changed to internal (${decided.reason}); the reply needs rewriting` }, { now });
+        continue;
+      }
+
+      /* — GATE 7: caps. THE SLOT IS SPENT HERE, BEFORE THE WRITE (F-431). — */
+      const owed = isOwed({ row, issue, selfAccountId });
+      const caps = await readCaps(deps.store, agentId, { now });
+      const allowed = capsAllow(caps, {
+        owed, capsPerHour: guard(va, "capsPerHour"), capsPerDay: guard(va, "capsPerDay"), owedPerHour: guard(va, "owedPerHour"),
+      });
+      if (!allowed.allowed) { note(issueKey, `gate.caps.${allowed.reason}`); continue; }
+      const bumped = await bumpCaps(deps.store, agentId, { owed, now });
+      if (!bumped.ok && bumped.reason === "caps-read-fault") {
+        // A bump that could not read cannot be projected, so nothing was written and the
+        // counter is unknown. Unknown BLOCKS: the thing being braked here is speech.
+        note(issueKey, "gate.caps.caps-read-fault");
+        continue;
+      }
+
+      /* — GATE 8: write scope — */
+      const scope = await assertWriteScope(issueKey, writeScope, {
+        readProject: async () => (isObj(issue.fields) && isObj(issue.fields.project) ? issue.fields.project.key : null),
+      });
+      if (!scope.allowed) { await refuse(`gate.scope.${scope.reason}`); continue; }
+
+      /* — GATE 9: voice lint, fail CLOSED. A rejected draft is an ATTEMPT (F-414). — */
+      const g9 = gateVoice(row.staged.body, voice);
+      if (!g9.ok) {
+        note(issueKey, `gate.${g9.reason}:${(g9.blocks || []).join("|")}`);
+        // The item goes back for a rewrite AND counts an attempt, so a model that cannot
+        // write in this voice parks instead of burning a tick a day for ever.
+        await saveItem(deps.store, agentId, issueKey, { state: "queued", staged: null, event: "lint_rejected", reason: `the voice check refused the draft: ${(g9.blocks || []).join(", ")}` }, { now });
+        await bumpAttempt(deps.store, agentId, issueKey, `voice lint: ${(g9.blocks || []).join(", ")}`, { now });
+        continue;
+      }
+
+      /* — GATE 10: THE CLAIM. Last thing before the write. — */
+      const claim = await takePostClaim(deps.store, agentId, issueKey, row.staged.stagedAt);
+      if (!claim.ok) { note(issueKey, `gate.claim.${claim.reason}`); continue; }
+
+      /* — THE WRITE, then GATE 11: READ-BACK — */
+      const wantPublic = decided.audience === "public";
+      let commentId = null;
+      try {
+        const written = await deps.addComment(issueKey, row.staged.body, { internal: !wantPublic });
+        commentId = written && written.id != null ? String(written.id) : null;
+      } catch (e) {
+        // The claim is NOT released: we do not know whether the comment landed, and a
+        // retry that might double-post is worse than a reply that never arrives. The row
+        // stays `staged`, visible in the Agents tab, for a human to decide.
+        errors++;
+        await refuse(`post_failed:${String((e && e.message) || e).slice(0, 80)}`);
+        continue;
+      }
+      if (!commentId) {
+        errors++;
+        note(issueKey, "gate.readback.no_comment_id");
+        await saveItem(deps.store, agentId, issueKey, { event: "post_unverified", reason: "the comment API returned no id, so nothing can be verified" }, { now });
+        continue;
+      }
+
+      const verdict = await verifyPostedComment({ deps, issueKey, commentId, wantPublic, now });
+      if (!verdict.ok) {
+        errors++;
+        note(issueKey, `gate.readback.${verdict.reason}`);
+      }
+
+      // The item is `posted` whatever the read-back said, because A COMMENT EXISTS. The
+      // alternative — leaving it `staged` — invites a second one. The mismatch lives in
+      // the history, in the receipt's error, and in the effects row's summary.
+      await saveItem(deps.store, agentId, issueKey, {
+        state: "posted", staged: null, fingerprint: fingerprintOf(issue),
+        event: verdict.ok ? "posted" : "posted_with_error",
+        reason: verdict.ok ? `${verdict.audience} comment ${commentId}` : `comment ${commentId}: ${verdict.reason}`,
+      }, { now });
+
+      if (verdict.effectProof) {
+        // WRITTEN ONLY ON READ-BACK PROOF (§3.14 law 6). The kind comes from the ledger's
+        // own `EFFECT_TARGETS` vocabulary, and the proof's identifiers must equal the
+        // effect's target or the ledger refuses the row — which is the point: an effects
+        // row is evidence, not a note that a call was attempted.
+        const effect = {
+          issueKey, commentId,
+          kind: verdict.audience === "public" ? "public_comment" : "internal_comment",
+          audience: verdict.audience,
+          summary: verdict.ok ? clampChars(row.staged.reason, 300) : `AUDIENCE MISMATCH REPAIRED: ${verdict.reason}`,
+          tickId: tick,
+        };
+        const wrote = await recordEffect(deps.store, agentId, effect, verdict.effectProof, { now });
+        if (!wrote.ok) note(issueKey, `effect_refused:${wrote.reason}`);
+      }
+      posted++;
+    }
+
+    await recordTickHealth(deps.store, agentId, true, { now });
+    return await finish(errors ? `${errors} post(s) could not be verified` : null);
+  } catch (e) {
+    const error = String((e && e.message) || e).slice(0, 300);
+    await recordTickHealth(deps.store, agentId, false, { reason: error, now });
+    return await finish(error);
+  }
+};
+
+/**
+ * GATE 11 — READ BACK, AND REPAIR A MISMATCH (F-415).
+ *
+ * A comment id in the write's response is NOT proof: it is what the API said it did. The
+ * proof is a SECOND REST READ that shows the comment, with the visibility gate 6 decided.
+ *
+ * A MISMATCH IS NOT A LOG LINE. If a comment we meant to be internal came back public,
+ * somebody's customer can already see the agent's working notes, so the comment is
+ * IMMEDIATELY EDITED TO INTERNAL and an ERROR receipt is written. It is edited rather
+ * than deleted and re-posted: a delete-and-repost is a SECOND visible event on the
+ * customer's portal, which makes the incident worse in exactly the way the customer
+ * notices.
+ *
+ * The effects row that follows a repair records what was ACTUALLY observed after it —
+ * never what was intended — and says in its summary that a mismatch happened.
+ */
+const verifyPostedComment = async ({ deps, issueKey, commentId, wantPublic, now }) => {
+  const proofOf = (observed, audience) => ({
+    source: "rest",
+    verifiedAt: nowIso(now),
+    observed,
+    readBack: { issueKey, commentId },
+    audience,
+  });
+  let observed;
+  try { observed = await deps.readComment(issueKey, commentId); }
+  catch (e) {
+    // We cannot prove anything. NO effects row: "the read failed" and "the write is
+    // verified" are different answers and conflating them is the whole defect.
+    return { ok: false, reason: `readback_failed:${String((e && e.message) || e).slice(0, 60)}`, effectProof: null };
+  }
+  const isPublic = observed && observed.jsdPublic === true;
+  if (isPublic === wantPublic) {
+    return { ok: true, audience: wantPublic ? "public" : "internal", effectProof: proofOf(observed, wantPublic ? "public" : "internal") };
+  }
+  // MISMATCH. Repair first, verify the repair second.
+  try { await deps.makeCommentInternal(issueKey, commentId); }
+  catch (e) {
+    return { ok: false, reason: `jsdPublic_mismatch_repair_failed:${String((e && e.message) || e).slice(0, 60)}`, effectProof: null };
+  }
+  let after;
+  try { after = await deps.readComment(issueKey, commentId); }
+  catch (e) { return { ok: false, reason: "jsdPublic_mismatch_repair_unverified", effectProof: null }; }
+  if (after && after.jsdPublic === true) return { ok: false, reason: "jsdPublic_mismatch_still_public", effectProof: null };
+  return { ok: false, reason: "jsdPublic_mismatch_edited_to_internal", audience: "internal", effectProof: proofOf(after, "internal") };
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
  * 9. DEPS — every platform reach, injectable, resolved lazily
  * ════════════════════════════════════════════════════════════════════════════ */
 
@@ -1000,6 +1495,78 @@ export const DEFAULT_DEPS = {
       projectKey: projectKey || null, audience: "agentRun",
       log: (line) => console.log(`[va] knowledge: ${line}`),
     });
+  },
+
+  /* — the POST phase's platform reach — */
+
+  /**
+   * The app's OWN accountId. Everything the post gates decide about "who spoke last"
+   * turns on telling our comments from theirs, and a null answer makes `gateFreshness`
+   * and `gatePileUp` treat OUR OWN comment as a human's — which is the conservative
+   * direction (it blocks), so a failure here costs silence, never a double reply.
+   */
+  selfAccountId: async () => {
+    const { default: api, route } = await import("@forge/api");
+    try {
+      const res = await api.asApp().requestJira(route`/rest/api/3/myself`);
+      if (!res.ok) return null;
+      return ((await res.json()) || {}).accountId || null;
+    } catch (e) { return null; }
+  },
+
+  /**
+   * Post a comment, with the JSM internal-note property in THE SHAPE THIS APP'S OWN SPEC
+   * DOCUMENTS: `sd.public.comment = { internal: true }`
+   * (`src/shared/sandbox-api-spec.js`, `addComment`). The plan's §3.11 text says
+   * `sd.public.comment=false`; the code is the authority and the plan text is not
+   * transcribed. `internal: false` posts nothing — the property is simply omitted, which
+   * is what makes a comment portal-visible.
+   */
+  addComment: async (issueKey, body, { internal = true } = {}) => {
+    const { default: api, route } = await import("@forge/api");
+    const m = await import("./index.js");
+    const payload = { body: m.coerceToAdf(String(body || "")) };
+    if (internal) payload.properties = [{ key: "sd.public.comment", value: { internal: true } }];
+    const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/comment`, {
+      method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`comment failed: ${res.status} ${(await res.text()).slice(0, 160)}`);
+    return res.json();
+  },
+
+  /** THE SECOND READ. `jsdPublic` is what Jira says the customer can see. */
+  readComment: async (issueKey, commentId) => {
+    const { default: api, route } = await import("@forge/api");
+    const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/comment/${commentId}?expand=properties`);
+    if (!res.ok) throw new Error(`comment read failed: ${res.status}`);
+    return res.json();
+  },
+
+  /** THE REPAIR: edit the property, never delete and re-post (a second visible event). */
+  makeCommentInternal: async (issueKey, commentId) => {
+    const { default: api, route } = await import("@forge/api");
+    const res = await api.asApp().requestJira(route`/rest/api/3/comment/${commentId}/properties/sd.public.comment`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ internal: true }),
+    });
+    if (!res.ok) throw new Error(`repair failed: ${res.status}`);
+    return { repaired: true };
+  },
+
+  /** The tenant kill switch (the existing cancel epoch), read at the post gate. */
+  isKillSwitchActive: async (job) => {
+    try { return await (await import("./index.js")).isJobCancelled(`va:${job && job.id}`); }
+    catch (e) { return false; }
+  },
+
+  /**
+   * Which tick number is this, for shadow mode? Counted from the agent's creation at the
+   * schedule's own cadence, so "three ticks of watching" means three of ITS runs rather
+   * than three of the scheduler's 5-minute ones.
+   */
+  tickIndex: (job) => {
+    const created = Date.parse(String((job && job.createdAt) || ""));
+    if (!Number.isFinite(created)) return Number.MAX_SAFE_INTEGER;   // unknown age ⇒ not in shadow
+    return Math.floor((Date.now() - created) / 300000);
   },
 
   /** THE LOOP. One implementation, shared with the listener, the job and the Coder. */

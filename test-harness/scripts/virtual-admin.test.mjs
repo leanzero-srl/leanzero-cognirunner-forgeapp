@@ -49,8 +49,12 @@ const vaJob = (over = {}) => ({
 /** A Jira issue as the sweep sees it. */
 const issue = (key, over = {}) => ({
   key, id: key.replace(/\D/g, ""),
-  fields: { summary: `s ${key}`, updated: "2026-09-13T10:00:00.000Z", project: { key: key.split("-")[0] }, status: { name: "Open" }, comment: { comments: [] }, ...(over.fields || {}) },
   ...over,
+  // `fields` is merged LAST and deliberately: spreading `over` after it replaces the
+  // whole object, which silently drops `project` — and a missing project makes every
+  // write-scope check answer `project_unresolvable`, i.e. the suite would assert the
+  // gates against fixtures that can never pass them.
+  fields: { summary: `s ${key}`, updated: "2026-09-13T10:00:00.000Z", project: { key: key.split("-")[0] }, status: { name: "Open" }, comment: { comments: [] }, ...(over.fields || {}) },
 });
 
 console.log("=== VA engine (1.5 commit 3) ===");
@@ -509,6 +513,350 @@ reset();
   // A READ is never scope-checked: an agent that cannot read cannot decide anything.
   const read = await dispatcherOn("OPS", { projects: ["SUP"] })("get_issue", { issueKey: "OPS-1" });
   ok(read, "writescope: reads are not blocked by the WRITE scope");
+}
+
+/* ══ 7. THE POST PHASE — the eleven gates, each BLOCK and ALLOW by name ═════ */
+
+const T0 = Date.parse("2026-09-13T12:00:00Z");
+const MIN = 60000;
+const DAY = 86400000;
+const SELF = "app-user";
+
+/** An issue with a comment thread, for the freshness / quiet / pile-up gates. */
+const thread = (comments) => issue("SUP-1", {
+  fields: {
+    reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" },
+    comment: { comments },
+  },
+});
+const humanComment = (id, atMs) => ({ id, author: { accountId: "rep-1" }, created: new Date(atMs).toISOString(), body: "hi" });
+const ourComment = (id, atMs) => ({ id, author: { accountId: SELF }, created: new Date(atMs).toISOString(), body: "ok" });
+
+/** Stage one draft on SUP-1 and return the deps for a post run. */
+const postDeps = (over = {}) => {
+  const commented = [];
+  const repaired = [];
+  const read = [];
+  return {
+    store: kvs, now: () => T0,
+    tickId: () => "t-post",
+    tickIndex: () => 999,                       // out of shadow unless a test says otherwise
+    isKillSwitchActive: async () => false,
+    selfAccountId: async () => SELF,
+    getIssue: async () => thread([humanComment("c-1", T0 - 60 * MIN)]),
+    addComment: async (k, body, opts) => { commented.push({ k, body, internal: opts.internal }); return { id: "new-1" }; },
+    readComment: async () => { read.push(1); return { id: "new-1", jsdPublic: false }; },
+    makeCommentInternal: async (k, id) => { repaired.push(id); return { repaired: true }; },
+    log: () => {},
+    __commented: commented, __repaired: repaired, __read: read,
+    ...over,
+  };
+};
+
+const stageDraft = async (over = {}) => {
+  await L.saveItem(kvs, AG, "SUP-1", { state: "queued" }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-1", {
+    state: "staged",
+    staged: {
+      audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "customer asked for an ETA",
+      baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - 30 * MIN).toISOString(), ...over,
+    },
+  }, { now: T0 });
+};
+
+/* — the DOUBLE FLOOR — */
+{
+  const staged = { tickId: "t-post", stagedAt: new Date(T0 - 60 * MIN).toISOString() };
+  eq(V.postFloorOk({ staged, currentTickId: "t-post", minPostGapMinutes: 15, now: T0 }).reason, "same_tick", "post.floor.BLOCK_same_tick");
+  eq(V.postFloorOk({ staged: { tickId: "t-stage", stagedAt: new Date(T0 - 5 * MIN).toISOString() }, currentTickId: "t-post", minPostGapMinutes: 15, now: T0 }).reason, "inside_gap", "post.floor.BLOCK_inside_gap");
+  eq(V.postFloorOk({ staged: { tickId: "t-stage", stagedAt: new Date(T0 - 20 * MIN).toISOString() }, currentTickId: "t-post", minPostGapMinutes: 15, now: T0 }).ok, true, "post.floor.ALLOW_later_tick_past_gap");
+  eq(V.postFloorOk({ staged: { tickId: "t-stage", stagedAt: "not a date" }, currentTickId: "t-post", minPostGapMinutes: 15, now: T0 }).reason, "staged_at_unreadable", "post.floor.BLOCK_unreadable_stagedAt");
+}
+
+/* — GATE 1: paused / shadow / kill switch — */
+{
+  eq(V.gatePausedShadow({ va: vaJob({ status: { paused: true } }).va, tickIndex: 99 }).reason, "paused", "gate.paused.BLOCK");
+  eq(V.gatePausedShadow({ va: vaJob().va, killSwitchActive: true }).reason, "kill_switch", "gate.killswitch.BLOCK");
+  eq(V.gatePausedShadow({ va: vaJob({ status: { paused: false, shadowUntilTick: 3 } }).va, tickIndex: 1 }).reason, "shadow", "gate.shadow.BLOCK_within_shadow_ticks");
+  eq(V.gatePausedShadow({ va: vaJob({ status: { paused: false, shadowUntilTick: 3 } }).va, tickIndex: 4 }).ok, true, "gate.shadow.ALLOW_after_shadow_ticks");
+}
+
+/* — GATE 2: attempts — */
+{
+  eq(V.gateAttempts({ state: "staged", attempts: 0 }).ok, true, "item.attempts.ALLOW_second_attempt");
+  eq(V.gateAttempts({ state: "staged", attempts: VA_LIMITS.attemptsCap }).reason, "attempts_exhausted", "item.attempts.BLOCK_parked_at_three");
+  eq(V.gateAttempts({ state: "parked", attempts: 0 }).reason, "parked", "item.attempts.BLOCK_parked_state");
+}
+
+/* — GATE 3: freshness — */
+{
+  const staged = { baseline: "c-1" };
+  eq(V.gateFreshness({ staged, issue: thread([humanComment("c-1", T0)]), selfAccountId: SELF }).ok, true, "gate.freshness.ALLOW_unchanged_thread");
+  eq(V.gateFreshness({ staged, issue: thread([humanComment("c-1", T0), humanComment("c-2", T0)]), selfAccountId: SELF }).reason, "thread_moved", "gate.freshness.BLOCK_new_human_comment");
+  // OUR OWN comment after the baseline is not the thread moving.
+  eq(V.gateFreshness({ staged, issue: thread([humanComment("c-1", T0), ourComment("c-2", T0)]), selfAccountId: SELF }).ok, true, "gate.freshness: our own comment does not count as the thread moving");
+}
+
+/* — GATE 4: other-writer quiet — */
+{
+  eq(V.gateQuiet({ issue: thread([humanComment("c-1", T0 - 2 * MIN)]), now: T0, quietMinutes: 15, selfAccountId: SELF }).reason, "recent_other_writer", "gate.quiet.BLOCK_recent_other_writer");
+  eq(V.gateQuiet({ issue: thread([humanComment("c-1", T0 - 60 * MIN)]), now: T0, quietMinutes: 15, selfAccountId: SELF }).ok, true, "gate.quiet.ALLOW_past_quiet_window");
+  eq(V.gateQuiet({ issue: thread([]), now: T0, quietMinutes: 15, selfAccountId: SELF }).ok, true, "gate.quiet: nobody else has written, so there is nothing to be quiet about");
+}
+
+/* — GATE 5: anti-pile-up — */
+{
+  const spokeLast = thread([humanComment("c-1", T0 - 5 * DAY), ourComment("c-2", T0 - 1 * DAY)]);
+  eq(V.gatePileUp({ row: { state: "staged" }, issue: spokeLast, now: T0, antiPileUpDays: 4, selfAccountId: SELF }).reason, "we_spoke_last", "gate.pileup.BLOCK_we_spoke_last");
+  eq(V.gatePileUp({ row: { state: "owed" }, issue: spokeLast, now: T0, antiPileUpDays: 4, selfAccountId: SELF }).ok, true, "gate.pileup.ALLOW_owed_overrides");
+  eq(V.gatePileUp({ row: { state: "staged" }, issue: thread([ourComment("c-2", T0 - 9 * DAY)]), now: T0, antiPileUpDays: 4, selfAccountId: SELF }).ok, true, "gate.pileup.ALLOW_past_the_window");
+  eq(V.gatePileUp({ row: { state: "staged" }, issue: thread([ourComment("c-1", T0 - DAY), humanComment("c-2", T0)]), now: T0, antiPileUpDays: 4, selfAccountId: SELF }).ok, true, "gate.pileup: a human spoke after us, so we did not speak last");
+}
+
+/* — the POST WINDOW — */
+{
+  const va = vaJob().va;
+  va.cadence.postWindow = { days: [1, 2, 3, 4, 5], from: "09:00", to: "17:00" };
+  va.cadence.timeZone = "UTC";
+  eq(V.inPostWindow(va, Date.parse("2026-09-14T10:00:00Z")).ok, true, "window.ALLOW_inside");         // Monday
+  eq(V.inPostWindow(va, Date.parse("2026-09-14T20:00:00Z")).reason, "outside_post_window_hours", "window.BLOCK_outside_hours");
+  eq(V.inPostWindow(va, Date.parse("2026-09-13T10:00:00Z")).reason, "outside_post_window_day", "window.BLOCK_outside_day");   // Sunday
+  const wrap = vaJob().va;
+  wrap.cadence.postWindow = { days: [], from: "18:00", to: "02:00" };
+  eq(V.inPostWindow(wrap, Date.parse("2026-09-14T23:00:00Z")).ok, true, "window: a window that ends before it starts WRAPS past midnight");
+  eq(V.inPostWindow(wrap, Date.parse("2026-09-14T12:00:00Z")).ok, false, "…and midday is still outside it");
+  const bad = vaJob().va;
+  bad.cadence.postWindow = { days: [1], from: "09:00", to: "17:00" };
+  bad.cadence.timeZone = "Not/AZone";
+  eq(V.inPostWindow(bad, T0).reason, "post_window_unreadable", "window.BLOCK_unreadable_timezone — a restriction must not evaporate on bad input");
+}
+
+/* — GATE 9: the voice lint, and it fails CLOSED — */
+{
+  eq(V.gateVoice("I have picked this up. It should be sorted today.", { register: "plain", maxSentences: 3 }).ok, true, "gate.voice.ALLOW_human_corpus_sample");
+  eq(V.gateVoice("- one\n- two", { register: "plain", maxSentences: 3 }).ok, false, "gate.voice.BLOCK_bullet");
+  eq(V.gateVoice("As an AI I cannot do that.", { register: "plain", maxSentences: 3 }).ok, false, "gate.voice.BLOCK_as_an_ai");
+  eq(V.gateVoice("", { register: "plain" }).ok, false, "gate.voice.BLOCK_empty — nothing to check must never read as checked");
+}
+
+/* — THE WHOLE POST RUN — */
+reset();
+{
+  await stageDraft();
+  const d = postDeps();
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 1, "post.ALLOW_a_clean_draft_goes_out");
+  eq(d.__commented.length, 1, "post: exactly one comment");
+  eq(d.__commented[0].internal, true, "post: internal is the DEFAULT — the property carries sd.public.comment");
+  eq(d.__read.length, 1, "gate.readback: a SECOND read was made — the write's own response is not proof");
+  const row = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(row.state, "posted", "post: the item is posted");
+  eq(row.staged, null, "post: the draft is cleared, so it cannot go out twice");
+  const receipt = (await L.readTick(kvs, AG, "t-post", "post")).receipt;
+  ok(receipt, "planner.postphase.ALLOW_receipt_written — its OWN receipt (F-421)");
+  eq(receipt.phase, "post", "…on the post phase, not the prepare one");
+  // The EFFECTS row, written only on a read-back proof.
+  const caps = await L.readCaps(kvs, AG, { now: T0 });
+  eq(caps.hour, 1, "gate.caps: the slot was SPENT — before the write, never after");
+}
+
+reset();
+{
+  // GATE 3 BLOCK: a human spoke after the baseline. The draft dies, the item RE-QUEUES.
+  await stageDraft();
+  const d = postDeps({ getIssue: async () => thread([humanComment("c-1", T0 - 60 * MIN), humanComment("c-2", T0 - 40 * MIN)]) });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 0, "gate.freshness.BLOCK_new_human_comment — nothing posted");
+  eq(d.__commented.length, 0, "…nothing reached Jira");
+  const row = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(row.state, "queued", "…the item is RE-QUEUED, not discarded");
+  eq(row.staged, null, "…and the stale draft is gone");
+  ok((await L.readTick(kvs, AG, "t-post", "post")).receipt.skipped.some((s) => s.reason === "gate.thread_moved"), "…and the receipt names the gate");
+}
+
+reset();
+{
+  // GATE 4 BLOCK: somebody else wrote two minutes ago.
+  await stageDraft({ baseline: "c-1" });
+  const d = postDeps({ getIssue: async () => thread([humanComment("c-1", T0 - 2 * MIN)]) });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 0, "gate.quiet.BLOCK_recent_other_writer");
+  eq(d.__commented.length, 0, "…and nothing was posted over them");
+}
+
+reset();
+{
+  // GATE 7 BLOCK: the hour cap is full.
+  await stageDraft();
+  const b = L.__capsBucketsForTest ? null : null;
+  for (let i = 0; i < 6; i++) await L.bumpCaps(kvs, AG, { now: T0 });
+  const d = postDeps();
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 0, "gate.caps.BLOCK_hour_exceeded");
+  eq(d.__commented.length, 0, "…and nothing was posted");
+  ok((await L.readTick(kvs, AG, "t-post", "post")).receipt.skipped.some((s) => /gate.caps/.test(s.reason)), "…with the cap named in the receipt");
+}
+
+reset();
+{
+  // GATE 7 ALLOW: an OWED item uses its OWN counter, so a full general hour does not
+  // silence a reply somebody is waiting for.
+  await L.saveItem(kvs, AG, "SUP-1", { state: "queued" }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-1", { state: "posted" }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-1", { state: "owed" }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-1", {
+    state: "staged",
+    staged: { audience: "internal", body: "Sorry about that. I have fixed it now.", reason: "owed reply", baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - 30 * MIN).toISOString() },
+  }, { now: T0 });
+  for (let i = 0; i < 6; i++) await L.bumpCaps(kvs, AG, { now: T0 });
+  // OWED is read from the THREAD: we spoke, and the last word is theirs.
+  const owedThread = thread([ourComment("c-0", T0 - 3 * 60 * MIN), humanComment("c-1", T0 - 60 * MIN)]);
+  eq(V.isOwed({ row: { state: "staged" }, issue: owedThread, selfAccountId: SELF }), true, "isOwed: we spoke and a human answered after us");
+  eq(V.isOwed({ row: { state: "staged" }, issue: thread([humanComment("c-1", T0)]), selfAccountId: SELF }), false, "isOwed: a thread we never spoke in owes nobody");
+  const d = postDeps({ getIssue: async () => owedThread });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 1, "gate.caps.ALLOW_owed_within_owed_cap — owed is cheaper, never free");
+  const caps = await L.readCaps(kvs, AG, { now: T0 });
+  eq(caps.owedHour, 1, "…and it spent the OWED counter, not the general one");
+  eq(caps.hour, 6, "…which is untouched");
+}
+
+reset();
+{
+  // GATE 7 BLOCK: a caps READ FAULT blocks. Unknown is not permissive when the thing
+  // being braked is speech (F-431).
+  await stageDraft();
+  let reads = 0;
+  const faultyStore = {
+    get: async (k) => { if (String(k).startsWith("va_caps:")) { reads++; throw new Error("kvs down"); } return kvs.get(k); },
+    set: async (k, v, o) => kvs.set(k, v, o), delete: async (k) => kvs.delete(k),
+  };
+  const d = postDeps({ store: faultyStore });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 0, "gate.caps.BLOCK_read_fault");
+  eq(d.__commented.length, 0, "…and nothing was posted on an unknown counter");
+  ok(reads > 0, "…the caps read really was attempted");
+}
+
+reset();
+{
+  // GATE 8 BLOCK: the issue is outside the write scope.
+  await stageDraft();
+  const d = postDeps({ getIssue: async () => ({ ...thread([humanComment("c-1", T0 - 60 * MIN)]), fields: { ...thread([humanComment("c-1", T0 - 60 * MIN)]).fields, project: { key: "OPS" } } }) });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 0, "gate.scope.BLOCK_outside_write_scope");
+  eq(d.__commented.length, 0, "…and nothing was posted");
+}
+
+reset();
+{
+  // GATE 9 BLOCK: the lint refuses the draft. It re-queues AND counts an attempt.
+  await stageDraft({ body: "- I did a thing\n- I did another thing" });
+  const d = postDeps();
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 0, "gate.voice.BLOCK_bullet stops the post");
+  eq(d.__commented.length, 0, "…nothing reached Jira");
+  const row = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(row.state, "queued", "…the item goes back for a rewrite");
+  eq(row.attempts, 1, "item.attempts.INCREMENT_on_lint_reject — a model that cannot write in this voice parks");
+}
+
+reset();
+{
+  // GATE 10: a REDELIVERY does not post a second time.
+  await stageDraft();
+  const stagedAt = (await L.readItem(kvs, AG, "SUP-1")).row.staged.stagedAt;
+  await L.takePostClaim(kvs, AG, "SUP-1", stagedAt);       // as if a first delivery had it
+  const d = postDeps();
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.posted, 0, "gate.claim.BLOCK_redelivery_second_post");
+  eq(d.__commented.length, 0, "…and no second reply reached the human");
+  ok((await L.readTick(kvs, AG, "t-post", "post")).receipt.skipped.some((s) => /gate.claim/.test(s.reason)), "…named in the receipt");
+}
+
+reset();
+{
+  // GATE 11 BLOCK: the read-back shows PUBLIC when internal was intended. The comment is
+  // EDITED to internal — never deleted and re-posted — and an ERROR receipt is written.
+  await stageDraft();
+  let reads = 0;
+  const d = postDeps({
+    readComment: async () => { reads++; return { id: "new-1", jsdPublic: reads === 1 }; },
+  });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(d.__repaired.length, 1, "gate.readback.BLOCK_jsdPublic_mismatch_edits_to_internal");
+  eq(d.__repaired[0], "new-1", "…the comment that was posted, by id");
+  eq(reads, 2, "…and the REPAIR is itself verified by a second read");
+  eq(r.errors, 1, "…the run counts an error");
+  const receipt = (await L.readTick(kvs, AG, "t-post", "post")).receipt;
+  ok(receipt.error, "gate.readback: an ERROR receipt, never a silent success");
+  ok(receipt.skipped.some((s) => /jsdPublic_mismatch/.test(s.reason)), "…naming the mismatch");
+  const row = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(row.state, "posted", "…the item is posted, because a comment EXISTS and must not be written twice");
+  ok(row.history.some((h) => h.event === "posted_with_error"), "…and the history says it went out wrong");
+}
+
+reset();
+{
+  // GATE 11 BLOCK: no comment id came back. NO effects row, and the item stays staged.
+  await stageDraft();
+  const d = postDeps({ addComment: async () => ({}) });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post", deps: d });
+  eq(r.errors, 1, "gate.readback.BLOCK_no_comment_id");
+  eq((await L.readItem(kvs, AG, "SUP-1")).row.state, "staged", "…the item stays staged for a human to look at");
+}
+
+reset();
+{
+  // SHADOW MODE: the agent stages and shows, and posts NOTHING.
+  await stageDraft();
+  const d = postDeps({ tickIndex: () => 1 });
+  const r = await V.runVaPost({ agent: vaJob({ status: { paused: false, shadowUntilTick: 3 } }), tickId: "t-post", deps: d });
+  eq(r.posted, 0, "gate.shadow.BLOCK_within_shadow_ticks, end to end");
+  eq(d.__commented.length, 0, "…nothing reached Jira");
+  eq((await L.readItem(kvs, AG, "SUP-1")).row.state, "staged", "…and the draft is still there to be reviewed");
+}
+
+reset();
+{
+  // THE SCAN IS BOUNDED (F-421) — a hundred staged rows do not become a hundred posts.
+  for (let i = 0; i < 12; i++) {
+    await L.saveItem(kvs, AG, `SUP-${100 + i}`, { state: "queued" }, { now: T0 });
+    await L.saveItem(kvs, AG, `SUP-${100 + i}`, {
+      state: "staged",
+      staged: { audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "r", baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - 30 * MIN).toISOString() },
+    }, { now: T0 });
+  }
+  const d = postDeps({ getIssue: async (k) => ({ ...thread([humanComment("c-1", T0 - 60 * MIN)]), key: k, fields: { ...thread([humanComment("c-1", T0 - 60 * MIN)]).fields, project: { key: "SUP" } } }) });
+  const r = await V.runVaPost({ agent: vaJob({ guardrails: { ...vaJob().va.guardrails, capsPerHour: 99, capsPerDay: 99 } }), tickId: "t-post", deps: d });
+  ok(d.__commented.length <= VA_LIMITS.maxItemsPerTick, `planner.postphase.BLOCK_unbounded_scan (${d.__commented.length} <= ${VA_LIMITS.maxItemsPerTick})`);
+  ok((await L.readTick(kvs, AG, "t-post", "post")).receipt.skipped.some((s) => s.reason === "over_post_budget"), "…and the rows it did not reach are NAMED, not dropped silently");
+}
+
+/* ══ 8. THE WIRING ═════════════════════════════════════════════════════════ */
+{
+  const { readFileSync } = await import("node:fs");
+  const async = readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8");
+  for (const t of ["va-tick", "va-item", "va-post"]) {
+    ok(new RegExp(`"${t}": executeVa`).test(async), `wiring: "${t}" is a TASK_HANDLERS row`);
+  }
+  ok(!/LONG_QUEUE_ONLY_TASKS = new Set\(\[[^\]]*va-item/.test(async), "wiring: va-item is NOT long-queue-only — the PRODUCER chooses its queue");
+
+  const { NON_AI_TASK_TYPES, TOKEN_SPENDING_TASK_TYPES, estimateTaskTokens } = await import("../../src/shared/ai-budget.js");
+  ok(NON_AI_TASK_TYPES.includes("va-tick"), "budget: va-tick is NON-AI — a sweep calls no model");
+  ok(!TOKEN_SPENDING_TASK_TYPES.includes("va-tick"), "budget: …and is never priced as spending");
+  eq(estimateTaskTokens("va-tick", {}), 0, "budget: va-tick is explicitly priced at zero");
+  ok(TOKEN_SPENDING_TASK_TYPES.includes("va-item") && TOKEN_SPENDING_TASK_TYPES.includes("va-post"), "budget: the two tasks that DO call a model are paced");
+
+  const jobs = readFileSync(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
+  ok(/isVaJob/.test(jobs), "wiring: the planner asks `isVaJob`, the ONE home for the question");
+  ok(/enqueueVaPostRuns/.test(jobs), "wiring: the post phase is enqueued by the SAME 5-minute planner — no second trigger");
+  // The RUN PATH asks `isVaJob` (which requires the `va` BLOCK, not just the mode), so a
+  // record with a `va` mode and no configuration cannot be run as an unconfigured agent.
+  // The index-row filter reads `mode` because an index row carries no block — that is a
+  // cheap pre-filter, and the task re-checks. Both facts are asserted, not assumed.
+  ok(/const taskType = isVaJob\(job\)/.test(jobs), "wiring: the RUN path decides by isVaJob, on the full record");
+  ok(/loadVaJob/.test(async) && /isVaJob\(job\)/.test(async), "wiring: every task handler re-checks isVaJob before running anything");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

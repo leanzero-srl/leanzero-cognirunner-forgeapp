@@ -249,7 +249,10 @@ so a 100-issue sweep could make 300 searches with every turn politely inside its
   const agentSrc = await fs.readFile(new URL("../../src/agent-runner.js", import.meta.url), "utf8");
   ok(/const webRunBudget = createRunSearchBudget\(\);[\s\S]{0,400}const runOne = async/.test(jobSrc),
     "the job creates ONE run budget OUTSIDE runOne — a per-issue counter is not a run budget");
-  ok(/webRunBudget }\);/.test(jobSrc), "…and passes it into every turn of the run");
+  // Matches the ARGUMENT, not its position in the literal: the old pattern required
+  // `webRunBudget` to be the LAST key of the call, so adding any argument after it
+  // (1.5's `writeScope`) broke an assertion that is really about the value being passed.
+  ok(/runAgentTask\(\{[\s\S]*?\bwebRunBudget\b[\s\S]*?\}\);/.test(jobSrc), "…and passes it into every turn of the run");
   ok(/webRunBudget: createRunSearchBudget\(\)/.test(lstSrc), "the listener run site carries one too");
   ok(/webRunBudget = null/.test(agentSrc) && /runBudget: webRunCeiling/.test(agentSrc),
     "the runner takes the caller's ceiling and hands it to the executor");

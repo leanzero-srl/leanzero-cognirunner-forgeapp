@@ -41,6 +41,9 @@ import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, D
 import { normalizeStep, armingStamp, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
 import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_MIN_WRITES_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
+// The VA record has ONE normalizer and it is called FROM INSIDE normalizeJob — a parallel
+// save path for agents would be the split this release exists to avoid.
+import { normalizeVa } from "./shared/va-config.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 // ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
@@ -92,7 +95,11 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
   if (src.scope && typeof src.scope === "object" && clampStr(src.scope.jql, 2000).trim()) {
     scope = { jql: clampStr(src.scope.jql, 2000).trim(), maxIssues: clampInt(src.scope.maxIssues, 1, MAX_SCOPE_ISSUES, DEFAULT_SCOPE_ISSUES) };
   }
-  const mode = src.mode === "agent" ? "agent" : "script";
+  // THREE VALUES NOW (1.5). `mode` was binary for two releases, so the third value's
+  // blast radius is every `mode ===` site in this file and in `async-handler.js`; they
+  // were grepped in the same cut. The default stays "script" — an unknown value must
+  // never become a VA, because a VA is the mode with the most autonomy.
+  const mode = src.mode === "agent" ? "agent" : (src.mode === "va" ? "va" : "script");
   const functions = Array.isArray(src.functions) ? src.functions.slice(0, 50).map((fn, i) => normalizeStep(fn, i)) : [];
   const a = src.agent && typeof src.agent === "object" ? src.agent : {};
   const agent = {
@@ -109,11 +116,20 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
   if (mode === "agent" && !agent.instructions.trim()) throw new Error("agent.instructions is required in agent mode");
   if (mode === "agent" && String(a.instructions || "").length > 6000) throw new Error("agent.instructions exceeds 6000 characters");
   if (mode === "script" && functions.length === 0) throw new Error("functions must contain at least one code step in script mode");
+  // THE VA BLOCK, normalised by its ONE home (`normalizeVa`, src/shared/va-config.js):
+  // every number clamped, every project key validated, `scope.write.site` REFUSED.
+  // A `mode:"va"` save with no block is refused rather than defaulted — an agent whose
+  // persona, scope and caps were invented by the save path is an agent nobody configured.
+  const vaResult = mode === "va" ? normalizeVa(src.va, { existing: existing && existing.va, savedByRole }) : null;
+  const va = vaResult ? vaResult.va : null;
   const out = {
     id, name,
     description: clampStr(src.description, 2000),
     enabled: src.enabled !== false,
     schedule, scope, mode, functions, agent,
+    // Absent on a script/agent job — `isVaJob` reads the PRESENCE of the block, not the
+    // mode alone, so a null here can never be mistaken for a configured agent.
+    ...(va ? { va } : {}),
     simulationMode: src.simulationMode === true,
     suppressNotifications: src.suppressNotifications === true,
     // THE JOB WRITE BRAKE (1.4 commit 13d). Clamped here, default from the ONE home in
@@ -228,10 +244,25 @@ export const enqueueJobRun = async ({ job, scheduledFor, missed = 0, manual = fa
   const m = await idx();
   const { Queue } = await import("@forge/events");
   const queue = new Queue({ key: "async-ai-queue" });
-  const taskId = m.makeTaskId("scheduledjob");
+  // A VIRTUAL ADMINISTRATOR'S DUE RUN IS ITS PREPARE TICK, not a script/agent run. The
+  // branch is HERE rather than in `scheduledTick` so that "Run now" from the Jobs tab and
+  // from the REST API reach the same task the scheduler does — a second route that ran a
+  // VA as an ordinary job would skip the sweep, the ledger and every gate.
+  // ONE home for the question: `isVaJob` (src/virtual-admin.js), which requires the `va`
+  // BLOCK and not merely the mode, so a record whose mode says `va` but which carries no
+  // configuration runs as an ordinary job rather than as an unconfigured agent.
+  const { isVaJob } = await import("./virtual-admin.js");
+  const taskType = isVaJob(job) ? "va-tick" : "scheduledjob";
+  const taskId = m.makeTaskId(taskType);
   const enqueuedAt = nowIso();
-  await queue.push({ body: { taskType: "scheduledjob", taskId, params: { jobId: job.id, jobName: job.name, scheduledFor, missed, manual, enqueuedAt } } });
-  await m.writeAsyncJob({ taskId, taskType: "scheduledjob", status: "queued", ruleId: job.id, ruleName: job.name, issueKey: null, provider: null, model: null, accountId, enqueuedAt });
+  // The tick identity is the FIVE-MINUTE BUCKET of the firing, not the instant: the post
+  // phase's floor asks "was this staged on an EARLIER tick", and an identity minted per
+  // delivery would make every item its own tick and silently disable that condition.
+  const tickId = taskType === "va-tick"
+    ? `${job.id}-${Math.floor((scheduledFor ? Date.parse(scheduledFor) : Date.now()) / 300000)}`
+    : null;
+  await queue.push({ body: { taskType, taskId, params: { jobId: job.id, jobName: job.name, scheduledFor, missed, manual, enqueuedAt, ...(tickId ? { tickId } : {}) } } });
+  await m.writeAsyncJob({ taskId, taskType, status: "queued", ruleId: job.id, ruleName: job.name, issueKey: null, provider: null, model: null, accountId, enqueuedAt });
   return { taskId };
 };
 
@@ -303,8 +334,55 @@ export async function scheduledTick() {
       queued++;
     } catch (e) { console.error(`[job] enqueue failed for ${full.id}:`, e && e.message); }
   }
+  // THE VIRTUAL ADMINISTRATOR'S POST PHASE (F-421), on the SAME planner. It is its own
+  // task with its own receipt, so it cannot ride the prepare tick's row — but it is NOT
+  // a second scheduled trigger: one clock drives both phases, which is the only way the
+  // "a later tick than the one that staged it" half of the speech floor means anything.
+  //
+  // It runs on EVERY 5-minute tick, not on the agent's own cadence, because a draft
+  // staged at 10:00 with a 15-minute gap must go out at 10:15 — not at 10:30 when a
+  // half-hourly agent next wakes. The engine bounds its own scan and refuses everything
+  // outside the post window, so a tick with nothing to do is two KVS reads.
+  await enqueueVaPostRuns(rows, started);
   console.log(`[job] tick: ${rows.length} job(s), ${due.length} due, ${queued} queued in ${Date.now() - started}ms`);
 }
+
+/**
+ * Enqueue one `va-post` task per enabled Virtual Administrator.
+ *
+ * SMALLEST POSSIBLE EDIT TO THE PLANNER, and ONE home for the DECISION.
+ *
+ * The authority on "is this job a Virtual Administrator" is `isVaJob`
+ * (`src/virtual-admin.js`), which requires the `va` BLOCK and not merely the mode — and
+ * that is what `enqueueJobRun` and the three task handlers all call. The filter below
+ * reads `mode` directly because an INDEX ROW carries the mode and not the block, so the
+ * full record cannot be consulted without loading all of them. It is therefore a CHEAP
+ * PRE-FILTER, never the decision: a row that says `va` with no record is loaded by the
+ * task, refused by `isVaJob` there, and skipped — it is never run as a script job.
+ *
+ * The claim identity is the MINUTE, not the schedule: the post phase has no cron of its
+ * own, so two deliveries of the same 5-minute trigger must collapse onto one key. Failing
+ * to claim is the healthy duplicate path and is silent; the post task takes the far
+ * narrower `va_post` claim per draft, which is what actually prevents a double reply.
+ */
+const enqueueVaPostRuns = async (rows, nowMs) => {
+  const vaRows = rows.filter((r) => r && r.enabled !== false && r.mode === "va");
+  if (!vaRows.length) return;
+  const minute = Math.floor(nowMs / 300000);
+  const { Queue } = await import("@forge/events");
+  const queue = new Queue({ key: "async-ai-queue" });
+  for (const row of vaRows) {
+    const claimKey = `job_claim:${safeKeyPart(row.id)}:post:${minute}`;
+    try {
+      if (!(await claimRuleExecution(storage, claimKey, CLAIM_TTL, "va-post"))) continue;
+      await queue.push({ body: { taskType: "va-post", taskId: `va-post_${safeKeyPart(row.id)}_${minute}`, params: { jobId: row.id, tickId: `${row.id}-${minute}`, enqueuedAt: nowIso() } } });
+    } catch (e) {
+      // A post phase that could not be queued is a MISSED CHANCE TO SPEAK, never a
+      // failed tick: the drafts stay staged and the next 5-minute tick tries again.
+      console.warn(`[va] post enqueue skipped for ${row.id}:`, e && e.message);
+    }
+  }
+};
 
 // ── Execution (consumer) ─────────────────────────────────────────────────────
 

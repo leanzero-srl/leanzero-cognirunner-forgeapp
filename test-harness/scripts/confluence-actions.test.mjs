@@ -404,5 +404,40 @@ console.log("=== Confluence agent actions (1.5 commit 4b) ===");
   ok(e.__client.__calls.filter((c) => c.name === "probeInstalled").length >= 1, "the executor consults the install state");
 }
 
+/* ══ 10b. …AND src/index.js DOES NOT GROW A SECOND ONE (F-473) ════════════════
+ *
+ * index.js carried a private copy of both accessors over its own module-level memo for
+ * one commit. Two memos of one fact meant an install could be visible to the agent
+ * actions and not the validators (or the reverse) for up to five minutes, and the stale
+ * half is the one that decides a rule fails open. This is the grep that keeps it gone:
+ * it fails on a DEFINITION, not on a mention, so the prose pointer above the deleted
+ * block and the import both stay legal.
+ */
+{
+  const { readFileSync } = await import("node:fs");
+  const isrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  const defRe = (name) => new RegExp(`(?:const|let|var|function|export\\s+const)\\s+${name}\\s*[=(]`);
+  ok(!defRe("getConfluenceInstallState").test(isrc), "index.js defines no getConfluenceInstallState (F-473)");
+  ok(!defRe("peekConfluenceInstalled").test(isrc), "index.js defines no peekConfluenceInstalled (F-473)");
+  ok(!/_cachedConfluenceInstall/.test(isrc), "index.js keeps no install memo of its own");
+  ok(/from\s+"\.\/confluence-client\.js"/.test(isrc) && /peekConfluenceInstalled/.test(isrc),
+    "…it imports the ONE memo from the client instead");
+
+  // The client's own source is the only definition site.
+  const csrc = readFileSync(new URL("../../src/confluence-client.js", import.meta.url), "utf8");
+  ok(defRe("getConfluenceInstallState").test(csrc), "confluence-client.js is where the memo is defined");
+
+  // The space picker warms that ONE memo through the exported door rather than a
+  // second writer: a successful listSpaces IS a positive probe.
+  const { noteConfluenceInstallState, peekConfluenceInstalled: peek2, resetConfluenceInstallMemo: reset2 } =
+    await import("../../src/confluence-client.js");
+  reset2();
+  noteConfluenceInstallState({ installed: true, code: null, message: null });
+  eq(peek2(), true, "noteConfluenceInstallState warms the one memo");
+  noteConfluenceInstallState({ nonsense: 1 });
+  eq(peek2(), true, "…and a row without a boolean `installed` is ignored, never recorded as unknown");
+  reset2();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -115,7 +115,11 @@ import {
 import { executePremadeRule, writeConfluenceIssueProperty } from "./premade-rules.js";
 // THE Confluence client (1.5 commit 6). Every Confluence call in this file goes through
 // it — one error-code table, one timeout, one version-checked update.
-import { createConfluenceClient, ConfluenceError } from "./confluence-client.js";
+import {
+  createConfluenceClient, ConfluenceError,
+  // THE ONE install memo (F-473) — this file no longer keeps a copy of it.
+  peekConfluenceInstalled, noteConfluenceInstallState,
+} from "./confluence-client.js";
 // Listeners (Jira product events) + Scheduled Jobs (cron) + the Rules REST API.
 // Thin resolvers below delegate to these modules; they lazily import index.js back
 // (no top-level cycle) for the shared sandbox / AI / log / permission internals
@@ -3470,8 +3474,7 @@ const listConfluenceSpacesForPicker = async () => {
   try {
     if (peekConfluenceInstalled() === false) return [];
     const spaces = await createConfluenceClient().listSpaces({});
-    _cachedConfluenceInstall = { installed: true, code: null, message: null };
-    _cachedConfluenceInstallAt = Date.now();
+    noteConfluenceInstallState({ installed: true, code: null, message: null });
     return spaces.map((s) => ({ value: s.key, label: s.name === s.key ? s.key : `${s.name} (${s.key})` }));
   } catch (e) {
     // A fault here says nothing about whether a SPACE exists — only that we could not
@@ -3479,8 +3482,7 @@ const listConfluenceSpacesForPicker = async () => {
     // is unavailable; an auth or network blip must not make the picker empty for five
     // minutes on a site that does have Confluence.
     if (e instanceof ConfluenceError && e.code === "confluence_unavailable") {
-      _cachedConfluenceInstall = { installed: false, code: e.code, message: e.message, status: e.status };
-      _cachedConfluenceInstallAt = Date.now();
+      noteConfluenceInstallState({ installed: false, code: e.code, message: e.message, status: e.status });
     }
     console.warn("[confluence] space picker list unavailable:", e && e.message);
     return [];
@@ -13787,46 +13789,19 @@ const getProviderConfig = async () => {
   }
 };
 
-/* ═══════════ THE CONFLUENCE INSTALL PROBE — ONE MEMO (1.5 commit 7) ═══════════
+/* ═══════════ THE CONFLUENCE INSTALL PROBE — NOT HERE ANY MORE (F-473) ═══════════
  *
- * Deliberately beside the provider memo, and deliberately the ONLY memo of this fact.
- * "Is CogniRunner installed on Confluence too?" is a per-SITE fact that changes when an
- * admin runs `forge install -p Confluence` — roughly never — while every Confluence rule
- * would otherwise ask it again on every transition, every post-function and every admin
- * panel open. 5 minutes rather than the provider memo's 30 s: a provider switch must take
- * effect while an admin watches, an install does not, and 5 minutes is short enough that
- * the admin card shows the truth a minute after they install.
+ * This file used to carry a private copy of `getConfluenceInstallState` /
+ * `peekConfluenceInstalled` with its own module-level memo, beside the provider memo.
+ * The ONE memo now lives in src/confluence-client.js, beside the client that probes,
+ * and this file IMPORTS it (see the import at the top).
  *
- * TWO ACCESSORS, ONE MEMO, and the difference matters:
- *   getConfluenceInstallState() — probes when the memo is cold. Callers that are ABOUT to
- *     do Confluence work and want to fail fast (the post-functions, the admin card).
- *   peekConfluenceInstalled()   — memo ONLY, never a call. Returns null for "unknown".
- *     The VALIDATOR uses this: it is inside a transition's 8 s budget, and a probe there
- *     would double the latency of the very check it precedes. A cold memo means the
- *     validator simply runs its search, which answers the same question anyway.
- *
- * Every call goes through `createConfluenceClient` (LAW 1 — one client, one error-code
- * table, one timeout). `probeInstalled` never throws; a fault is "not installed", which
- * is the fail-OPEN direction for every validator that reads it.
+ * Two memos of one fact is not a duplication of code, it is a duplication of TRUTH: on
+ * the same container, for up to five minutes after an admin runs `forge install -p
+ * Confluence`, the half of the app holding the warm stale copy decides a rule fails
+ * open while the other half sees the install. Whichever half is stale is the one that
+ * matters. There is exactly one now, and confluence-actions.js reads the same one.
  */
-const CONFLUENCE_PROBE_TTL_MS = 5 * 60 * 1000;
-let _cachedConfluenceInstall = null;
-let _cachedConfluenceInstallAt = 0;
-
-const peekConfluenceInstalled = () =>
-  (_cachedConfluenceInstall && Date.now() - _cachedConfluenceInstallAt < CONFLUENCE_PROBE_TTL_MS)
-    ? _cachedConfluenceInstall.installed === true
-    : null;
-
-const getConfluenceInstallState = async ({ fresh = false } = {}) => {
-  if (!fresh && _cachedConfluenceInstall && Date.now() - _cachedConfluenceInstallAt < CONFLUENCE_PROBE_TTL_MS) {
-    return { ..._cachedConfluenceInstall, cached: true };
-  }
-  const state = await createConfluenceClient().probeInstalled();
-  _cachedConfluenceInstall = state;
-  _cachedConfluenceInstallAt = Date.now();
-  return { ...state, cached: false };
-};
 
 // ===== SEAT SNAPSHOT (drives the Forge LLM monthly allowance) =====
 // The allowance is clamp(seats x $2, $40, $800)/month, so we need a seat count.

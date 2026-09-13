@@ -791,7 +791,7 @@ async function runConfluenceValidator(cfg, issueKey, mf, read, deps) {
     return misconfig("This Confluence rule is in Semantic mode but has no prompt, so there is nothing for the AI to judge the page against. Open the rule and write what the page must say.");
   }
 
-  // The 5-minute install memo, READ ONLY (src/index.js peekConfluenceInstalled). A
+  // The 5-minute install memo, READ ONLY (src/confluence-client.js peekConfluenceInstalled). A
   // KNOWN-negative short-circuits the search — same verdict, one fewer call. `null`
   // ("unknown", the cold-container case) never short-circuits anything: a negative that
   // authorises a decision has to be PROVEN, and an unread memo proves nothing.

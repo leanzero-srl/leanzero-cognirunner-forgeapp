@@ -738,12 +738,12 @@ export function createConfluenceClient(deps = {}) {
  * caches on the same container answer differently after an install, and the one that is
  * stale is the one that decides a rule fails open.
  *
- * ⚠️ src/index.js STILL CARRIES A PRIVATE COPY of these two accessors (grep
- * `getConfluenceInstallState` there). It predates this module-level home by one commit
- * and could not be removed in this cut -- index.js was held by another writer (prime
- * directive 1). THE COPY IN index.js MUST BE DELETED and replaced with an import from
- * here; until it is, an install can be visible to one half of the app and not the other
- * for up to five minutes. Named loudly rather than quietly duplicated.
+ * THERE IS NO SECOND COPY ANY MORE (F-473). src/index.js carried a private pair of these
+ * accessors over its own module-level memo for one commit; it imports from here now, and
+ * test-harness/scripts/confluence-actions.test.mjs fails the build if a definition of
+ * `getConfluenceInstallState` reappears in index.js. Two memos of one fact meant an
+ * install could be visible to one half of the app and not the other for five minutes,
+ * and the stale half is the one that decides a rule fails open.
  *
  * TWO ACCESSORS, ONE MEMO, and the difference matters:
  *   getConfluenceInstallState() -- probes when the memo is cold. Callers that are ABOUT
@@ -772,6 +772,24 @@ export const getConfluenceInstallState = async ({ fresh = false, client = null }
   _installMemo = state;
   _installMemoAt = Date.now();
   return { ...state, cached: false };
+};
+
+/**
+ * WARM THE MEMO FROM A CALL THAT ALREADY ANSWERED THE QUESTION (F-473).
+ *
+ * The space picker lists spaces; a successful list IS a positive install probe, and a
+ * `confluence_unavailable` fault IS a negative one. Before F-473 that caller reached into
+ * index.js's private copy of the memo and assigned it; there is no private copy any more,
+ * so the ONE memo takes the note through this door instead of growing a second writer.
+ *
+ * Only an explicit `{ installed }` object is accepted -- a caller cannot record "unknown",
+ * because a cold memo already means that and a fabricated row would expire five minutes
+ * later as if it had been probed.
+ */
+export const noteConfluenceInstallState = (state) => {
+  if (!state || typeof state !== "object" || typeof state.installed !== "boolean") return;
+  _installMemo = { ...state };
+  _installMemoAt = Date.now();
 };
 
 /** Tests only -- a module-level memo outlives a test case otherwise. */

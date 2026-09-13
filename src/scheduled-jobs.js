@@ -302,7 +302,7 @@ export const setJobEnabled = async (id, enabled) => {
 };
 
 /**
- * `patchJobStatus` — THE EMERGENCY STOP IS A STATUS WRITE, NOT A RE-SAVE (F-536).
+ * `patchJobStatus` — THE EMERGENCY STOP IS A STATUS WRITE, NOT A RE-SAVE (F-536/F-537).
  *
  * A Virtual Administrator's pause button used to go through `saveJob`, which re-runs
  * `normalizeJob` over the WHOLE record. `normalizeJob` re-gates `agent.allowedActions`,
@@ -314,11 +314,25 @@ export const setJobEnabled = async (id, enabled) => {
  * posting. Fail-closed on the save is fail OPEN on the safety control, and the safety
  * control is the one that must not fail.
  *
- * The cure is a NARROWING: a status flip is not a configuration change and must not be
- * routed through the door that validates one. This writes `va.status.paused` and nothing
- * else. `agent`, `schedule`, `functions` and the rest of the `va` block are carried
- * through untouched — the row was gated WHEN IT WAS ARMED, and re-gating it at the
- * moment somebody tries to stop it is the whole defect.
+ * THE SECOND CONSEQUENCE OF THE SAME LINE (F-537). `normalizeJob` also applies
+ * `armingStamp`, which re-stamps `savedByRole` and moves `createdBy` to the SAVING
+ * account on every save. Pausing an admin-armed agent therefore silently DOWNGRADED it
+ * to "editor" and handed its ownership to whoever pressed the button — so every
+ * `confirm` action it was armed with would be refused at the next real save, and the
+ * ownership gate's answer about the row changed owner. Nobody could see it, because
+ * pause reported success.
+ *
+ * The cure is one NARROWING for both: a status flip is not a configuration change and
+ * must not be routed through the door that validates one. This writes `va.status.paused`
+ * and nothing else. `agent`, `schedule`, `functions`, the rest of the `va` block AND THE
+ * ARMING FACTS — `savedByRole`, `createdBy`, `firstCreatedBy` — are carried through
+ * untouched by the spread. The row was gated and armed WHEN IT WAS ARMED; re-deciding
+ * either at the moment somebody tries to stop it is the whole defect.
+ *
+ * THE INVARIANT, STATED SO IT CAN BE BROKEN LOUDLY: nothing on this path may reach
+ * `normalizeJob`, `armingStamp` or `saveJob`. `va-admin.test.mjs` asserts that as a
+ * source shape as well as a behaviour, because the next person to need "just one more
+ * field on the pause write" will reach for `saveJob` exactly as the first one did.
  *
  * IT STILL GOES THROUGH THE NORMAL WRITERS. `toIndexRow` + `writeJobIndex` + the record
  * key, in the order `setJobEnabled` uses, so the list and the record cannot disagree

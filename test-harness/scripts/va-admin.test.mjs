@@ -1297,6 +1297,10 @@ let agentId = null;
     va: { ...before.va, status: { ...before.va.status, paused: false } },
   };
   await storage.set(rowKey, armed);
+  // F-537 — the INDEX row carries the arming facts too, so the arrange plants them in
+  // BOTH places a real admin-armed save would have written them.
+  const idxBefore = (await storage.get("job_index")) || [];
+  await storage.set("job_index", idxBefore.map((r) => (r.id === agentId ? { ...r, createdBy: ARMER } : r)));
 
   // F-536 — THE PAUSE LANDS.
   const paused = await call("pauseVa", { jobId: agentId, reason: "posting nonsense" }, ADMIN);
@@ -1308,6 +1312,18 @@ let agentId = null;
   ok(afterPause && Array.isArray(afterPause.agent.allowedActions)
     && afterPause.agent.allowedActions.includes("get_pull_request"),
     `F-536: …with the gated action still on the row — a status flip never re-gates actions (got ${JSON.stringify(afterPause && afterPause.agent.allowedActions)})`);
+
+  /* F-537 — THE ARMING FACTS DO NOT MOVE.
+     `normalizeJob` applies `armingStamp`, which re-stamps `savedByRole` and moves
+     `createdBy` to the saving account. Routing a pause through it downgraded an
+     admin-armed agent to "editor" and re-owned it to whoever pressed the button, so
+     every `confirm` action it held would be refused at the next real save — invisibly,
+     because pause reported success. */
+  ok(afterPause && afterPause.savedByRole === "admin",
+    `F-537: pausing does not downgrade savedByRole (got ${JSON.stringify(afterPause && afterPause.savedByRole)})`);
+  ok(afterPause && afterPause.createdBy === ARMER,
+    `F-537: …and does not move createdBy to whoever pressed the button (got ${JSON.stringify(afterPause && afterPause.createdBy)})`);
+  ok(afterPause && afterPause.firstCreatedBy === ARMER, "F-537: …nor firstCreatedBy");
 
   // The pause is still a RECEIPT, not a silent write.
   const stTab = await call("getVaStatus", { jobId: agentId });
@@ -1324,6 +1340,18 @@ let agentId = null;
   ok(afterResume && Array.isArray(afterResume.agent.allowedActions)
     && afterResume.agent.allowedActions.includes("get_pull_request"),
     "F-536: …and the gated action survived the resume too");
+  ok(afterResume && afterResume.savedByRole === "admin" && afterResume.createdBy === ARMER,
+    `F-537: …with the arming facts still the armer's (got ${JSON.stringify(afterResume && { savedByRole: afterResume.savedByRole, createdBy: afterResume.createdBy })})`);
+
+  // AND THE INDEX ROW MOVED WITH THE RECORD. A status write that skipped the index
+  // writer would leave the Jobs/Agents list rendering a stale owner and a stale
+  // `updatedAt` while the record said something else.
+  const index = (await storage.get("job_index")) || [];
+  const idxRow = index.find((r) => r.id === agentId);
+  ok(idxRow && idxRow.createdBy === ARMER,
+    `F-537: the INDEX row carries the armer too (got ${JSON.stringify(idxRow && idxRow.createdBy)})`);
+  ok(idxRow && afterResume && idxRow.updatedAt === afterResume.updatedAt,
+    "F-537: …and the list and the record agree about updatedAt");
 
   /*
    * THE REAL SAVE DOOR IS UNCHANGED — the fix narrows the STATUS FLIP, never the gate.
@@ -1341,6 +1369,40 @@ let agentId = null;
     `F-536: a REAL save holding a product-gated action is still refused (got ${JSON.stringify(realSave).slice(0, 240)})`);
   ok(/confluence/i.test(String(realSave.error || "")),
     `F-536: …naming the CAUSE, as F-302 requires (got ${JSON.stringify(realSave.error)})`);
+
+  /*
+   * F-537 — THE SOURCE SHAPE, because the behaviour above is only half a mechanism.
+   *
+   * The assertions so far prove the row survives TODAY. What produced the defect in the
+   * first place was somebody needing "just one more field on the pause write" and
+   * reaching for `saveJob`, which is the only writer with a name that sounds right. The
+   * next person will reach for it too, and every assertion above would still pass if the
+   * pause were re-routed through it on an instance where nothing happens to be gated —
+   * the downgrade is silent by construction. So the RULE is asserted directly: the pause
+   * path does not touch a writer that normalises or re-arms.
+   */
+  const vaAdminSrc = await readFile(new URL("../../src/va-admin.js", import.meta.url), "utf8");
+  // The DEP TABLE, not a call site: the general writer is not reachable from this module
+  // at all, so there is nothing for the next "just one more field" to reach for.
+  ok(!/\n\s*saveJob:\s/.test(vaAdminSrc),
+    "F-537: va-admin.js has no `saveJob` dep — the whole-row writer is not reachable from the pause path");
+  ok(/\n\s*patchJobStatus:\s/.test(vaAdminSrc) && /deps\.patchJobStatus\s*\(/.test(vaAdminSrc),
+    "F-537: …and the status-only writer is the one it has, and the one it calls");
+
+  const jobsSrc = await readFile(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
+  const patchBody = jobsSrc.slice(jobsSrc.indexOf("export const patchJobStatus"));
+  const patchFn = patchBody.slice(0, patchBody.indexOf("\n};") + 3);
+  ok(patchFn.includes("patchJobStatus") && patchFn.length > 100 && patchFn.length < 2000,
+    `F-537 arrange: the patchJobStatus body was located (${patchFn.length} chars)`);
+  for (const forbidden of ["normalizeJob", "armingStamp", "saveJob("]) {
+    ok(!patchFn.includes(forbidden),
+      `F-537: patchJobStatus never reaches \`${forbidden}\` — a status flip re-decides neither the gate nor the arming`);
+  }
+  // …and it DOES go through the shared writers, so the index cannot drift from the record.
+  for (const required of ["toIndexRow", "writeJobIndex", "JOB_PREFIX"]) {
+    ok(patchFn.includes(required),
+      `F-537: …while still writing through \`${required}\`, like every other job writer`);
+  }
 }
 
 console.log(`\nva-admin.test.mjs: ${pass} passed, ${fail} failed`);

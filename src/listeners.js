@@ -1093,7 +1093,11 @@ export const executeListenerTask = async (params, taskId, { gateFacts = null, ex
  * Without a provided payload, issue updates synthesize a summary change and comments
  * use the issue's latest comment; neither proves a particular historical event matched.
  */
-export const testListener = async ({ listener, issueKey, eventType, syntheticEvent = null, deadline = Date.now() + 20000 }) => {
+export const testListener = async ({ listener, issueKey, eventType, syntheticEvent = null, deadline = Date.now() + 20000,
+  // F-302 — the SAME seam the two live run sites use. Without it a test run gated
+  // arity-1 and dropped every git action, so "Test with an issue" reported a rule that
+  // cannot do what the live delivery will do: the one thing a test must never do.
+  gateFacts = null, executors = {} }) => {
   const m = await idx();
   const ev = eventType && listener.events.includes(eventType) ? eventType : listener.events[0];
   const meta = getEvent(ev) || {};
@@ -1157,7 +1161,7 @@ export const testListener = async ({ listener, issueKey, eventType, syntheticEve
     type: "listener", source: "test", issueKey: ctx.issueKey || ctx.entityName || "(no issue)", fieldId: ev,
     ruleId: listener.id, ruleName: listener.name, ruleWorkflow: null, eventType: ev, mode: listener.mode,
     isValid: true, decision: "SKIP", reason: skipReason, executionTimeMs: 0,
-  } } : await runListener({ listener, eventType: ev, event, ctx: { ...ctx, jqlPending: Boolean(jql) }, deadline, forceSimulation: true, source: "test" });
+  } } : await runListener({ listener, eventType: ev, event, ctx: { ...ctx, jqlPending: Boolean(jql) }, deadline, forceSimulation: true, source: "test", gateFacts, executors });
   const entry = { ...out.log, testRun: true };
   await m.storeLog(entry);
   return { ...entry, skipped: out.skipped, gate: out.gate || null, eventUsed, testNote: testNotes.join(" ") };

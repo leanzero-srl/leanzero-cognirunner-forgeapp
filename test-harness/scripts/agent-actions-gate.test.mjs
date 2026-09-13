@@ -188,6 +188,10 @@ n++;
   ok(/buildAgentGateContext\(\{ \.\.\.gateFacts, triggerSource: null, savedByRole: job\.savedByRole \}\)/.test(jsrc),
     "a SCHEDULED JOB is not external (the app's own clock started it)");
   ok(/gate: agentGate, executors/.test(lsrc) && /gate: agentGate, executors/.test(jsrc), "…and both hand the context to runAgentTask");
+  // F-302 seam — a TEST run must gate exactly like the live delivery, or "Test with an
+  // issue" reports a rule that cannot do what the real run will do.
+  ok(/export const testListener = async \(\{[\s\S]*?gateFacts = null, executors = \{\}/.test(lsrc), "testListener takes the same gate seam");
+  ok(/source: "test", gateFacts, executors/.test(lsrc), "…and threads it into runListener");
 }
 
 console.log(`agent-actions gate: ${n} assertions passed`);

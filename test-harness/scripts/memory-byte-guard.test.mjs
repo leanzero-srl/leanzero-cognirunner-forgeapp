@@ -27,6 +27,7 @@ import storage from "../lib/mock-kvs.mjs";
 import {
   saveMemories, saveMemoryCandidate, serializedBytes, clampMemoryMeta, META_LIMITS,
   wouldRefuseNewMemory, loadMemories, MEMORIES_KEY, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_CONTENT_MAX,
+  MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
 } from "../../src/memories.js";
 
 let pass = 0, fail = 0;
@@ -190,6 +191,77 @@ const tight = buildStore(MEMORY_MAX_SERIALIZED_BYTES - probeContentBytes - 300);
 ok(wouldRefuseNewMemory(tight) === true,
   "the store-full probe includes its worst-case meta (a content-only probe would have fitted)");
 ok(wouldRefuseNewMemory([]) === false, "an empty store accepts a lesson");
+
+// ---------------------------------------------------------------------------
+// F-196 — `stored` is what saveMemories ANSWERED, on BOTH arms of saveMemoryCandidate.
+// Both arms used to hard-code `stored: true`, so a refused or faulted write came back as
+// a success carrying an id that exists nowhere. Every caller (addMemory, the distill task,
+// the runtime reinforce) branches on `stored`, so the lie propagated to all three.
+// F-197 — and a throw from `set` AFTER our own size check passed is a "write-fault", not
+// the platform cap: no byte deficit is invented for it.
+// ---------------------------------------------------------------------------
+
+// --- merge arm, store already OVER the platform ceiling ---
+const overCap = buildStore(MEMORY_PLATFORM_MAX_SERIALIZED_BYTES + 3000);
+const dupText = "the Rollback field customfield_10099 is required on release";
+overCap.push(row("dup", dupText, { reinforcements: 2 }));
+storage.__reset();
+storage.__seed(MEMORIES_KEY, overCap);
+const beforeMerge = JSON.stringify(load());
+const mergeRefused = await saveMemoryCandidate({ content: dupText, source: "user" });
+ok(mergeRefused.merged === true && mergeRefused.stored === false,
+  `F-196 merge arm: a refused reinforcement is merged:true / stored:FALSE (got ${JSON.stringify({ merged: mergeRefused.merged, stored: mergeRefused.stored })})`);
+ok(mergeRefused.id === "mdup", "the merge arm still names the real row it matched");
+ok(mergeRefused.reason === "platform-cap" && mergeRefused.bytesOver > 0,
+  `the refusal reason and deficit ride through (got ${JSON.stringify({ reason: mergeRefused.reason, bytesOver: mergeRefused.bytesOver })})`);
+ok(JSON.stringify(load()) === beforeMerge, "the store is byte-identical — the reinforcement was NOT recorded");
+ok(load().find((m) => m.id === "mdup").reinforcements === 2, "the stored reinforcement counter did not move");
+
+// --- new-row arm, store already OVER the platform ceiling ---
+storage.__reset();
+storage.__seed(MEMORIES_KEY, buildStore(MEMORY_PLATFORM_MAX_SERIALIZED_BYTES + 3000));
+const beforeNew = JSON.stringify(load());
+const newRefused = await saveMemoryCandidate({ content: "a brand new distinct lesson about sprint mapping", source: "test" });
+ok(newRefused.stored === false && newRefused.id === null,
+  `F-196 new-row arm: a refused write reports stored:false and NO id (got ${JSON.stringify({ stored: newRefused.stored, id: newRefused.id })})`);
+// (this one is caught EARLIER, by the admission guard's dry run, which is why the
+// hard-coded `stored: true` never showed here — the throwing-set case below is the one
+// that reaches saveMemories and used to come back a success.)
+ok(newRefused.reason === "bytes", `with the admission guard naming the reason (got ${JSON.stringify(newRefused.reason)})`);
+ok(JSON.stringify(load()) === beforeNew, "nothing was written");
+
+// --- both arms, with a THROWING storage.set on a write that passed our size check ---
+const small = [row("s1", "the deploy gate needs a QA signoff", { reinforcements: 1 })];
+ok(serializedBytes(small) < 2000, "the fault case is a SMALL write — nothing is near any limit");
+
+storage.__reset();
+storage.__seed(MEMORIES_KEY, small);
+storage.__failNextSet();
+const newFault = await saveMemoryCandidate({ content: "a wholly unrelated lesson about watchers", source: "fix" });
+ok(newFault.stored === false && newFault.id === null,
+  `F-196: a THROWING set on the new-row arm is stored:false with no id (got ${JSON.stringify({ stored: newFault.stored, id: newFault.id })})`);
+ok(newFault.reason === "write-fault",
+  `F-197: a throw after a passing pre-check is "write-fault", not "platform-cap" (got ${JSON.stringify(newFault.reason)})`);
+ok(newFault.bytesOver === undefined, "no byte deficit is invented for a write fault");
+ok(typeof newFault.error === "string" && newFault.error.length > 0, "the platform's own message is carried");
+ok(load().length === 1 && !load().some((m) => /watchers/.test(m.content)), "the faulted write left the store untouched");
+
+storage.__reset();
+storage.__seed(MEMORIES_KEY, small);
+storage.__failNextSet();
+const mergeFault = await saveMemoryCandidate({ content: "the deploy gate needs a QA signoff", source: "user" });
+ok(mergeFault.merged === true && mergeFault.stored === false && mergeFault.reason === "write-fault",
+  `F-196/F-197: a THROWING set on the merge arm is merged:true / stored:false / write-fault (got ${JSON.stringify({ merged: mergeFault.merged, stored: mergeFault.stored, reason: mergeFault.reason })})`);
+ok(load()[0].reinforcements === 1, "and the reinforcement really is absent from the store");
+
+// --- the SUCCESS paths still say stored:true (the fix must not refuse everything) ---
+storage.__reset();
+storage.__seed(MEMORIES_KEY, small);
+const okNew = await saveMemoryCandidate({ content: "a novel lesson about attachment uploads", source: "fix" });
+ok(okNew.stored === true && okNew.id && load().length === 2, "a healthy new write is still stored:true with an id that EXISTS");
+const okMerge = await saveMemoryCandidate({ content: "the deploy gate needs a QA signoff", source: "user" });
+ok(okMerge.merged === true && okMerge.stored === true && load().find((m) => m.id === "ms1").reinforcements === 2,
+  "a healthy merge is still stored:true and the counter moved");
 
 console.log(`\nmemory-byte-guard: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

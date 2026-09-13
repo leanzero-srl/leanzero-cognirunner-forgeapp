@@ -13,7 +13,7 @@
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import { readFileSync } from "node:fs";
-import { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MEMORY_CONTENT_MAX, MAX_MEMORIES, memoryCapRefusalMessage } from "../../src/memories.js";
+import { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MEMORY_CONTENT_MAX, MAX_MEMORIES, memoryCapRefusalMessage, memoryWriteFaultMessage } from "../../src/memories.js";
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -240,6 +240,27 @@ ok(!/substring\(0, 350\)/.test(asyncSrc) && /MEMORY_DISTILL_CONTENT_MAX = 350/.t
   ok(!/\(200 max\)/.test(idxSrc) && !/full of your own memories/.test(idxSrc),
     "index.js no longer carries a copy of the cap sentence or a retyped 200");
 }
+
+// === F-196/F-197: a FAULTED write is not a saved memory, and not a size problem ===
+// addMemory used to be handed `stored: true` for a write that threw, so the tab said
+// "Memory saved" for an id that exists nowhere; and when the refusal did surface, every
+// throw wore reason "platform-cap" with a fabricated 1-byte deficit, telling the admin to
+// bulk-delete memories because of a transient fault on a 1.4 KB write.
+reset([]);
+const filler = "the release checklist needs a signed-off rollback plan ".repeat(25); // ~1.4 KB
+ok(new TextEncoder().encode(JSON.stringify([{ content: filler }])).length > 1300, "the faulting write really is ~1.4 KB — nowhere near any limit");
+storage.__failNextSet();
+const faulted = await call("addMemory", { content: filler.substring(0, MEMORY_CONTENT_MAX), source: "user" });
+ok(faulted.success === false && faulted.stored === false,
+  `a faulted write is NOT reported as saved (got ${JSON.stringify({ success: faulted.success, stored: faulted.stored, id: faulted.id })})`);
+ok(faulted.id === undefined, "and carries no id for a row that does not exist");
+ok(faulted.reason === "write-fault", `the reason is "write-fault" (got ${JSON.stringify(faulted.reason)})`);
+ok(faulted.error === memoryWriteFaultMessage(), `the sentence is the shared write-fault one: "${faulted.error}"`);
+ok(!/\d/.test(faulted.error), `and contains NO byte number (got "${faulted.error}")`);
+ok(load().length === 0, "the store is untouched");
+// the very next add, with no fault armed, succeeds — "try again" is honest advice
+const retried = await call("addMemory", { content: filler.substring(0, MEMORY_CONTENT_MAX), source: "user" });
+ok(retried.success === true && load().length === 1, "the retry the sentence recommends actually works");
 
 console.log(`\nmemory-resolvers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -852,7 +852,7 @@ Error: ${defangFence(String(error).substring(0, 2000))}${recommendation ? `\nRec
       const mergeSave = await saveMemories(all);
       if (mergeSave.refused) {
         console.warn(`memory_distill: merge into ${target.id} NOT stored (${mergeSave.reason || "unknown"}) — the memory store refused the write`);
-        return { success: true, stored: false, reason: mergeSave.reason || "bytes", skipped: "memory store full" };
+        return { success: true, stored: false, reason: mergeSave.reason || "bytes", skipped: `memory not stored (${mergeSave.reason || "unknown"})` };
       }
       return { success: true, id: target.id, merged: true };
     }
@@ -878,8 +878,11 @@ Error: ${defangFence(String(error).substring(0, 2000))}${recommendation ? `\nRec
     // F-159: the memory store is full of higher-value rows and the distilled lesson
     // could not be written. Say so loudly — silently returning an id for a row that
     // does not exist is what this warn replaces.
-    console.warn(`memory_distill: lesson NOT stored (${saved.reason || "unknown"}) for rule ${ruleId || "?"} step ${stepName || "?"} — memory store is at capacity`);
-    return { success: true, stored: false, reason: saved.reason || "cap", skipped: "memory store full" };
+    // F-196/F-197: `stored:false` now also covers a write the store REFUSED or the platform
+    // FAULTED on, not only the admission cap — so the line says which, instead of asserting
+    // "at capacity" over a store that has plenty of room and a KVS blip.
+    console.warn(`memory_distill: lesson NOT stored (${saved.reason || "unknown"}) for rule ${ruleId || "?"} step ${stepName || "?"} — the memory store did not take the write`);
+    return { success: true, stored: false, reason: saved.reason || "cap", skipped: `memory not stored (${saved.reason || "unknown"})` };
   }
   if (Array.isArray(saved.evicted) && saved.evicted.length) {
     console.warn(`memory_distill: stored ${saved.id}, evicted ${saved.evicted.length} lower-value memor${saved.evicted.length === 1 ? "y" : "ies"}: ${saved.evicted.join(", ")}`);

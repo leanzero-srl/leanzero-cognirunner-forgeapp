@@ -628,10 +628,16 @@ const jaccard = (a, b) => {
  * against an existing memory reinforces it (reinforcements++, confidence =
  * max, updatedAt = now) instead of creating a near-duplicate.
  *
- * @returns {{ id: string|null, merged: boolean, stored: boolean, evicted: string[], reason?: string, error?: string }}
+ * @returns {{ id: string|null, merged: boolean, stored: boolean, evicted: string[], reason?: string, bytesOver?: number, error?: string }}
  *   stored:false means nothing was written: reason "cap" = the item cap with no
  *   AUTO row left to evict (hand-authored rows are never evicted — F-160/F-161/F-164),
- *   reason "bytes" = the serialized-size guard.
+ *   reason "bytes" = the serialized-size guard, reason "platform-cap" = the store is
+ *   already over Jira's own value limit (`bytesOver` says by how much), reason
+ *   "write-fault" = KVS threw on a write our measurement said would fit (F-197).
+ *   F-196: `stored` is derived from what saveMemories ANSWERED, on BOTH arms — a merge
+ *   that could not be written comes back `{ merged: true, stored: false }` with a real
+ *   id, a refused new row comes back `{ id: null, stored: false }`, and no caller is
+ *   ever handed an id for a row that was not persisted.
  */
 export const saveMemoryCandidate = async ({ content, source = "user", projectKey = null, confidence = 1.0, meta = null, createdBy = null } = {}) => {
   const clean = String(content || "").trim().substring(0, MEMORY_CONTENT_MAX);
@@ -665,7 +671,20 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
       // F-171: a reinforce writes NO new row, so it is not evidence that the store has
       // room. saveMemories re-evaluates the marker; it clears only if a newcomer would fit.
       const mergedSave = await saveMemories(memories);
-      return { id: m.id, merged: true, stored: true, evicted: mergedSave.evicted };
+      // F-196: a refusal is a write that DID NOT HAPPEN. The reinforcement, the widened
+      // scope and the un-archive above live only in the in-memory array; reporting
+      // `stored: true` for them told every caller the lesson had been recorded when the
+      // store still holds the old row. `merged` stays true — the candidate WAS matched to
+      // an existing memory, so there is a real id to name — but `stored` is false and the
+      // reason (and any deficit) rides along for the caller's sentence.
+      if (mergedSave.refused) {
+        return {
+          id: m.id, merged: true, stored: false, reason: mergedSave.reason || "bytes",
+          ...(mergedSave.bytesOver === undefined ? {} : { bytesOver: mergedSave.bytesOver }),
+          evicted: [], error: mergedSave.error || undefined,
+        };
+      }
+      return { id: m.id, merged: true, stored: true, evicted: mergedSave.evicted || [] };
     }
   }
 
@@ -711,7 +730,18 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
     };
   }
   const saved = await saveMemories(memories, { protectId: id });
-  return { id, merged: false, stored: true, evicted: saved.evicted };
+  // F-196: same rule for the new row — `stored: true` used to be hard-coded here, so a
+  // write the store refused (platform cap) or the platform faulted on was answered with
+  // an id that exists NOWHERE, and addMemory reported "Memory saved" for it. The id is
+  // dropped with the write it belonged to.
+  if (saved.refused) {
+    return {
+      id: null, merged: false, stored: false, reason: saved.reason || "bytes",
+      ...(saved.bytesOver === undefined ? {} : { bytesOver: saved.bytesOver }),
+      evicted: [], error: saved.error || undefined,
+    };
+  }
+  return { id, merged: false, stored: true, evicted: saved.evicted || [] };
 };
 
 /*

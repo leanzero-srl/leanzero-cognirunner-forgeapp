@@ -185,6 +185,42 @@ export const saveSkillInternal = async (meta = {}, content = {}) => {
   return { success: true, id, row };
 };
 
+/**
+ * Remove a skill — THE ONLY writer of the skill index for deletes.
+ *
+ * F-590: the index used to be written from here AND from the `deleteSkill`
+ * resolver in src/index.js, so the "builtins flip to disabled, never delete"
+ * invariant this module documents lived in a second file that could drift
+ * (and a counter-based skill epoch would have been wrong at the second home).
+ * Permission gating stays with the caller — this is the store, not the policy.
+ *
+ * @param {string} id      skill id
+ * @param {object} [opts]
+ * @param {string|null} [opts.who] acting accountId, for error-log context only
+ * @returns {Promise<{success: boolean, mode: "disabled"|"deleted", removed: number}>}
+ */
+export const deleteSkillRows = async (id, { who = null } = {}) => {
+  const index = (await storage.get(SKILL_INDEX_KEY)) || [];
+  const skill = index.find((s) => s.id === id);
+  if (skill?.builtin === true) {
+    // Builtins are shared, curated content: flip enabled:false so a future
+    // seed-version bump cannot resurrect a row an admin turned off.
+    const disabledRow = { ...skill, enabled: false, updatedAt: new Date().toISOString() };
+    await storage.set(SKILL_INDEX_KEY, index.map((s) => (s.id === id ? disabledRow : s)));
+    try {
+      const record = await storage.get(`${SKILL_PREFIX}${id}`);
+      if (record) await storage.set(`${SKILL_PREFIX}${id}`, { ...record, enabled: false });
+    } catch (e) {
+      console.error(`Failed to flag builtin skill record as disabled (actor ${who}):`, e);
+    }
+    return { success: true, mode: "disabled", removed: 0 };
+  }
+  await storage.delete(`${SKILL_PREFIX}${id}`);
+  const next = index.filter((s) => s.id !== id);
+  await storage.set(SKILL_INDEX_KEY, next);
+  return { success: true, mode: "deleted", removed: index.length - next.length };
+};
+
 // === Auto-matching ===========================================================
 
 // Common English + prompt-domain filler words that carry no matching signal.

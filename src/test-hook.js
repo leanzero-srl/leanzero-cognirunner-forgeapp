@@ -423,12 +423,11 @@ export async function testStateTrigger(req) {
     }
     if (body.action === "deleteSkill") {
       try {
-        const { SKILL_INDEX_KEY, SKILL_PREFIX } = await import("./skills.js");
-        const idx = (await storage.get(SKILL_INDEX_KEY)) || [];
-        const next = idx.filter((s) => s.id !== body.id);
-        await storage.set(SKILL_INDEX_KEY, next);
-        await storage.delete(SKILL_PREFIX + body.id);
-        return json(200, { success: true, removed: idx.length - next.length });
+        // F-590 — the skill index has ONE writer (src/skills.js). The hook
+        // used to hard-delete here, bypassing the builtin flip-to-disabled rule.
+        const { deleteSkillRows } = await import("./skills.js");
+        const r = await deleteSkillRows(body.id, { who: "test-hook" });
+        return json(200, { success: true, removed: r.removed, mode: r.mode });
       } catch (e) {
         return json(500, { error: String((e && e.message) || e) });
       }

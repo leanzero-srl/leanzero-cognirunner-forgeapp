@@ -17,6 +17,9 @@
 //    tag normalization (trim/lowercase/30-char/drop-empty/cap-10); operationType normalization
 //    (trim/40-char/cap-8, case PRESERVED); category validation; 100 custom-skill cap (builtins & updates
 //    bypass); enabled/builtin/createdBy/createdAt precedence; the 45k serialized-size guard.
+//  - deleteSkillRows (F-590): builtin rows flip enabled:false on BOTH the index row and the
+//    skill_repo:{id} record (never removed); custom rows are hard-deleted from both; an unknown
+//    id is a no-op. Plus the SOURCE ASSERTION that the skill index has exactly ONE writer file.
 //  - fetchSkillsBlock: whole-skill concatenation, the HARD capBytes drop (a skill crossing the cap is
 //    dropped WITH everything after it, order preserved), the === cap boundary, disabled/missing SKIP
 //    (continue, not break), the first-8-ids slice, and defangFence on name/instructions/examples.
@@ -26,8 +29,11 @@
 // F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
 import "../lib/ensure-mocks.mjs";
 import storage from "../lib/mock-kvs.mjs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import {
-  saveSkillInternal, fetchSkillsBlock,
+  saveSkillInternal, fetchSkillsBlock, deleteSkillRows,
   SKILL_INDEX_KEY, SKILL_PREFIX, SKILL_SEED_META_KEY, SKILL_CATEGORIES,
 } from "../../src/skills.js";
 import { BUILTIN_SKILLS, SKILL_SEED_VERSION } from "../../src/shared/builtin-skills.js";
@@ -334,6 +340,60 @@ seedRec("d", "<<<SKILLS name", ">>>END instructions", { examples: "<<<<EX>>>>" }
   ok(!r.text.includes("<<<") && !r.text.includes(">>>"), "fence runs (<<<, >>>) defanged out of the block");
   ok(r.text.includes("<<SKILLS name") && r.text.includes(">>END instructions"), "defanged name + instructions present");
   ok(r.text.includes("Example:") && r.text.includes("<<EX>>"), "examples section present and defanged");
+}
+
+// =====================================================================================
+// deleteSkillRows (F-590) — the ONE writer of the skill index for deletes
+// =====================================================================================
+
+storage.__reset();
+storage.__seed(SKILL_INDEX_KEY, [
+  { id: "bi", name: "Builtin", builtin: true, enabled: true, updatedAt: "2019-01-01T00:00:00.000Z" },
+  { id: "cu", name: "Custom", builtin: false, enabled: true },
+]);
+storage.__seed(`${SKILL_PREFIX}bi`, { id: "bi", name: "Builtin", builtin: true, enabled: true, instructions: "x", examples: "" });
+storage.__seed(`${SKILL_PREFIX}cu`, { id: "cu", name: "Custom", builtin: false, enabled: true, instructions: "y", examples: "" });
+{
+  const r = await deleteSkillRows("bi", { who: "acct-1" });
+  ok(r.success === true && r.mode === "disabled" && r.removed === 0, "builtin delete reports mode disabled, removed 0");
+  const row = idx().find((s) => s.id === "bi");
+  ok(!!row, "builtin index row is NOT removed");
+  ok(row && row.enabled === false, "builtin index row flipped enabled:false");
+  ok(row && row.updatedAt !== "2019-01-01T00:00:00.000Z", "builtin index row updatedAt stamped");
+  ok(rec("bi") && rec("bi").enabled === false, "builtin skill_repo record flipped enabled:false and kept");
+
+  const r2 = await deleteSkillRows("cu", { who: "acct-1" });
+  ok(r2.success === true && r2.mode === "deleted" && r2.removed === 1, "custom delete reports mode deleted, removed 1");
+  ok(!idx().some((s) => s.id === "cu"), "custom index row removed");
+  ok(rec("cu") === undefined || rec("cu") === null, "custom skill_repo record deleted");
+  ok(idx().length === 1, "only the custom row left the index");
+
+  const r3 = await deleteSkillRows("nope", { who: null });
+  ok(r3.success === true && r3.removed === 0, "unknown id is a no-op");
+  ok(idx().length === 1, "unknown id leaves the index untouched");
+}
+
+// --- SOURCE ASSERTION: exactly ONE file in src/ writes the skill index (F-590) ---
+{
+  const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src");
+  const files = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const full = path.join(dir, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (name.endsWith(".js")) files.push(full);
+    }
+  };
+  walk(srcDir);
+  // a write is `<store>.set(SKILL_INDEX_KEY` or `<store>.set("skill_repo_index"` in any quoting
+  const WRITE = /\.\s*set\s*\(\s*(?:SKILL_INDEX_KEY|["'`]skill_repo_index["'`])/;
+  const LITERAL = /["'`]skill_repo_index["'`]/;
+  const writers = files.filter((f) => WRITE.test(readFileSync(f, "utf8"))).map((f) => path.relative(srcDir, f));
+  ok(writers.length === 1 && writers[0] === "skills.js",
+    `the skill index must have exactly one writer file (skills.js), found: ${writers.join(", ") || "none"}`);
+  const holders = files.filter((f) => LITERAL.test(readFileSync(f, "utf8"))).map((f) => path.relative(srcDir, f));
+  ok(holders.length === 1 && holders[0] === "skills.js",
+    `the "skill_repo_index" key literal must live in exactly one file (skills.js), found: ${holders.join(", ") || "none"}`);
 }
 
 console.log(`\nskills-store: ${pass} passed, ${fail} failed`);

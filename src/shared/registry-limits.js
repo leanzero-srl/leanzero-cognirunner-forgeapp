@@ -556,6 +556,13 @@ export const VA_SHADOW_TICKS_MAX = 50;
  * by the door (which reports what it cut) and by the reader (which does not need to,
  * because nobody asked for the stored value). Read that helper for why the read side's
  * ceiling is anchored rather than flat.
+ *
+ * AND THE CEILING ITSELF IS `shadowReachableCeiling`, one function asked by BOTH (F-519).
+ * The two clamps stayed, because only the door reports; the ARITHMETIC did not. The door
+ * was still applying this constant flat, ahead of the shared clamp, so an agent with 600
+ * prepare receipts armed to 603 was cut to 500 by its next save — in the PERMISSIVE
+ * direction, releasing it from shadow mode 103 ticks early. Where the watch count cannot
+ * be read at all, the door keeps what is stored and says `shadow-watch-unknown`.
  */
 export const VA_SHADOW_UNTIL_TICK_MAX = 500;
 

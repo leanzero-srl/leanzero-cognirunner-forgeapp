@@ -18,13 +18,19 @@
  *
  * THE GATE IS `process.env.HARNESS_SECRET`, exactly like src/test-hook.js: development
  * and staging builds carry it, PRODUCTION NEVER DOES. It has ONE home in this file,
- * `harnessEnabled()`, and BOTH sides ask it on their FIRST statement — `harnessFaultArmed`
- * returns false and `armHarnessFault` returns `{ ok: false, reason: "harness-off" }`, both
- * before any storage call. So on a production deployment this module performs no KVS read
- * and no KVS write, and cannot change any outcome, no matter who imports it (F-517: the
- * arming side used to rely on its caller's Bearer check alone). That is asserted offline by
- * stubbing the env (async-handler-helpers.test.mjs counts KVS reads of the fault key and
- * expects zero, and counts KVS writes from arming both kinds and expects zero).
+ * `harnessEnabled()`, and ALL FOUR storage-touching exports ask it on their FIRST
+ * statement, before any storage call: `harnessFaultArmed` returns false,
+ * `armHarnessFault` and `disarmHarnessFault` return `{ ok: false, reason: "harness-off" }`,
+ * and `readHarnessFault` returns `null`. So on a production deployment this module performs
+ * no KVS read and no KVS write, and cannot change any outcome, no matter who imports it.
+ *
+ * THAT SENTENCE WAS FALSE TWICE. F-517 gated the arming side and the docblock went on
+ * claiming the whole-module property while `disarmHarnessFault` still issued an ungated
+ * DELETE and `readHarnessFault` an ungated GET — two of four exports, one of them a write.
+ * F-522 closed them. A file whose premise is "one home, one gate" cannot satisfy it in
+ * half its exports and say so in prose. Asserted offline by stubbing the env
+ * (async-handler-helpers.test.mjs counts every KVS operation on the fault key across all
+ * four exports and expects zero).
  *
  * SHAPE: `harness_fault:<kind>:<part>:<part>…`, value `{ count, armedAt }`, TTL 10 min so
  * an armed lever that is never consumed disarms itself. Every part goes through
@@ -88,10 +94,13 @@ export class HarnessFault extends Error {
 
 /**
  * THE gate, in ONE home. `process.env.HARNESS_SECRET` is set in development and staging
- * builds and NEVER in production, exactly as in src/test-hook.js. Both the consuming side
- * (`harnessFaultArmed`) and the arming side (`armHarnessFault`, F-517) ask this — and ask
- * it as their FIRST statement, before any storage call, so a production deployment performs
- * no KVS access through this module at all.
+ * builds and NEVER in production, exactly as in src/test-hook.js. ALL FOUR exports that
+ * touch storage ask this — `harnessFaultArmed` (consume), `armHarnessFault` (F-517),
+ * `disarmHarnessFault` and `readHarnessFault` (F-522) — and each asks it as its FIRST
+ * statement, before any storage call, so a production deployment performs no KVS access
+ * through this module at all. Adding a fifth storage-touching export means adding this
+ * line to it; the offline test counts operations, so a new one that forgets shows up as a
+ * non-zero count rather than as a comment nobody read.
  */
 export const harnessEnabled = () => Boolean(process.env.HARNESS_SECRET);
 
@@ -136,15 +145,31 @@ export const armHarnessFault = async (kind, parts, count) => {
   return { key, count: n };
 };
 
-/** Disarm. Idempotent: removing a lever that was never armed is a success. */
+/**
+ * Disarm. Idempotent: removing a lever that was never armed is a success.
+ *
+ * F-522 — GATED, like the other three. F-517 gated the arming side and left this one
+ * ungated, which made the docblock's "no KVS access through this module at all" false by
+ * two of four exports — and this one is a WRITE (a delete). The gap is the same
+ * defence-in-depth class F-517 named and its own scenario predicted: the "admin
+ * diagnostics" resolver that imports a lever to self-test it. Four exports, one
+ * predicate, asked first, before any storage call.
+ */
 export const disarmHarnessFault = async (kind, parts) => {
+  if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
   const key = harnessFaultKey(kind, ...parts);
   await storage.delete(key);
   return { key, disarmed: true };
 };
 
-/** What is left on the lever (the live driver polls this to prove consumption). */
+/**
+ * What is left on the lever (the live driver polls this to prove consumption).
+ *
+ * F-522 — GATED. `null` is the refusal, and it is the same answer the callers already
+ * handle: with no lever there is nothing on it. A production build reads nothing.
+ */
 export const readHarnessFault = async (kind, parts) => {
+  if (!harnessEnabled()) return null;
   const key = harnessFaultKey(kind, ...parts);
   return { key, value: (await storage.get(key)) || null };
 };

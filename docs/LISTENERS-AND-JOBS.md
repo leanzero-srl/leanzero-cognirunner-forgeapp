@@ -151,10 +151,77 @@ inspect both the saved rows and the indexed `errors` array before marking the ba
 | POST | `?resource=listeners&id=&action=enable\|disable\|test` | test: `{ issueKey, eventType, event? }` | state / simulated run |
 | GET/POST/PUT/DELETE | `?resource=jobs…` | same shapes | same |
 | POST | `?resource=jobs&id=&action=run\|preview` | preview: `{ cron, timeZone, count }` | `202 { taskId }` / next runs |
+| GET | `?resource=agents` / `&id=` | — | Virtual Administrators: list / one (status, caps, health, receipts) |
+| POST | `?resource=agents` | a VA record (`{ "mode": "va", "va": {...} }`) | created (201) or upserted (200) |
+| PUT | `?resource=agents&id=` | partial record (`va` merges) | updated |
+| DELETE | `?resource=agents&id=` | — | deleted |
+| GET | `?resource=agents&id=&part=drafts\|effects\|memory` | — | staged replies / verified effects / learned memory |
+| PUT | `?resource=agents&id=&part=memory` | `{ memory, constraints? }` | saved, with `clamped` when the cap cut it |
+| POST | `?resource=agents&id=&action=pause\|resume` | `{ reason? }` | the per-agent kill switch, plus a receipt |
+| POST | `?resource=agents&id=&action=tick\|post` | — | `202 { taskType, taskId, tickId }` |
+| POST | `?resource=agents&id=&action=approve\|reject` | `{ itemKey, stagedAt }` | a recorded verdict, `posted: false` |
 | GET | `?resource=tasks&id=<taskId>` | — | queued-run status + result |
 | GET | `?resource=logs[&ruleId=]` | — | execution logs (newest first) |
 | GET | `?resource=samples&eventType=` | — | last captured payload |
 | GET | `?resource=whoami` | — | token identity |
+
+### Virtual Administrators (`?resource=agents`)
+
+A Virtual Administrator is a scheduled job with `mode: "va"`, so this resource is a view
+over `?resource=jobs` filtered to that mode rather than a second store. The save goes
+through the same normalisation the Agents tab uses: project keys, service desks, queues,
+time zones and skill ids are checked against what this site actually has, an option the
+site does not have is dropped and the drop is reported in `refused[]`, the cadence becomes
+the schedule, the persona name becomes the job name, and any configuration change re-arms
+shadow mode. A record that cannot be accepted at all, such as a site-wide write scope,
+comes back as `400 { error, reason, refused }`.
+
+Tokens carry a role. Mint one per integration and give it the least it needs:
+
+| Role | What it may do on `?resource=agents` |
+|---|---|
+| viewer | nothing; the overview already names every agent on the site |
+| editor | list agents, read one agent's status, caps, health and tick receipts |
+| admin | everything above, plus drafts, effects, memory, create, update, delete, pause, resume, tick, post, approve, reject |
+
+A token minted before roles existed counts as admin, which is what such a token could
+already do here. The floors match the Agents tab exactly: a REST caller cannot do anything
+the tab cannot, and in particular a staged reply is an unsent message to a real person, so
+reading one is admin only.
+
+Neither `approve` nor `reject` posts anything. They record a human verdict on the ledger
+row while the agent is in shadow mode; the post phase is the only thing in the product that
+delivers a draft, and it does so behind its own gates. `approve` leaves the draft staged,
+`reject` drops it and re-queues the item so the agent gets another go at it. Send the
+`stagedAt` you read back with the draft: a tick between your read and your verdict can
+replace the draft, and a verdict on a draft nobody read is refused with `409
+draft_changed`.
+
+`tick` and `post` are a shortcut through the clock and not through a gate. They push the
+same task the scheduler pushes, behind the same five-minute claim, so a second press inside
+the same window is refused with `409 already_running`, and so is a press that collides with
+the scheduler's own firing. A paused or disabled agent refuses both by name.
+
+Refusals on this resource use the shape the rest of the surface uses: `error` is the
+sentence the Agents tab shows, `reason` is the machine-readable half to branch on, and a
+permission refusal adds `needsRole` and `hint`. The statuses are meaningful: 400 for a body
+to fix, 403 for a role, 404 for an agent that is not there or a job that is not an agent,
+409 for a state that refuses (paused, live, already running, superseded draft), 502 for a
+read or write this app could not complete. "There are no drafts" and "I could not read the
+drafts" never arrive as the same answer.
+
+The setup interview is not on this surface. It holds server-side state keyed by an account,
+and a token is not an account. The record it produces is exactly what `POST
+?resource=agents` takes, so nothing it configures is out of reach.
+
+```bash
+curl --fail-with-body "$RULES_API_URL?resource=agents&id=$AGENT&part=drafts" \
+  -H "Authorization: Bearer $RULES_API_TOKEN"
+curl --fail-with-body -X POST \
+  "$RULES_API_URL?resource=agents&id=$AGENT&action=reject" \
+  -H "Authorization: Bearer $RULES_API_TOKEN" -H 'Content-Type: application/json' \
+  --data '{"itemKey":"SUP-14","stagedAt":"2026-09-13T09:05:00.000Z","reason":"too formal"}'
+```
 
 Listener config (script mode):
 

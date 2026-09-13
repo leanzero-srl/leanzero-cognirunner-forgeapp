@@ -35,8 +35,10 @@ Jira Cloud instance.
 
 ## 1. What you're actually calling
 
-There is no CogniRunner REST API for *workflow* rules (Listeners and Scheduled Jobs have their
-own — see [Rules REST API](LISTENERS-AND-JOBS.md#rules-rest-api)). You are calling **Jira's** workflow API and placing a
+There is no CogniRunner REST API for *workflow* rules (Listeners, Scheduled Jobs and
+Virtual Administrators have their own, including `?resource=agents` for listing, saving,
+pausing and reviewing an agent's staged replies — see
+[Rules REST API](LISTENERS-AND-JOBS.md#rules-rest-api)). You are calling **Jira's** workflow API and placing a
 rule that names CogniRunner's Forge module:
 
 | Step | Endpoint |

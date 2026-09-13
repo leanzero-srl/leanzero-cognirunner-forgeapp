@@ -10,7 +10,11 @@ import { router } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
-import { EDITION_IDS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT } from "../../../../src/shared/edition.js";
+import {
+  EDITION_IDS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
+  MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL,
+  agentCapabilityCopy,
+} from "../../../../src/shared/edition.js";
 
 // Forge Custom UI runs in a sandboxed iframe — plain <a target="_blank"> links
 // are blocked (nothing happens on click). router.open() is the supported way to
@@ -32,6 +36,11 @@ const PROVIDER_OPTIONS = [
   { value: "anthropic", label: "Anthropic", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
   { value: "lmstudio", label: "LM Studio", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8h2v3H7zM11 8h2v3h-2zM15 8h2v3h-2z"/></svg>' },
   { value: "atlassian", label: "Atlassian (Forge LLM)", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.12 11.084c-.282-.302-.717-.284-.92.072L.123 23.305a.585.585 0 0 0 .523.847h8.46a.563.563 0 0 0 .523-.323c1.825-3.772.719-9.508-2.51-12.745zM11.434.323c-3.022 4.785-2.822 10.085-.831 14.066l4.079 8.157a.585.585 0 0 0 .523.323h8.46a.585.585 0 0 0 .523-.847S12.81 1.255 12.524.685c-.256-.51-.865-.518-1.09-.362z"/></svg>' },
+  /* CogniRunner Cloud AI - the LeanZero-MANAGED engine. The id and the label come from
+     the ONE home (src/shared/edition.js), never retyped, so a rename follows here. The
+     row is FILTERED OUT below on Standard: the managed engine is a Coder entitlement,
+     and offering a row a tenant can never pick is a worse answer than not offering it. */
+  { value: MANAGED_PROVIDER_ID, label: MANAGED_PROVIDER_LABEL, icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM10.5 16.5v-6l5 3z"/></svg>' },
   { value: "bedrock", label: "AWS Bedrock", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5z"/></svg>' },
 ];
 
@@ -54,6 +63,9 @@ const PROVIDER_HELP = {
   // AWS Bedrock: the API key is a plain bearer token (no SigV4). No endpoint URL —
   // the region (picked below) determines the Converse host. regionNeeded shows the picker.
   bedrock: { keyPlaceholder: "Bedrock API key (bearer token)", keyLabel: "Bedrock API Key", endpointNeeded: false, regionNeeded: true },
+  // The managed engine has NO key field and NO URL field: its credential is an encrypted
+  // Forge env var on LeanZero's side, never KVS and never something a tenant admin pastes.
+  [MANAGED_PROVIDER_ID]: { keyPlaceholder: "", keyLabel: "API Key", endpointNeeded: false, noKey: true },
 };
 
 // AWS Bedrock regions. Bedrock endpoints are region-specific and model availability
@@ -156,6 +168,18 @@ export default function OpenAIConfig({ invoke }) {
   // their own state so the shape is impossible to confuse again.
   const [usageSeats, setUsageSeats] = useState(null);
   const [forgeAllowance, setForgeAllowance] = useState(null);
+  /* CogniRunner Cloud AI (the managed engine). The backend reports a BOOLEAN and a
+     REASON CODE - never the key, never a prefix or a length. `managedReason` is one of
+     "managed" | "managed-key-missing" | "managed-disabled" and is rendered through
+     agentCapabilityCopy() so the wording lives in ONE home. Default to available:true
+     so an older backend that sends neither field does not black out a working row;
+     the row is Coder-only anyway, which is the gate that actually matters. */
+  const [managedAvailable, setManagedAvailable] = useState(true);
+  const [managedReason, setManagedReason] = useState("managed");
+  // The FIXED managed model list, from the backend when it sends one, else the shared
+  // home. Never OpenRouter's catalogue - the offer is a pricing decision.
+  const [managedModels, setManagedModels] = useState([...MANAGED_MODELS]);
+  const [managedDefaultModel, setManagedDefaultModel] = useState(MANAGED_DEFAULT_MODEL);
   const [usageConfirmReset, setUsageConfirmReset] = useState(false);
   const [usageResetting, setUsageResetting] = useState(false);
   // AWS Bedrock: region rides the base URL; ack is the Anthropic use-case gate; the
@@ -258,6 +282,7 @@ export default function OpenAIConfig({ invoke }) {
   const lmDevices = [...new Set((modelDetails || []).map((m) => m.device).filter(Boolean))];
   const isAtlassian = provider === "atlassian";
   const isBedrock = provider === "bedrock";
+  const isManaged = provider === MANAGED_PROVIDER_ID;
   // Tracks the provider whose config is currently being loaded, so a fast switch
   // doesn't let a slow in-flight load() overwrite the newer provider's state.
   const providerRef = useRef("atlassian");
@@ -336,6 +361,8 @@ export default function OpenAIConfig({ invoke }) {
         setListUnavailable(!!modelsResult.listUnavailable);
         setLockedModels(modelsResult.locked || []);
         if (modelsResult.edition) setEdition(modelsResult.edition);
+        if (typeof modelsResult.managedAvailable === "boolean") setManagedAvailable(modelsResult.managedAvailable);
+        if (modelsResult.managedReason) setManagedReason(modelsResult.managedReason);
         if (!modelsResult.isByok) setFactoryModel(modelsResult.currentModel || "");
       }
       if (modelKvs.success) {
@@ -344,6 +371,8 @@ export default function OpenAIConfig({ invoke }) {
         setModelClamped(!!modelKvs.clamped);
         setClampedFrom(modelKvs.savedModel || modelKvs.requestedModel || "");
         if (modelKvs.edition) setEdition(modelKvs.edition);
+        if (typeof modelKvs.managedAvailable === "boolean") setManagedAvailable(modelKvs.managedAvailable);
+        if (modelKvs.managedReason) setManagedReason(modelKvs.managedReason);
         if (!modelKvs.isByok) setFactoryModel(modelKvs.model || "");
       }
       // Agent model is a separate slot (COGNIRUNNER_AGENT_MODEL_{provider}); a backend
@@ -388,7 +417,10 @@ export default function OpenAIConfig({ invoke }) {
       if (usageResult && usageResult.success) {
         setUsage(usageResult.usage);
         setUsageSeats(usageResult.seats ?? null);
-        setForgeAllowance(usageResult.forgeLlm || null);
+        // `vendorAllowance` is the honest name for the same object and is what a new
+        // surface reads; `forgeLlm` is the compatibility alias. Prefer the new field,
+        // fall back to the old one so an older backend still fills the card.
+        setForgeAllowance(usageResult.vendorAllowance || usageResult.forgeLlm || null);
       }
 
       let initial = "atlassian";
@@ -397,6 +429,13 @@ export default function OpenAIConfig({ invoke }) {
         setActiveProvider(initial);
         setProvider(initial);
         setBedrockAck(!!providerResult.bedrockAck);
+        // Only overwrite the defaults when the backend actually SENT the field, so a
+        // deploy where the UI is ahead of the backend degrades to "available" rather
+        // than to a permanently disabled row.
+        if (typeof providerResult.managedAvailable === "boolean") setManagedAvailable(providerResult.managedAvailable);
+        if (providerResult.managedReason) setManagedReason(providerResult.managedReason);
+        if (Array.isArray(providerResult.managedModels) && providerResult.managedModels.length > 0) setManagedModels(providerResult.managedModels);
+        if (providerResult.managedDefaultModel) setManagedDefaultModel(providerResult.managedDefaultModel);
       }
       if (mcpsResult && mcpsResult.success) {
         setMcpEnabled(mcpsResult.enabled || { context7: false, webSearch: false, docReader: false, docWriter: false, localContext7: false, localWebSearch: false, localDocReader: false });
@@ -1239,13 +1278,31 @@ export default function OpenAIConfig({ invoke }) {
   // Forge LLM: the picker must exist on this provider too — it is where the Coder
   // edition's frontier models actually become selectable. (Before 1.3 the whole
   // picker was gated on isByok, so Forge LLM had no model control at all.)
-  const showModelPicker = isByok || isAtlassian;
+  const showModelPicker = isByok || isAtlassian || isManaged;
+  /* THE MANAGED ROW IS CODER-ONLY. On Standard it is not rendered at all - not as a
+     locked row, not as an upsell. The upgrade story for the managed engine is told by
+     the edition chip and the feature list; a provider a tenant cannot select has no
+     business sitting in the provider picker pretending to be a choice.
+     When the DEPLOYMENT has no engine (key missing, or LeanZero's kill switch) the row
+     stays visible but NON-SELECTABLE, carrying the remedy sentence from the one copy
+     home - because that is a vendor-side fact the admin should be able to read, not a
+     silent disappearance they would report as a bug. */
+  const managedCopy = agentCapabilityCopy(managedReason);
+  const providerOptions = PROVIDER_OPTIONS
+    .filter((o) => o.value !== MANAGED_PROVIDER_ID || isAdvanced)
+    .map((o) => {
+      if (o.value !== MANAGED_PROVIDER_ID || managedAvailable) return o;
+      return { ...o, disabled: true, meta: managedCopy.remedy, badges: [{ text: "Unavailable", tone: "unavailable" }] };
+    });
   // Defensive fallback: if the backend hasn't shipped the edition-aware model list
   // yet, still show Haiku selected and the frontier ids as locked rows on Forge LLM,
   // so the surface is never an empty "no models found" lie.
   const effectiveModels = models.length > 0
     ? models
-    : (isAtlassian ? [FORGE_LLM_DEFAULT] : []);
+    // The managed engine falls back to the shared MANAGED_MODELS home rather than to an
+    // empty "no models found" lie - but only while it is AVAILABLE. With no engine the
+    // list is genuinely empty and the disabled row above is what says why.
+    : (isAtlassian ? [FORGE_LLM_DEFAULT] : (isManaged && managedAvailable ? [...managedModels] : []));
   const effectiveLocked = lockedModels.length > 0
     ? lockedModels
     : (isAtlassian && !isAdvanced ? FORGE_LLM_FRONTIER : []);
@@ -1257,7 +1314,29 @@ export default function OpenAIConfig({ invoke }) {
   // sends `forgeLlm: null` for Standard and for BYOK tenants, but the provider gate
   // lives here too: a BYOK tenant must never be shown a vendor allowance, whatever
   // an older backend happens to return. Both conditions, on purpose.
-  const allowance = (isAtlassian && forgeAllowance && typeof forgeAllowance === "object") ? forgeAllowance : null;
+  /* F-545 — THE BACKEND OWNS THIS GATE, NOT A PROVIDER LITERAL HERE.
+     F-091 originally gated the card on `isAtlassian`, back when Forge LLM was the only
+     vendor-billed engine. The backend's rule is now
+     `VENDOR_BILLED_PROVIDERS.includes(provider) && edition === ADVANCED` (src/index.js
+     getAiUsage), and it expresses the answer by sending the allowance object or an
+     explicit `null`. A Coder tenant on CogniRunner Cloud AI therefore saw NO meter at
+     all and could ride to `level: "hard"` with the only surface that explains the pause
+     off screen.
+     So the gate is PRESENCE, not a provider name: a client-side list of vendor-billed
+     providers is a second copy of a rule the backend already owns, and the two are
+     guaranteed to disagree the next time an engine is added. `null` means "do not show
+     it", which is exactly what a BYOK or Standard tenant receives - F-091's guarantee is
+     kept, it is just enforced in the one place that knows. */
+  const allowance = (forgeAllowance && typeof forgeAllowance === "object") ? forgeAllowance : null;
+  /* `byEngine` says WHERE the money went inside the one ceiling. Two bars are drawn only
+     when BOTH engines actually spent something - a 0-width bar labelled with an engine
+     the tenant never used is noise, and the single total bar already tells that story. */
+  const byEngine = (allowance && allowance.byEngine && typeof allowance.byEngine === "object") ? allowance.byEngine : null;
+  const engineForge = Number(byEngine && byEngine.forgeLlm) || 0;
+  const engineManaged = Number(byEngine && byEngine.managed) || 0;
+  const showByEngine = engineForge > 0 && engineManaged > 0;
+  const engineTotal = engineForge + engineManaged;
+  const enginePct = (n) => (engineTotal > 0 ? Math.max(0, Math.min(100, Math.round((n / engineTotal) * 100))) : 0);
   // F-090: `pct` from forgeLlmAllowanceStatus (src/shared/usage-meter.js) is a
   // 0-1 FRACTION, not a percentage. Convert in exactly ONE place — the bar width
   // and every piece of copy read this, so the two can never disagree again.
@@ -1273,7 +1352,7 @@ export default function OpenAIConfig({ invoke }) {
         if (u && u.success) {
           setUsage(u.usage);
           setUsageSeats(u.seats ?? null);
-          setForgeAllowance(u.forgeLlm || null);
+          setForgeAllowance(u.vendorAllowance || u.forgeLlm || null);
         }
       }
     } catch (e) { /* ignore */ }
@@ -1323,7 +1402,7 @@ export default function OpenAIConfig({ invoke }) {
           {allowance && (
             <div className="usage-allowance">
               <div className="usage-prov-row">
-                <span className="usage-prov-name">Forge LLM allowance</span>
+                <span className="usage-prov-name">Vendor allowance</span>
                 <span className="usage-prov-bar">
                   <span
                     className={`usage-prov-fill usage-allow-fill lvl-${allowance.level || "ok"}`}
@@ -1334,9 +1413,30 @@ export default function OpenAIConfig({ invoke }) {
                   {money(allowance.estUsd)} of {money(allowance.allowanceUsd)} · {allowancePct}%
                 </span>
               </div>
+              {/* WHERE the money went, inside the ONE ceiling. Rendered only when both
+                  vendor-billed engines actually spent - solid saturated fills, white
+                  value text, never a faded tint and never a rail. */}
+              {showByEngine && (
+                <div className="usage-byengine">
+                  <div className="usage-prov-row">
+                    <span className="usage-prov-name">Atlassian Forge LLM</span>
+                    <span className="usage-prov-bar">
+                      <span className="usage-prov-fill usage-engine-fill eng-forge" style={{ width: `${enginePct(engineForge)}%` }} />
+                    </span>
+                    <span className="usage-prov-val">{money(engineForge)}</span>
+                  </div>
+                  <div className="usage-prov-row">
+                    <span className="usage-prov-name">CogniRunner Cloud AI</span>
+                    <span className="usage-prov-bar">
+                      <span className="usage-prov-fill usage-engine-fill eng-managed" style={{ width: `${enginePct(engineManaged)}%` }} />
+                    </span>
+                    <span className="usage-prov-val">{money(engineManaged)}</span>
+                  </div>
+                </div>
+              )}
               {allowance.level === "soft" && (
                 <p className="usage-allow-note lvl-soft">
-                  Most of this month&apos;s Forge LLM allowance is used.
+                  Most of this month&apos;s vendor allowance is used.
                 </p>
               )}
               {allowance.level === "hard" && (
@@ -1386,7 +1486,7 @@ export default function OpenAIConfig({ invoke }) {
                   onChange={handleSelectProvider}
                   // Mark the active provider right in the dropdown so it's always clear
                   // which one runs AI, even while browsing another's config.
-                  options={PROVIDER_OPTIONS.map((o) => o.value === activeProvider ? { ...o, label: `${o.label}  •  Active` } : o)}
+                  options={providerOptions.map((o) => o.value === activeProvider ? { ...o, label: `${o.label}  •  Active` } : o)}
                   disabled={savingProvider}
                 />
               </div>
@@ -1436,6 +1536,30 @@ export default function OpenAIConfig({ invoke }) {
             <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
               All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
             </p>
+            {/* CogniRunner Cloud AI. Two states, one copy home: AVAILABLE gets the data
+                note (the one thing an admin must know before switching - whose systems
+                see the content), UNAVAILABLE gets the remedy sentence from
+                agentCapabilityCopy(managedReason), which is the SAME sentence the
+                disabled picker row carries. Solid 2px border and solid chip; no tint,
+                no left rail. */}
+            {isManaged && (
+              <div className={"anim-rise mg-note" + (managedAvailable ? " mg-ok" : " mg-off")} style={{ marginTop: "8px" }}>
+                <span className="mg-chip">{managedAvailable ? "Managed engine" : "Unavailable"}</span>
+                {managedAvailable ? (
+                  <p className="mg-body">
+                    No API key and no endpoint to configure. LeanZero runs the engine and pays
+                    the provider bill; your site is metered against the vendor allowance below.
+                    <br />
+                    <strong>Data note:</strong> content sent to this engine is processed by
+                    OpenRouter and Anthropic under LeanZero&apos;s account.
+                  </p>
+                ) : (
+                  <p className="mg-body">
+                    <strong>{managedCopy.title}.</strong> {managedCopy.remedy}
+                  </p>
+                )}
+              </div>
+            )}
             {isAtlassian && (
               <div className="anim-rise" style={{ marginTop: "8px", padding: "8px 10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
                 <strong>Atlassian-hosted Claude (Forge LLMs, Preview).</strong> No API key and no
@@ -1720,8 +1844,9 @@ export default function OpenAIConfig({ invoke }) {
             );
           })()}
 
-          {/* API Key Input — hidden entirely for Forge LLM (no key exists) */}
-          {!isAtlassian && (
+          {/* API Key Input — hidden entirely for Forge LLM AND for the managed engine
+              (neither has a key a tenant admin could paste). */}
+          {!isAtlassian && !isManaged && (
           <div style={{ marginBottom: "16px" }}>
             <label style={{ display: "flex", alignItems: "center", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
               {pHelp.keyLabel}
@@ -1889,7 +2014,12 @@ export default function OpenAIConfig({ invoke }) {
                             ...effectiveModels.map((m) => ({
                               value: m,
                               label: m,
-                              badges: m === recommendedModel ? [{ text: "recommended", tone: "info" }] : undefined,
+                              // On the managed engine the fixed list has a DEFAULT rather than a
+                              // recommendation - it is the id the backend clamps an unknown saved
+                              // model back to (clampManagedModel), so the picker says which one.
+                              badges: (isManaged && m === managedDefaultModel)
+                                ? [{ text: "default", tone: "info" }]
+                                : (m === recommendedModel ? [{ text: "recommended", tone: "info" }] : undefined),
                             })),
                             ...effectiveLocked
                               .filter((m) => !effectiveModels.includes(m))
@@ -1985,7 +2115,28 @@ export default function OpenAIConfig({ invoke }) {
                   Agent model
                 </label>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  {isAtlassian ? (
+                  {isManaged ? (
+                    /* The managed engine answers frontierOnly:true, and every id in
+                       MANAGED_MODELS already IS a frontier model - so this is the same
+                       fixed list as the rule model above, never a free-text id. There is
+                       no locked row here: a Standard tenant cannot reach this provider at
+                       all, which is the honest boundary and the one the picker renders. */
+                    <div style={{ flex: 1, maxWidth: "320px" }}>
+                      <CustomSelect
+                        value={agentModel}
+                        onChange={setAgentModel}
+                        placeholder="Select an agent model..."
+                        searchable={false}
+                        ariaLabel="Agent model"
+                        disabled={!managedAvailable}
+                        options={(managedModels || []).map((m) => ({
+                          value: m,
+                          label: m,
+                          badges: m === managedDefaultModel ? [{ text: "default", tone: "info" }] : undefined,
+                        }))}
+                      />
+                    </div>
+                  ) : isAtlassian ? (
                     <div style={{ flex: 1, maxWidth: "320px" }}>
                       <CustomSelect
                         value={agentModel}
@@ -2019,6 +2170,7 @@ export default function OpenAIConfig({ invoke }) {
                       || !(agentModel || "").trim()
                       || (agentModel || "").trim() === savedAgentModel
                       || (isAtlassian && !isAdvanced)
+                      || (isManaged && !managedAvailable)
                     }
                   >
                     Save

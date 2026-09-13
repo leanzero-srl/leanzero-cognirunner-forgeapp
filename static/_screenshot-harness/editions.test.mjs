@@ -44,11 +44,19 @@ let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
 
-async function openAdmin(browser, theme = "light", standard = false, unlicensed = false) {
+/* `extra` is a plain bag of window.__FLAG__ values set before mount (the managed-engine
+   knobs: __MANAGED_MISSING__, __MANAGED_DISABLED__, __MANAGED_SPEND__). Keeping it a bag
+   rather than more positional booleans is what stopped this signature growing a fifth and
+   sixth flag nobody can read at the call site. */
+async function openAdmin(browser, theme = "light", standard = false, unlicensed = false, extra = {}) {
   const root = ensureFreshBuildShot("admin-panel"); // F-125: never serve a bundle older than src/
   const { s, port } = await serve(root);
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
-  await ctx.addInitScript(([th, std, unl]) => { window.__SHOT__ = "admin"; window.__THEME__ = th; if (std) window.__STANDARD__ = true; if (unl) window.__UNLICENSED__ = true; }, [theme, standard, unlicensed]);
+  await ctx.addInitScript(([th, std, unl, ex]) => {
+    window.__SHOT__ = "admin"; window.__THEME__ = th;
+    if (std) window.__STANDARD__ = true; if (unl) window.__UNLICENSED__ = true;
+    for (const [k, v] of Object.entries(ex || {})) window[k] = v;
+  }, [theme, standard, unlicensed, extra]);
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e && e.message)));
@@ -81,6 +89,10 @@ async function pickForgeLlm(page) {
     `E0 mock feature ids equal ADVANCED_FEATURES ids (got ${JSON.stringify(mockIds)})`);
   ok(mockIds.length > 0, "E0 mock actually emits features");
   // F-077: seats and forgeLlm are SIBLINGS of usage on the resolver result.
+  /* F-545: the allowance only EXISTS for a vendor-billed ACTIVE provider, so the shape
+     assertions below have to ask as one. The default mock tenant is Anthropic BYOK and
+     correctly gets `null` - which is asserted separately, right after. */
+  globalThis.window.__PROVIDER__ = "atlassian";
   const u = await invoke("getAiUsage");
   ok(u.seats !== undefined, "E0 getAiUsage mock puts seats at the result root");
   ok(u.forgeLlm !== undefined, "E0 getAiUsage mock puts forgeLlm at the result root");
@@ -103,11 +115,29 @@ async function pickForgeLlm(page) {
     ok(real.allowanceUsd === allowanceUsdForSeats(u.seats),
       "E0 mock seats and allowance agree via the shared seat rule");
   }
+  /* F-545: `vendorAllowance` is the honest name for the SAME object and is what a new
+     surface reads. Both keys must carry it, or a reader picks the one that is dead. */
+  ok(JSON.stringify(u.vendorAllowance) === JSON.stringify(u.forgeLlm),
+    "E0 vendorAllowance and forgeLlm are the same allowance object");
+  ok(u.vendorAllowance && typeof u.vendorAllowance.byEngine === "object",
+    "E0 the allowance carries byEngine so a panel can say where the money went");
   /* F-091: Standard gets an explicit null — the value the backend now sends. */
   globalThis.window.__STANDARD__ = true;
   const uStd = await invoke("getAiUsage");
   ok(uStd.forgeLlm === null, `E0 getAiUsage returns forgeLlm: null on Standard (got ${JSON.stringify(uStd.forgeLlm)})`);
+  ok(uStd.vendorAllowance === null, "E0 vendorAllowance is null on Standard too");
   globalThis.window.__STANDARD__ = false;
+  /* F-545: a BYOK-active Coder tenant pays its own bill and gets an explicit null on
+     BOTH keys — this is the case whose client-side literal gate the fix removed. */
+  globalThis.window.__PROVIDER__ = "anthropic";
+  const uByok = await invoke("getAiUsage");
+  ok(uByok.vendorAllowance === null && uByok.forgeLlm === null,
+    "E0 a BYOK-active Coder tenant gets no allowance from the backend");
+  /* ...and the managed engine, being vendor-billed, DOES get one. */
+  globalThis.window.__PROVIDER__ = "managed";
+  const uMgd = await invoke("getAiUsage");
+  ok(uMgd.vendorAllowance !== null, "E0 the managed engine is vendor-billed and gets an allowance");
+  globalThis.window.__PROVIDER__ = undefined;
   // The frontier/default ids the mock serves are the shared ones, not a copy.
   const m = await invoke("getOpenAIModels", { provider: "atlassian" });
   ok((m.models || []).includes(FORGE_LLM_DEFAULT) && m.currentModel === FORGE_LLM_DEFAULT,
@@ -267,20 +297,15 @@ try {
       ok(await page.locator(".usage-allowance").count() === 0, "E1 no allowance row while the provider is BYOK");
 
       await pickForgeLlm(page);
-      // allowance meter — only now, on Forge LLM
-      ok(await page.locator(".usage-allowance").count() === 1, "E1 Forge LLM allowance row renders");
-      const allowText = await page.locator(".usage-allowance .usage-prov-val").innerText();
-      ok(allowText.includes("of $200"), "E1 allowance shows est of allowance");
-      /* F-090: the percentage is the real one. `pct` is a fraction (0.462) and the
-         panel must render 46%, not the 0% a bare Math.round produced. */
-      ok(allowText.includes("46%"), `E1 allowance row renders the real percentage (got "${allowText}")`);
-      ok(!/\b0%/.test(allowText), `E1 allowance row is not the 0% fraction bug (got "${allowText}")`);
-      ok(await page.locator(".usage-allow-fill.lvl-ok").count() === 1, "E1 allowance bar at the ok level");
-      const barW = await page.locator(".usage-allow-fill").first().evaluate((el) => el.style.width);
-      ok(barW === "46%", `E1 allowance bar width matches the percentage (got ${barW})`);
+      /* F-545: the allowance follows the ACTIVE provider, because that is what the
+         getAiUsage resolver reads. BROWSING Forge LLM in the picker does not refetch
+         usage and must NOT conjure a meter - this tenant is still Anthropic-active and
+         still pays its own bill. The meter's own assertions moved to E1b, which opens
+         the panel as a genuinely Forge-LLM-active tenant. */
+      ok(await page.locator(".usage-allowance").count() === 0,
+        "E1 browsing Forge LLM does not show an allowance to a BYOK-ACTIVE tenant");
       const body = await page.locator(".container").innerText();
       ok(body.includes("Sonnet 5 and Opus 5 unlocked."), "E1 unlocked notice on Coder");
-      ok(body.includes("Monthly allowance: 46% used."), "E1 notice names the allowance percentage");
       ok(body.includes("Used by Coder and Virtual Administrators."), "E1 agent-model help text");
       ok(!body.includes("upgrade in Jira"), "E1 no upgrade prompt on Coder");
       ok(await page.locator(".dropdown-item-locked").count() === 0, "E1 no locked rows on Coder (panel closed)");
@@ -352,6 +377,38 @@ try {
     } catch (e) { fail++; console.log("  ✗ E2 threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
+  /* ---------------- E1b — a Forge-LLM-ACTIVE Coder tenant: the meter ------------
+     F-090's numbers (the 0-1 fraction rendered as 46%, the bar width, the notice copy)
+     and F-091's "only a vendor-billed engine gets a meter" both live here, because
+     after F-545 the meter follows the ACTIVE provider rather than the browsed one. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E1b Forge-LLM-active Coder tenant (${theme})`);
+    const env = await openAdmin(browser, theme, false, false, { __PROVIDER__: "atlassian" });
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      ok(await page.locator(".usage-allowance").count() === 1, "E1b the Forge LLM allowance row renders");
+      const allowText = await page.locator(".usage-allowance .usage-prov-val").innerText();
+      ok(allowText.includes("of $200"), "E1b allowance shows est of allowance");
+      /* F-090: `pct` is a fraction (0.462) and the panel must render 46%, not the 0%
+         a bare Math.round produced. */
+      ok(allowText.includes("46%"), `E1b allowance renders the real percentage (got "${allowText}")`);
+      ok(!/\b0%/.test(allowText), `E1b allowance is not the 0% fraction bug (got "${allowText}")`);
+      ok(await page.locator(".usage-allow-fill.lvl-ok").count() === 1, "E1b allowance bar at the ok level");
+      const barW = await page.locator(".usage-allow-fill").first().evaluate((el) => el.style.width);
+      ok(barW === "46%", `E1b allowance bar width matches the percentage (got ${barW})`);
+      /* Forge LLM alone: one engine spent, so there is NO per-engine split. A 0-width
+         bar for an engine the tenant never used is noise, not information. */
+      ok(await page.locator(".usage-byengine").count() === 0,
+        "E1b no per-engine split when only one engine spent");
+      const body = await page.locator(".container").innerText();
+      ok(body.includes("Monthly allowance: 46% used."), "E1b notice names the allowance percentage");
+      await shot(page, `E1b-forge-active-${theme}`);
+      ok(env.errors.length === 0, "E1b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  \u2717 E1b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
   /* ---------------- E3 — UNLICENSED install: the chip must still say STANDARD ----
      F-106. A live install with no license object returns
      checkLicense -> { isActive: null, edition: "standard", label: "Standard", source: "none" }.
@@ -381,6 +438,203 @@ try {
       ok(env.errors.length === 0, "E3 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ E3 threw: " + e.message.split("\n")[0]); }
     await close(env);
+  }
+
+  /* ================= E4 — CogniRunner Cloud AI, the MANAGED engine ==============
+     Plan 2.3/3.17. The managed engine is a Coder entitlement with no key and no URL:
+     LeanZero runs it and pays the provider bill. Four things must hold, and each one
+     is a defect this suite has to be able to see:
+       a) Standard NEVER sees the row at all (not even as a locked upsell row).
+       b) Coder + available: the row is selectable, there is NO key field and NO URL
+          field, and the model picker offers exactly MANAGED_MODELS with the default
+          marked.
+       c) Coder + the deployment has no engine: the row is present but NON-SELECTABLE
+          and carries the EXACT sentence from agentCapabilityCopy(reason) - imported
+          from the one home, never retyped here, so a reworded remedy fails loudly
+          instead of drifting.
+       d) The allowance card is "Vendor allowance" and splits into two SOLID bars when
+          both vendor-billed engines spent. Colours are read COMPUTED, per theme. */
+  {
+    const { MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL, agentCapabilityCopy } =
+      await import("../../src/shared/edition.js");
+
+    const openProviderPicker = async (page) => {
+      await page.locator(".dropdown-trigger").first().click();
+      await page.waitForTimeout(200);
+    };
+    const managedRow = (page) => page.locator(".dropdown-item", { hasText: MANAGED_PROVIDER_LABEL }).first();
+
+    // ---- E4a Standard: the row does not exist -----------------------------
+    for (const theme of ["light", "dark"]) {
+      console.log(`E4a managed row absent on Standard (${theme})`);
+      const env = await openAdmin(browser, theme, true);
+      const { page } = env;
+      try {
+        await tab(page, "Settings");
+        await page.waitForTimeout(400);
+        await openProviderPicker(page);
+        ok(await page.locator(".dropdown-item", { hasText: MANAGED_PROVIDER_LABEL }).count() === 0,
+          "E4a Standard is offered no CogniRunner Cloud AI row");
+        // and not as a locked/disabled upsell row either
+        ok(await page.locator(".dropdown-item.dropdown-item-locked", { hasText: MANAGED_PROVIDER_LABEL }).count() === 0,
+          "E4a Standard is not shown a locked managed row");
+        await page.keyboard.press("Escape");
+        await shot(page, `E4a-standard-no-managed-${theme}`);
+        ok(env.errors.length === 0, "E4a no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  ✗ E4a threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+
+    // ---- E4b Coder + available: selectable, no key, no URL, models listed --
+    for (const theme of ["light", "dark"]) {
+      console.log(`E4b managed selectable on Coder (${theme})`);
+      const env = await openAdmin(browser, theme, false);
+      const { page } = env;
+      try {
+        await tab(page, "Settings");
+        await page.waitForTimeout(400);
+        await openProviderPicker(page);
+        const row = managedRow(page);
+        ok(await row.count() === 1, "E4b Coder is offered the CogniRunner Cloud AI row");
+        ok(await page.locator(".dropdown-item.dropdown-item-locked", { hasText: MANAGED_PROVIDER_LABEL }).count() === 0,
+          "E4b an available managed row is not disabled");
+        await row.click();
+        await page.waitForTimeout(600);
+
+        // NO key field and NO URL field on this provider.
+        ok(await page.locator("input[type=password]").count() === 0,
+          "E4b the managed engine shows no API key field");
+        const body = await page.locator(".container").innerText();
+        ok(!/Azure Endpoint|LM Studio Public URL/.test(body),
+          "E4b the managed engine shows no endpoint/URL field");
+
+        // The one-line data note.
+        ok(/processed by\s+OpenRouter and Anthropic under LeanZero/i.test(body.replace(/\s+/g, " ")),
+          "E4b the data note names OpenRouter and Anthropic under LeanZero's account");
+
+        // Solid violet chip, per theme, read COMPUTED — never a faded tint.
+        const chip = page.locator(".mg-note.mg-ok .mg-chip").first();
+        ok(await chip.count() === 1, "E4b the available managed note carries a solid chip");
+        const chipBg = await chip.evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(chipBg === (theme === "dark" ? "rgb(139, 92, 246)" : "rgb(124, 58, 237)"),
+          `E4b managed chip violet per theme (got ${chipBg})`);
+        ok(await chip.evaluate((el) => getComputedStyle(el).opacity) === "1",
+          "E4b managed chip is solid, not faded");
+        // The mandate: no left accent rail anywhere on this note.
+        const rail = await page.locator(".mg-note").first().evaluate((el) => {
+          const cs = getComputedStyle(el);
+          return { l: cs.borderLeftWidth, t: cs.borderTopWidth };
+        });
+        ok(rail.l === rail.t, `E4b the managed note has no left accent rail (l=${rail.l} t=${rail.t})`);
+
+        // Model picker: exactly MANAGED_MODELS, with the default marked.
+        await page.locator(".dropdown-trigger").nth(1).click();
+        await page.waitForTimeout(250);
+        const items = await page.locator(".dropdown-panel .dropdown-item .dropdown-item-name").allInnerTexts();
+        ok(JSON.stringify(items.map((t) => t.trim())) === JSON.stringify(MANAGED_MODELS),
+          `E4b the model picker lists exactly MANAGED_MODELS (got ${JSON.stringify(items)})`);
+        const dflt = page.locator(".dropdown-panel .dropdown-item", { hasText: MANAGED_DEFAULT_MODEL }).first();
+        ok((await dflt.locator(".dropdown-item-badge").count()) === 1,
+          "E4b the default managed model is marked with a badge");
+        ok((await dflt.locator(".dropdown-item-badge").innerText()).trim().toLowerCase() === "default",
+          "E4b the badge on the default managed model reads 'default'");
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(200);
+
+        // Agent model on this provider: a CustomSelect with the SAME list, not free text.
+        const agentSel = page.locator('[aria-label="Agent model"]');
+        ok(await agentSel.count() >= 1, "E4b an agent model control exists on the managed engine");
+        const agentIsInput = await page.locator('input[aria-label="Agent model"]').count();
+        ok(agentIsInput === 0, "E4b the managed agent model is a CustomSelect, never a free-text input");
+        await shot(page, `E4b-managed-available-${theme}`);
+        ok(env.errors.length === 0, "E4b no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  ✗ E4b threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+
+    // ---- E4c Coder + no engine on the deployment: disabled + EXACT copy ----
+    for (const reasonFlag of ["__MANAGED_MISSING__", "__MANAGED_DISABLED__"]) {
+      const reason = reasonFlag === "__MANAGED_MISSING__" ? "managed-key-missing" : "managed-disabled";
+      const copy = agentCapabilityCopy(reason);
+      for (const theme of ["light", "dark"]) {
+        console.log(`E4c managed unavailable (${reason}, ${theme})`);
+        const env = await openAdmin(browser, theme, false, false, { [reasonFlag]: true });
+        const { page } = env;
+        try {
+          await tab(page, "Settings");
+          await page.waitForTimeout(400);
+          await openProviderPicker(page);
+          const row = managedRow(page);
+          ok(await row.count() === 1, `E4c the managed row is still shown when ${reason}`);
+          ok(await row.evaluate((el) => el.classList.contains("dropdown-item-locked")),
+            `E4c the managed row is NON-selectable when ${reason}`);
+          ok(await row.getAttribute("aria-disabled") === "true",
+            `E4c the managed row is aria-disabled when ${reason}`);
+          // THE EXACT sentence, from the one copy home.
+          const meta = (await row.locator(".dropdown-item-meta").innerText()).trim();
+          ok(meta === copy.remedy,
+            `E4c the disabled managed row carries the exact ${reason} remedy (got "${meta.slice(0, 60)}…")`);
+          // Solid red "Unavailable" badge, computed, per theme.
+          const badge = row.locator(".dropdown-item-badge").first();
+          const bBg = await badge.evaluate((el) => getComputedStyle(el).backgroundColor);
+          ok(bBg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"),
+            `E4c the unavailable badge is solid red per theme (got ${bBg})`);
+          // Clicking it changes nothing.
+          const before = await page.locator(".dropdown-trigger").first().innerText();
+          await row.dispatchEvent("click");
+          await page.waitForTimeout(200);
+          ok(before === await page.locator(".dropdown-trigger").first().innerText(),
+            `E4c clicking the disabled managed row does not switch provider (${reason})`);
+          await page.keyboard.press("Escape");
+          await shot(page, `E4c-managed-${reason}-${theme}`);
+          ok(env.errors.length === 0, "E4c no page errors: " + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  ✗ E4c threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
+    }
+
+    // ---- E4d the allowance card: "Vendor allowance" + two solid bars -------
+    for (const theme of ["light", "dark"]) {
+      console.log(`E4d vendor allowance, both engines (${theme})`);
+      /* F-545's actual defect shape: a Coder tenant whose ACTIVE provider IS the managed
+         engine. That tenant used to see no meter at all and could ride to level "hard"
+         with the only surface that explains the pause off screen. */
+      const env = await openAdmin(browser, theme, false, false, { __PROVIDER__: "managed", __MANAGED_SPEND__: 48.6 });
+      const { page } = env;
+      try {
+        await tab(page, "Settings");
+        await page.locator(".usage-card").waitFor({ timeout: 10000 });
+
+        const card = page.locator(".usage-allowance").first();
+        ok(await card.count() === 1, "E4d the allowance card is shown on the managed engine");
+        /* innerText, not textContent: `.usage-prov-name` carries text-transform:capitalize,
+           so the rendered string is "Vendor Allowance". Compare case-insensitively rather
+           than asserting the CSS-transformed casing, which is a styling choice. */
+        ok((await card.locator(".usage-prov-name").first().innerText()).trim().toLowerCase() === "vendor allowance",
+          "E4d the allowance card is titled 'Vendor allowance'");
+
+        const split = page.locator(".usage-byengine").first();
+        ok(await split.count() === 1, "E4d the per-engine split is rendered when both engines spent");
+        const names = await split.locator(".usage-prov-name").allInnerTexts();
+        ok(JSON.stringify(names.map((n) => n.trim())) === JSON.stringify(["Atlassian Forge LLM", "CogniRunner Cloud AI"]),
+          `E4d both engines are named (got ${JSON.stringify(names)})`);
+        ok(await split.locator(".usage-engine-fill").count() === 2, "E4d exactly two engine bars");
+
+        const fBg = await split.locator(".eng-forge").evaluate((el) => getComputedStyle(el).backgroundColor);
+        const mBg = await split.locator(".eng-managed").evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(fBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(37, 99, 235)"), `E4d Forge LLM bar hue per theme (got ${fBg})`);
+        ok(mBg === (theme === "dark" ? "rgb(139, 92, 246)" : "rgb(124, 58, 237)"), `E4d managed bar hue per theme (got ${mBg})`);
+        for (const [nm, sel] of [["forge", ".eng-forge"], ["managed", ".eng-managed"]]) {
+          ok(await split.locator(sel).evaluate((el) => getComputedStyle(el).opacity) === "1",
+            `E4d the ${nm} bar is solid, not faded`);
+          const w = await split.locator(sel).evaluate((el) => parseFloat(getComputedStyle(el).width));
+          ok(w > 0, `E4d the ${nm} bar has a real width (got ${w})`);
+        }
+        await shot(page, `E4d-vendor-allowance-${theme}`);
+        ok(env.errors.length === 0, "E4d no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  ✗ E4d threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
   }
 } finally {
   await browser.close();

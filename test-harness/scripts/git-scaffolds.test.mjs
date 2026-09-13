@@ -101,6 +101,32 @@ for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
 assert.ok(!/registers the app ONCE/.test(src) && !/registers at most once/.test(src),
   "the module's own comments no longer promise a bootstrap that registers at most once automatically");
 
+/* ===================== F-530 — THE INSTALL COMMAND MATCHES THE TREE ==================
+ * Live, Bitbucket run #1 of the offshoot: `+ npm ci` -> `npm error code EUSAGE`, "The
+ * `npm ci` command can only install with an existing package-lock.json or
+ * npm-shrinkwrap.json". Nothing after it ran. The scaffold has never committed a lockfile
+ * and its own README said `npm install`, so the tree and the pipeline disagreed in writing.
+ *
+ * This is the INVARIANT rather than the instance: a scaffold may say `npm ci` only if it
+ * actually ships a lockfile. That way a future scaffold which does ship one is free to use
+ * it, and one which does not can never reintroduce the failure. */
+for (const entry of m.SCAFFOLD_INDEX) {
+  const rendered = m.renderScaffold(entry.id, {});
+  const shipsLock = rendered.some((f) => /(^|\/)(package-lock\.json|npm-shrinkwrap\.json)$/.test(f.path));
+  for (const f of rendered) {
+    if (shipsLock) break;
+    assert.ok(!/\bnpm ci\b/.test(f.content),
+      entry.id + "/" + f.path + ": no `npm ci` in a scaffold that ships no lockfile");
+  }
+  if (!shipsLock) {
+    const ci = rendered.filter((f) => /forge-deploy\.yml$|bitbucket-pipelines\.yml$/.test(f.path));
+    for (const f of ci) {
+      assert.ok(/npm install --no-audit --no-fund/.test(f.content),
+        entry.id + "/" + f.path + ": installs with `npm install`, the command the README also gives");
+    }
+  }
+}
+
 /* ===================== F-529 — THE LOCK SPEAKS BEFORE FORGE DOES =====================
  * Live, 2026-09-13: with `write:jira-work` added to the manifest, the Permission lock step
  * printed `permission lock: DRIFT` / `locked=false` and the scopes — correctly — and then

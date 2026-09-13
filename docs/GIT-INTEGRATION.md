@@ -472,6 +472,16 @@ the generated checker because that file is standalone in a customer's repository
 import nothing; `git-scaffolds.test.mjs` holds the two regex literals byte-equal so the two
 homes cannot drift apart.
 
+**Installing dependencies (F-530).** Both pipelines run `npm install --no-audit --no-fund`,
+not `npm ci`. `npm ci` refuses to run without a lockfile (`npm error code EUSAGE`) and the
+scaffold ships none — live, Bitbucket run #1 of the offshoot died on that line before
+`forge register` was ever reached, while the README the same scaffold commits said
+`npm install`. A generated lockfile is not an option here: it is a resolved dependency graph
+with integrity hashes for the whole transitive tree, and `git-scaffolds.js` is a
+dependency-free list of string arrays that cannot produce a true one. The invariant is held
+in `git-scaffolds.test.mjs`: no rendered file may say `npm ci` unless that scaffold's file
+list actually contains a lockfile.
+
 **The steps.** The consumer runs a fixed chain and records every step on the row before
 the next one starts, so a chain that dies reports `status: "partial"` with the step that
 failed, never "installed": on Bitbucket `enable-pipelines`, then `secret:FORGE_EMAIL`,

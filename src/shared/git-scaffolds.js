@@ -16,6 +16,21 @@
 //
 // Dependency-free: bundles into the backend and into the admin panel (which only
 // needs the catalogue metadata, see SCAFFOLD_INDEX).
+//
+// F-530 — THE INSTALL COMMAND MUST MATCH THE TREE WE ACTUALLY COMMIT. Both pipelines ran
+// `npm ci`, and `npm ci` refuses to run without a lockfile ("The `npm ci` command can only
+// install with an existing package-lock.json or npm-shrinkwrap.json", npm error EUSAGE) —
+// which this scaffold has never shipped. Live on Bitbucket, run #1 of the offshoot died on
+// that line before forge register was ever reached, and the README the same scaffold ships
+// said `npm install`, so the tree and the pipeline disagreed with each other in writing.
+//
+// The fix is `npm install`, not a generated lockfile: a package-lock.json is a resolved
+// dependency graph with integrity hashes for the whole transitive tree, and this module is
+// a dependency-free list of string arrays. It cannot produce one that is true, and a
+// lockfile that is not true is worse than none. If a scaffold ever does ship one, the
+// command goes back to `npm ci` in the same commit — the invariant is held by
+// git-scaffolds.test.mjs: no rendered file may say `npm ci` unless that scaffold's file
+// list contains a lockfile.
 
 export const SCAFFOLD_VERSION = 1;
 
@@ -86,9 +101,9 @@ const FORGE_DEPLOY_YML = [
   "        with:",
   "          node-version: 22",
   "      - name: Install (backend)",
-  "        run: npm ci",
+  "        run: npm install --no-audit --no-fund",
   "      - name: Install and build (Custom UI)",
-  "        run: npm ci && npm run build",
+  "        run: npm install --no-audit --no-fund && npm run build",
   "        working-directory: {{UI_DIR}}",
   "      - name: Forge CLI",
   "        run: npm install --global @forge/cli@13 && forge settings set usage-analytics false",
@@ -137,8 +152,8 @@ const BITBUCKET_PIPELINES_YML = [
   "        name: Forge deploy",
   "        caches: [node]",
   "        script:",
-  "          - npm ci",
-  "          - cd {{UI_DIR}} && npm ci && npm run build && cd -",
+  "          - npm install --no-audit --no-fund",
+  "          - cd {{UI_DIR}} && npm install --no-audit --no-fund && npm run build && cd -",
   "          - npm install --global @forge/cli@13",
   "          - forge settings set usage-analytics false",
   "          - export FORGE_ENV=\"${ENVIRONMENT:-development}\"",

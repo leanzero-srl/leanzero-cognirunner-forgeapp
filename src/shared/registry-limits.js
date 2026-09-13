@@ -350,6 +350,52 @@ export const KNOWLEDGE_BUDGET_BYTES = Object.freeze({
  */
 export const knowledgeBudget = (audience) => KNOWLEDGE_BUDGET_BYTES[audience] || KNOWLEDGE_BUDGET_BYTES.prReview;
 
+/* ------------------------------------------------------------------------
+ * FIELD-GUIDE BUDGETS (1.4 commit 14a) — ONE home for the per-audience byte caps.
+ *
+ * The field guide (src/shared/knowledge-select.js, packs under
+ * src/shared/knowledge-packs/) is a THIRD knowledge layer alongside skills and memories,
+ * and it needs its own row per audience for the same reason they do: a validator running
+ * on every transition and a Coder turn on the 900 s consumer do not have the same token
+ * economy, and a single constant would be wrong for both. This is the same mistake
+ * `fetchSkillsBlock` made with one 24,576-byte number for every caller.
+ *
+ * The numbers are the plan's (§3.15) and they are deliberately SMALLER than the skills
+ * budgets: a skill is instruction the author chose, the field guide is background the
+ * selector chose. Background that outweighs the instruction is how a model ends up
+ * answering the reference material instead of the request.
+ *
+ *   codegen / fix  12 KB — the generous rows. Generation is the surface the guide was
+ *                          built for, and a wrong answer here is saved and re-run forever.
+ *   validator       6 KB — runs on EVERY transition, inline, inside the 25 s budget and
+ *                          under the token-per-minute ceiling validators cannot defer.
+ *   agent           8 KB — a listener/job agent run: several rounds, each resending the
+ *                          prefix, so every kilobyte is paid per round.
+ *   va              8 KB — one Virtual Administrator item turn, same shape as an agent run.
+ *   coder          16 KB — the in-issue Coder. Longer, code-shaped background genuinely
+ *                          helps and the 900 s consumer affords the tokens.
+ *   review          6 KB — a PR review. The DIFF is the content; background is there to
+ *                          shape the house rules, not to compete with it.
+ * ---------------------------------------------------------------------- */
+export const FIELD_GUIDE_BUDGET_BYTES = Object.freeze({
+  codegen: 12288,
+  fix: 12288,
+  validator: 6144,
+  agent: 8192,
+  va: 8192,
+  coder: 16384,
+  review: 6144,
+});
+
+/**
+ * The field-guide budget for one audience. An UNKNOWN audience gets the SMALLEST row, not
+ * the largest — the same rule `knowledgeBudget` follows, and for the same reason: a caller
+ * that forgot to name itself must not be handed the biggest budget by accident.
+ */
+export const fieldGuideBudget = (audience) =>
+  FIELD_GUIDE_BUDGET_BYTES[audience]
+  || Math.min(...Object.values(FIELD_GUIDE_BUDGET_BYTES));
+
 /** Skills a rule may bind. Small on purpose: a rule picks a VOICE, not a library. */
 export const MAX_RULE_SKILL_IDS = 4;
 

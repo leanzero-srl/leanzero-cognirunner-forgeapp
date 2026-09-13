@@ -72,12 +72,17 @@ export const MEMORY_SETTINGS_KEY = "COGNIRUNNER_MEMORY_SETTINGS";
 export const MEMORY_STORE_FULL_KEY = "COGNIRUNNER_MEMORY_STORE_FULL";
 
 /**
- * Defang prompt-fence tokens in untrusted content before it is interpolated
- * inside a <<<FENCE ... FENCE>>> block. Collapses any run of 3+ angle brackets
- * to 2 so injected text can never open or close a literal fence. Shared by
- * every prompt-fence interpolation site (index.js, skills.js, async-handler.js).
+ * Defang prompt-fence tokens in untrusted content before it is interpolated inside a
+ * <<<FENCE ... FENCE>>> block. Shared by every prompt-fence interpolation site
+ * (index.js, skills.js, async-handler.js, the agent and git engines) — they all import it
+ * from HERE, which is why this re-export stays.
+ *
+ * The DECLARATION moved to src/shared/prompt-fencing.js so that src/shared/ modules, which
+ * also bundle into the webpack builds, can defang without importing this file and dragging
+ * @forge/kvs into a browser bundle. One home, two doors — not two copies.
  */
-export const defangFence = (s) => String(s ?? "").replace(/<<<+/g, "<<").replace(/>>>+/g, ">>");
+export { defangFence } from "./shared/prompt-fencing.js";
+import { defangFence } from "./shared/prompt-fencing.js";
 
 const utf8Len = (s) => { try { return new TextEncoder().encode(s).length; } catch (e) { return String(s).length * 4; } };
 const JACCARD_DEDUP_THRESHOLD = 0.85;

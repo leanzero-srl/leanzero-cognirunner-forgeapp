@@ -16,7 +16,7 @@ import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
 import { getEvent, eventLabel, filtersForEvents, EVENT_CATEGORIES, requiresRepoFilter } from "../../../../src/shared/jira-events.js";
 import { DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS } from "../../../../src/shared/agent-actions.js";
-import { PREMADE_LISTENERS } from "../../../../src/shared/premade-rules-catalog.js";
+import { PREMADE_LISTENERS, premadeRequiresCapability } from "../../../../src/shared/premade-rules-catalog.js";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 import {
   useAgentCapability, CAPABILITY_UNKNOWN_TITLE, CAPABILITY_UNKNOWN_TEXT,
@@ -31,8 +31,12 @@ import {
    after all of the work. The question is the catalogue's, asked once here, and answered
    by the ONE capability read (`useAgentCapability`, byte-identical in three apps).
    An agentless row (`agentlessTaskType`) that declares NO capability is untouched: the
-   deterministic engine needs no Coder, so gating it would remove a starter that works. */
-const premadeNeedsCapability = (p) => !!(p && p.requiresCapability);
+   deterministic engine needs no Coder, so gating it would remove a starter that works.
+   F-489 - the READING of that declaration now lives beside the catalogue itself
+   (`premadeRequiresCapability`), because the wizard and config-ui asked the same question
+   by comparing to the literal "git" and would have waved a second capability straight
+   through to a refused Save. Three askers, one answer. */
+const premadeNeedsCapability = (p) => premadeRequiresCapability(p);
 
 const newStep = () => ({ id: `fn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: "", conditionPrompt: "", operationType: "work_item_query", operationPrompt: "", endpoint: "", method: "GET", variableName: "result1", code: "", includeBackoff: false });
 const emptyDraft = () => ({

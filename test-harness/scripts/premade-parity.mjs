@@ -15,7 +15,7 @@
  * an orphan branch). Run manually / pre-deploy:  node test-harness/scripts/premade-parity.mjs
  * Exits 1 on any mismatch.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import {
@@ -252,6 +252,53 @@ for (const row of PREMADE_LISTENERS) {
   }
   if (CODER_PF_MODE_IDS.join() !== CODER_PF_MODES.map((m) => m.id).join()) {
     problems.push("CODER_PF_MODE_IDS is out of step with CODER_PF_MODES");
+  }
+}
+
+// 5. F-489 — NO FRONTEND MAY COMPARE `requiresCapability` TO A LITERAL.
+// The catalogue declares which rows need an instance capability; the ONE reader of that
+// declaration is `premadeRequiresCapability` (src/shared/premade-rules-catalog.js). Two UI
+// sites used to ask the question as `requiresCapability === "git"`, which answers "needs
+// nothing" for any SECOND value the catalogue grows — the row is then offered on an
+// instance that cannot run it and the refusal arrives at Save, after all of the work.
+// This is a SOURCE grep, not an inference: the predicate cannot be exercised by running
+// the app until such a second value exists, which is exactly too late.
+{
+  const uiRoot = resolve(here, "../../static");
+  const skipDirs = new Set(["build", "node_modules", "dist", ".cache"]);
+  const files = [];
+  const walk = (dir) => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      if (ent.isDirectory()) {
+        if (!skipDirs.has(ent.name)) walk(resolve(dir, ent.name));
+      } else if (/\.(js|jsx|mjs)$/.test(ent.name)) {
+        files.push(resolve(dir, ent.name));
+      }
+    }
+  };
+  walk(uiRoot);
+  // `requiresCapability` on either side of ===/!==/==/!= a quoted string, allowing for the
+  // property being read off any expression (row.requiresCapability, p?.requiresCapability,
+  // r["requiresCapability"]) and for the comparison written in either order.
+  const LITERAL_CMP = /(?:requiresCapability["\]]*\s*[!=]==?\s*["'`]|["'`][a-z-]*["'`]\s*[!=]==?\s*[A-Za-z_$][\w.$?[\]"']*requiresCapability)/;
+  let scanned = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    if (!src.includes("requiresCapability")) continue;
+    scanned++;
+    for (const [i, line] of src.split("\n").entries()) {
+      // A comment may quote the old predicate to explain why it is gone.
+      const code = line.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, "");
+      if (LITERAL_CMP.test(code)) {
+        problems.push(
+          `${f.slice(uiRoot.length - 6)}:${i + 1} compares requiresCapability to a LITERAL — ` +
+          "import premadeRequiresCapability from src/shared/premade-rules-catalog.js instead (F-489)",
+        );
+      }
+    }
+  }
+  if (!scanned) {
+    problems.push("no static/ file reads requiresCapability at all — the F-489 guard is scanning nothing, so it can never fail");
   }
 }
 

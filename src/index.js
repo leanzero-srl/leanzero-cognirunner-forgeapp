@@ -45,6 +45,7 @@ import {
   resolveEdition, EDITIONS, EDITION_IDS, ADVANCED_FEATURES, isFeatureAllowed,
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, normalizeModelId,
+  agentCapability,
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -10639,6 +10640,49 @@ resolver.define("clearForgeIdentity", async ({ context }) => {
 resolver.define("getForgeIdentityStatus", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) return needRole("admin");
   return okOr(async () => ({ success: true, status: await getForgeIdentityStatusCore() }));
+});
+
+/* THE CAPABILITY ANSWER, for every UI that asks "is Coder on?" (1.4 commit 6).
+ *
+ * The admin panel's Code tab, the agent-action checklist and (later) the coder panel
+ * all need the same verdict, and NONE of them may re-derive it: a frontend that
+ * inferred "Coder" from `checkLicense().edition` would be wrong for three of the five
+ * reasons (a BYOK site is enabled on Standard; a Coder site on Haiku is not; a Coder
+ * site whose allowance is spent is paused), and it would be the copy nobody updates.
+ * So there is exactly one predicate (`agentCapability`, src/shared/edition.js), fed by
+ * exactly one fact-reader (`agentGateFacts`, the same one the save-time and run-time
+ * action gates use), and this resolver is its only door for a UI.
+ *
+ * PERMISSION: the VIEWER floor, not admin. The Code tab is admin-only and gates itself
+ * on its own admin answer, but `AgentConfig` renders this verdict for any EDITOR who
+ * opens a listener - refusing them here would leave the checklist unable to say why a
+ * git action is disabled, which is the F-233 shape (a control whose refusal is told as
+ * an outage). The shape carries no credential and no key: a provider ID, an edition, a
+ * model id and a verdict.
+ *
+ * FAILS TO THE RESTRICTIVE SIDE: `agentGateFacts` never throws and omits what it could
+ * not read, and `agentCapability` refuses on an unknown provider - so a failed read is
+ * "off", never "on".
+ */
+resolver.define("getAgentCapability", async ({ context }) => {
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("check the Coder capability", "viewer");
+  return okOr(async () => {
+    const facts = await agentGateFacts(context);
+    // No provider read = no capability, the same rule buildAgentGateContext applies
+    // (F-281): an unanswered question is refused, never assumed.
+    const verdict = facts.provider
+      ? agentCapability(facts)
+      : { enabled: false, reason: "unknown" };
+    return {
+      success: true,
+      enabled: verdict.enabled === true,
+      reason: verdict.reason,
+      provider: facts.provider,
+      edition: facts.edition,
+      agentModel: facts.agentModel,
+      allowanceLevel: facts.allowanceLevel,
+    };
+  });
 });
 
 // Rotation is QUEUED, never done here (§8's "rotation in a resolver" finding):

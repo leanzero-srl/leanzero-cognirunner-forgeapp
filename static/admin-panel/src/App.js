@@ -18,6 +18,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import TabBar from "./components/TabBar";
 import DocsTab from "./components/DocsTab";
+import CodeTab from "./components/CodeTab";
 import SkillsAdminTab from "./components/SkillsAdminTab";
 import MemoriesAdminTab from "./components/MemoriesAdminTab";
 /* F-243 — the role-outage sentence has ONE home and it is MemoriesTab, one of the
@@ -2875,6 +2876,92 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .apx-badge { background: #e11d48; }
     html[data-color-mode="dark"] .evp-row.on { background: #3b82f6; }
     html[data-color-mode="dark"] .agc-action.on { background: #8b5cf6; }
+    /* ── CODE TAB (1.4 commit 6) ─────────────────────────────────────────────
+       GIT NAMESPACE HUE: #a21caf light / #c026d3 dark (one shade lighter), matching the
+       the git row in EVENT_CATEGORIES. Provider brands: GitHub #0f172a / #334155,
+       Bitbucket #0052cc / #2684ff. Every one has its dark override at the foot of this
+       block. Solid fills with white text throughout - no rails, no tints. */
+    .code-tab { display: flex; flex-direction: column; gap: 16px; }
+    .code-card { padding: 18px; }
+    .code-status { padding: 18px; }
+    .code-status-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+    .code-status-badge { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; background: #475569; }
+    .code-status-on .code-status-badge { background: #16a34a; }
+    .code-status-off .code-status-badge { background: #d97706; }
+    .code-status-title { font-size: 15px; font-weight: 700; }
+    .code-status-text { margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+    .code-status-link { margin: 8px 0 0; font-size: 12px; color: var(--text-secondary); }
+    .code-facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .code-fact { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-color); font-size: 12px; }
+    .code-fact-k { font-size: 10px; font-weight: 800; letter-spacing: 0.05em; color: var(--text-muted); text-transform: uppercase; }
+    .code-fact-v { font-weight: 700; }
+    .code-form { display: flex; flex-direction: column; gap: 12px; padding: 14px; margin-bottom: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--card-bg); }
+    .code-input { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; }
+    .code-form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .code-form-error { padding: 10px 12px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; font-size: 12px; font-weight: 600; }
+    .code-conns { display: flex; flex-direction: column; gap: 12px; }
+    .code-conn { border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); padding: 12px 14px; }
+    .code-conn-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+    .code-conn-label { font-size: 14px; font-weight: 700; }
+    .code-conn-login { font-size: 12px; color: var(--text-secondary); }
+    .code-conn-token { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; background: #475569; }
+    .code-conn-token.set { background: #16a34a; }
+    .code-conn-token.missing { background: #dc2626; }
+    .code-conn-actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+    .code-kind { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }
+    .code-kind-github { background: #0f172a; }
+    .code-kind-bitbucket { background: #0052cc; }
+    .code-dead { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
+    .code-dead-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+    .code-dead-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    .code-conn-repos { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .code-repo { padding: 2px 8px; border-radius: 999px; background: #a21caf; color: #fff; font-size: 11px; font-weight: 700; }
+    .code-repo-none { font-size: 12px; color: #d97706; font-weight: 700; }
+    .code-who { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px; border-radius: var(--r-md, 8px); border: 1px solid var(--border-color); font-size: 12px; }
+    .code-who-err { background: #d97706; color: #fff; border-color: #d97706; font-weight: 600; }
+    .code-who-row { display: inline-flex; align-items: center; gap: 6px; }
+    .code-who-caps { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+    .code-who-note { flex-basis: 100%; color: var(--text-secondary); line-height: 1.45; }
+    .code-cap { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; }
+    .code-cap-yes { background: #16a34a; }
+    .code-cap-no { background: #dc2626; }
+    .code-cap-unknown { background: #475569; }
+    .code-rotate { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 12px; border-radius: var(--r-md, 8px); border: 1px solid var(--border-color); }
+    .code-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+    .code-identity-set { padding: 3px 9px; border-radius: 4px; background: #16a34a; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
+    .code-consent { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: flex-start; padding: 12px; border-radius: var(--r-md, 8px); background: #a21caf; color: #fff; font-size: 12px; font-weight: 600; line-height: 1.5; cursor: pointer; }
+    .code-consent input { margin-top: 2px; accent-color: #0f172a; }
+    html[data-color-mode="dark"] .code-status-on .code-status-badge, html[data-color-mode="dark"] .code-conn-token.set, html[data-color-mode="dark"] .code-cap-yes, html[data-color-mode="dark"] .code-identity-set { background: #22c55e; }
+    html[data-color-mode="dark"] .code-status-off .code-status-badge, html[data-color-mode="dark"] .code-who-err { background: #f59e0b; border-color: #f59e0b; }
+    html[data-color-mode="dark"] .code-status-badge, html[data-color-mode="dark"] .code-conn-token, html[data-color-mode="dark"] .code-cap-unknown, html[data-color-mode="dark"] .code-kind { background: #64748b; }
+    html[data-color-mode="dark"] .code-conn-token.missing, html[data-color-mode="dark"] .code-form-error, html[data-color-mode="dark"] .code-dead, html[data-color-mode="dark"] .code-cap-no { background: #ef4444; }
+    html[data-color-mode="dark"] .code-repo, html[data-color-mode="dark"] .code-consent { background: #c026d3; }
+    html[data-color-mode="dark"] .code-repo-none { color: #f59e0b; }
+    html[data-color-mode="dark"] .code-kind-github { background: #334155; }
+    html[data-color-mode="dark"] .code-kind-bitbucket { background: #2684ff; }
+    /* AgentConfig CODE column (the git namespace) */
+    .agc-kind-code { background: #a21caf; }
+    .agc-col-locked .agc-action { opacity: 0.55; }
+    .agc-action-off { cursor: not-allowed; }
+    .agc-locked { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; background: #d97706; color: #fff; }
+    .agc-locked-title { font-size: 12px; font-weight: 800; }
+    .agc-locked-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    .agc-mark { margin-left: 6px; padding: 1px 6px; border-radius: 3px; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 0.04em; vertical-align: middle; }
+    .agc-mark-confirm { background: #475569; }
+    .agc-mark-danger { background: #dc2626; }
+    html[data-color-mode="dark"] .agc-kind-code { background: #c026d3; }
+    html[data-color-mode="dark"] .agc-locked { background: #f59e0b; }
+    html[data-color-mode="dark"] .agc-mark-confirm { background: #64748b; }
+    html[data-color-mode="dark"] .agc-mark-danger { background: #ef4444; }
+    /* EventPicker git repos filter */
+    .evp-repos { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; padding: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .evp-repos-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--text-color); }
+    .evp-repos-dot { width: 10px; height: 10px; border-radius: 3px; }
+    .evp-repos-input { width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; }
+    .evp-repos-input.invalid { border-color: #dc2626; }
+    .evp-repos-hint { margin: 0; font-size: 11px; color: var(--text-secondary); line-height: 1.45; }
+    .evp-repos-bad { margin: 0; padding: 6px 10px; border-radius: 4px; background: #dc2626; color: #fff; font-size: 11px; font-weight: 700; }
+    html[data-color-mode="dark"] .evp-repos-bad { background: #ef4444; }
 `;
   document.head.appendChild(style);
 };
@@ -5644,6 +5731,10 @@ const TABS = [
   { key: "docs", label: "Documentation" },
   { key: "skills", label: "Skills" },
   { key: "memories", label: "Memories" },
+  // Deliberately NOT adminOnly. Every resolver behind it is requireAdmin, so a
+  // non-admin sees the backend's own refusal note - which names the remedy - instead of
+  // a tab that silently does not exist and a feature they cannot find out about.
+  { key: "code", label: "Code" },
   { key: "permissions", label: "Permissions", adminOnly: true },
   { key: "settings", label: "Settings", adminOnly: true },
 ];
@@ -5679,6 +5770,11 @@ const SURFACES = {
     terms: [
       { label: "distill", def: "When a production failure is new, the AI writes a short (≤400-char) lesson from it and saves it as a memory — no repeat AI cost for known errors." },
       { label: "runtime injection", def: "Feeding memories into live validators and post-functions on every transition. Opt-in, because it adds tokens to each run." },
+    ] },
+  code: { eyebrow: "CODE", what: "Your Git providers: the connections rules use to read and write repositories, and the Atlassian identity the pipeline deploys your Forge app with. Admin only.",
+    terms: [
+      { label: "connection", def: "A stored credential for GitHub or Bitbucket, plus the list of repositories it is allowed to touch. Nothing listed means nothing allowed." },
+      { label: "deploy identity", def: "An Atlassian API token the pipeline in your repository uses to deploy your Forge app as you. Stored write only; there is no reveal path." },
     ] },
   permissions: { eyebrow: "PERMISSIONS", what: "Who can create and edit CogniRunner rules on this site. App admins manage the roster; editors manage rules." },
   settings: { eyebrow: "SETTINGS", what: "Your AI provider, API key, and model, plus the MCP tools the agent can call. Keys are stored in Forge storage, never in environment variables.",
@@ -7646,6 +7742,10 @@ function App() {
       )}
 
       {/* Permissions Tab (admin only) — app admin management */}
+      {activeTab === "code" && (
+        <CodeTab invoke={invoke} />
+      )}
+
       {activeTab === "permissions" && isAdmin && (
         <PermissionsTab invoke={invoke} />
       )}

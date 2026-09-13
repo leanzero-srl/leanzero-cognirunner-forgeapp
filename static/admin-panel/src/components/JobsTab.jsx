@@ -234,7 +234,7 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
               <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} roleUnknown={roleUnknown} />
             </div>
           ) : (
-            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" scoped={!!scoped} />
+            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" scoped={!!scoped} invoke={invoke} />
           )}
           <div className="lst-options">
             <label className="lst-check"><input type="checkbox" checked={draft.simulationMode} onChange={(e) => patch({ simulationMode: e.target.checked })} /><span><strong>Simulation mode</strong> — reads are live, writes are logged but never executed.</span></label>

@@ -811,6 +811,57 @@ const MEMORY_SETTINGS = () => ({
    components had one. `getContextDocContent` is deliberately ABSENT from the roster list:
    that resolver has no role floor in the backend today, and a fixture that invents a gate
    the backend does not have would verify a screen no tenant can reach. */
+/* ── 1.4 commit 6: CODE TAB fixtures ──────────────────────────────────────────────
+   The shapes are the BACKEND's own allow-lists, field for field: `publicConnection`
+   (src/git-connections.js) for a connection row, `publicWhoami` + `capabilityFlags` for a
+   Test, `forgeIdentityStatus` for the identity. A fixture that invented a field would let
+   the UI render something no tenant can ever see - and a fixture carrying a TOKEN would
+   let a leak pass, which is why none of these rows has one.
+
+   Scenario flags:
+     window.__CODE_CAP__       - the getAgentCapability answer (default: Coder ON, BYOK).
+                                 Set to a reason string for the OFF arms.
+     window.__CODE_DEAD__      - the second connection reports `auth_dead` (the red banner).
+     window.__CODE_NO_CONNS__  - empty list.
+     window.__CODE_IDENTITY__  - a Forge deploy identity is already stored. */
+const CODE_CAP = () => {
+  const raw = (typeof window !== "undefined" && window.__CODE_CAP__) || null;
+  if (!raw) return { success: true, enabled: true, reason: "byok", provider: "anthropic", edition: "standard", agentModel: "claude-sonnet-5", allowanceLevel: null };
+  if (raw === "needs-coder-edition") return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: "standard", agentModel: "claude-sonnet-5", allowanceLevel: null };
+  if (raw === "needs-frontier-model") return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: "advanced", agentModel: "claude-haiku-4-5-20251001", allowanceLevel: null };
+  if (raw === "allowance-exhausted") return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: "advanced", agentModel: "claude-sonnet-5", allowanceLevel: "hard" };
+  if (raw === "forge-frontier") return { success: true, enabled: true, reason: raw, provider: "atlassian", edition: "advanced", agentModel: "claude-sonnet-5", allowanceLevel: "soft" };
+  // Anything else models a read that did not answer - the restrictive side.
+  return { success: true, enabled: false, reason: "unknown", provider: null, edition: null, agentModel: null, allowanceLevel: null };
+};
+const CODE_CONNS = () => {
+  if (typeof window !== "undefined" && window.__CODE_NO_CONNS__) return [];
+  const dead = typeof window !== "undefined" && !!window.__CODE_DEAD__;
+  return [
+    {
+      id: "gc_1", kind: "github", label: "Acme engineering", host: null, owner: "acme",
+      createdBy: ACCT, createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-09-10T08:00:00.000Z",
+      hasToken: true, status: "ok", authDeadAt: null, authDeadReason: null,
+      lastCheckedAt: "2026-09-12T08:00:00.000Z", login: "acme-bot",
+      repos: ["acme/web", "acme/api"],
+      capabilities: { canCreateRepos: true, canWebhooks: true, canPipelines: null, reason: "Derived from the classic token's reported OAuth scopes." },
+    },
+    {
+      id: "gc_2", kind: "bitbucket", label: "Acme platform", host: null, owner: "acme",
+      createdBy: ACCT, createdAt: "2026-09-02T08:00:00.000Z", updatedAt: "2026-09-11T08:00:00.000Z",
+      hasToken: true, status: dead ? "auth_dead" : "ok",
+      authDeadAt: dead ? "2026-09-12T09:00:00.000Z" : null,
+      authDeadReason: dead ? "The provider rejected this credential" : null,
+      lastCheckedAt: "2026-09-12T09:00:00.000Z", login: "acme-platform",
+      repos: ["acme/platform"],
+      capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "Bitbucket does not report scopes on this call. Capability is proven only by the call that needs it." },
+    },
+  ];
+};
+const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDENTITY__)
+  ? { hasIdentity: true, email: "deploy@acme.example", consent: { accountId: ACCT, at: "2026-09-03T10:00:00.000Z" }, rotation: null, createdAt: "2026-09-03T10:00:00.000Z", updatedAt: "2026-09-03T10:00:00.000Z" }
+  : { hasIdentity: false, email: null, consent: null, rotation: null, createdAt: null, updatedAt: null });
+
 const ROSTER_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats"];
 const EDITION_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats", "getKnowledgeCounts"];
 
@@ -1224,6 +1275,27 @@ function invoke(name, payload) {
          invoke(), alongside the docs and skills reads behind the same viewer floor. */
       if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [], settings: MEMORY_SETTINGS() });
       return Promise.resolve({ success: true, settings: MEMORY_SETTINGS(), memories: MEMORY_ROWS.filter((m) => !DELETED_MEMORY_IDS.has(m.id)) });
+    /* 1.4 commit 6 - Code tab. Every one of these resolvers is requireAdmin in the
+       backend, so `__REFUSE__`/`__NO_ROSTER__` at the top of invoke() is what models a
+       non-admin reader; these arms are the ADMIN answers. */
+    case "getAgentCapability": return Promise.resolve(CODE_CAP());
+    case "listGitConnections": return Promise.resolve({ success: true, connections: CODE_CONNS() });
+    case "saveGitConnection": return Promise.resolve({ success: true, connection: CODE_CONNS()[0], whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: ["repo", "workflow"] } });
+    case "testGitConnection":
+      if (typeof window !== "undefined" && window.__CODE_TEST_FAILS__) {
+        return Promise.resolve({ success: false, error: "The provider could not be reached", code: "network", transient: true });
+      }
+      return Promise.resolve({ success: true, whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: ["repo", "workflow"] }, capabilities: { canCreateRepos: true, canWebhooks: true, canPipelines: null, reason: "Derived from the classic token's reported OAuth scopes." } });
+    case "setGitRepoAllowlist": return Promise.resolve({ success: true, connection: CODE_CONNS()[0] });
+    case "deleteGitConnection": return Promise.resolve({ success: true });
+    case "rotateGitCredential": return Promise.resolve({ success: true, taskId: "rot_abc", queued: true });
+    case "getForgeIdentityStatus": return Promise.resolve({ success: true, status: CODE_IDENTITY() });
+    case "saveForgeIdentity":
+      // The backend FAILS CLOSED without an explicit consent flag, and so does the mock -
+      // a fixture that accepted a missing flag would let a consent-free form ship.
+      if (!payload || payload.consent !== true) return Promise.resolve({ success: false, error: "Explicit consent is required to store a deploy identity", code: "consent_required" });
+      return Promise.resolve({ success: true, status: { hasIdentity: true, email: payload.email || null, consent: { accountId: ACCT, at: new Date().toISOString() }, rotation: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } });
+    case "clearForgeIdentity": return Promise.resolve({ success: true, status: { hasIdentity: false, email: null, consent: null, rotation: null, createdAt: null, updatedAt: null } });
     /* listeners + scheduled jobs + API tokens (admin) */
     case "getListeners": return Promise.resolve({ success: true, listeners: LISTENER_ROWS });
     case "getListener": return Promise.resolve(LISTENER_FULL[payload && payload.id] ? { success: true, listener: LISTENER_FULL[payload.id] } : { success: false, error: "Listener not found" });

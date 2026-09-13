@@ -14,13 +14,16 @@ import IssuePicker from "./IssuePicker";
 import { ModeSwitch, ChipsInput, ProjectPicker, RunStat, RunResultView, RecentLogs } from "./RuleEditorBits";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
-import { getEvent, eventLabel, filtersForEvents, EVENT_CATEGORIES } from "../../../../src/shared/jira-events.js";
+import { getEvent, eventLabel, filtersForEvents, EVENT_CATEGORIES, requiresRepoFilter } from "../../../../src/shared/jira-events.js";
 import { DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS } from "../../../../src/shared/agent-actions.js";
 
 const newStep = () => ({ id: `fn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: "", conditionPrompt: "", operationType: "work_item_query", operationPrompt: "", endpoint: "", method: "GET", variableName: "result1", code: "", includeBackoff: false });
 const emptyDraft = () => ({
   id: null, name: "", description: "", enabled: true, events: [],
-  filters: { projectKeys: [], issueTypes: [], jql: "", changedFields: [], commentPattern: "" },
+  // `repos` is the git allow-list for this listener. There is NO "all repositories"
+  // listener (src/listeners.js refuses one), so an empty array is a rule that cannot save
+  // once a git event is picked - which is what the EventPicker field and validateDraft say.
+  filters: { projectKeys: [], issueTypes: [], jql: "", changedFields: [], commentPattern: "", repos: [] },
   ignoreSelf: true, aiCondition: "", mode: "script",
   agent: { instructions: "", allowedActions: DEFAULT_AGENT_ACTIONS, maxRounds: DEFAULT_AGENT_ROUNDS },
   simulationMode: false, suppressNotifications: false,
@@ -121,6 +124,11 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   const validateDraft = () => {
     if (!draft.name.trim()) return "Give the listener a name.";
     if (!draft.events.length) return "Pick at least one event.";
+    // Mirrors src/listeners.js' refusal, so the admin reads it before the save round trip
+    // rather than as a backend error. The BACKEND stays the gate; this is only the notice.
+    if (draft.events.some((id) => requiresRepoFilter(id)) && !(draft.filters.repos || []).length) {
+      return "Git events run per repository. List at least one repository as owner/name.";
+    }
     if (draft.mode === "script" && !functions.some((f) => (f.code || "").trim())) return "Add at least one code step with code (describe it and click Generate).";
     if (draft.mode === "agent" && !draft.agent.instructions.trim()) return "Write instructions for the AI agent.";
     return null;
@@ -200,7 +208,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
 
           <div className="form-group">
             <span className="label">When these Jira events fire</span>
-            <EventPicker value={draft.events} onChange={(events) => { patch({ events }); if (!events.includes(testEvent)) setTestEvent(events[0] || ""); }} />
+            <EventPicker value={draft.events} onChange={(events) => { patch({ events }); if (!events.includes(testEvent)) setTestEvent(events[0] || ""); }} repos={draft.filters.repos} onReposChange={(repos) => patchFilters({ repos })} />
           </div>
 
           <div className="form-group">
@@ -258,7 +266,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
               <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} roleUnknown={roleUnknown} />
             </div>
           ) : (
-            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="listener" />
+            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="listener" invoke={invoke} />
           )}
 
           <div className="lst-options">

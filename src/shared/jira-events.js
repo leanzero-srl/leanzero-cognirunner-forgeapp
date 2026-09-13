@@ -40,6 +40,8 @@
  * filter vocabulary and the matcher all keep exactly one source of truth.
  */
 
+import { normalizeRepoId } from "./git-ids.js";
+
 export const EVENT_CATEGORIES = [
   { id: "issue", label: "Issues", hue: "#2563eb" },
   { id: "comment", label: "Comments", hue: "#7c3aed" },
@@ -62,7 +64,11 @@ export const EVENT_CATEGORIES = [
   // THIS catalogue on purpose — a second event catalogue is the defect this repo
   // is named for (it breaks the project filter, the picker and the REST contract
   // all at once). The hue lives here, once, like every other category's.
-  { id: "git", label: "Git", hue: "#c026d3" },
+    // The hue is the LIGHT-mode 600-level shade, like every other row here: these
+  // values are rendered as INLINE styles by EventPicker, which no dark-mode rule can
+  // override. #c026d3 (the dark shade) shipped here by mistake in 5a - the Code tab
+  // pairs #a21caf with an html[data-color-mode="dark"] override for its own chips.
+  { id: "git", label: "Git", hue: "#a21caf" },
 ];
 
 // entity: the payload property carrying the main object ("issue", "comment",
@@ -359,7 +365,9 @@ export const extractEventContext = (eventType, payload) => {
     // ignoreSelf check that compares this login to the connection's cached whoami.
     const pr = p.pullRequest || null;
     out.connectionId = p.connectionId || null;
-    out.repoId = p.repoId ? String(p.repoId).trim().toLowerCase() : null;
+    // F-310 - the SAME normaliser the allow-list and the picker use. An envelope
+    // normalised differently from the filter is a listener that never matches.
+    out.repoId = p.repoId ? (normalizeRepoId(p.repoId) || null) : null;
     out.actorLogin = (p.actor && p.actor.login) ? String(p.actor.login) : null;
     out.prNumber = pr && pr.number != null ? num(pr.number) : null;
     out.deliveryId = p.deliveryId ? String(p.deliveryId) : null;

@@ -34,6 +34,7 @@
  * EVERY subscribed event (cached 30s per warm container), so it must stay small.
  */
 import { kvs as storage } from "@forge/kvs";
+import { normalizeRepoId } from "./shared/git-ids.js";
 import api, { route } from "@forge/api";
 import {
   isKnownEvent, getEvent, eventLabel, extractEventContext, changedFieldsOf, commentTextOf,
@@ -128,7 +129,10 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     // Repository allow-list for git events. Same normalisation as
     // git-connections.normalizeRepoId ("owner/name", trimmed, lower-cased) — see
     // the FINDINGS ledger row asking for one shared home for that one line.
-    repos: uniqStrings(f.repos, 50, (r) => r.toLowerCase()),
+    // F-310 - the ONE normaliser, shared with the connection allow-list, the webhook
+    // envelope and the admin picker. A filter canonicalised differently from the
+    // envelope is a listener that looks configured and never matches.
+    repos: uniqStrings(f.repos, 50, normalizeRepoId),
   };
   // There is NO "all repositories" listener. A git event names a repo, the app
   // may be connected to hundreds, and a listener that fired on every one of them
@@ -315,7 +319,7 @@ export const matchesListenerProject = (projectKeys, ctx) => {
  * validation refuses it; a legacy row without one must not fire on everything).
  */
 export const matchesListenerRepos = (repos, ctx) => {
-  const want = Array.isArray(repos) ? repos.map((r) => String(r).trim().toLowerCase()) : [];
+  const want = Array.isArray(repos) ? repos.map(normalizeRepoId) : [];
   if (!want.length) return false;
   const have = ctx.repoId ? String(ctx.repoId).trim().toLowerCase() : null;
   return Boolean(have && want.includes(have));

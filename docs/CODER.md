@@ -11,8 +11,9 @@ workflow post-function that hands a transition to that same engine, and the Git 
 layer both run on. This page describes what is on `main` and what a developer or an admin
 sees. The Git side (connections in depth, the webhook, the nine git events, the PR-review
 listener, the git validators and conditions, the pipeline setup) is in
-[`GIT-INTEGRATION.md`](GIT-INTEGRATION.md). The 1.5 work (the Virtual Administrator and the
-Confluence rules) is in progress and is not described here.
+[`GIT-INTEGRATION.md`](GIT-INTEGRATION.md). The 1.5 work is in
+[`VIRTUAL-ADMINISTRATOR.md`](VIRTUAL-ADMINISTRATOR.md) and [`CONFLUENCE.md`](CONFLUENCE.md)
+and is not described here.
 
 Everything below was read from the code, not from the plan. Where a claim names a file, the
 file is the authority.

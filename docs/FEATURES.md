@@ -25,6 +25,8 @@
 17. [Editions: Standard and Coder](#editions-standard-and-coder)
 18. [The Coder (1.4)](#the-coder-14)
 19. [Git integration (1.4)](#git-integration-14)
+20. [Virtual Administrators (1.5)](#virtual-administrators-15)
+21. [Confluence (1.5)](#confluence-15)
 
 ---
 
@@ -697,3 +699,49 @@ Admin panel → **Code** for connections and the deploy identity. The workflow e
 - The `cognirunner.git` property is advisory and forgeable; only the validators verify live, and the live pull request must name the issue key in its branch or title.
 - The per-repository webhook secret is not yet provisioned from the product; see the 1.4 release notes. Full reference: [`GIT-INTEGRATION.md`](GIT-INTEGRATION.md).
 
+## Virtual Administrators (1.5)
+
+### What It Does
+
+A Virtual Administrator is an AI agent that works a queue of Jira issues on a schedule, without a person in the loop for every turn. It is a scheduled job with `mode: "va"`: on each tick it sweeps its intake (service desk queues, a JQL filter narrowed to its read scope, mentions of named people), decides what to do on each changed issue in one bounded agent turn, and **stages** a reply rather than posting it. A separate post phase delivers the draft on a later tick, after a wall-clock floor and eleven checks: paused / shadow / kill switch and the posting window, attempts, freshness, other-writer quiet, anti-pile-up, audience, caps, write scope, the voice lint, a fail-closed delivery claim, and a read-back of the posted comment's visibility. It never posts directly, never changes configuration (it can only propose), and never writes outside a named list of projects.
+
+### Where You See It
+
+Admin panel → **Agents**. Editors see the list, each agent's status, caps, health and tick receipts; admins also see the staged drafts (with **Approve / Reject** while the agent is in shadow mode), the verified effects and the memory, and hold create, edit, delete, **Pause / Resume**, **Run tick now** and **Post now**. Settings → **Agent model** is the model it runs on. The same record is reachable over the Rules REST API as `?resource=agents`.
+
+### How to Configure
+
+**+ New virtual administrator** starts a setup interview: name, voice (with a live sample checked by the same rules that check real messages), intake, read scope, write scope, cadence and posting window, powers, guardrails, review, create. The model only writes the sentence above the controls; every option comes from the site's own catalogue, so a project the app cannot see cannot be picked. **Use the form** fills the same record directly. Both go through one save path that checks the record against live data, executes a changed JQL dry before accepting it, and re-arms shadow mode on any change.
+
+### How It Works Internally
+
+`src/virtual-admin.js` is the engine (three tasks: `va-tick`, `va-item`, `va-post`), `src/va-ledger.js` the per-item state (one KVS row per item, fingerprints, claims, receipts, effects written only on read-back proof, caps, health, memory), `src/shared/va-config.js` the record and every clamp, `src/shared/voice-lint.js` the outward-text contract, `src/shared/va-wizard.js` the interview, `src/va-admin.js` the one home of every admin operation behind both the resolvers and REST. The capability rule (`agentCapability`) is asked at the tick and again at the item turn. Full reference: [`VIRTUAL-ADMINISTRATOR.md`](VIRTUAL-ADMINISTRATOR.md).
+
+### Pitfalls
+
+- A new or edited agent posts nothing until it has been watched for its own prepare ticks (default 3, `shadowTicks`); approve a draft in the drafts pane to send one out of shadow, through every other gate.
+- It writes as the app user with the persona name in the text. An internal note is the JSM property `sd.public.comment = { internal: true }`; a portal reply is the absence of that property, and only to the reporter of a portal request.
+- Caps block when their counters cannot be read; a red banner after three failed ticks is the agent's own counter, so read the tick receipts for the gate that refused.
+- Deleting an agent purges its ledger in a bounded sweep; item rows it does not reach expire on their 90-day TTL.
+
+## Confluence (1.5)
+
+### What It Does
+
+With the app also installed on Confluence, a workflow **validator** (`confluence-page-exists`) searches Confluence live on every transition from a CQL template with `{issueKey}`, `{summary}` and `{field:<id>}` placeholders, or in Semantic mode reads the top three matching pages and lets the AI judge them against a prompt; a **condition** (`confluence-page-linked`) shows a transition once CogniRunner has recorded a page for the issue; two **post-functions** create-or-update a page authored from the issue (queued) and comment on the linked page (inline, deterministic); and five **agent actions** let a Virtual Administrator search, read, create, update and comment on pages inside a per-agent space allow-list.
+
+### How to Configure
+
+The workflow editor's premade catalogue, category **Confluence**: pick the space from the space picker, write the query or the title and comment templates, and on the validator decide **Strict**, which says whether an unreachable Confluence blocks or allows. A rule with no space or no query blocks either way. For an agent, turn on `confluenceRead` or `confluenceWrite` in its powers and name the spaces it may write in.
+
+### How It Works Internally
+
+`src/confluence-client.js` is the only module that calls `requestConfluence`: a closed error set, no retries on writes, a 10 s budget per operation, a version-checked update, 60 KB page clamps, and a 5-minute memo of whether the app is installed on Confluence. `src/shared/confluence-endpoints.js` is the endpoint catalogue, `src/shared/confluence-rules.js` the one CQL escaper, the template renderers, the advisory property builder and the Markdown-to-storage converter, `src/confluence-actions.js` the agent executor. The manifest carries six Confluence scopes and the condition branch. Full reference: [`CONFLUENCE.md`](CONFLUENCE.md).
+
+### Pitfalls
+
+- Nothing works until `forge install -p Confluence` on the site and the major-version upgrade that adds the three write scopes; until then every Confluence rule fails open with the reason and a banner.
+- The `cognirunner.confluence` property is advisory and forgeable: only the validator verifies live, and it never reads the property. A missing property shows the transition.
+- Write `title ~ {summary}`, never `title ~ "{summary}"`: each placeholder expands to a complete quoted literal.
+- A page update that hits a version conflict is abandoned, never retried; the other person's edit wins.
+- The five Confluence agent actions are refused at save time on listeners, jobs and the Coder (`missing-product:confluence`); a Virtual Administrator's powers are the only way to hold them today.

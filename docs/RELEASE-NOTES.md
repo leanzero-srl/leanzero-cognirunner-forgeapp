@@ -8,6 +8,112 @@
 
 ---
 
+## 1.5, Virtual Administrator and Confluence (2026-09-13)
+
+1.4 shipped an agent a person drives from inside an issue. 1.5 ships one that works alone:
+a Virtual Administrator that sweeps a service desk queue on a schedule, stages a reply, and
+sends it on a later tick only after eleven checks, plus a reach into Confluence for rules
+and agents. Two reference pages carry the detail,
+[`VIRTUAL-ADMINISTRATOR.md`](VIRTUAL-ADMINISTRATOR.md) and
+[`CONFLUENCE.md`](CONFLUENCE.md); everything below was read from the code on `main`.
+
+### The Virtual Administrator
+
+A scheduled job with `mode: "va"`, not a new kind of rule: it lives in the job index, is
+planned by the same 5-minute tick, and is reachable through the Agents tab and the Rules
+REST API. The record (`src/shared/va-config.js`) carries a persona and a voice, a read scope
+that may be site-wide and a write scope that never is, an intake of service desk queues, a
+JQL filter and mentions, a cadence with a posting window, a closed list of powers, and the
+guardrails the engine enforces. Every number is clamped toward the restrictive end and
+every clamp is reported back; a site-wide write scope is refused outright.
+
+Two doors build the same record: a setup interview whose field order is in code and whose
+model only writes the sentence above the controls, and a classic form. Both go through one
+save path that checks project keys, desks, queues, time zones and skills against what the
+site has, executes a changed JQL dry inside the read scope before it becomes standing
+intake, re-arms shadow mode on any configuration change, and derives the schedule from the
+cadence.
+
+### The two-phase day
+
+A prepare tick sweeps at most 50 candidates (queues, then the scope-wrapped JQL, then
+mentions), diffs them against a per-item ledger by an authorship-aware fingerprint, and fans
+out at most `maxItemsPerTick` item turns; it calls no model. An item turn is one bounded
+`runAgentLoop` on one issue, on the Agent model, behind a fail-closed `va_exec` claim taken
+by the consumer. Speech is never direct: `stage_reply` writes a draft to the ledger, and a
+separate post task delivers it only when the wall-clock floor holds (at least
+`minPostGapMinutes` and a later tick than the one that staged it) and the gates pass in
+order: paused / shadow / kill switch and the posting window, attempts, freshness (a human
+spoke since: the draft is dropped and the item re-queued), other-writer quiet, anti-pile-up
+(owed overrides), audience (public only to the reporter of a portal request, otherwise an
+internal note), caps (hour, day, and a separate owed-per-hour cap; unknown counters block),
+write scope from a read of the issue, the voice lint (no bullets, headings, bold, dashes,
+disclaimers, banned openers, method leaks or sign-offs; a sentence cap, a word cap per
+register and a burstiness rule), the fail-closed `va_post` claim, and a read-back that
+verifies the comment's portal visibility and edits a wrong one to internal.
+
+Shadow mode holds every draft until the agent has been watched for its own prepare ticks
+(default 3); an admin can approve one draft out of shadow or reject it back to the queue,
+and neither posts. Pause, run tick now and post now go through the same claims the
+scheduler takes. Three consecutive failed ticks turn the Agents tab banner solid red from
+the agent's own health counter. The capability rule is the one predicate every agent surface
+asks, checked at the tick and again at the item turn; a refusal is written into the receipt
+and the health row.
+
+### Confluence
+
+Three scopes join the manifest (`write:page:confluence`, `read:comment:confluence`,
+`write:comment:confluence`), a major version; the app must also be installed on Confluence.
+One client (`src/confluence-client.js`) with a closed error set, no retries on writes, a
+10 s budget per operation, a version-checked update and 60 KB page clamps; one endpoint
+catalogue shaped like the Jira one. The **Confluence validator** searches live on every
+transition from a CQL template whose placeholders are substituted as quoted literals by one
+escaper, or reads the top three pages and lets the validator engine judge them; an
+unreachable Confluence allows unless Strict, a misconfigured rule blocks either way. The
+**condition** is one more branch of the single manifest expression over the advisory
+`cognirunner.confluence` property, missing means show. Two **post-functions**: a queued
+page writer that authors from the issue, creates once and updates after, links the page and
+records the property; and an inline, deterministic comment on the linked page. Five
+**agent actions** (`confluence_search`, `confluence_get_page`, `confluence_create_page`,
+`confluence_update_page`, `confluence_add_comment`): the model never writes CQL or storage
+XHTML, every write is bounded by a per-agent space allow-list resolved from a read of the
+page, and a site without the app on Confluence answers a named refusal, never an empty
+result.
+
+### Also
+
+- `?resource=agents` on the Rules REST API, a view over `?resource=jobs` filtered to
+  `mode: "va"` with the Agents tab's floors (editor for the overview, admin for drafts,
+  effects, memory and every write); `?resource=jobs` refuses a VA row by name.
+- Token roles on the REST surface (`viewer`, `editor`, `admin`) are minted in Settings and
+  gate every resource through one predicate; an editor token acts as the account that
+  minted it.
+- `va-tick` joins the non-AI task types; `va-item` and `va-post` are paced by the token
+  budget like every other queued AI task.
+- Deleting an agent purges its index, health and memory rows and up to 200 item rows; the
+  rest expires on the 90-day item TTL.
+
+### Known limitations
+
+- **Writes as the app user.** Everything the agent posts or changes is authored by the app's
+  own account; the persona name is in the text, never the author.
+- **No configuration writes**, by construction: there is no action for schemes, workflows,
+  permissions, roles or fields, and `propose_change` is the only route.
+- **Memory compaction is not scheduled.** `compactMemory` exists with its pinned-constraints
+  guarantee, but no task calls it; a memory over the 8 KB cap is clamped, constraints kept.
+- **The allowance arm** of the capability rule cannot fire on the VA path, because the
+  monthly allowance is computed inside `src/index.js` and is not exported.
+- **Confluence actions on listeners, jobs and the Coder** are refused at save time with
+  `missing-product:confluence`; the Virtual Administrator's powers are the only way to hold
+  them today.
+- **No `api.confluence.*` in the sandbox.** The planned spec entry is not in the tree.
+- **The not-installed response is uncaptured**; the client maps anything unrecognised to
+  `confluence_unavailable`, which fails open with the reason.
+- **The dev test hook cannot drive a tick**; the live proof reaches the same task bodies
+  through allow-listed doors.
+
+---
+
 ## 1.4 — Coder (2026-09-13)
 
 1.3 sold the Coder edition; 1.4 ships the Coder. An engineer inside the Jira issue, a

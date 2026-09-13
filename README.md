@@ -29,6 +29,8 @@ CogniRunner is the **first open-source Atlassian Forge app**, licensed under [Ap
 - [Development](#development)
 - [Configuration Reference](#configuration-reference)
 - [Attaching rules over the REST API](docs/REST-API-RULES.md)
+- [The Virtual Administrator (1.5)](docs/VIRTUAL-ADMINISTRATOR.md)
+- [Confluence rules and actions (1.5)](docs/CONFLUENCE.md)
 - [Known Limitations](#known-limitations)
 - [Permissions & Security](#permissions--security)
 - [Contributing](#contributing)
@@ -136,6 +138,11 @@ The two non-transition "ways to run" (the ScriptRunner *Script Listener* / *Sche
 - **Listeners** subscribe to **all 68 Jira product events** Forge exposes — issue created/updated/deleted/assigned/viewed/mentioned, comments, worklogs, attachments, issue links, projects, versions, components, sprints, boards, users, custom fields (+ contexts), issue types, filters, global configuration, time tracking, JSM request types. Filter by project, issue type, JQL, changed fields (`updated:issue`) or a comment regex; ignore self-generated events (loop guard); add a plain-language **AI condition** gate. Then run **code steps** (describe → AI generates → test → fix, same sandbox `api.*` as static post-functions, plus `api.forIssue(key)` and `api.context.event`) or an **AI agent** (instructions + an allow-list of actions the model may take).
 - **Scheduled Jobs** run on a cron schedule (presets from every 5 minutes to monthly, any IANA time zone, 5-minute tick) — once, or per issue of a **JQL scope** (escalation-style) — with the same code-steps / AI-agent modes and a "Run now" button.
 - Both are managed in the admin panel and through the **Rules REST API** (`Settings → API access` mints bearer tokens; `?resource=listeners|jobs` supports create/upsert/update/delete/enable/disable/test/run, plus `events`, `actions`, `logs`, `samples`, `tasks`). Details: [`docs/LISTENERS-AND-JOBS.md`](docs/LISTENERS-AND-JOBS.md).
+
+#### Virtual Administrators & Confluence (1.5)
+
+- **Virtual Administrators** are scheduled jobs with `mode: "va"`: an agent with a persona, a read scope and a never-site-wide write scope, an intake of service desk queues, JQL and mentions, a cadence with a posting window, a closed list of powers and enforced guardrails. Each tick sweeps the intake and stages replies; a separate post phase delivers a draft on a later tick only after a wall-clock floor and eleven checks (shadow mode, freshness, quiet, anti-pile-up, audience, caps, write scope, voice lint, a fail-closed claim, a read-back). It never posts directly and never changes configuration. Admin panel → **Agents**, and `?resource=agents` over the Rules REST API. Details: [`docs/VIRTUAL-ADMINISTRATOR.md`](docs/VIRTUAL-ADMINISTRATOR.md).
+- **Confluence** (with the app also installed on Confluence): a validator that searches Confluence live from a CQL template or judges the top pages semantically, a condition over the advisory `cognirunner.confluence` property, a queued page writer and an inline comment post-function, and five agent actions bounded by a per-agent space allow-list. Details: [`docs/CONFLUENCE.md`](docs/CONFLUENCE.md).
 
 ### Agentic Validation
 

@@ -397,11 +397,12 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   if (method === "DELETE") {
     const gate = floor("editor", `delete a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
-    { const va = vaDoor(await get(id)); if (va) return va; }
+    const rowForDelete = await get(id);
+    { const va = vaDoor(rowForDelete); if (va) return va; }
     // `destructive` selects the narrower ownership rule the delete resolver uses: an
     // OWNERLESS row is not yours. The row is read before the gate so an unknown id and
     // a foreign one give a scope-"own" caller the same answer (F-261).
-    const owned = await ownerGate(who, await get(id), { what: `delete this ${noun}`, destructive: true, notFound: `${noun} not found` });
+    const owned = await ownerGate(who, rowForDelete, { what: `delete this ${noun}`, destructive: true, notFound: `${noun} not found` });
     if (owned) return owned;
     const r = await remove(id);
     return json(r.removed ? 200 : 404, r.removed ? { deleted: id } : { error: `${noun} not found` });

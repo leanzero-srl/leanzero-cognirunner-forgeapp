@@ -34,6 +34,27 @@ const store = new Map();
  * never depend on the code alone — src/memories.js refuses an over-cap write BEFORE handing it
  * to KVS, and treats any throw from the write as the same refusal.
  */
+/*
+ * F-349 — THE KEY GRAMMAR. Forge KVS refuses a key that does not match its own pattern
+ * with `ForgeKvsAPIError` code INVALID_KEY (observed live 2026-09-13, F-346: the per-repo
+ * hook secret key embedded "owner/name" and could never be written, which killed the whole
+ * inbound git path). The mock had NO key check, so five broken builders passed offline.
+ * It enforces the platform pattern now, so a future builder that emits an illegal key
+ * fails in the offline suite instead of on somebody's webhook.
+ */
+const KVS_KEY_PATTERN = /^(?!\s+$)[a-zA-Z0-9:._\s#-]+$/;
+export const KVS_INVALID_KEY_CODE = "INVALID_KEY";
+const enforceKey = (key, httpPath) => {
+  if (typeof key === "string" && key.length > 0 && key.length <= 500 && KVS_KEY_PATTERN.test(key)) return;
+  // Mirrors ForgeKvsAPIError exactly as the platform returned it (message included).
+  const error = new Error(`Field 'key' must match pattern "^(?!\\s+$)[a-zA-Z0-9:._\\s-#]+$"`);
+  error.name = "ForgeKvsError";
+  error.code = KVS_INVALID_KEY_CODE;
+  error.responseDetails = { status: 400, statusText: "Bad Request", traceId: "mock-trace", httpMethod: "POST", httpPath };
+  error.context = { key: String(key) };
+  throw error;
+};
+
 const KVS_MAX_VALUE_BYTES = 245760;
 export const KVS_PLATFORM_MAX_VALUE_BYTES = KVS_MAX_VALUE_BYTES;
 export const KVS_STORAGE_LIMIT_CODE = "STORAGE_LIMIT_EXCEEDED";
@@ -68,6 +89,7 @@ let pendingGetFault = null;
 
 const storage = {
   async get(key) {
+    enforceKey(key, "/api/v1/get");
     if (pendingGetFault) {
       const fault = pendingGetFault;
       pendingGetFault = null;
@@ -76,6 +98,7 @@ const storage = {
     return store.has(key) ? clone(store.get(key)) : undefined;
   },
   async set(key, value, options = {}) {
+    enforceKey(key, "/api/v1/set");
     if (pendingSetFault) {
       const fault = pendingSetFault;
       pendingSetFault = null;
@@ -91,7 +114,7 @@ const storage = {
     enforceValueSize(key, value);
     store.set(key, clone(value)); return { key };
   },
-  async delete(key) { store.delete(key); },
+  async delete(key) { enforceKey(key, "/api/v1/delete"); store.delete(key); },
   query() {
     let prefix = ""; let cap = 10; let after = "";
     const query = {
@@ -114,6 +137,8 @@ const storage = {
       delete(key) { deletes.push(key); return transaction; },
       async execute() {
         // No await between mutations: all-or-nothing visibility to other calls.
+        for (const { key } of sets) enforceKey(key, "/api/v1/transact");
+        for (const key of deletes) enforceKey(key, "/api/v1/transact");
         for (const { key, options } of sets) if (options?.keyPolicy === "FAIL_IF_EXISTS" && store.has(key)) throw new Error("Key already exists");
         for (const { key, value } of sets) enforceValueSize(key, value);
         for (const { key, value } of sets) store.set(key, clone(value));

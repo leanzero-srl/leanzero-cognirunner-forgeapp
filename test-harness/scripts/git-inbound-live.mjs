@@ -18,10 +18,13 @@
  * on somebody's repository. Point it at a real repo id that is on the stand-in
  * connection's allow-list; nothing here ever talks to GitHub.
  *
- * KNOWN BLOCKER (2026-09-13, F-346): `gitHookSecretKey` embeds the repo id
- * "owner/name" verbatim and Forge KVS rejects "/" in a key, so the plant fails with
- * INVALID_KEY and every delivery answers 503. This script reports that as a FAIL
- * with the KVS error attached rather than pretending the surface is unproven.
+ * F-346 (fixed 2026-09-13, not yet re-proven live): `gitHookSecretKey` used to embed the
+ * repo id "owner/name" verbatim, and Forge KVS rejects "/" in a key — the plant failed
+ * with INVALID_KEY and every delivery answered 503. The key part is now built by
+ * `repoKeyPart` (src/shared/git-ids.js): "owner#name.<8-hex>". This script never asserts
+ * a key STRING — it echoes whatever key the plant reports — so nothing here had to change;
+ * what it still does is report a failed plant as a FAIL with the KVS error attached
+ * rather than pretending the surface is unproven. Re-run it to close F-346 live.
  *
  *   node scripts/git-inbound-live.mjs                 # plant, deliver, assert, clean up
  *   KEEP=1 node scripts/git-inbound-live.mjs          # leave the stand-in row in place

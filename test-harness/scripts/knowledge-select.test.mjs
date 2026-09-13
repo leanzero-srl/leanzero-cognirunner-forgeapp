@@ -278,6 +278,46 @@ ok(scored.length === corpus.length, "scoreSections returns one row per section")
 ok(scored.every((r) => Number.isFinite(r.score)), "every score is finite");
 ok(scored.every((r) => r.score >= 0), "no score is negative");
 
+/* 16. THE BAKED CORPUS CAN ACTUALLY FILL THE BUDGET IT IS GIVEN (F-539).
+       Every property above is checked against a synthetic corpus, which is right for the
+       selector but blind to the allow-list: `knowledge/sources.json` decides which real
+       sections carry which audience tag, and the selector cannot tell an audience that
+       was never tagged from one that simply scored nothing. Before F-539 the tags gave
+       `fix` 5 sections and `validator` 8, against budgets of 12 KB and 6 KB — the two
+       surfaces with a real budget had no corpus to spend it on, and nothing failed.
+       So this asserts the REAL index, which is the artefact the runtime registers. */
+const index = await import(pathToFileURL(path.join(sharedDir, "knowledge-index.js")).href);
+const realSections = index.KNOWLEDGE_INDEX;
+const realPins = index.KNOWLEDGE_PINS || {};
+ok(Array.isArray(realSections) && realSections.length > 0, "the baked index is non-empty");
+
+// 20 is a FLOOR, not a target: at ~2-3 KB a section a 6 KB budget spends two or three of
+// them, so 20 is the smallest corpus that lets the SCORER choose rather than hand over
+// whatever exists. An audience with a budget and five sections is a mis-tagged allow-list.
+const MIN_SECTIONS = 20;
+for (const [audience, budget] of Object.entries(limits.FIELD_GUIDE_BUDGET_BYTES)) {
+  if (budget < 6144) continue;
+  const available = realSections.filter((s) => (s.audience || []).includes(audience));
+  ok(available.length >= MIN_SECTIONS,
+    `audience "${audience}" (budget ${budget} B) has ${available.length} baked sections, needs >= ${MIN_SECTIONS}`);
+  const availableBytes = available.reduce((n, s) => n + (s.bytes || 0), 0);
+  ok(availableBytes >= budget,
+    `audience "${audience}" has ${availableBytes} B of corpus, more than its ${budget} B budget`);
+}
+
+// The fix prompt's pin: the sandbox traps are the mistakes the model makes unprompted, so
+// they lead the block rather than competing with the rest of the corpus for a slot. The
+// pack's `purpose` line has claimed this since the first bake; `pinned` was empty.
+const fixPins = realPins.fix || [];
+ok(fixPins.length > 0, "the fix audience has at least one pin");
+const pinnedFixSections = realSections.filter((s) =>
+  fixPins.some((p) => mod.pinMatchesSection(parsePin(p), s)));
+ok(pinnedFixSections.length > 0, "every fix pin resolves to a baked section");
+ok(pinnedFixSections.some((s) => s.pack === "cognirunner-sandbox-traps"),
+  "the fix pins include the CogniRunner sandbox-trap core");
+ok(pinnedFixSections.every((s) => (s.audience || []).includes("fix")),
+  "a section pinned for fix also carries the fix audience tag — a pin cannot smuggle past the filter");
+
 registerKnowledgePins({ agent: ["administrator-practice#blast-radius"] });
 clearKnowledgeSections();
 ok(getKnowledgeSections().length === 0, "clearKnowledgeSections empties the registry");

@@ -43,7 +43,8 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix"
     ],
     "provenance": {
       "source": "confluence-api",
@@ -74,7 +75,8 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix"
     ],
     "provenance": {
       "source": "confluence-api",
@@ -108,7 +110,8 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix"
     ],
     "provenance": {
       "source": "confluence-api",

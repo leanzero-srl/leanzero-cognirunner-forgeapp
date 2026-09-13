@@ -45,7 +45,8 @@ export const SECTIONS = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -79,7 +80,8 @@ export const SECTIONS = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -114,7 +116,8 @@ export const SECTIONS = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -150,7 +153,8 @@ export const SECTIONS = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -184,7 +188,8 @@ export const SECTIONS = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -220,7 +225,8 @@ export const SECTIONS = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -259,7 +265,8 @@ export const SECTIONS = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -290,7 +297,8 @@ export const SECTIONS = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -324,7 +332,8 @@ export const SECTIONS = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -351,7 +360,8 @@ export const SECTIONS = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -380,7 +390,8 @@ export const SECTIONS = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -413,7 +424,8 @@ export const SECTIONS = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -447,7 +459,8 @@ export const SECTIONS = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -480,7 +493,8 @@ export const SECTIONS = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -510,7 +524,8 @@ export const SECTIONS = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -541,7 +556,9 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "platform-fact-memories",
@@ -570,7 +587,9 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "platform-fact-memories",
@@ -599,7 +618,9 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "platform-fact-memories",
@@ -629,7 +650,9 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "platform-fact-memories",
@@ -657,7 +680,9 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "platform-fact-memories",
@@ -693,7 +718,9 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "platform-fact-memories",
@@ -726,7 +753,9 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "platform-fact-memories",
@@ -757,7 +786,9 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "platform-fact-memories",

@@ -29,10 +29,45 @@ for (const ns of ["jira", "git", "confluence", "web", "ledger"]) {
   ok(row && typeof row.label === "string", `namespace ${ns} exists`);
   ok("requiresCapability" in row && "requiresProduct" in row, `namespace ${ns} declares its flags`);
 }
-for (const ns of ["confluence"]) {
-  ok(AGENT_ACTION_NAMESPACES[ns].reserved === true, `${ns} is reserved`);
-  eq(AGENT_ACTIONS.filter((a) => agentActionNamespace(a) === ns).map((a) => a.id), [], `${ns} is still empty`);
+// NOTHING IS RESERVED ANY MORE (1.5 commits 4a + 4b). The flag stays in the shape so the
+// next namespace can be declared before its executor exists; that it is false everywhere
+// is asserted so a namespace cannot be quietly re-reserved with its actions still listed.
+ok(Object.values(AGENT_ACTION_NAMESPACES).every((r) => r.reserved === false), "no namespace is reserved");
+for (const ns of AGENT_ACTION_NAMESPACE_IDS) {
+  ok(AGENT_ACTIONS.some((a) => agentActionNamespace(a) === ns), `namespace ${ns} has at least one action`);
 }
+
+/* ---------- 1.5 commit 4b — the CONFLUENCE namespace is filled ---------- */
+const CONFLUENCE_SNAPSHOT = ["confluence_search", "confluence_get_page", "confluence_create_page", "confluence_update_page", "confluence_add_comment"];
+eq(AGENT_ACTIONS.filter((a) => agentActionNamespace(a) === "confluence").map((a) => a.id), CONFLUENCE_SNAPSHOT,
+  "the confluence namespace is the five planned actions");
+ok(AGENT_ACTION_NAMESPACES.confluence.executor === "confluence-actions", "confluence names its executor module");
+ok(AGENT_ACTION_NAMESPACES.confluence.requiresCapability === null,
+  "confluence requires NO capability — the product is the gate, and the install probe is the run-time half");
+for (const id of CONFLUENCE_SNAPSHOT) {
+  const a = getAgentAction(id);
+  ok(a.requiresProduct === "confluence", `${id} names the product it needs`);
+  ok(a.dangerous === undefined, `${id} is not dangerous`);
+  ok(!("cql" in a.parameters.properties), `${id} offers the model NO query language`);
+}
+// A SITE WITHOUT CONFLUENCE refuses every one of them, by name, at save time.
+{
+  const r = normalizeAllowedActions(CONFLUENCE_SNAPSHOT, { products: ["jira"], savedByRole: "admin" });
+  eq(r.allowed, [], "confluence.BLOCK_missing_product");
+  ok(r.refused.every((x) => x.reason === "missing-product:confluence"), "…and the reason names the product");
+  ok(/does not have confluence/.test(agentActionRefusalText("missing-product:confluence")), "…in a sentence an admin can act on");
+}
+// The two PAGE writes need an admin-saved rule on a headless surface; the comment does not.
+{
+  const r = normalizeAllowedActions(CONFLUENCE_SNAPSHOT, { products: ["jira", "confluence"], savedByRole: null });
+  eq(r.allowed, ["confluence_search", "confluence_get_page", "confluence_add_comment"], "confluence.BLOCK_page_writes_without_admin");
+  eq(r.refused.map((x) => x.id), ["confluence_create_page", "confluence_update_page"], "…and it is exactly the two page writes");
+  const all = normalizeAllowedActions(CONFLUENCE_SNAPSHOT, { products: ["jira", "confluence"], savedByRole: "admin" });
+  eq(all.allowed, CONFLUENCE_SNAPSHOT, "confluence.ALLOW_admin_saved_with_the_product");
+}
+// The three writes are writes: the dispatcher's cross-namespace write ledger counts them.
+ok(hasWriteActions(["confluence_add_comment"], { products: ["jira", "confluence"] }), "confluence writes count as writes");
+ok(!hasWriteActions(["confluence_search", "confluence_get_page"], { products: ["jira", "confluence"] }), "confluence reads do not");
 
 /* ---------- 1.5 commit 4a — the LEDGER namespace is filled ---------- */
 // The five speech/state actions lived as `VA_SPEECH_ACTIONS` inside src/virtual-admin.js

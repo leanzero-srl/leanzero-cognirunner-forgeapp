@@ -38,6 +38,11 @@ import { recordTick } from "../../src/va-ledger.js";
 // The allow-list the F-507 source assertion reads: the receipt keys the projection
 // deliberately does not hand to the tab, each with its reason.
 import { RECEIPT_NOT_PROJECTED } from "../../src/va-admin.js";
+/* F-614 - the settle projection and the tombstone key/window it is derived from. The
+   constant is imported, never retyped: this suite must fail if the tab and the engine
+   could ever disagree about the minute the clear happens. */
+import { settlingProjection } from "../../src/va-admin.js";
+import { vaPurgedKey, VA_PURGE_SETTLE_MS } from "../../src/shared/va-keys.js";
 // F-508: the tests assert against the CEILING, never a retyped literal.
 import { VA_CEILINGS } from "../../src/shared/va-config.js";
 const { default: forgeApi, pushed } = await import("@forge/api");
@@ -865,7 +870,8 @@ let agentId = null;
  * drifting apart on a field name. */
 {
   const st = await call("getVaStatus", { jobId: agentId });
-  has(st, ["lastTick", "staged", "nextTick", "nextPostWindow", "shadow", "paused", "health", "receipts"], "getVaStatus");
+  has(st, ["lastTick", "staged", "nextTick", "nextPostWindow", "shadow", "paused", "health", "receipts", "settling"], "getVaStatus");
+  ok(st.settling === null, "F-614: an agent with no tombstone projects `settling: null`, so the card shows nothing extra");
   ok(st.nextPostWindow && typeof st.nextPostWindow.from === "string" && !Number.isNaN(Date.parse(st.nextPostWindow.from)),
     `nextPostWindow.from is an ISO INSTANT, not a wall clock — the tab renders it in the VIEWER's zone (got ${JSON.stringify(st.nextPostWindow)})`);
   ok(st.nextPostWindow && Date.parse(st.nextPostWindow.to) > Date.parse(st.nextPostWindow.from),
@@ -1403,6 +1409,57 @@ let agentId = null;
     ok(patchFn.includes(required),
       `F-537: …while still writing through \`${required}\`, like every other job writer`);
   }
+}
+
+/* ═════ F-614. THE SETTLE WINDOW IS A READ, AND IT IS THE ONLY SURFACE THE WAIT HAS ═════
+ *
+ * The tick arm that skips a re-created agent while the deleted one's turns finish is
+ * RECEIPT-FREE by design (the receipt is a ledger write and the standing tombstone is what
+ * refuses ledger writes). The Agents tab renders skips off RECORDED receipts, so the
+ * sentence written for this moment could never appear and a re-created agent showed the
+ * admin nothing at all for five minutes. The fix does not add a write: `status` READS the
+ * tombstone and projects the wait.
+ *
+ * Three cases, because all three reach a live admin: a tombstone inside its window, one
+ * that has outlived it (still standing, so the clear is being refused by the claim scan),
+ * and none at all.
+ */
+{
+  const T = Date.parse("2026-09-14T19:00:00.000Z");
+
+  // 1. STANDING AND INSIDE THE WINDOW.
+  const fresh = settlingProjection({ purged: true, at: new Date(T - 60 * 1000).toISOString() }, T);
+  ok(fresh && fresh.reason === "window", `F-614: a tombstone stamped a minute ago is settling on the WINDOW (got ${JSON.stringify(fresh)})`);
+  ok(fresh && Date.parse(fresh.until) - Date.parse(fresh.since) === VA_PURGE_SETTLE_MS,
+    "F-614: …and `until` is exactly VA_PURGE_SETTLE_MS after `since` — the same constant clearPurgeTombstone refuses on, not a second copy");
+  ok(fresh && Date.parse(fresh.until) > T, "F-614: …and the window has not closed yet, which is what the card prints");
+
+  // 2. STANDING PAST THE WINDOW. The clock cannot be holding it, so the persistent refusal
+  //    is the truncated claim scan (F-585/F-596) — the lockout that can last days.
+  const stale = settlingProjection({ purged: true, at: new Date(T - 3 * 3600 * 1000).toISOString() }, T);
+  ok(stale && stale.reason === "scan_truncated",
+    `F-614: a tombstone that has OUTLIVED its window is not reported as a window wait (got ${JSON.stringify(stale)})`);
+  ok(stale && Date.parse(stale.until) < T, "F-614: …and its `until` is in the past, so the copy cannot promise a minute that has gone");
+
+  // 3. NO TOMBSTONE, A READ FAULT, AND AN UNDATED ROW.
+  ok(settlingProjection({ purged: false, at: null }, T) === null, "F-614: no tombstone projects null, never a cheerful `not settling`");
+  ok(settlingProjection({ purged: true, at: "x", readFailed: true }, T) === null, "F-614: a READ FAULT projects null — a fault is not a fact about the agent");
+  ok(settlingProjection(null, T) === null, "F-614: a missing row projects null");
+  const undated = settlingProjection({ purged: true, at: "not-a-date" }, T);
+  ok(undated && undated.until === null && undated.reason === "window",
+    `F-614: an UNDATED tombstone still stands, so the wait is reported WITHOUT a clock rather than dropped (got ${JSON.stringify(undated)})`);
+
+  // 4. …AND IT REACHES THE RESOLVER THE TAB CALLS. The tombstone is written the way
+  //    `markAgentPurged` writes it and read back through the whole door.
+  await storage.set(vaPurgedKey(agentId), { at: new Date(Date.now() - 60 * 1000).toISOString(), agent: agentId });
+  const settlingSt = await call("getVaStatus", { jobId: agentId });
+  ok(settlingSt.success === true && settlingSt.settling && settlingSt.settling.reason === "window",
+    `F-614: getVaStatus projects the standing tombstone to the tab (got ${JSON.stringify(settlingSt.settling)})`);
+  ok(settlingSt.success === true && typeof settlingSt.settling.until === "string" && !Number.isNaN(Date.parse(settlingSt.settling.until)),
+    "F-614: …with `until` as an ISO INSTANT, so the tab renders the minute in the VIEWER's zone");
+  await storage.delete(vaPurgedKey(agentId));
+  const clearSt = await call("getVaStatus", { jobId: agentId });
+  ok(clearSt.success === true && clearSt.settling === null, "F-614: …and it goes away the moment the tombstone does");
 }
 
 console.log(`\nva-admin.test.mjs: ${pass} passed, ${fail} failed`);

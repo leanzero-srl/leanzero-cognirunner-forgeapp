@@ -3480,6 +3480,16 @@ html[data-color-mode="dark"] .va-badge-unknown { background: #ef4444; }
 .va-health-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
 html[data-color-mode="dark"] .va-health { background: #ef4444; }
 
+/* F-614 - the purge settle window: SOLID amber, because this is a WAIT and not a
+   failure. Red is reserved for "somebody must act"; nobody need act on this, it
+   clears itself. Same block shape as the health banner so the two read as one family,
+   never a tint and never a left rail. */
+.va-settling { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; }
+.va-settling-title { font-size: 12.5px; font-weight: 800; }
+.va-settling-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+.va-settling-pane { margin-bottom: 4px; }
+html[data-color-mode="dark"] .va-settling { background: #f59e0b; }
+
 .va-stats { display: flex; flex-wrap: wrap; gap: 10px 22px; }
 .va-stat { display: flex; flex-direction: column; gap: 2px; }
 .va-stat-label { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-secondary); }

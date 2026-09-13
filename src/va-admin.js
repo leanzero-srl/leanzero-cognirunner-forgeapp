@@ -88,6 +88,10 @@ import {
   // while the write had already refused. The measurer lives with the writer that enforces
   // the cap; a reader that measures it its own way is a reader that disagrees with it.
   memoryBytes,
+  // F-614 — the tombstone READ, not a second copy of it. The status projection has to
+  // answer "is this agent inside its purge settle window?" and the one reader of
+  // `va_purged:{agent}` lives with the writer and with `clearPurgeTombstone`.
+  readPurgeTombstone,
 } from "./va-ledger.js";
 import {
   isVaJob, vaOf, readScopeProjects, wrapScopedJql, inPostWindow,
@@ -111,6 +115,10 @@ import {
   vaWizardKey, vaTickPrefix, vaEffectPrefix, VA_WIZARD_TTL, VA_CLAIM_TTL,
   // F-595 — the tombstone prefix, for the one purge an admin must act on.
   vaPurgedPrefix,
+  // F-614 — THE SAME WINDOW LENGTH `clearPurgeTombstone` refuses on. One home, so the
+  // "settling until HH:MM" the tab prints cannot promise a different minute from the one
+  // the engine will actually clear on.
+  VA_PURGE_SETTLE_MS,
 } from "./shared/va-keys.js";
 import {
   createWizard, resumeWizard, stepWizard, serializeWizardState, clampSay,
@@ -816,6 +824,53 @@ const publicReceipt = (r) => {
  * `lastTick` and `nextTick` are ISO INSTANTS, not objects: the tab renders both through
  * `when(iso, tz)`. `staged` is a COUNT. `shadow` is null when the agent is live.
  */
+/**
+ * F-614 - THE ONE SURFACE A RE-CREATED AGENT HAS WHILE ITS PURGE SETTLES.
+ *
+ * `runVaTick`'s `purge-settling` arm is RECEIPT-FREE and must stay that way: the receipt
+ * is a ledger write and the standing tombstone is exactly what refuses ledger writes (see
+ * the comment on that arm in src/virtual-admin.js). So for the whole settle window the
+ * agent ticks, does nothing, and writes nothing - and the tab, which renders skips from
+ * RECORDED receipts only, had nothing to show. The sentence written for this moment could
+ * never appear. An admin's only evidence was `forge logs`.
+ *
+ * The fix is a READ, not a write: the tombstone row itself is the durable fact, so the
+ * status projection reads it and reports the wait. Nothing here writes under a tombstone.
+ *
+ * `until` is `since + VA_PURGE_SETTLE_MS`, the SAME constant `clearPurgeTombstone` refuses
+ * on, imported rather than retyped - a tab that printed its own idea of the window would
+ * promise a minute the engine does not honour.
+ *
+ * THE TWO REASONS, and the honest limit of what a read can tell:
+ *  - `window` - now is inside `[since, until)`. The clear is refusing on condition 2, the
+ *    settle clock, and this is certain from the row alone.
+ *  - `scan_truncated` - the tombstone has OUTLIVED its window and still stands. The clock
+ *    cannot be what is holding it, so the clear is refusing on condition 3, the claim
+ *    scan - and of that arm's two refusals only truncation PERSISTS: a live claim is only
+ *    live while its own `at` is inside the same window, so it stops blocking on its own,
+ *    while a claim space bigger than the page budget truncates on every tick until the
+ *    rows age out (F-585/F-596). A tombstone still standing after the window is therefore
+ *    reported as truncation. It is an inference from persistence, not a reading of the
+ *    scan, and the copy it drives says only that the agent is still settling.
+ *
+ * A read fault or an absent tombstone is `null` - "no wait to report" - and never a
+ * cheerful "not settling": the card simply shows nothing extra, exactly as it does today.
+ */
+export const settlingProjection = (tomb, nowMs, settleMs = VA_PURGE_SETTLE_MS) => {
+  if (!isObj(tomb) || tomb.purged !== true || tomb.readFailed) return null;
+  const stamped = Date.parse(tomb.at == null ? "" : tomb.at);
+  // AN UNDATED TOMBSTONE STILL STANDS, and the tick still skips on it, so the wait is
+  // reported with no clock rather than dropped: `until: null` renders as a settle with no
+  // time, which is the truth, where silence would be the defect this row is closing.
+  if (!Number.isFinite(stamped)) return { since: tomb.at || null, until: null, reason: "window" };
+  const until = stamped + settleMs;
+  return {
+    since: new Date(stamped).toISOString(),
+    until: new Date(until).toISOString(),
+    reason: Number(nowMs) < until ? "window" : "scan_truncated",
+  };
+};
+
 export const status = async ({ jobId } = {}, injected = {}) => {
   const deps = withAdminDeps(injected);
   const loaded = await loadAgent(jobId, deps);
@@ -836,6 +891,8 @@ export const status = async ({ jobId } = {}, injected = {}) => {
 
   let nextTick = null;
   try { nextTick = await deps.nextRunOf(job); } catch (e) { nextTick = null; }
+  // F-614 - the purge tombstone, read for the ONE thing the receipts cannot carry.
+  const settling = settlingProjection(await readPurgeTombstone(deps.store, agent), now);
 
   return okv({
     id: job.id,
@@ -850,6 +907,8 @@ export const status = async ({ jobId } = {}, injected = {}) => {
     staged: items.ok ? items.items.filter((i) => i.state === "staged").length : null,
     itemsByState: items.ok ? countStates(items.items) : null,
     nextTick,
+    // `null` when there is no tombstone, so the tab renders nothing extra (F-614).
+    settling,
     nextPostWindow: postWindowInstants(va, now),
     shadow: await isInShadow(job, { store: deps.store }),
     paused: va.status.paused === true,

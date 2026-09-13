@@ -137,7 +137,28 @@ export const CONNECTION_SECURITY_MODEL = Object.freeze({
   tokensAreWriteOnly: true,
   /** Credential replacement happens on the queue, never in a resolver. */
   rotationIsQueuedOnly: true,
+  /** A harness stand-in row is credential-less BY CONSTRUCTION — see HARNESS_STATUS. */
+  harnessConnectionsAreTokenless: true,
 });
+
+/**
+ * F-339 — THE HARNESS STAND-IN STATUS, IN ONE PLACE.
+ *
+ * The inbound git path (webhook → verify → claim → enqueue → dispatch) needs a
+ * `git_conn:*` row to exist before it will route anything, and the dev hook is
+ * forbidden to create a credential — so the whole surface had no automatable
+ * live proof. A row with this status is the resolution: it ROUTES like a real
+ * connection (`getConnection` + `isRepoAllowed` are all the webhook reads) and
+ * it can never TALK to a provider, because every path that would reach for a
+ * credential refuses it by name before it reaches the network.
+ *
+ * Anything comparing against "harness" imports this constant. A row that
+ * carries it has no `git_conn_secret:*` key and `hasToken:false`.
+ */
+export const HARNESS_STATUS = "harness";
+export const isHarnessConnection = (row) => !!row && row.status === HARNESS_STATUS;
+/** The one refusal message for "this is a stand-in, there is nothing to call with". */
+const HARNESS_REFUSAL = "This is a harness stand-in connection with no credential — nothing can be called with it";
 
 /* ===== SHAPES ===== */
 
@@ -261,6 +282,15 @@ export async function providerForConnection(id, { repo, fetchImpl } = {}) {
   const row = await getConnection(id);
   if (!row) {
     throw new GitProviderError("not_found", "Unknown git connection", { operation: "providerForConnection" });
+  }
+  // A harness stand-in refuses in the SAME class as a dead token (auth_dead), so a
+  // downstream run — gitreview, an agent action — fails with a NAMED reason and
+  // never reaches GitHub. Checked before the secret read so nothing marks the row.
+  if (isHarnessConnection(row)) {
+    throw new GitProviderError("auth_dead", HARNESS_REFUSAL, {
+      provider: row.kind,
+      operation: "providerForConnection",
+    });
   }
   if (row.status === "auth_dead") {
     throw new GitProviderError("auth_dead", "This git connection's credential is no longer valid", {
@@ -559,6 +589,9 @@ export function publicWhoami(who) {
 export async function testConnection(id, { fetchImpl } = {}) {
   const row = await getConnection(id);
   if (!row) return { ok: false, error: "Unknown git connection", code: "not_found" };
+  // Same named refusal as every other credential path, and the row is left alone:
+  // a stand-in is not a connection that WENT dead.
+  if (isHarnessConnection(row)) return { ok: false, error: HARNESS_REFUSAL, code: "auth_dead" };
   let sec;
   try {
     sec = await readConnectionSecret(id);
@@ -656,6 +689,70 @@ export async function deleteConnection(id) {
   }
   await storage.delete(gitConnKey(id));
   return { ok: true };
+}
+
+/**
+ * F-339 — PLANT A TOKENLESS STAND-IN CONNECTION (dev harness only).
+ *
+ * The ONE home for the stand-in row's shape, so the dev hook stays wiring. It
+ * writes NO `git_conn_secret:*` key, ever, and it REFUSES rather than overwrite
+ * an existing row — a real connection must never be turned into a stand-in (and
+ * a stand-in must never inherit a real connection's repo allow-list).
+ * The caller is responsible for the dev gate; this function has no gate of its own
+ * and is never reachable from a resolver.
+ */
+export async function plantHarnessConnection({ id, kind = "github", repoId, accountId = "harness" } = {}) {
+  if (!id || !/^[A-Za-z0-9_-]{1,64}$/.test(String(id))) return { ok: false, error: "A connection id is required", code: "invalid" };
+  if (!GIT_PROVIDER_KINDS.includes(kind)) return { ok: false, error: "Unknown provider kind", code: "invalid" };
+  const repo = normalizeRepoId(repoId);
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return { ok: false, error: "repoId must be owner/name", code: "invalid" };
+  if (await getConnection(id)) {
+    return { ok: false, error: "A connection with that id already exists — refusing to overwrite it", code: "exists" };
+  }
+  const row = {
+    id: String(id),
+    kind,
+    label: "harness",
+    host: null,
+    owner: null,
+    createdBy: accountId,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    // No credential exists and none is claimed to.
+    hasToken: false,
+    status: HARNESS_STATUS,
+    authDeadAt: null,
+    authDeadReason: null,
+    lastCheckedAt: null,
+    login: null,
+    // EXACTLY the one repo asked for: a stand-in never widens an allow-list.
+    repos: [repo],
+    capabilities: null,
+  };
+  try {
+    // FAIL_IF_EXISTS as well as the read above: the read is the readable refusal,
+    // this is the one that holds under a race.
+    await storage.set(gitConnKey(row.id), row, { keyPolicy: "FAIL_IF_EXISTS" });
+  } catch (e) {
+    if (isKeyConflict(e)) return { ok: false, error: "A connection with that id already exists — refusing to overwrite it", code: "exists" };
+    throw e;
+  }
+  const ids = await readIndex();
+  if (!ids.includes(row.id)) await storage.set(GIT_CONN_INDEX_KEY, [...ids, row.id]);
+  return { ok: true, connection: publicConnection(row) };
+}
+
+/**
+ * F-339 — remove a stand-in. REFUSES any row that is not one, so this cannot
+ * become a delete path for a real connection (that stays admin-UI-only).
+ */
+export async function deleteHarnessConnection(id) {
+  const row = await getConnection(id);
+  if (!row) return { ok: false, error: "Unknown git connection", code: "not_found" };
+  if (!isHarnessConnection(row)) {
+    return { ok: false, error: "That connection is not a harness stand-in — refusing to delete it", code: "refused" };
+  }
+  return deleteConnection(id);
 }
 
 /* ===== PER-REPO WEBHOOK SECRETS ===== */

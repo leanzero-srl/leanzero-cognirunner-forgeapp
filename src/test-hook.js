@@ -82,12 +82,34 @@ export async function testStateTrigger(req) {
       if (!/^[A-Za-z0-9_-]{1,64}$/.test(connId)) return json(400, { error: "connId required" });
       if (!/^[^/\s]+\/[^/\s]+$/.test(repoId)) return json(400, { error: "repoId must be owner/name" });
       if (!/^[A-Za-z0-9]{16,80}$/.test(secretValue)) return json(400, { error: "secret must be 16-80 alphanumerics" });
-      const { gitHookSecretKey, normalizeRepoId } = await import("./git-connections.js");
+      const { gitHookSecretKey, normalizeRepoId, plantHarnessConnection } = await import("./git-connections.js");
+      // F-339 — the secret alone proves nothing: `gitWebhook` 404s unless a
+      // `git_conn:*` row exists AND the repo is on its allow-list, and the write
+      // resolvers are deliberately off the allow-list below. So the hook may plant
+      // a TOKENLESS STAND-IN row for the same connId — routing without a credential.
+      // Its shape lives in git-connections.js; this is wiring. It never overwrites
+      // an existing row, and no `git_conn_secret:*` key is written on any path.
+      let connection = null;
+      if (body.plantConnection === true) {
+        const planted = await plantHarnessConnection({ id: connId, kind: body.kind || "github", repoId });
+        if (!planted.ok) return json(400, { error: planted.error, code: planted.code });
+        connection = planted.connection;
+      }
       const key = gitHookSecretKey(connId, repoId);
       await storage.set(key, { secret: secretValue, connId, repoId: normalizeRepoId(repoId), createdAt: new Date().toISOString() });
       // The secret is what the CALLER just sent us; echoing the KEY (never the value)
       // is what makes the plant verifiable without a read path for secrets.
-      return json(200, { ok: true, key });
+      return json(200, { ok: true, key, connection });
+    }
+    // F-339 — the cleanup half. It refuses any row that is not a stand-in, so it
+    // is not a delete path for a real connection (`deleteGitConnection` stays off
+    // the invoke allow-list).
+    if (body.action === "deleteHarnessConnection") {
+      const connId = String(body.connId || "");
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(connId)) return json(400, { error: "connId required" });
+      const { deleteHarnessConnection } = await import("./git-connections.js");
+      const r = await deleteHarnessConnection(connId);
+      return json(r.ok ? 200 : 400, r);
     }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
@@ -346,7 +368,10 @@ export async function testStateTrigger(req) {
         // saveForgeIdentity, clearForgeIdentity, rotateGitCredential. A harness that
         // can plant or destroy a credential is a harness that can be turned into
         // one, and a planted token would then exist on a real tenant — so the write
-        // side is driven by a human admin in the UI, never from here. The kvSet
+        // side is driven by a human admin in the UI, never from here. F-339 does NOT
+        // relax this: the `plantHookSecret` action can plant a TOKENLESS stand-in row
+        // (status "harness", no secret key, one repo) so the inbound path is provable,
+        // and `deleteHarnessConnection` refuses anything else — the resolvers stay out. The kvSet
         // allow-list below is NOT widened for `git_conn:*` / `git_conn_secret:*`
         // for the same reason: secrets are never plantable.
         // `testGitConnection` is here despite writing the whoami verdict back to the

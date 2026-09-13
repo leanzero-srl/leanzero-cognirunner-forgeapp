@@ -30,7 +30,7 @@ import { pushed, Queue } from "../lib/mock-forge-api.mjs";
 
 const { gitWebhook, mapGitEvent, buildGitEnvelope, gitIssueKeysFrom } = await import("../../src/index.js");
 const { extractEventContext, GIT_EVENT_IDS, isKnownEvent } = await import("../../src/shared/jira-events.js");
-const { gitHookSecretKey, gitConnKey } = await import("../../src/git-connections.js");
+const { gitHookSecretKey, gitConnKey, plantHarnessConnection, deleteHarnessConnection, HARNESS_STATUS, providerForConnection, testConnection } = await import("../../src/git-connections.js");
 const { safeKeyPart } = await import("../../src/shared/kvs-keys.js");
 
 let pass = 0, fail = 0;
@@ -365,6 +365,55 @@ seed();
     },
   }));
   ok(mixed.status === 202 && mixed.body.accepted === true, `an arbitrary mixed casing is read too (${JSON.stringify(mixed)})`);
+}
+
+/* ============ 4c. the harness stand-in row (F-339) ============ */
+{
+  // The inbound path had no automatable live proof: it needs a git_conn row, and
+  // the dev hook may not create a credential. A TOKENLESS stand-in row routes a
+  // signed delivery and can never talk to a provider.
+  storage.__reset();
+  pushed.length = 0;
+  const planted = await plantHarnessConnection({ id: "gc_harness", kind: "github", repoId: "LeanZero/CogniRunner" });
+  ok(planted.ok === true && planted.connection.status === HARNESS_STATUS, `a stand-in row is planted (${JSON.stringify(planted).slice(0, 160)})`);
+  ok(planted.connection.hasToken === false, "…with no credential and no claim to one");
+  ok(planted.connection.repos.length === 1 && planted.connection.repos[0] === "leanzero/cognirunner",
+    "…and an allow-list of exactly the one repo asked for, normalised");
+  ok(storage.__raw("git_conn_secret:gc_harness") === undefined, "NO secret key is written — not on any path");
+
+  const body = JSON.stringify(ghPr("opened"));
+  storage.__seed(gitHookSecretKey("gc_harness", "leanzero/cognirunner"), { secret: SECRET, connId: "gc_harness", repoId: "leanzero/cognirunner" });
+  const r = parse(await gitWebhook({
+    method: "POST", body, queryParameters: { conn: ["gc_harness"], repo: ["leanzero/cognirunner"] },
+    headers: { "X-Hub-Signature-256": [sign(body)], "X-GitHub-Event": ["pull_request"], "X-GitHub-Delivery": ["h-1"] },
+  }));
+  ok(r.status === 202 && r.body.accepted === true && pushed.length === 1,
+    `a signed delivery to the stand-in routes and enqueues (${JSON.stringify(r)})`);
+
+  // …and the credential paths refuse it BY NAME, in the auth_dead class, before
+  // any network call, so a downstream gitreview run never reaches GitHub.
+  let thrown = null;
+  try { await providerForConnection("gc_harness", { repo: "leanzero/cognirunner", fetchImpl: () => { throw new Error("NETWORK REACHED"); } }); }
+  catch (e) { thrown = e; }
+  ok(thrown && thrown.code === "auth_dead" && /harness stand-in/i.test(thrown.message),
+    `the token read refuses with a NAMED auth_dead reason (${thrown && thrown.message})`);
+  const tested = await testConnection("gc_harness", { fetchImpl: () => { throw new Error("NETWORK REACHED"); } });
+  ok(tested.ok === false && tested.code === "auth_dead" && /harness stand-in/i.test(tested.error),
+    `testConnection refuses the same way (${JSON.stringify(tested)})`);
+  ok(storage.__raw(gitConnKey("gc_harness")).status === HARNESS_STATUS,
+    "…and the row is left alone — a stand-in is not a connection that WENT dead");
+
+  // A REAL row is never overwritten, and never deleted through the harness path.
+  storage.__seed(gitConnKey("gc_real"), { id: "gc_real", kind: "github", label: "real", repos: ["leanzero/private"], status: "ok", hasToken: true });
+  const clash = await plantHarnessConnection({ id: "gc_real", kind: "github", repoId: "LeanZero/CogniRunner" });
+  ok(clash.ok === false && clash.code === "exists", `planting over a real connection is REFUSED (${JSON.stringify(clash)})`);
+  ok(storage.__raw(gitConnKey("gc_real")).label === "real" && storage.__raw(gitConnKey("gc_real")).repos[0] === "leanzero/private",
+    "…and the real row is untouched, allow-list included");
+  const delReal = await deleteHarnessConnection("gc_real");
+  ok(delReal.ok === false && delReal.code === "refused", `deleting a real connection through the harness path is REFUSED (${JSON.stringify(delReal)})`);
+  ok(!!storage.__raw(gitConnKey("gc_real")), "…and it is still there");
+  const delHarness = await deleteHarnessConnection("gc_harness");
+  ok(delHarness.ok === true && !storage.__raw(gitConnKey("gc_harness")), "the stand-in itself deletes cleanly");
 }
 
 /* ===================== 5. redelivery ===================== */

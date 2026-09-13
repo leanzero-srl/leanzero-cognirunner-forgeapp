@@ -565,6 +565,24 @@ ok(conns.CONNECTION_SECURITY_MODEL.agentReposAreAllowListed === true, "agents ar
 ok(conns.CONNECTION_SECURITY_MODEL.repoAllowListEditableBy === "admin", "only an admin edits the allow-list");
 ok(conns.CONNECTION_SECURITY_MODEL.tokensAreWriteOnly === true, "tokens are write-only");
 ok(conns.CONNECTION_SECURITY_MODEL.rotationIsQueuedOnly === true, "rotation is queued-only");
+ok(conns.CONNECTION_SECURITY_MODEL.harnessConnectionsAreTokenless === true, "a harness stand-in is tokenless by construction (F-339)");
+ok(conns.HARNESS_STATUS === "harness" && conns.isHarnessConnection({ status: "harness" }) === true
+  && conns.isHarnessConnection({ status: "ok" }) === false,
+  "the stand-in status has ONE home and one predicate");
+// The stand-in never carries a credential and is never returned as if it had one.
+reset();
+const hPlant = await conns.plantHarnessConnection({ id: "gc_h1", kind: "github", repoId: "LeanZero/Cogni" });
+ok(hPlant.ok === true && hPlant.connection.hasToken === false && hPlant.connection.status === "harness",
+  `the stand-in plants tokenless (${JSON.stringify(hPlant).slice(0, 140)})`);
+ok(storage.__raw(conns.gitConnSecretKey("gc_h1")) === undefined, "…and no secret key exists for it");
+ok((await conns.listConnections()).some((c) => c.id === "gc_h1"), "…it is INDEXED, so an admin can see and remove it");
+const hProbes = fetchCalls.length;
+const hTest = await conns.testConnection("gc_h1");
+ok(hTest.ok === false && hTest.code === "auth_dead" && fetchCalls.length === hProbes,
+  `testing a stand-in refuses in the auth_dead class without a network call (${JSON.stringify(hTest)})`);
+const hDel = await conns.deleteHarnessConnection("gc_h1");
+ok(hDel.ok === true, "the stand-in deletes");
+ok(!(await conns.listConnections()).some((c) => c.id === "gc_h1"), "…and leaves the index");
 ok(Object.isFrozen(conns.CONNECTION_SECURITY_MODEL), "and the model cannot be mutated at runtime");
 
 /* ===================== 11. THE DEEP SCAN (runs last, over everything above) ===== */

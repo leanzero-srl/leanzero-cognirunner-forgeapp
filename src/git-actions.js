@@ -220,10 +220,44 @@ export const createGitActionExecutor = ({
         const connOwner = str(conn.owner || conn.workspace || "").trim();
         if (owner && connOwner && owner.toLowerCase() !== connOwner.toLowerCase()) refuse("not_allowed", `This connection may only create repositories under "${connOwner}".`);
         if (owner && !connOwner) refuse("not_allowed", "This connection does not declare an owner, so a repository may only be created in its own account (omit org).");
+        // The BUDGET IS CHECKED HERE AND SPENT ON SUCCESS (F-308). Counting the attempt
+        // meant a simulated create, or one that failed with bad_request, permanently
+        // burned the run's single allowance and the model was then refused with a cap
+        // message for a repository that was never created.
         if (createdRepos >= MAX_CREATE_REPO_PER_RUN) refuse("not_allowed", `Only ${MAX_CREATE_REPO_PER_RUN} repository may be created per run.`);
-        createdRepos++;
-        const payload = { name, org: owner || (connOwner || undefined), private: args.private !== false, description: clampText(args.description, 1000, "description") };
-        return { summary: payload, call: (p) => p.createRepo(payload) };
+        const onSuccess = () => { createdRepos++; };
+        const common = { name, private: args.private !== false, description: clampText(args.description, 1000, "description") };
+        // ONE plan, TWO provider vocabularies (F-300). Bitbucket's adapter takes
+        // `workspace` and REQUIRES it; the model only ever knows the action's `org`
+        // argument, so the mapping happens here rather than being an argument error
+        // naming a parameter the model was never offered.
+        if (conn.kind === "bitbucket") {
+          const workspace = owner || str(conn.workspace || conn.owner || "").trim();
+          if (!workspace) refuse("not_configured", "This Bitbucket connection has no workspace, so a repository cannot be created. Set the workspace on the connection in the Code tab.");
+          const payload = { ...common, workspace };
+          return { summary: payload, onSuccess, call: (p) => p.createRepo(payload) };
+        }
+        // GitHub: a PERSONAL account creates through /user/repos, an ORGANISATION
+        // through /orgs/{org}/repos, and the adapter picks by whether `org` is set
+        // (F-301). `conn.owner` is the whoami LOGIN for both kinds, so it cannot
+        // answer the question — only the account TYPE can. Until the connection
+        // stores it, REFUSE with a cause an admin can act on rather than send a
+        // personal account to /orgs/<login>/repos and report a 404.
+        const accountType = str(conn.accountType || conn.ownerType || "").trim().toLowerCase();
+        if (owner) {
+          const payload = { ...common, org: owner };
+          return { summary: payload, onSuccess, call: (p) => p.createRepo(payload) };
+        }
+        if (accountType === "user") {
+          const payload = { ...common };           // no org ⇒ /user/repos
+          return { summary: payload, onSuccess, call: (p) => p.createRepo(payload) };
+        }
+        if (accountType === "organization" || accountType === "org") {
+          if (!connOwner) refuse("not_configured", "This connection does not declare an organisation, so a repository cannot be created.");
+          const payload = { ...common, org: connOwner };
+          return { summary: payload, onSuccess, call: (p) => p.createRepo(payload) };
+        }
+        refuse("not_configured", "This connection does not record whether its account is a user or an organisation, so a repository cannot be created safely. Re-test the connection in the Code tab to refresh its identity, or pass org explicitly.");
       },
     },
     create_branch: {
@@ -352,6 +386,9 @@ export const createGitActionExecutor = ({
           return capResult({ success: true, simulated: true, action: id, connection: conn.id || null, request: planned.summary });
         }
         const out = await planned.call(await getProvider());
+        // Per-run budgets are spent by RESULTS, never by attempts (F-308). This runs
+        // only on the real, successful path — a simulation returned above.
+        if (typeof planned.onSuccess === "function") planned.onSuccess();
         log(`git ${id} ok`);
         return capResult({ success: true, action: id, ...(out && typeof out === "object" && !Array.isArray(out) ? out : { result: out }) });
       } catch (e) {

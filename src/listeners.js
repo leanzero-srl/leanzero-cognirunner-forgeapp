@@ -39,7 +39,7 @@ import {
   isKnownEvent, getEvent, eventLabel, extractEventContext, changedFieldsOf, commentTextOf,
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
-import { assertAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { assertAllowedActions, buildAgentGateContext, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -897,7 +897,14 @@ const summarizeEventForAi = (eventType, event, ctx) => {
  * Run ONE listener against ONE event. Shared by the queue consumer (live) and the
  * editor's "Test with an issue" (simulated). Returns the outcome + a ready log entry.
  */
-export const runListener = async ({ listener, eventType, event, ctx, deadline = Date.now() + LISTENER_RUN_BUDGET_MS, cancelToken = null, forceSimulation = false, source = "async" }) => {
+export const runListener = async ({ listener, eventType, event, ctx, deadline = Date.now() + LISTENER_RUN_BUDGET_MS, cancelToken = null, forceSimulation = false, source = "async",
+  // RUN-TIME GATE (F-302). `gateFacts` are the instance's facts — { edition, provider,
+  // agentModel, allowanceLevel, products } — which only the caller can read (they live
+  // behind index.js). OMITTED means the most restrictive context: the 13 Jira actions
+  // behave exactly as before and nothing from another namespace is held, so forgetting
+  // to pass them can never be the way PAST the gate. `executors` carries the namespace
+  // modules (the caller owns the credentials); a namespace with none refuses.
+  gateFacts = null, executors = {} }) => {
   const m = await idx();
   const started = Date.now();
   const config = { ...listener, simulationMode: forceSimulation || listener.simulationMode === true };
@@ -927,10 +934,17 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
   }
   if (listener.mode === "agent") {
     const { runAgentTask } = await agentMod();
+    // A LISTENER IS AN EXTERNAL TRIGGER, always: an event we did not originate started
+    // this run and no human is watching it, so a `dangerous` action (approve code,
+    // block a merge, deploy) is dropped whatever was saved. `savedByRole` comes from
+    // the rule ROW, never from the delivery.
+    const agentGate = gateFacts
+      ? buildAgentGateContext({ ...gateFacts, triggerSource: "external", savedByRole: listener.savedByRole })
+      : undefined;
     const r = await runAgentTask({
       instructions: listener.agent.instructions, allowedActions: listener.agent.allowedActions, maxRounds: listener.agent.maxRounds,
       issueKey: ctx.issueKey || null, config, contextTitle: "EVENT", contextText: summarizeEventForAi(eventType, event, ctx),
-      deadline, cancelToken, extraContext,
+      deadline, cancelToken, extraContext, gate: agentGate, executors,
     });
     return {
       skipped: false, result: r, gate, ...agentResultFields(r),
@@ -971,7 +985,7 @@ export const claimListenerRun = (params, taskId) => claimRuleExecution(
 );
 
 /** Queue consumer entry: taskType "listener". */
-export const executeListenerTask = async (params, taskId) => {
+export const executeListenerTask = async (params, taskId, { gateFacts = null, executors = {} } = {}) => {
   const m = await idx();
   const { listenerId, eventType, event, ctx } = params || {};
   const listener = await getListener(listenerId);
@@ -990,7 +1004,7 @@ export const executeListenerTask = async (params, taskId) => {
   const started = Date.now();
   let out;
   try {
-    out = await runListener({ listener, eventType, event, ctx: ctx || extractEventContext(eventType, event), deadline: Date.now() + LISTENER_RUN_BUDGET_MS, cancelToken: taskId, source: "async" });
+    out = await runListener({ listener, eventType, event, ctx: ctx || extractEventContext(eventType, event), deadline: Date.now() + LISTENER_RUN_BUDGET_MS, cancelToken: taskId, source: "async", gateFacts, executors });
   } catch (e) {
     // A crash inside the run must still leave a trace — never a silent miss.
     console.error(`[listener] ${listener.id} run crashed:`, e);

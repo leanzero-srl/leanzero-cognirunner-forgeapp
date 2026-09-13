@@ -30,6 +30,8 @@
 const P = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
 // Issue references are named tool arguments, not the sandbox's overloaded
 // positional arguments. Accept Jira keys (case preserved) or numeric ID strings.
+import { agentCapability } from "./edition.js";
+
 export const ISSUE_REFERENCE_SCHEMA = Object.freeze({ type: "string", pattern: "^(?:[A-Za-z][A-Za-z0-9_]*-[0-9]+|[0-9]+)$" });
 const KEY = { ...ISSUE_REFERENCE_SCHEMA, description: "Issue key, e.g. PROJ-123, or numeric issue ID as a string. Omit to use the current issue." };
 
@@ -295,6 +297,55 @@ const gateActions = (ids, opts) => {
   return { allowed, refused };
 };
 
+/**
+ * THE ONE PLACE that turns the instance's facts into the gate's context (F-302).
+ *
+ * Before this existed, no production call site supplied a context at all: save time
+ * gated against the restrictive default and refused every git action with
+ * "capability-off:git", and there was no setting anywhere that could satisfy it,
+ * because `agentCapability()` was never called on that path. The context is built
+ * HERE, from the four facts that decide it, so the resolver, the REST API and the two
+ * run sites cannot each assemble a different one.
+ *
+ *   edition / provider / agentModel / allowanceLevel → the `git` capability verdict
+ *   products       → the site's products (defaults to ["jira"])
+ *   triggerSource  → "external" for anything an outside event started (a webhook, a
+ *                    listener delivery). Dangerous actions are dropped there.
+ *   savedByRole    → "admin" only when an admin saved the rule (src/listeners.js).
+ *
+ * Omitting a fact keeps the RESTRICTIVE answer — this helper never invents a
+ * capability it was not given.
+ */
+export const buildAgentGateContext = ({ edition = null, provider = null, agentModel = null, allowanceLevel = null, products = ["jira"], triggerSource = null, savedByRole = null } = {}) => ({
+  // A MAP, not a bare verdict: an absent key is refused rather than assumed (F-281),
+  // so adding the `web` namespace later cannot inherit git's answer.
+  //
+  // NO PROVIDER, NO CAPABILITY. `agentCapability` answers "enabled: byok" for any
+  // provider that is not Atlassian — including `null` — so a caller that built this
+  // context without reading the provider would silently ENABLE git. The builder
+  // refuses instead: an unknown provider is an unanswered question, and unanswered
+  // is refused, exactly like an absent map key.
+  capability: { git: provider ? agentCapability({ provider, edition, agentModel, allowanceLevel }) : { enabled: false, reason: "capability-off:git" } },
+  products, triggerSource, savedByRole,
+});
+
+/**
+ * The sentence an operator is shown for a refusal reason. The gate's reason CODES are
+ * for machines (`refused[{id,reason}]`); this is the human half, and it must name the
+ * REAL cause — "capability-off:git" told an admin nothing about what to change.
+ */
+export const agentActionRefusalText = (reason) => {
+  const code = String(reason || "");
+  if (code === "capability-off:git" || code === "needs-coder-edition") return "git actions need the Coder edition on Forge LLM, or any BYOK provider";
+  if (code === "needs-frontier-model") return "git actions on Forge LLM need a frontier agent model — pick one in Settings, or use a BYOK provider";
+  if (code === "allowance-exhausted") return "the Forge LLM allowance is exhausted, so git actions are paused — switch to a BYOK provider or wait for the allowance to reset";
+  if (code.startsWith("capability-off:")) return `${code.slice("capability-off:".length)} actions are not enabled on this instance`;
+  if (code.startsWith("missing-product:")) return `this site does not have ${code.slice("missing-product:".length)}`;
+  if (code === "external-trigger") return "an externally triggered rule may not hold an action that approves code, blocks a merge or deploys";
+  if (code === "needs-admin") return "this action writes to somebody's repository, so only an ADMIN may save a rule that holds it";
+  return code || "not allowed";
+};
+
 export const normalizeAllowedActions = (ids, opts) =>
   (opts === undefined ? gateActions(ids, undefined).allowed : gateActions(ids, opts));
 
@@ -309,7 +360,10 @@ export const normalizeAllowedActions = (ids, opts) =>
 export const assertAllowedActions = (ids, opts) => {
   const { allowed, refused } = gateActions(ids, opts || {});
   if (refused.length) {
-    const e = new Error(`agent.allowedActions contains actions this rule may not use: ${refused.map((r) => `${r.id} (${r.reason})`).join(", ")}`);
+    // The message names the CAUSE, not the code (F-302): an admin who reads
+    // "capability-off:git" cannot act on it, and there is nothing in the UI with that
+    // name. The machine-readable codes still ride on `refused[]` for the REST client.
+    const e = new Error(`agent.allowedActions contains actions this rule may not use: ${refused.map((r) => `${r.id} — ${agentActionRefusalText(r.reason)}`).join("; ")}`);
     e.reason = "action-not-allowed";
     e.refused = refused;
     throw e;

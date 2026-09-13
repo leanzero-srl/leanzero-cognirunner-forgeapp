@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   AGENT_ACTIONS, AGENT_ACTION_IDS, AGENT_ACTION_NAMESPACES, AGENT_ACTION_NAMESPACE_IDS,
   agentActionNamespace, normalizeAllowedActions, assertAllowedActions, toolDefinitionsFor, hasWriteActions, getAgentAction,
+  buildAgentGateContext, agentActionRefusalText,
 } from "../../src/shared/agent-actions.js";
 const { normalizeListener } = await import("../../src/listeners.js");
 const { normalizeJob } = await import("../../src/scheduled-jobs.js");
@@ -144,6 +145,49 @@ for (const [what, normalize] of [["listener", normalizeListener], ["job", normal
   n += 2;
   const gated = normalize({ ...base, agent: { instructions: "do it", allowedActions: ["commit_files"] } }, { gate: { capability: true, savedByRole: "admin" } });
   eq(gated.agent.allowedActions, ["commit_files"], `a ${what} saved with the right context keeps the git action`);
+}
+
+/* ---------- F-302: the gate CONTEXT has one home, and the refusal names the cause ---------- */
+// BYOK: any provider that is not Atlassian enables the git capability.
+const byok = buildAgentGateContext({ provider: "openai", savedByRole: "admin" });
+eq(normalizeAllowedActions(["commit_files"], byok).allowed, ["commit_files"], "BYOK + an admin save keeps a git write");
+// Forge LLM needs the Coder edition AND a frontier model AND allowance.
+const forge = (over) => buildAgentGateContext({ provider: "atlassian", edition: "advanced", agentModel: "not-frontier", savedByRole: "admin", ...over });
+eq(normalizeAllowedActions(["commit_files"], forge({})).refused, [{ id: "commit_files", reason: "needs-frontier-model" }], "Forge LLM on a non-frontier model refuses with the REAL cause");
+eq(normalizeAllowedActions(["commit_files"], buildAgentGateContext({ provider: "atlassian", edition: "standard", savedByRole: "admin" })).refused,
+  [{ id: "commit_files", reason: "needs-coder-edition" }], "…and a non-Coder edition says so, not 'capability-off'");
+// THE DEFAULT IS RESTRICTIVE — a context built with no provider must not enable git,
+// even though agentCapability() answers "byok" for a null provider.
+eq(normalizeAllowedActions(["commit_files"], buildAgentGateContext({ savedByRole: "admin" })).refused,
+  [{ id: "commit_files", reason: "capability-off:git" }], "a context built WITHOUT a provider refuses git (an unanswered question is refused)");
+ok(buildAgentGateContext({ provider: "openai" }).capability.web === undefined, "the capability is a MAP: a namespace nobody answered for stays unanswered");
+eq(normalizeAllowedActions(["approve_pull_request"], buildAgentGateContext({ provider: "openai", savedByRole: "admin", triggerSource: "external" })).refused,
+  [{ id: "approve_pull_request", reason: "external-trigger" }], "an externally triggered run never holds a dangerous action, even admin-saved");
+eq(normalizeAllowedActions(["add_pr_comment"], buildAgentGateContext({ provider: "openai" })).refused,
+  [{ id: "add_pr_comment", reason: "needs-admin" }], "a confirm action needs an admin-saved rule");
+// The refusal SENTENCE names something an admin can act on.
+for (const [code, must] of [["capability-off:git", /Coder edition/], ["needs-coder-edition", /Coder edition/], ["needs-frontier-model", /frontier/], ["allowance-exhausted", /allowance/], ["external-trigger", /externally triggered/], ["needs-admin", /ADMIN/]]) {
+  ok(must.test(agentActionRefusalText(code)), `the refusal text for ${code} names the cause`);
+}
+assert.throws(() => assertAllowedActions(["commit_files"], {}), (e) => {
+  ok(/Coder edition/.test(e.message), "the SAVE-time message names the real cause, not the code");
+  eq(e.refused, [{ id: "commit_files", reason: "capability-off:git" }], "…while the machine-readable code still rides on refused[]");
+  return true;
+}, "save time still refuses");
+n++;
+
+// The RUN sites accept a caller-supplied context and default to the restrictive one.
+{
+  const { readFileSync } = await import("node:fs");
+  const lsrc = readFileSync(new URL("../../src/listeners.js", import.meta.url), "utf8");
+  const jsrc = readFileSync(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
+  ok(/gateFacts = null, executors = \{\}/.test(lsrc) && /gateFacts = null, executors = \{\}/.test(jsrc),
+    "both run sites take gateFacts + executors, defaulting to the restrictive context");
+  ok(/gateFacts\s*\?\s*buildAgentGateContext\(\{ \.\.\.gateFacts, triggerSource: "external", savedByRole: listener\.savedByRole \}\)\s*:\s*undefined/.test(lsrc),
+    "a LISTENER run is external and reads savedByRole from the rule row");
+  ok(/buildAgentGateContext\(\{ \.\.\.gateFacts, triggerSource: null, savedByRole: job\.savedByRole \}\)/.test(jsrc),
+    "a SCHEDULED JOB is not external (the app's own clock started it)");
+  ok(/gate: agentGate, executors/.test(lsrc) && /gate: agentGate, executors/.test(jsrc), "…and both hand the context to runAgentTask");
 }
 
 console.log(`agent-actions gate: ${n} assertions passed`);

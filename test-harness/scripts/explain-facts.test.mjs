@@ -109,6 +109,50 @@ ok(/Agentic JQL search: disabled/.test(falseTools), "enableTools false → 'disa
   ok(/always blocks\.$/m.test(laxFacts), "explain facts: the strict-off sentence survives the 220-char line clamp whole");
 }
 
+// --- F-388: the CODER post-function's mode + instructions reach the card and the prompt ---
+// A coder rule is a premade row in the POST-FUNCTION half of the catalogue, and its git
+// group is the OBJECT form with prMatch switched off. Both facts used to be invisible
+// here: the lookup only searched the validator/condition halves, and the git predicate
+// read `params.git === true`.
+{
+  const coderCfg = {
+    ruleKind: "premade", premadeRuleType: "postfunction-coder",
+    connectionId: "gc_7", repo: "acme/widget", strict: false,
+    mode: "open-branch", instructions: "Run npm test before you commit. Never touch infra/.",
+  };
+  const rows = premadeSummaryRows(coderCfg);
+  const val = (l) => (rows.find((r) => r.label === l) || {}).value;
+
+  ok(/Coder/.test(val("Premade rule:") || ""), "coder: the catalogue label is found in the post-function half");
+  ok(val("What the Coder does:") === "Open a branch", "coder: the mode renders as its LABEL, not its id");
+  ok(!rows.some((r) => r.label === "When:"), "coder: `mode` is NOT mistaken for the dateRel future/within row");
+  ok(/npm test/.test(val("Extra instructions:") || ""), "coder: the admin's instructions reach the card");
+  ok(val("Repository:") === "acme/widget" && /gc_7/.test(val("Connection:") || ""), "coder: the git rows still render");
+  ok(!rows.some((r) => r.label === "Match pull request by:"), "coder: NO prMatch row — the rule switches that sub-control off");
+  ok(/^Off — /.test(val("Strict:") || ""), "coder: strict IS one of its sub-controls, so its row stays");
+
+  // An unknown / missing mode says what the executor does with it, and never invents one.
+  const noMode = premadeSummaryRows({ ...coderCfg, mode: "" });
+  ok(/not set/.test((noMode.find((r) => r.label === "What the Coder does:") || {}).value || ""),
+    "coder: a missing mode is named as unset, not defaulted");
+  ok(!premadeSummaryRows({ ...coderCfg, instructions: "   " }).some((r) => r.label === "Extra instructions:"),
+    "coder: blank instructions grow no row");
+  // The 2 KB cap is the catalogue's, applied where the value is READ as well as written.
+  const long = premadeSummaryRows({ ...coderCfg, instructions: "x".repeat(5000) });
+  ok(((long.find((r) => r.label === "Extra instructions:") || {}).value || "").length === 2048,
+    "coder: instructions are clamped to CODER_PF_INSTRUCTIONS_MAX");
+
+  const facts = buildFactsText(coderCfg, []);
+  ok(/What the Coder does: Open a branch/.test(facts), "explain facts: the coder mode");
+  ok(/Extra instructions: Run npm test/.test(facts), "explain facts: the coder instructions");
+  ok(!/Match pull request by/.test(facts), "explain facts: no prMatch sentence for a rule that has no prMatch");
+
+  // The F-350 validators keep the boolean shape — both sub-rows must still appear.
+  const boolGit = premadeSummaryRows({ ruleKind: "premade", premadeRuleType: "git-pr-merged", connectionId: "gc_7", repo: "acme/widget", prMatch: "branch", strict: true });
+  ok(boolGit.some((r) => r.label === "Match pull request by:") && boolGit.some((r) => r.label === "Strict:"),
+    "the boolean `git: true` rules are unchanged — both sub-rows still render");
+}
+
 // --- bounds ---
 ok(buildFactsText({ type: "validator", fieldId: "f", prompt: "x".repeat(3000) }, []).length <= 1500, "facts capped ≤1500");
 

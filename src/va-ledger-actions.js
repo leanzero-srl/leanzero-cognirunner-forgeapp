@@ -289,17 +289,36 @@ export const createVaLedgerExecutor = ({
       // DEFANGED AND CLAMPED AT WRITE TIME by `writeMemory` (F-423) — not here, and not
       // at injection. One row that cannot contain a fence marker is safe at every
       // injection site, including the ones that do not exist yet.
+      //
+      // THE MODEL PROPOSES A CONSTRAINT; IT DOES NOT PIN ONE (F-456).
+      //
+      // `constraints[]` is the pinned list that memory compaction preserves VERBATIM, by
+      // code, for ever. `constraint: true` therefore used to be a tool with which the
+      // model could write itself a permanent, self-issued standing order — something no
+      // human had approved, which survived every compaction, and which was then injected
+      // into every subsequent turn as the agent's own rule. A model that once concluded
+      // "always close duplicates without asking" would have carried it indefinitely.
+      //
+      // So the flag now writes the note into the PROSE, marked `proposed constraint:`.
+      // An admin who agrees promotes it to the pinned list in the Agents tab's memory
+      // editor; nothing else can. The model is told exactly this in the result, because
+      // a model that believes it pinned something and did not would stop repeating it.
       const constraints = asArray(memory && memory.constraints).slice();
-      let text = (memory && memory.text) || "";
-      if (a.constraint === true) constraints.push(str(a.note));
-      else text = `${text}${text ? "\n" : ""}${str(a.note)}`;
+      const proposed = a.constraint === true;
+      const line = proposed ? `proposed constraint: ${str(a.note)}` : str(a.note);
+      const text = `${(memory && memory.text) || ""}${(memory && memory.text) ? "\n" : ""}${line}`;
       const wrote = await writeMemory(store, agentId, { text, constraints }, { now: now() });
       if (!wrote.ok) return { success: false, code: "ledger_write", error: `That could not be remembered: ${wrote.reason}.` };
       // The engine's `memory` object is the one injected into the NEXT round's prompt in
       // this same turn, so it is updated in place rather than re-read.
       if (isObj(memory)) { memory.text = wrote.memory.text; memory.constraints = wrote.memory.constraints; }
       outcome.memories++;
-      return { remembered: true, constraint: a.constraint === true };
+      return {
+        remembered: true,
+        constraint: false,
+        proposedConstraint: proposed,
+        ...(proposed ? { note: "Recorded as a PROPOSED constraint. A standing rule is pinned by a person, not by you: an administrator promotes it in the Agents tab if they agree. Until then it is an ordinary note." } : {}),
+      };
     },
   };
 

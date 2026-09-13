@@ -482,8 +482,23 @@ reset();
   await V.runVaItem({ agent: vaJob(), issueKey: "SUP-12", tickId: "t1", deps: itemDeps({ runLoop: loop }) });
   const mem = (await L.readMemory(kvs, "job_va1")).memory;
   ok(!mem.text.includes("<<<"), "memory.write.CLAMP_and_defang — a fence marker cannot survive the write");
-  eq(mem.constraints.length, 1, "memory: a constraint lands in the pinned list, not in the prose");
+  // F-456: THE MODEL PROPOSES, IT DOES NOT PIN. `constraints[]` is what compaction
+  // preserves verbatim for ever, so a self-issued standing order nobody approved would
+  // outlive every summarisation and be injected into every later turn as the agent's own
+  // rule. The flag writes into the PROSE, marked, and an admin promotes it.
+  eq(mem.constraints.length, 0, "memory.BLOCK_model_cannot_pin_a_constraint (F-456)");
+  ok(/proposed constraint: Never reply publicly on SEC issues/.test(mem.text),
+    "memory.ALLOW_constraint_becomes_a_marked_proposal_in_the_prose");
   ok(L.memoryPromptBlock(mem).includes("ADVISORY"), "memory.inject.ADVISORY_fence (F-408/F-423)");
+  // …and the model is TOLD, because one that believes it pinned something would stop
+  // repeating it and the proposal would never reach a human.
+  const proposal = loop.seen[1].result;
+  eq(proposal.constraint, false, "memory: the result does not claim a pin happened");
+  eq(proposal.proposedConstraint, true, "memory: it says a proposal was recorded");
+  ok(/pinned by a person, not by you/.test(proposal.note), "memory: …and who does the pinning");
+  // A HUMAN still can: `writeMemory` is the editor's path and it pins verbatim.
+  const pinned = await L.writeMemory(kvs, "job_va1", { text: mem.text, constraints: ["Never reply publicly on SEC issues"] });
+  eq(pinned.memory.constraints.length, 1, "memory.ALLOW_a_human_pins_through_writeMemory");
 }
 
 

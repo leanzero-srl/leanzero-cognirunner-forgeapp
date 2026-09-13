@@ -937,6 +937,22 @@ export const readMemory = async (store, agent) => {
  * The byte ceiling is `memoryCapBytes`; over it the PROSE is clamped and the pinned
  * constraints are kept whole, because the constraints are the part a human typed.
  */
+/**
+ * `constraints[]` IS HUMAN-PINNED, AND ONLY HUMAN-PINNED (F-456).
+ *
+ * This list is what compaction preserves VERBATIM, by code, for ever — which makes it the
+ * one field in the whole record that outlives every summarisation. It is therefore written
+ * by the Agents tab's memory editor (src/va-admin.js) and by nothing else.
+ *
+ * The AGENT cannot add to it. `memory_note(constraint: true)` writes
+ * `proposed constraint: …` into the PROSE instead (src/va-ledger-actions.js), and an
+ * administrator who agrees promotes it here. Without that split, a model could issue
+ * itself a permanent standing order nobody approved, which would survive every compaction
+ * and be injected into every later turn as the agent's own rule.
+ *
+ * A caller passing `constraints` is asserting it is acting for a human. There is exactly
+ * one such caller; a second one is a finding.
+ */
 export const writeMemory = async (store, agent, { text = "", constraints = [] } = {}, { now = Date.now() } = {}) => {
   const pinned = normalizeConstraints(constraints);
   const budget = Math.max(256, VA_LIMITS.memoryCapBytes - bytesOf(pinned));

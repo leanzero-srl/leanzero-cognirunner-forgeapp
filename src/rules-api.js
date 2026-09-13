@@ -53,8 +53,16 @@
  *   POST   ?resource=agents&id=&action=pause|resume|tick|post   (admin)
  *   POST   ?resource=agents&id=&action=approve|reject           (admin; {itemKey, stagedAt})
  *
- * ROLES: a token carries an optional `role` (viewer|editor|admin). A token minted
- * without one is ADMIN — that is what every token on this surface already was, and
+ * ROLES: a token carries an optional `role` (viewer|editor|admin), chosen at mint
+ * time in the admin UI. ONE predicate decides every floor on this surface
+ * (`tokenRoleAtLeast`), and the floors are the RESOLVERS' floors:
+ *   whoami / events / actions          — any token
+ *   GET listeners|jobs|logs|tasks      — viewer
+ *   GET samples                        — editor (a real captured event body)
+ *   POST|PUT|DELETE listeners|jobs,
+ *     enable|disable|test|run          — editor      (preview: viewer)
+ *   agents: overview editor; drafts / memory / effects / every write admin
+ * A token minted without a role is ADMIN — that is what every token on this surface already was, and
  * narrowing existing tokens on upgrade would break callers silently. The floors on
  * ?resource=agents are the SAME floors the Agents tab's resolvers use, because a
  * REST caller must not be able to do anything the tab cannot: editor for the
@@ -98,10 +106,17 @@ const publicRow = (t) => ({ id: t.id, name: t.name, prefix: t.prefix, createdAt:
  * them). Defaulting a missing role to anything narrower would revoke capability from
  * live integrations on upgrade, silently, which is the worse failure of the two.
  */
-const TOKEN_ROLES = ["viewer", "editor", "admin"];
+export const TOKEN_ROLES = ["viewer", "editor", "admin"];
 const ROLE_RANK = Object.freeze({ viewer: 1, editor: 2, admin: 3 });
 const tokenRole = (t) => (t && TOKEN_ROLES.includes(String(t.role)) ? String(t.role) : "admin");
-const meetsFloor = (who, floor) => ROLE_RANK[tokenRole(who)] >= ROLE_RANK[floor];
+/*
+ * THE ONE ROLE FLOOR ON THIS SURFACE (F-466). Every resource asks this predicate and
+ * nothing else - `?resource=agents` used to be the only gated one, so a viewer token
+ * could write a listener that the Listeners tab would have refused a viewer's click.
+ * The floors are the RESOLVERS' floors, read off `src/index.js`, because a REST caller
+ * must never hold a power the product's own UI does not grant.
+ */
+export const tokenRoleAtLeast = (who, floor) => ROLE_RANK[tokenRole(who)] >= ROLE_RANK[floor];
 const tombstoneKey = (id) => REVOKED_TOKEN_PREFIX + String(id).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0, 120);
 const isRevoked = async (id) => Boolean(await storage.get(tombstoneKey(id)));
 
@@ -119,10 +134,24 @@ export const listApiTokens = async () => {
   return out;
 };
 
+/*
+ * A role asked for at MINT time is either in the closed set or it is REFUSED - never
+ * coerced. Silently minting an ADMIN token for a caller who typed "viwer" is the one
+ * failure this field exists to prevent. Omitted (undefined/null/"") stays null, which
+ * READS as admin: the documented compatibility default, and what every row minted
+ * before this field existed already is.
+ */
+const normalizeMintRole = (role) => {
+  if (role === undefined || role === null || role === "") return null;
+  const r = String(role).trim().toLowerCase();
+  if (!TOKEN_ROLES.includes(r)) throw new Error(`Unknown token role "${String(role).slice(0, 40)}". Use one of: ${TOKEN_ROLES.join(", ")}.`);
+  return r;
+};
+
 /** Mint a token; returns { token (plaintext, once), row }. */
 export const createApiTokenInternal = async ({ name, accountId, role }) => {
   const token = `cgr_${randomBytes(24).toString("hex")}`;
-  const row = { id: `tok_${Date.now().toString(36)}${randomBytes(3).toString("hex")}`, name: String(name || "API token").slice(0, 80), hash: sha256(token), prefix: token.slice(0, 10), createdAt: nowIso(), createdBy: accountId || null, role: TOKEN_ROLES.includes(String(role)) ? String(role) : null, lastUsedAt: null, revokedAt: null };
+  const row = { id: `tok_${Date.now().toString(36)}${randomBytes(3).toString("hex")}`, name: String(name || "API token").slice(0, 80), hash: sha256(token), prefix: token.slice(0, 10), createdAt: nowIso(), createdBy: accountId || null, role: normalizeMintRole(role), lastUsedAt: null, revokedAt: null };
   // Read IMMEDIATELY before the write (nothing awaited in between but the write
   // itself): a token minted or revoked while this request was hashing must not be
   // dropped by a stale snapshot. Two mints that overlap this narrow window can still
@@ -229,6 +258,16 @@ const errBody = (e) => ({
   ...(e && Array.isArray(e.refused) ? { refused: e.refused } : {}),
 });
 
+/*
+ * The ONE refusal a role floor produces, in the ONE refusal shape (`reason`,
+ * `needsRole`, `hint`) the resolvers and the admin UI already speak. Returns null when
+ * the token clears the floor, so every call site reads
+ * `const r = floor(...); if (r) return r;`.
+ */
+const roleFloor = (who, level, what) => (tokenRoleAtLeast(who, level)
+  ? null
+  : json(403, { error: `This token may not ${what}.`, reason: "no-permission", needsRole: level, hint: "ask-app-admin" }));
+
 const eventCatalog = () => ({
   categories: EVENT_CATEGORIES,
   // `source` tells a client WHERE the event comes from ("jira" = a Forge product
@@ -249,27 +288,42 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   const setEnabled = isL ? L.setListenerEnabled : J.setJobEnabled;
   const noun = isL ? "listener" : "job";
   const actor = `api:${who.id}`;
+  /*
+   * THE FLOORS, mirrored one-for-one off the resolvers in `src/index.js` (F-466):
+   * getListeners/getScheduledJobs and their by-id reads gate on `viewer`; every write
+   * — save, delete, enable/disable, test, run — gates on `editor` (the resolvers reach
+   * it through gateExistingRow's `minRole: "editor"`, whose OWNERSHIP arm has no
+   * meaning for a token: a token is not an author). previewSchedule is `viewer`.
+   * Before this, EVERY token was admin-in-effect here regardless of its role.
+   */
+  const floor = (level, what) => roleFloor(who, level, what);
   // A REST token carries no role, so every save through this surface is recorded as
   // `savedByRole:"editor"` (the normalizer's default). That is deliberate and it is a
   // REFUSAL, not an oversight: a rule armed over the API can never hold an
   // admin-only power such as a PR verdict action. Arming one is an admin's click.
 
   if (method === "GET") {
+    const gate = floor("viewer", `view ${kind}`); if (gate) return gate;
     if (id) { const row = await get(id); return row ? json(200, { [noun]: row }) : json(404, { error: `${noun} not found` }); }
     return json(200, { [kind]: await list() });
   }
   if (method === "DELETE") {
+    const gate = floor("editor", `delete a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const r = await remove(id);
     return json(r.removed ? 200 : 404, r.removed ? { deleted: id } : { error: `${noun} not found` });
   }
   if (method === "PUT") {
+    const gate = floor("editor", `change a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const existing = await get(id);
     if (!existing) return json(404, { error: `${noun} not found` });
     try { const saved = await save({ ...merge(existing, body || {}), id }, { accountId: actor }); return json(200, { [noun]: saved }); } catch (e) { return json(400, errBody(e)); }
   }
   if (method === "POST" && action) {
+    // `preview` computes nothing but the next fire times of a cron string — the
+    // previewSchedule resolver's floor is `viewer`, and this one matches it.
+    const gate = floor(action === "preview" ? "viewer" : "editor", `${action} a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const row = await get(id);
     if (!row) return json(404, { error: `${noun} not found` });
@@ -291,6 +345,7 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     return json(400, { error: `unknown action "${action}" for ${kind}` });
   }
   if (method === "POST") {
+    const gate = floor("editor", `create ${kind}`); if (gate) return gate;
     const items = Array.isArray(body) ? body : (body && Array.isArray(body[kind]) ? body[kind] : [body]);
     if (!items.length || items.length > 100) return json(400, { error: "provide 1-100 items" });
     const saved = []; const errors = [];
@@ -362,9 +417,7 @@ const vaJson = (r, okStatus = 200) => {
 
 const handleAgents = async ({ method, id, action, part, body, who, req }) => {
   const actor = `api:${who.id}`;
-  const floor = (level, what) => (meetsFloor(who, level)
-    ? null
-    : json(403, { error: `This token may not ${what}.`, reason: "no-permission", needsRole: level, hint: "ask-app-admin" }));
+  const floor = (level, what) => roleFloor(who, level, what);
 
   /* A REST save is recorded as `savedByRole:"editor"` exactly as a listener or job
    * save is, and for the same reason: an admin-only power (a PR verdict action) is
@@ -479,6 +532,9 @@ export async function rulesApiHandler(req) {
   try {
     const m = await idx();
     switch (resource) {
+      // whoami is the token describing ITSELF, and events/actions are the static
+      // catalogues the frontends import straight from `src/shared/` — no floor, and
+      // none in the product either.
       case "whoami": return json(200, { token: publicRow(who), app: "CogniRunner", now: nowIso() });
       case "events": return json(200, eventCatalog());
       case "actions": return json(200, { actions: AGENT_ACTIONS.map((a) => ({ id: a.id, kind: a.kind, label: a.label, description: a.description })) });
@@ -488,14 +544,24 @@ export async function rulesApiHandler(req) {
       case "jobs": return await handleCollection({ req, method, id, action, body, who, kind: "jobs" });
       case "agents": return await handleAgents({ req, method, id, action, part, body, who });
       case "samples": {
+        // EDITOR, mirroring the getEventSample resolver: a captured payload is a real
+        // event body from the instance, not a catalogue entry.
+        { const r = roleFloor(who, "editor", "read event samples"); if (r) return r; }
         const s = await L.getEventSample(String(q(req, "eventType") || ""));
         return s ? json(200, s) : json(404, { error: "no sample captured yet for this event" });
       }
       case "logs": {
+        // VIEWER, mirroring getLogs. NOTE: the resolver ALSO narrows a scope-"own"
+        // caller's rows; a token has no account and therefore no owner scope, which is
+        // why a narrower token role is the only lever a reader gets here.
+        { const r = roleFloor(who, "viewer", "read execution logs"); if (r) return r; }
         const ruleId = q(req, "ruleId") ? String(q(req, "ruleId")).slice(0, 120) : null;
         return json(200, { logs: await m.readLogs(ruleId) });
       }
       case "tasks": {
+        // VIEWER, mirroring getAsyncTaskResult (which is a viewer floor because the
+        // read also CONSUMES the row).
+        { const r = roleFloor(who, "viewer", "read task results"); if (r) return r; }
         if (!id) return json(400, { error: "id required" });
         const row = await storage.get(`async_task:${id}`);
         const job = await storage.get(`async_job:${id}`);

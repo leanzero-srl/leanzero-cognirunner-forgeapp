@@ -35,10 +35,14 @@ import { readFile, readdir } from "node:fs/promises";
 // The REAL receipt writer (F-501/F-502): the tests below write the row the engine writes
 // and read it back through the resolver, rather than hand-building a KVS value.
 import { recordTick } from "../../src/va-ledger.js";
+// The allow-list the F-507 source assertion reads: the receipt keys the projection
+// deliberately does not hand to the tab, each with its reason.
+import { RECEIPT_NOT_PROJECTED } from "../../src/va-admin.js";
 const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
+const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const asRefusals = (r) => (Array.isArray(r && r.refused) ? r.refused : []);
 const has = (o, keys, label) => {
   const missing = keys.filter((k) => !(o && Object.prototype.hasOwnProperty.call(o, k)));
@@ -696,6 +700,105 @@ let agentId = null;
   const errReceipt = (errSt.receipts || []).find((r) => r.tickId === "f502e");
   ok(errReceipt && errReceipt.ok === false && errReceipt.error === "kvs down",
     `F-502: a tick that threw is still ok:false and still names the error (got ${JSON.stringify(errReceipt && { ok: errReceipt.ok, error: errReceipt.error })})`);
+
+  /* -- F-507: EVERY KEY `recordTick` WRITES REACHES A HUMAN, OR IS NAMED --------
+   *
+   * `publicReceipt` has now dropped or invented an engine-decided field four times
+   * (F-499, F-501, F-502, and `compacted` here). Each fix so far closed one field; the
+   * mechanism that produced them - a projection with a hand-written key list, sitting
+   * between an engine that keeps learning to record things and the ONE surface an admin
+   * reads - was still in place after every one of them. This is the gate for the class:
+   * the writer's OWN SOURCE is read, every key it puts on a receipt is enumerated, and
+   * each one must either carry its value through to `getVaStatus` or appear in
+   * `RECEIPT_NOT_PROJECTED` with the reason it does not.
+   *
+   * The probes assert on VALUES, not on names, so a deliberate rename (`started` ->
+   * `startedAt`, `candidates` -> `swept`) stays legal and a silent DROP does not.
+   */
+  {
+    const ledgerSrc = await readFile(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+    const from = ledgerSrc.indexOf("const receipt = {", ledgerSrc.indexOf("export const recordTick"));
+    const to = ledgerSrc.indexOf("\n  };", from);
+    const literal = ledgerSrc.slice(from, to);
+    ok(from > 0 && to > from, "F-507: the receipt literal in `recordTick` was located in source");
+
+    // Loose on purpose: sub-keys of `skipped`/`compacted` are enumerated too, so a new
+    // field anywhere on the receipt has to be given a probe or a written-down reason.
+    const written = new Set([...literal.matchAll(/^\s+(\w+):/gm)].map((m) => m[1]));
+
+    const stamp = "2026-09-13T04:05:06.507Z";
+    const wrote = await recordTick(storage, agentId, {
+      tickId: "f507src", phase: "post", started: stamp,
+      candidates: 424207, staged: 70507, error: "tok-error-507",
+      next: "2026-09-13T04:10:00.000Z",
+      skipped: [{ key: "SUP-507", reason: "tok-skipped-507", gate: "compaction" }],
+      compacted: { before: 7000, after: 4101, reason: "tok-compacted-507", fellBack: true },
+    });
+    for (const k of Object.keys((wrote && wrote.receipt) || {})) written.add(k);
+
+    const proj = ((await call("getVaStatus", { jobId: agentId })).receipts || [])
+      .find((r) => r.tickId === "f507src");
+    ok(proj, "F-507: the probe receipt is in the timeline");
+    const seen = JSON.stringify(proj || {});
+
+    // key -> what proves that key reached the tab (by VALUE, under whatever name).
+    const probes = {
+      phase: () => proj.phase === "post",
+      tickId: () => proj.tickId === "f507src",
+      started: () => proj.startedAt === stamp,
+      candidates: () => proj.swept === 424207,
+      staged: () => proj.posted === 70507,
+      error: () => proj.error === "tok-error-507",
+      skipped: () => seen.includes("tok-skipped-507"),
+      key: () => (proj.skipped[0] || {}).itemKey === "SUP-507",
+      gate: () => (proj.skipped[0] || {}).gate === "compaction",
+      reason: () => seen.includes("tok-compacted-507") && seen.includes("tok-skipped-507"),
+      compacted: () => isObj(proj.compacted),
+      before: () => proj.compacted && proj.compacted.before === 7000,
+      after: () => proj.compacted && proj.compacted.after === 4101,
+      fellBack: () => proj.compacted && proj.compacted.fellBack === true,
+    };
+
+    for (const k of [...written].sort()) {
+      if (Object.prototype.hasOwnProperty.call(RECEIPT_NOT_PROJECTED, k)) {
+        ok(String(RECEIPT_NOT_PROJECTED[k] || "").length > 20,
+          `F-507: \`${k}\` is not projected ON PURPOSE and the reason is written down`);
+        continue;
+      }
+      const probe = probes[k];
+      ok(typeof probe === "function",
+        `F-507: \`recordTick\` writes \`${k}\` - project it in publicReceipt and probe it here, or add it to RECEIPT_NOT_PROJECTED with the reason`);
+      if (typeof probe === "function") {
+        ok(probe() === true,
+          `F-507: the value \`recordTick\` stored under \`${k}\` reaches getVaStatus (got ${seen.slice(0, 300)})`);
+      }
+    }
+
+    // The field this row was cut for, stated plainly: a fell-back compaction is visible.
+    ok(proj && proj.compacted && proj.compacted.fellBack === true && proj.compacted.reason === "tok-compacted-507",
+      `F-507: a compaction that FELL BACK says so on the receipt the admin reads (got ${JSON.stringify(proj && proj.compacted)})`);
+
+    // Absent stays absent: a tick with no compaction must not look like one that
+    // achieved nothing.
+    await recordTick(storage, agentId, { tickId: "f507none", phase: "prepare", candidates: 1, staged: 1 });
+    const none = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((r) => r.tickId === "f507none");
+    ok(none && !("compacted" in none),
+      `F-507: a tick that compacted NOTHING carries no compacted field (got ${JSON.stringify(none && none.compacted)})`);
+
+    /* A skip row is carried VERBATIM (F-507): F-506's compaction skip may arrive with
+     * fields this file has never heard of, and a projection that filters to a key list
+     * only it knows about would drop them the same way `compacted` was dropped. */
+    await recordTick(storage, agentId, {
+      tickId: "f507skip", phase: "prepare",
+      skipped: [{ key: "(agent)", gate: "compaction", reason: "summariser_failed_no_shrink" }],
+    });
+    const skipR = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((r) => r.tickId === "f507skip");
+    const sk = skipR && (skipR.skipped || [])[0];
+    ok(sk && sk.gate === "compaction" && sk.reason === "summariser_failed_no_shrink" && sk.itemKey === null,
+      `F-507: a compaction GATE skip reaches the tab whole (got ${JSON.stringify(sk)})`);
+    ok(skipR && skipR.ok === false,
+      "F-507: ...and an agent-level gate skip is still not an ok tick (F-502 holds)");
+  }
 
   const agents = await call("listVaAgents", {});
   has(agents, ["agents"], "listVaAgents");

@@ -602,7 +602,34 @@ export const postWindowInstants = (va, nowMs) => {
  * `itemKey` is null for an AGENT-level skip: the engine writes the sentinel `(agent)`
  * for "the whole run stopped here", and rendering that as an issue key would invite an
  * admin to go looking for an issue called `(agent)`.
+ *
+ * F-507 — EVERY FIELD THE ENGINE STORES IS EITHER PROJECTED OR NAMED BELOW.
+ *
+ * This function has now dropped or invented an engine-decided field FOUR times (F-499,
+ * F-501, F-502, F-507: `compacted`). The pattern is always the same — the engine learns
+ * to record something new, and the ONE projection the Agents tab reads silently stops at
+ * the old key list, so the new evidence exists in KVS and on no human surface. A field
+ * that is deliberately not shown is a decision, and a decision has to be WRITTEN DOWN;
+ * `RECEIPT_NOT_PROJECTED` is that list, and `va-admin.test.mjs` reads `recordTick`'s own
+ * source and fails the build when a key appears in neither place.
+ *
+ * SKIP ROWS ARE CARRIED VERBATIM. `gate`/`itemKey`/`reason` are the three the tab names,
+ * but any OTHER field the engine chooses to put on a skip (a compaction skip's before/
+ * after bytes, say) rides through untouched rather than being filtered out by a key list
+ * that only this file knows about. `key` is the single rename, to `itemKey`.
  */
+
+/*
+ * The receipt keys `publicReceipt` deliberately does NOT hand to the tab, each with the
+ * reason it is not there. Anything else `recordTick` writes must be projected.
+ */
+export const RECEIPT_NOT_PROJECTED = {
+  agent: "The caller asked for THIS agent by id; echoing it back on every row is noise.",
+  started: "Projected under the name the tab reads: `startedAt`.",
+  finished: "Projected under the name the tab reads: `at`.",
+  next: "The engine's own scheduling hint. `getVaStatus` answers `nextTick` from the live schedule instead, which is the truth after an edit; a stale hint beside it would be two answers to one question.",
+};
+
 const publicReceipt = (r) => {
   const phase = r.phase === "post" ? "post" : "prepare";
   /*
@@ -635,11 +662,30 @@ const publicReceipt = (r) => {
     worked: phase === "prepare" ? r.staged : null,
     posted: phase === "post" ? r.staged : null,
     error: r.error || null,
-    skipped: asArray(r.skipped).map((s) => ({
-      gate: (s && s.gate) || String((s && s.reason) || "").replace(/^gate\./, ""),
-      itemKey: s && s.key === "(agent)" ? null : ((s && s.key) || null),
-      reason: (s && s.reason) || null,
-    })),
+    skipped: asArray(r.skipped).map((s) => {
+      if (!isObj(s)) return { gate: "", itemKey: null, reason: null };
+      // Everything the engine put on the skip beside the three named fields rides
+      // through as it was written (F-507).
+      const { key, gate, reason, ...rest } = s;
+      return {
+        ...rest,
+        gate: gate || String(reason || "").replace(/^gate\./, ""),
+        itemKey: key === "(agent)" ? null : (key || null),
+        reason: reason || null,
+      };
+    }),
+    /*
+     * F-507 — COMPACTION IS INVISIBLE UNLESS THIS LINE EXISTS.
+     *
+     * `recordTick` writes `compacted:{before, after, reason?, fellBack?}` only when a
+     * compaction turn actually ran, and its docblock says a run that FELL BACK "reads
+     * very differently from a clean one, so the receipt says which". Dropping it here
+     * meant the one surface an admin reads could not tell them that the agent's notebook
+     * is over budget and that a model call is being spent and wasted every tick. Absent
+     * stays absent: a tick with no compaction must not look like a compaction that
+     * achieved nothing.
+     */
+    ...(isObj(r.compacted) ? { compacted: { ...r.compacted } } : {}),
   };
 };
 

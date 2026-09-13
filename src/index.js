@@ -125,6 +125,7 @@ import {
 // templates and the per-mode action subset all come from there, never from here.
 import {
   CODER_PF_MODE_IDS, getCoderPfMode, CODER_PF_INSTRUCTIONS_MAX,
+  getCatalog as getPremadeCatalog, gitSubEnabled, hasGitGroup, PR_MATCH_OPTIONS, PR_MATCH_DEFAULT,
 } from "./shared/premade-rules-catalog.js";
 import { describeCron } from "./shared/cron.js";
 // The ONE code-point-safe text clamp (F-381/F-383) — never `.slice()` on a prompt path.
@@ -6745,11 +6746,71 @@ export const serveAttachmentUpload = async (req) => {
 /**
  * Register (create/update) a post-function configuration.
  */
+/**
+ * THE PREMADE POST-FUNCTION HALF OF THE REGISTRY (F-398).
+ *
+ * A premade post-function (today: the Coder, `postfunction-coder`) is saved through the
+ * SAME resolver as an AI one, because it is the same registry row, the same disable
+ * switch, the same owner and the same `savedByRole` stamp. What differs is its config:
+ * catalogue-declared params instead of prompts.
+ *
+ * THE CATALOGUE IS THE AUTHORITY — `src/shared/premade-rules-catalog.js` decides which
+ * keys exist, which are available, whether the rule has a git group and which of that
+ * group's sub-controls it uses (`hasGitGroup` / `gitSubEnabled`, the one home for that
+ * question). Nothing here re-states a list the catalogue already holds.
+ *
+ * THE CLIENT IS NOT TRUSTED with any of it: every value is coerced and clamped HERE,
+ * server-side, after the catalogue lookup — an unknown `premadeRuleType` is REFUSED (a
+ * premade row that fell through to a semantic type would be run as an AI rule), an
+ * unknown mode is dropped so the runtime's own "no valid mode" ERROR fires, and the
+ * admin's note goes through `clampChars` at the catalogue's cap, exactly as the prompt
+ * renderer does.
+ *
+ * Returns null when this is not a premade save.
+ */
+const premadePostFunctionConfig = (payload) => {
+  if (payload?.ruleKind !== "premade") return null;
+  const key = String(payload.premadeRuleType || payload.ruleType || payload.type || "");
+  const def = getPremadeCatalog("postfunction").find((r) => r.key === key && r.availability === "available");
+  if (!def) return { error: `“${key || "(none)"}” is not an available premade post-function.` };
+  const params = def.params || {};
+  const out = { ruleKind: "premade", premadeRuleType: def.key, type: def.key };
+  if (params.coderMode === true) {
+    // An unknown mode is DROPPED, never defaulted: picking one for the admin would hand a
+    // transition to a Coder mode nobody chose. The runtime refuses a modeless rule loudly.
+    const mode = String(payload.mode || "");
+    if (CODER_PF_MODE_IDS.includes(mode)) out.mode = mode;
+  }
+  if (params.instructions === true) {
+    const note = clampChars(String(payload.instructions || "").trim(), CODER_PF_INSTRUCTIONS_MAX);
+    if (note) out.instructions = note;
+  }
+  if (hasGitGroup(params)) {
+    const connectionId = String(payload.connectionId || "").trim().slice(0, 100);
+    const repo = normalizeRepoId(payload.repo || "");
+    if (connectionId) out.connectionId = connectionId;
+    if (repo) out.repo = repo;
+    // Only the sub-controls this rule HAS. A `prMatch` on a Coder rule would store a key
+    // nothing reads, and the form would then draw a control the executor ignores.
+    if (gitSubEnabled(params, "prMatch")) {
+      out.prMatch = PR_MATCH_OPTIONS.some((o) => o.value === payload.prMatch) ? payload.prMatch : PR_MATCH_DEFAULT;
+    }
+    if (gitSubEnabled(params, "strict")) out.strict = payload.strict === true;
+  }
+  if (payload.simulationMode === true) out.simulationMode = true;
+  return out;
+};
+
 resolver.define("registerPostFunction", async ({ payload, context }) => {
   try {
     const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt, requestCodeOffload, legacyUpgrade, ruleInstanceId } = payload;
     if (!id) return { success: false, error: "Missing post-function ID" };
     if (!type) return { success: false, error: "Missing post-function type" };
+    // F-398 — a PREMADE post-function is validated against the catalogue BEFORE anything
+    // is written. An unknown key is refused rather than stored: a premade row that fell
+    // through would be typed as an AI post-function and run as one.
+    const premade = premadePostFunctionConfig(payload);
+    if (premade && premade.error) return { success: false, error: premade.error };
 
     let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
 
@@ -6815,7 +6876,7 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
 
     const entry = {
       id: effectiveId,
-      type,
+      type: premade ? premade.type : type,
       fieldId: fieldId || "",
       prompt: prompt || "",
       conditionPrompt: (conditionPrompt || "").substring(0, 500),
@@ -6841,6 +6902,9 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
         })),
       } : {}),
       workflow: workflow || {},
+      // F-398 — the catalogue-clamped premade params. Spread LAST of the config fields so
+      // a premade save can never be shadowed by an AI field of the same name.
+      ...(premade || {}),
       // Exact workflow-rule instance id (from the wizard's inject) so a later delete
       // can find this rule on the transition without inferring. Preserved on edit.
       ...(ruleInstanceId
@@ -6896,7 +6960,7 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     // would silently break or hijack the live rule (see pfCodeKeyFor).
     // codeKey tells a current-build client to return a slim config with codeRef;
     // old clients ignore it and keep embedding inline functions (status quo).
-    return { success: true, codeKey };
+    return { success: true, codeKey, ...(premade ? { premadeRuleType: premade.premadeRuleType } : {}) };
   } catch (error) {
     console.error("Failed to register post-function:", error);
     return { success: false, error: error.message };

@@ -408,6 +408,74 @@ if (CAP_OFF) {
     "an editor re-saving an admin's rule DOWNGRADES the stamp — it is never sticky");
 }
 
+/* ══════════ F-398 — a PREMADE post-function can be registered at all ══════════ */
+// `registerPostFunction` had no premade path: `ruleKind`/`premadeRuleType` were not even
+// read, so a Coder rule saved from the rule editor landed as a semantic AI row. The
+// catalogue is the authority for what may be saved and what each key may hold.
+{
+  await storage.set("app_admins", [
+    { accountId: ADMIN, role: "admin", scope: "all" },
+    { accountId: EDITOR, role: "editor", scope: "all" },
+  ]);
+  const { handler } = await import("../../src/index.js");
+  const call = (functionKey, payload, accountId) =>
+    handler({ call: { functionKey, payload } }, { principal: { accountId } });
+  const rowById = async (id) => ((await storage.get("config_registry")) || []).find((r) => r.id === id) || null;
+
+  const premadePayload = (over = {}) => ({
+    id: "pf-premade-admin", type: "postfunction-coder",
+    ruleKind: "premade", premadeRuleType: "postfunction-coder",
+    mode: "build", instructions: "Use the existing lint config. \u{1F600}".padEnd(60, "x"),
+    connectionId: CONN, repo: REPO, strict: true,
+    prMatch: "branch",           // the Coder's git group switches prMatch OFF
+    simulationMode: false,
+    workflow: { workflowName: "SW3", transitionId: "31", transitionFromName: "To Do", transitionToName: "In Progress" },
+    ...over,
+  });
+
+  ok((await call("registerPostFunction", premadePayload(), ADMIN)).success === true,
+    "an admin can register the premade Coder post-function");
+  const saved = await rowById("pf-premade-admin");
+  ok(saved && saved.type === "postfunction-coder" && saved.ruleKind === "premade"
+    && saved.premadeRuleType === "postfunction-coder",
+    `the row is typed as the CATALOGUE key, not a semantic PF (got ${saved && saved.type}/${saved && saved.ruleKind})`);
+  ok(saved && saved.mode === "build" && saved.connectionId === CONN && saved.repo === REPO && saved.strict === true,
+    "…and carries the catalogue's declared params");
+  ok(saved && !("prMatch" in saved),
+    "…and NOT a sub-control this rule does not have (params.git.prMatch === false)");
+  ok(saved && saved.savedByRole === "admin", "…stamped with the saver's role (F-394)");
+
+  // The client is not trusted with the catalogue.
+  const bogus = await call("registerPostFunction", premadePayload({ id: "pf-bogus", premadeRuleType: "postfunction-teleport" }), ADMIN);
+  ok(bogus.success === false && /not an available premade post-function/.test(bogus.error || ""),
+    `an unknown premadeRuleType is REFUSED with the one shape (got ${JSON.stringify(bogus)})`);
+  ok((await rowById("pf-bogus")) === null, "…and nothing was written");
+  await call("registerPostFunction", premadePayload({ id: "pf-badmode", mode: "teleport" }), ADMIN);
+  const badMode = await rowById("pf-badmode");
+  ok(badMode && !("mode" in badMode),
+    "an unknown mode is DROPPED, never defaulted — the runtime's 'no valid mode' ERROR is the answer");
+  await call("registerPostFunction", premadePayload({ id: "pf-longnote", instructions: "a".repeat(9000) + "\u{1F600}" }), ADMIN);
+  const longNote = await rowById("pf-longnote");
+  ok(longNote && [...longNote.instructions].length === CODER_PF_INSTRUCTIONS_MAX,
+    `the note is clamped server-side to the catalogue cap in CODE POINTS (got ${longNote && [...longNote.instructions].length})`);
+
+  // An editor-saved row: the stamp is what the transition reads, and F-390 refuses it.
+  ok((await call("registerPostFunction", premadePayload({ id: "pf-premade-editor" }), EDITOR)).success === true,
+    "an editor may register one too");
+  ok((await rowById("pf-premade-editor")).savedByRole === "editor", "…and the row records that");
+
+  // END TO END: the registered row drives a real transition.
+  const before = pushed.length;
+  await fire("LZPT-140", cfg({ ruleId: "pf-premade-admin", mode: "build" }));
+  const ev = pushed.slice(before)[0];
+  ok(ev && ev.body.taskType === "coder", "a transition on the registered ADMIN row enqueues a coder turn");
+  ok(ev && ev.body.params.savedByRole === "admin" && ev.body.params.allowedActions.includes("commit_files"),
+    "…armed by the ROW's stamp, so its write actions survive");
+  const before2 = pushed.length;
+  await fire("LZPT-141", cfg({ ruleId: "pf-premade-editor", mode: "build" }));
+  ok(pushed.length === before2, "a transition on the registered EDITOR row enqueues nothing (F-390)");
+}
+
 console.log(`\npremade-coder-pf: ${pass} passed, ${fail} failed`);
 
 /* ══════════ 5. the HEADLESS halt, against the real engine ══════════ */

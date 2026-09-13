@@ -24,7 +24,7 @@
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
-import { redactString } from "../lib/redact.mjs";
+import { redactString, redactSecrets } from "../lib/redact.mjs";
 
 const env = loadEnv();
 const HOOK_URL = env.TESTSTATE_URL;
@@ -306,7 +306,7 @@ async function main() {
     if (endRole && endRole.role === null) PASS("...and checkIsAdmin reports the second account back to NO role (second read through the product)", { role: endRole.role });
     else FAIL("the second account still holds a role", { answer: J(endRole) });
 
-    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(maskDeep(ev), null, 2));
+    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(maskDeep(ev)), null, 2)); // F-656: the shared redactor is the gate, the local mask is belt-and-braces
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
     if (fails > 0) process.exitCode = 1;
   }

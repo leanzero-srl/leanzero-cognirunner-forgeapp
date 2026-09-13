@@ -794,7 +794,9 @@ export const memory = async ({ jobId } = {}, injected = {}) => {
     capBytes: VA_LIMITS.memoryCapBytes,
     compactBytes: VA_LIMITS.memoryCompactBytes,
     constraintsMax: VA_LIMITS.constraintsMax,
-    constraintMaxChars: VA_LIMITS.constraintMaxChars,
+    // BYTES (F-498) — the unit `capBytes` is measured in, so the pane's per-line meter and
+    // the clamp `writeMemory` applies count the same thing on CJK text as on ASCII.
+    constraintMaxBytes: VA_LIMITS.constraintMaxBytes,
   });
 };
 

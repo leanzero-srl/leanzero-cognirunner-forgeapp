@@ -452,7 +452,7 @@ shape bounds declared in `va-config.js` itself. Quote the constants; do not rety
 | History entries per item | 10 | fixed | `VA_HISTORY_MAX` |
 | Notes per item, characters | 600 | fixed | `VA_NOTES_MAX_CHARS` |
 | Staged draft body, characters | 2000 | fixed | `VA_STAGED_BODY_MAX_CHARS` |
-| Pinned constraints | 20, 300 chars each | fixed | `VA_CONSTRAINTS_MAX`, `VA_CONSTRAINT_MAX_CHARS` |
+| Pinned constraints | 20, 280 **bytes** each (F-498 — the unit the memory cap is measured in; a character cap made 20 CJK constraints weigh ~18 KB and every later write refuse) | fixed | `VA_CONSTRAINTS_MAX`, `VA_CONSTRAINT_MAX_BYTES` |
 | Memory compaction trigger / cap, bytes | 6144 / 8192 | fixed | `VA_MEMORY_COMPACT_BYTES`, `VA_MEMORY_MAX_BYTES` |
 | Failed ticks before the banner | 3 | fixed | `VA_HEALTH_BANNER_FAILED_TICKS` |
 | Skills per agent | 4 | fixed | `MAX_RULE_SKILL_IDS` |

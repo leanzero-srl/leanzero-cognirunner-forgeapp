@@ -145,7 +145,7 @@ for (const name of ["normalizeVa", "renderGuardrailSentences", "vaWriteScope", "
 // asserted here as well as in va-config.test.mjs because the two commits land from two
 // worktrees, and a rename that only fails in the other one's suite fails at MERGE.
 for (const name of ["itemTtlDays", "tickTtlDays", "effectTtlDays", "itemRowCap", "attemptsCap",
-  "memoryCompactBytes", "memoryCapBytes", "stagedBodyMaxChars", "constraintsMax", "constraintMaxChars",
+  "memoryCompactBytes", "memoryCapBytes", "stagedBodyMaxChars", "constraintsMax", "constraintMaxBytes",
   "maxItemsPerTick", "capsPerHour", "capsPerDay", "owedPerHour", "minPostGapMinutes",
   "antiPileUpDays", "otherWriterQuietMinutes", "shadowTicks", "historyMax", "notesMaxChars"]) {
   ok(typeof vaConfig.VA_LIMITS[name] === "number", `VA_LIMITS.${name} is a flat number (the ledger clamps against it)`);
@@ -167,7 +167,7 @@ const VA_BRAKE_NUMBERS = [
   "VA_OTHER_WRITER_QUIET_MINUTES_DEFAULT", "VA_OTHER_WRITER_QUIET_MINUTES_MAX",
   "VA_ITEM_ATTEMPTS_MAX", "VA_ITEM_ROW_CAP", "VA_ITEM_TTL_DAYS", "VA_TICK_TTL_DAYS", "VA_EFFECT_TTL_DAYS",
   "VA_HISTORY_MAX", "VA_NOTES_MAX_CHARS", "VA_STAGED_BODY_MAX_CHARS",
-  "VA_CONSTRAINTS_MAX", "VA_CONSTRAINT_MAX_CHARS",
+  "VA_CONSTRAINTS_MAX", "VA_CONSTRAINT_MAX_BYTES",
   "VA_MEMORY_COMPACT_BYTES", "VA_MEMORY_MAX_BYTES", "VA_HEALTH_BANNER_FAILED_TICKS",
 ];
 for (const name of VA_BRAKE_NUMBERS) {

@@ -80,6 +80,7 @@ const reasonsFor = (r, field) => r.refused.filter((x) => x.field === field).map(
     && VA_LIMITS.itemRowCap === limits.VA_ITEM_ROW_CAP
     && VA_LIMITS.memoryCompactBytes === limits.VA_MEMORY_COMPACT_BYTES
     && VA_LIMITS.memoryCapBytes === limits.VA_MEMORY_MAX_BYTES
+    && VA_LIMITS.constraintMaxBytes === limits.VA_CONSTRAINT_MAX_BYTES
     && VA_LIMITS.healthBannerFailedTicks === limits.VA_HEALTH_BANNER_FAILED_TICKS
     && VA_CEILINGS.maxWritesPerRun.max === limits.JOB_MAX_WRITES_PER_RUN
     && VA_LIMITS.skillIds === limits.MAX_RULE_SKILL_IDS,
@@ -90,7 +91,7 @@ const reasonsFor = (r, field) => r.refused.filter((x) => x.field === field).map(
   const LEDGER_MEMBERS = {
     itemTtlDays: 90, tickTtlDays: 7, effectTtlDays: 30, itemRowCap: 400, attemptsCap: 3,
     memoryCompactBytes: 6144, memoryCapBytes: 8192, stagedBodyMaxChars: 2000,
-    constraintsMax: 20, constraintMaxChars: 300, maxItemsPerTick: 5,
+    constraintsMax: 20, constraintMaxBytes: 280, maxItemsPerTick: 5,
     capsPerHour: 6, capsPerDay: 40, owedPerHour: 12, minPostGapMinutes: 15,
     antiPileUpDays: 4, otherWriterQuietMinutes: 15, shadowTicks: 3,
     historyMax: 10, notesMaxChars: 600,
@@ -98,6 +99,22 @@ const reasonsFor = (r, field) => r.refused.filter((x) => x.field === field).map(
   for (const [k, v] of Object.entries(LEDGER_MEMBERS)) {
     ok(VA_LIMITS[k] === v, `VA_LIMITS.${k} is the flat number ${v} (got ${JSON.stringify(VA_LIMITS[k])})`);
   }
+
+  /*
+   * F-498 — THE PINNED BUDGET IS IN THE SAME UNIT AS THE CAP, AND FITS UNDER IT.
+   *
+   * A character cap on the pinned half and a byte cap on the row is how a CJK tenant
+   * reached a memory it could never write to. This asserts the ARITHMETIC the two numbers
+   * are chosen by, so raising either one without the other fails here rather than on a
+   * Japanese customer's agent: the whole pinned half, at maximum, must leave the prose
+   * real room under `memoryCapBytes` and must not sit permanently over the compaction
+   * trigger. (~100 bytes is the envelope: 19 commas, the brackets and the three key names.)
+   */
+  const pinnedWorstCase = VA_LIMITS.constraintsMax * VA_LIMITS.constraintMaxBytes + 100;
+  ok(pinnedWorstCase < VA_LIMITS.memoryCompactBytes,
+    `VA_LIMITS: the whole pinned half (${pinnedWorstCase}B) stays under memoryCompactBytes (${VA_LIMITS.memoryCompactBytes}B) — a fully pinned agent is not permanently compacting`);
+  ok(VA_LIMITS.memoryCapBytes - pinnedWorstCase >= 2048,
+    `VA_LIMITS: …and leaves >=2 KB of the cap for prose (${VA_LIMITS.memoryCapBytes - pinnedWorstCase}B)`);
   ok(Object.values(VA_LIMITS).every((v) => typeof v === "number"), "every VA_LIMITS member is a NUMBER, never an object");
   ok(Object.isFrozen(VA_LIMITS) && Object.isFrozen(VA_CEILINGS) && Object.isFrozen(VA_DEFAULTS), "the shared tables are frozen");
   ok(typeof limits.vaRefusalText === "function"

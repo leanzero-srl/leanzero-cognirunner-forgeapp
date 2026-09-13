@@ -1046,8 +1046,45 @@ export const purgeAgent = async (store, agent, { itemBudget = VA_PURGE_ITEM_BUDG
  * 11. MEMORY — defanged at write, compacted with `constraints[]` pinned BY CODE (F-423)
  * ════════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * ONE pinned line, clamped in the unit the cap is measured in: BYTES OF THE STORED JSON
+ * (F-498).
+ *
+ * The old clamp counted CHARACTERS (`constraintMaxChars`, 300) while `writeMemory` budgets
+ * `memoryCapBytes` (8192) in UTF-8 bytes of the stored envelope. A CJK tenant could
+ * therefore pin 20 x 300 characters = ~18 KB and, after F-494 made the overflow refuse
+ * rather than cut human text, never write memory again. Same rule, same unit, one home.
+ *
+ * The measure is `bytesOf` — the JSON form, not the raw string — because that is what is
+ * stored and what the cap counts: a constraint of quotes and newlines encodes to nearly
+ * twice its raw size, and a raw-byte clamp would let 20 of those back over the cap. The
+ * loop is the residual pass `writeMemory` uses for the same reason: `clampUtf8Bytes` cuts
+ * the RAW bytes, so after escaping the JSON form may still be over and is re-cut. It is
+ * bounded (the budget shrinks by at least the overflow, at most 8 passes) and the final
+ * arm gives up the line's text rather than the invariant.
+ */
+const clampConstraint = (value) => {
+  const max = VA_LIMITS.constraintMaxBytes;
+  // The two JSON quotes are part of the stored cost, so the RAW budget starts two below
+  // the stored one; anything the escaping adds on top is taken off by the loop.
+  let budget = max - 2;
+  let text = clampUtf8Bytes(safeText(value, max), budget).text;
+  for (let pass = 0; pass < 8 && bytesOf(text) > max && text; pass++) {
+    budget = Math.max(1, budget - Math.max(bytesOf(text) - max, 8));
+    text = clampUtf8Bytes(text, budget).text;
+  }
+  return bytesOf(text) > max ? "" : text;
+};
+
+/**
+ * The pinned list: at most `constraintsMax` lines, each at most `constraintMaxBytes` of
+ * stored JSON. The product (20 x 280 = 5600 + ~100 envelope) sits under
+ * `memoryCompactBytes` (6144) and ~2.4 KB under `memoryCapBytes` (8192), so the pinned
+ * half ALONE can never exhaust the cap and `writeMemory`'s `memory-full` refusal (F-494)
+ * is unreachable from pinned text — see the arithmetic in `registry-limits.js`.
+ */
 const normalizeConstraints = (list) => (Array.isArray(list) ? list : [])
-  .map((c) => safeText(c, VA_LIMITS.constraintMaxChars))
+  .map((c) => clampConstraint(c))
   .filter((c) => c.trim().length > 0)
   .slice(0, VA_LIMITS.constraintsMax);
 

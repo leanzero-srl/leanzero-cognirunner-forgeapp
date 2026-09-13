@@ -55,7 +55,11 @@ function createEmptyFunction() {
 // eventTypes, schedule, scopeJql) so the AI knows which sandbox context the steps run in.
 // testContext: spread into the dry-run's api.context (event, eventType, job facts).
 // reviewConfigType: the AI-review flavour (defaults to the static post-function).
-export default function FunctionBuilder({ functions, setFunctions, runAsync = false, setRunAsync, codegenContext = null, testContext = null, reviewConfigType = "postfunction-static", howItWorks = true }) {
+// F-233 — `canEdit` rides down to each FunctionBlock's KnowledgePanel → MemoriesTab,
+// which gates its memory add/delete on it. Pure pass-through here; fail-closed default
+// as documented on MemoriesTab. Every caller in both apps supplies it: config-ui App.js,
+// and admin-panel's AddRuleWizard / ListenersTab / JobsTab.
+export default function FunctionBuilder({ functions, setFunctions, runAsync = false, setRunAsync, codegenContext = null, testContext = null, reviewConfigType = "postfunction-static", howItWorks = true, canEdit = false }) {
   // Jira fields for editor completions (custom-field write formats etc.)
   const [fields, setFields] = useState([]);
 
@@ -120,6 +124,7 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
           isOnly={functions.length === 1}
           codegenContext={codegenContext}
           testContext={testContext}
+          canEdit={canEdit}
         />
       ))}
 

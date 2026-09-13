@@ -1192,6 +1192,91 @@ try {
     await close(env);
   }
 
+  /* ---------------- M6c — F-234: the READ itself is refused (no CogniRunner role) --------
+   * F-228 put a VIEWER FLOOR on `getMemories` (src/index.js:7341), so a user on neither
+   * the roster nor Jira's admin list gets `{ success: false }` from the LOAD — not just
+   * from the writes M6b covers. That refusal landed in the same `loadError` slot as a
+   * network fault, so the tab reported "Couldn't load memories." beside a Retry button:
+   * an outage told as the cause, and a remedy that re-asks the identical question and
+   * gets the identical no, forever. Same defect class as F-230 (an outage told as a
+   * verdict) run in the opposite direction — a verdict told as an outage.
+   * Both themes, because the replacement is a colour claim as much as a copy claim. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M6c getMemories REFUSED - no roster role - ${theme}`);
+    const env = await openAdmin(browser, theme, { __NO_ROSTER__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      const denied = page.locator(".memories-admin-denied");
+      await denied.waitFor({ timeout: 10000 });
+
+      // The refusal is told AS a refusal...
+      const dtxt = (await denied.innerText()).replace(/\s+/g, " ").trim();
+      ok(/You need CogniRunner viewer access to see memories\./.test(dtxt),
+        `M6c ${theme} the note states the refusal, not a failure (got: ${dtxt})`);
+      ok(/Ask a CogniRunner admin under Permissions\./.test(dtxt),
+        `M6c ${theme} and names WHO can grant it, and where (got: ${dtxt})`);
+
+      /* ...and the two things that made it a lie are GONE. The Retry is the load-bearing
+         assertion here: a button that re-asks a settled question can only ever fail, and
+         its presence is what kept the reader clicking instead of asking an admin. */
+      ok(await page.locator(".memories-admin-tab .load-error").count() === 0,
+        `M6c ${theme} no "Couldn't load memories." row - nothing failed to load`);
+      ok(await page.locator(".memories-admin-tab .btn-retry").count() === 0,
+        `M6c ${theme} and NO Retry button - it could never succeed`);
+      // Nor does it fall through to the "No memories yet" empty state, which would be a
+      // different false claim: that the store is empty, rather than unreadable by them.
+      ok(await page.locator(".memories-admin-empty-title").count() === 0,
+        `M6c ${theme} and not the "No memories yet" empty state either`);
+      /* `getMemoryStoreStats` carries the same F-228 viewer floor (src/index.js:7502), so
+         a reader who cannot see the memories cannot see what they WEIGH either. Asserting
+         it here keeps the two refusals in step: a future change that drops the floor from
+         one resolver and not the other would leak the store's byte pressure onto the very
+         screen that just said "you have no access". */
+      ok(await page.locator(".memories-admin-stats").count() === 0,
+        `M6c ${theme} and no store-size line - getMemoryStoreStats is refused by the same floor`);
+
+      /* Owner design law: neutral slate, solid colour, 600+ weight, NO left rail — the
+         same grammar as the F-224 add note, asserted the same way. */
+      const dst = await denied.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { fg: c.color, w: c.fontWeight, bl: c.borderLeftWidth, bt: c.borderTopWidth, bg: c.backgroundColor };
+      });
+      const drgb = dst.fg.match(/\d+/g).map(Number);
+      const wantSlate = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      ok(drgb.slice(0, 3).every((v, i) => Math.abs(v - wantSlate[i]) <= 2),
+        `M6c ${theme} the note is the neutral slate hue ${wantSlate.join(",")} - got ${dst.fg}`);
+      ok(Number(dst.w) >= 600, `M6c ${theme} the note is 600+ weight - got ${dst.w}`);
+      ok(dst.bl === dst.bt, `M6c ${theme} the note has NO left accent rail`);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(dst.bg),
+        `M6c ${theme} the note is not a tinted block - got ${dst.bg}`);
+
+      await shot(page, `m6c-memories-access-denied-${theme}`);
+      ok(env.errors.length === 0, `M6c ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x M6c ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* M6d — F-234 CONTROL. The refusal branch must NOT swallow a real transport failure:
+   * `getMemories` THROWING is still "Couldn't load memories." WITH a Retry, because that
+   * one genuinely can succeed on a second try. Without this arm, a fix that routed every
+   * unsuccessful load to the access note would pass M6c and quietly delete the retry path
+   * for everyone. One theme — this is a behaviour claim, not a colour claim. */
+  {
+    console.log("M6d getMemories THROWS - still a retryable load error");
+    const env = await openAdmin(browser, "light", { __FAIL__: ["getMemories"] });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .load-error").waitFor({ timeout: 10000 });
+      ok(await page.locator(".memories-admin-tab .btn-retry").count() === 1,
+        "M6d a transport failure still offers Retry");
+      ok(await page.locator(".memories-admin-denied").count() === 0,
+        "M6d and is NOT mistold as an access refusal");
+    } catch (e) { fail++; console.log("  x M6d threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- M7 — F-213: an app-DEMOTED site admin on jira:adminPage ----------------
    * `jira:adminPage` is gated by Jira's OWN admin permission, so reaching this module
    * proves SITE admin. It proves nothing about the CogniRunner role, and F-210 conflated

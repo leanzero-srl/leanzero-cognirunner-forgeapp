@@ -52,6 +52,30 @@ function fmtBytes(n) {
   return n < 1024 ? `${Math.round(n)} bytes` : `${Math.round(n / 1024)} KB`;
 }
 
+/**
+ * F-234 — is this resolver result a PERMISSION REFUSAL rather than a failure?
+ *
+ * ⚠️ STRING CONTRACT, and a deliberately temporary one. The backend answers every
+ * permission refusal through `noPerm(what)` (src/index.js:476), which returns
+ * `{ success: false, error: "You don't have permission to <what>." }` — and carries NO
+ * machine-readable marker. There is nothing else on the result to branch on, so this
+ * matches the sentence, anchored on the stable "don't have permission" stem rather than
+ * the full string (the trailing "<what>" differs per resolver: "read memories" here).
+ *
+ * The DURABLE fix is a structured `reason: "no-permission"` on `noPerm`, which would give
+ * every frontend one flag to read instead of N copies of this regex. That is a backend
+ * change and outside this cut's territory (static/ only) — it is recorded in the findings
+ * ledger. If this ever stops matching, the failure mode is SAFE: the tab falls back to
+ * the old "Couldn't load memories." + Retry, which is where it is today.
+ *
+ * Matching is apostrophe-tolerant because the sentence is retyped by humans and the
+ * curly ’ is one autocorrect away from shipping.
+ */
+function isAccessRefusal(result) {
+  if (!result || result.success) return false;
+  return /do(?:n['’]t| not) have permission/i.test(String(result.error || ""));
+}
+
 /* F-219 — the UI gate MATCHES THE BACKEND GATE, and nothing else.
    `addMemory`/`updateMemory`/`deleteMemory` all gate on `requireRole(accountId, "editor")`
    (src/index.js:7262/7312/7349). `saveMemorySettings` gates on `requireAdmin` (:7491).
@@ -74,6 +98,16 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /* F-234 — an ACCESS REFUSAL is not a load failure, and must not be told as one.
+     F-228 put a VIEWER FLOOR on `getMemories` (src/index.js:7341): a user who is not on
+     the CogniRunner roster and is not a Jira admin gets `{ success: false }` back. That
+     landed in the same `loadError` slot as a network fault, so the tab said "Couldn't
+     load memories." next to a Retry button — an outage told as the cause, and a remedy
+     that re-asks the identical question and gets the identical no, forever. It is the
+     same defect class F-230 fixed for `checkIsAdmin`: never render a refusal as a fault.
+     Kept in its OWN state, not a flavour of `loadError`, so the two cannot be collapsed
+     back together by a later edit. */
+  const [accessDenied, setAccessDenied] = useState(false);
   const [newContent, setNewContent] = useState("");
   const [adding, setAdding] = useState(false);
   // Which settings key is mid-save (toggles are optimistic — this only drives
@@ -124,11 +158,20 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
           return next.size === prev.size ? prev : next;
         });
         setLoadError(false);
+        setAccessDenied(false);
         hasLoadedRef.current = true;
+      } else if (isAccessRefusal(result)) {
+        /* A refusal is AUTHORITATIVE and is recorded even if a previous load succeeded:
+           a role revoked mid-session is a real state, and the honest thing to show is
+           "you no longer have access", not the stale table plus a silent failure. */
+        setAccessDenied(true);
+        setLoadError(false);
       } else if (!hasLoadedRef.current) {
         setLoadError(true);
       }
     } catch (e) {
+      /* A THROW is a transport fault, never a refusal — the resolver answers refusals
+         with a resolved `{ success: false }`. So this arm must not set accessDenied. */
       console.error("Failed to load memories:", e);
       if (!hasLoadedRef.current) setLoadError(true);
     }
@@ -733,6 +776,19 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
                 <div className="sk sk-text" style={{ width: 70, height: 11 }} />
               </div>
             ))}
+          </div>
+        ) : accessDenied ? (
+          /* F-234 — a REFUSAL, told as one. No Retry: the button would re-ask the same
+             question and get the same no, and a control that cannot succeed is worse than
+             no control — it keeps the reader trying instead of telling them who to ask.
+             Names the remedy and WHO owns it (a CogniRunner admin, under Permissions),
+             which is the only thing this reader can act on. Plain slate note, not the red
+             hard-stop grammar: nothing is broken and nothing was lost. */
+          <div style={{ padding: "14px" }}>
+            <div className="memories-admin-denied" role="note">
+              You need CogniRunner viewer access to see memories.
+              Ask a CogniRunner admin under Permissions.
+            </div>
           </div>
         ) : loadError ? (
           <div style={{ padding: "14px" }}>

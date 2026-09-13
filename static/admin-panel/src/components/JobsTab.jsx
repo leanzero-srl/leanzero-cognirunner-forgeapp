@@ -227,7 +227,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
           </div>
           {draft.mode === "script" ? (
             <div className="lst-builder">
-              <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} />
+              <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} />
             </div>
           ) : (
             <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" scoped={!!scoped} />

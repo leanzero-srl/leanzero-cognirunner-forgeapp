@@ -37,6 +37,11 @@ export default function KnowledgePanel({
   // Bump to force a counts refresh from the parent (e.g. after a flow outside
   // the panel persisted a memory).
   refreshKey = 0,
+  // F-233 — "may this user write memories". Pure pass-through to MemoriesTab, which
+  // gates its add form and per-row delete on it (both resolvers require the editor
+  // role). Defaults FALSE to match MemoriesTab: a caller that forgets to thread it
+  // gets a visibly missing control, not a silently reintroduced refusal trap.
+  canEdit = false,
 }) {
   const [open, setOpen] = useState(false);
   // The body mounts on FIRST open and then stays mounted (collapsed via the
@@ -194,7 +199,7 @@ export default function KnowledgePanel({
               )}
               {activatedTabs.memories && (
                 <div {...panelProps("memories")}>
-                  <MemoriesTab onChanged={loadCounts} />
+                  <MemoriesTab onChanged={loadCounts} canEdit={canEdit} />
                 </div>
               )}
             </>

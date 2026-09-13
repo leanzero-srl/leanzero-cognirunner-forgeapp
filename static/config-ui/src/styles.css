@@ -500,6 +500,17 @@ html[data-color-mode="dark"] .dropdown-panel {
 
 .doc-repo-embedded { padding-bottom: 4px; }
 
+/* F-236 — mirrored here because the css-parity gate requires this class to exist in
+   styles.css: the live source is injectStyles() in App.js. It is the empty state for
+   every Knowledge-panel list (documents, skills, memories) and also carries the
+   "manage all memories in the admin panel" footer line. */
+.doc-empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .skill-list { max-height: 320px; overflow-y: auto; }
 
 .skill-item {
@@ -600,7 +611,10 @@ html[data-color-mode="dark"] .dropdown-panel {
   flex-shrink: 0;
 }
 .memory-src-user { background: #2563eb; }
-.memory-src-test { background: #d97706; }
+/* F-236 — the `test` amber carries a dark INK (#2a1602), not white: white on #d97706
+   does not clear contrast. This mirror had DRIFTED and was missing the override, so the
+   convention file described a badge the app has never rendered. */
+.memory-src-test { background: #d97706; color: #2a1602; }
 .memory-src-fix { background: #16a34a; }
 
 .memory-quick-add {
@@ -609,6 +623,17 @@ html[data-color-mode="dark"] .dropdown-panel {
   padding: 10px 12px;
 }
 .memory-quick-add .input { flex: 1; }
+
+/* F-233 — what a NON-EDITOR sees where the quick-add form would be. Solid slate
+   (#475569, dark one shade lighter), 600 weight, no left rail and no tinted block.
+   Mirror of the live injectStyles() block in App.js. */
+.memory-quick-add-note {
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+html[data-color-mode="dark"] .memory-quick-add-note { color: #64748b; }
 
 /* F-152 — ONE visible busy state for a static-PF step, driven by stepBusy.
    Solid slate (the neutral hue), white text, white MLS spinner — no tint, no rail.

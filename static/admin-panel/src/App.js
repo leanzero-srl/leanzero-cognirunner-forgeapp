@@ -2160,6 +2160,19 @@ const injectStyles = () => {
     }
     html[data-color-mode="dark"] .memories-admin-add-note { color: #64748b; }
 
+    /* F-234 — the tab was REFUSED, not broken. Solid neutral slate (#475569, dark one
+       shade lighter #64748b), 600 weight, no left rail and no tinted block — this is a
+       statement of fact, so it gets neither the red .hard-stop grammar (nothing failed)
+       nor the .load-error row (which carries a Retry that can never succeed here).
+       line-height because it is two sentences, unlike the one-line add note above. */
+    .memories-admin-denied {
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.5;
+      color: #475569;
+    }
+    html[data-color-mode="dark"] .memories-admin-denied { color: #64748b; }
+
     .memories-admin-source-badge {
       display: inline-block;
       padding: 2px 10px;
@@ -5088,6 +5101,23 @@ const injectCopiedComponentStyles = () => {
     }
     .memory-quick-add .input { flex: 1; }
 
+    /* F-233 — what a NON-EDITOR sees where the quick-add form would be. Same padding as
+       .memory-quick-add so the tab does not jump between the two roles, and the same
+       neutral slate + 600 weight the admin tab's .memories-admin-add-note uses (F-224) —
+       one refusal, one voice, on both surfaces that render it.
+       Owner design law: solid #475569 (dark one shade lighter, #64748b), NO left rail and
+       NO tinted background. It is a statement of fact, not an error and not a callout, so
+       it gets neither the red hard-stop grammar nor a block fill. The harness asserts the
+       absence of a rail and the solidity of the colour in both themes.
+       Copy of the config-ui injectStyles() block — MemoriesTab is byte-shared. */
+    .memory-quick-add-note {
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #475569;
+    }
+    html[data-color-mode="dark"] .memory-quick-add-note { color: #64748b; }
+
     /* F-212 — THE HARD-STOP GRAMMAR, declared ONCE per injectStyles home.
        Three surfaces say "this store cannot accept a write": .memory-full-banner (row
        cap, rule editor + admin), .memories-admin-capwall (platform cap, admin tab) and
@@ -6972,6 +7002,9 @@ function App() {
             invoke={invoke}
             onClose={() => setShowAddWizard(false)}
             onCreated={() => fetchConfigs(true)}
+            /* F-233 — same expression as ListenersTab:31 / JobsTab:30 / MemoriesAdminTab:72.
+               One rule, one shape, everywhere it is asked. */
+            canEdit={isAdmin || userRole === "editor" || userRole === "admin"}
           />
         )}
 

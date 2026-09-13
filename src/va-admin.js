@@ -251,7 +251,18 @@ export const DEFAULT_ADMIN_DEPS = {
   /* — the job record. `getJob`/`listJobs`/`saveJob` are `scheduled-jobs.js`'s. — */
   getJob: async (id) => (await import("./scheduled-jobs.js")).getJob(id),
   listJobs: async () => (await import("./scheduled-jobs.js")).listJobs(),
-  saveJob: async (job, opts) => (await import("./scheduled-jobs.js")).saveJob(job, opts),
+  /*
+   * THE STATUS-ONLY WRITER, AND NO OTHER (F-536/F-537).
+   *
+   * There is deliberately NO `saveJob` dep here any more. `saveJob` re-normalises the
+   * whole record — re-gating `agent.allowedActions` and re-stamping `savedByRole` /
+   * `createdBy` through `armingStamp` — and this module's only job-row write is a pause
+   * flip, which must do neither. Leaving the general writer on the dep table is how the
+   * defect happened and is how it would happen again: it is the one with the name that
+   * sounds right. A VA's CONFIGURATION is saved by the two save doors (the resolver in
+   * src/index.js and `?resource=agents` in src/rules-api.js), which build the real gate.
+   */
+  patchJobStatus: async (id, patch) => (await import("./scheduled-jobs.js")).patchJobStatus(id, patch),
   nextRunOf: async (job) => (await import("./scheduled-jobs.js")).nextRunOf(job),
 
   /* NO `tickIndex` DEP ANY MORE (F-474). Shadow mode is not a wall-clock question: it is
@@ -1090,12 +1101,16 @@ const setPaused = async (paused, { jobId, accountId, reason } = {}, injected = {
     return okv({ id: job.id, paused, unchanged: true });
   }
 
+  /*
+   * A STATUS-ONLY WRITE (F-536). This used to be `deps.saveJob({...job, va})`, which
+   * re-ran the whole record through `normalizeJob` and so re-gated `allowedActions`
+   * against the restrictive default — an agent holding a capability-gated action COULD
+   * NOT BE STOPPED AT ALL. `patchJobStatus` writes `va.status.paused` and nothing else,
+   * through the same index and record writers. The long note is in scheduled-jobs.js.
+   */
   let savedJob = null;
   try {
-    savedJob = await deps.saveJob({
-      ...job,
-      va: { ...va, status: { ...va.status, paused } },
-    }, { accountId: accountId || null });
+    savedJob = await deps.patchJobStatus(job.id, { paused });
   } catch (e) {
     return fail("job_write_failed", { detail: String((e && e.message) || e) });
   }

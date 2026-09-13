@@ -33,7 +33,8 @@
  *     and never leaves the instance. The refusal names the KIND ("an issue key"), never
  *     the value — a refusal that echoes the identifier has leaked it into the model's
  *     transcript, the execution log and the operator's screen, which is the whole thing
- *     we were preventing.
+ *     we were preventing. The ISSUE-KEY half is decided by the TENANT'S REAL PROJECT
+ *     KEYS, read once per 30 s (F-395) — see findIdentifierLeak.
  *  2. REDUCTION. At most TOP_RESULTS rows survive, each trimmed to an ALLOW-LIST of
  *     fields, each snippet cut to SNIPPET_MAX_CHARS. The search engine's payload is not
  *     a shape we control and must never be forwarded verbatim into a context window.
@@ -97,6 +98,8 @@ export const IDENTIFIER_PATTERNS = Object.freeze([
 ]);
 
 /**
+ * THE FALLBACK DENY-LIST — used ONLY when the tenant's real project keys cannot be read.
+ *
  * A Jira issue key and a public standard reference are the SAME SHAPE: `UTF-8`,
  * `CVE-2024`, `RFC-7231`, `ISO-8601` and `PROJ-123` cannot be told apart by a regex.
  *
@@ -107,6 +110,15 @@ export const IDENTIFIER_PATTERNS = Object.freeze([
  * standard or format that nobody would use as a Jira project key. When in doubt, leave
  * it OUT — the cost of an extra refusal is a sentence to the operator, and the cost of
  * an extra allowance is an identifier on somebody else's server.
+ *
+ * F-395: THIS LIST IS NO LONGER THE PRIMARY RULE, because both of its errors were real.
+ * A tenant whose project key IS one of these tokens (API, SQL, UTF are all legal Jira
+ * project keys) had its real issue keys sent to the search engine, and every tenant lost
+ * "CVE-2024-1234". A guess about which prefixes are public cannot decide that; the
+ * tenant's OWN project list can, and it is one cached read away. So the shape rule is
+ * kept ONLY as the fallback for when that read FAILS — and there it stays deliberately
+ * BROAD (refuse on shape), because failing closed is the only safe way to be wrong about
+ * a leak.
  */
 export const NON_KEY_PREFIXES = Object.freeze(new Set([
   "UTF", "ISO", "RFC", "CVE", "CWE", "HTTP", "HTTPS", "TLS", "SSL", "SHA", "MD", "AES", "RSA",
@@ -116,20 +128,77 @@ export const NON_KEY_PREFIXES = Object.freeze(new Set([
 ]));
 
 /**
+ * How many project keys one tenant may contribute to the matcher. The read in
+ * src/index.js is paginated and stops here; a site with more projects than this reports
+ * `ok:false`, which means the SHAPE fallback (refuse) applies rather than a matcher that
+ * silently knows only half the site's keys.
+ */
+export const PROJECT_KEY_CAP = 500;
+
+/** A project key Jira itself would accept: a letter first, then letters/digits/_ , <=10. */
+const LEGAL_PROJECT_KEY = /^[A-Za-z][A-Za-z0-9_]{0,9}$/;
+
+/**
+ * Normalise whatever the project read produced into the matcher's input: an upper-cased,
+ * deduped list of keys that are SAFE to interpolate into a regex. A key that does not
+ * look like a Jira project key is DROPPED rather than escaped — no legal key is lost, and
+ * nothing out of a REST payload ever reaches `new RegExp` unchecked.
+ */
+export const normalizeProjectKeys = (keys) => [...new Set((Array.isArray(keys) ? keys : [])
+  .map((k) => String(k == null ? "" : k).trim().toUpperCase())
+  .filter((k) => LEGAL_PROJECT_KEY.test(k)))].slice(0, PROJECT_KEY_CAP);
+
+/**
+ * Does the query carry `<KEY>-<digits>` for one of THIS tenant's project keys?
+ *
+ * CASE-INSENSITIVE on purpose: a model writes "can you check api-12" as readily as
+ * "API-12", and a leak in lower case is the same leak. The boundaries are written out
+ * rather than `\b` so that `XAPI-12` is not read as this site's `API-12` — a different
+ * token is a different thing. A HYPHEN is deliberately left out of the boundary class:
+ * `SOMETHING-API-12` still carries the key, and when the two readings differ the refusal
+ * is the one we want.
+ */
+export const matchesTenantIssueKey = (query, keys) => {
+  const q = String(query == null ? "" : query);
+  for (const key of normalizeProjectKeys(keys)) {
+    if (new RegExp(`(?<![A-Za-z0-9_])${key}-\\d{1,6}(?![A-Za-z0-9_])`, "i").test(q)) return true;
+  }
+  return false;
+};
+
+/**
  * Refusal check. Returns `null` when the query is clean, or
  * `{ id, kind, message }` when it is not. NEVER returns the offending text.
+ *
+ * `projectKeys` (F-395) is the tenant's OWN project list, in the shape the reader in
+ * src/index.js reports:
+ *   { ok: true,  keys: [...] } → the issue-key row refuses ONLY those keys. "CVE-2024-1234"
+ *                                is a public question on a site with no CVE project, and
+ *                                "API-12" is a leak on a site whose project key IS API.
+ *   { ok: false } / omitted    → the read FAILED (or this caller has no list): fall back to
+ *                                the SHAPE rule minus NON_KEY_PREFIXES. Fail CLOSED — a
+ *                                site we cannot describe gets the broad refusal, never a
+ *                                free pass.
+ * Every other row is unaffected; this argument only ever decides the issue-key row.
  */
-export const findIdentifierLeak = (query) => {
+export const findIdentifierLeak = (query, projectKeys = null) => {
   const q = String(query == null ? "" : query);
+  const known = Boolean(projectKeys && projectKeys.ok === true && Array.isArray(projectKeys.keys));
   for (const row of IDENTIFIER_PATTERNS) {
-    const m = q.match(row.re);
-    if (!m) continue;
     if (row.id === "issueKey") {
-      // Subtract the public-standard shapes. `m[0]` is examined here and DISCARDED —
-      // it is never put into the refusal, the log or the tool result.
-      const prefix = String(m[0]).split("-")[0].toUpperCase();
-      if (NON_KEY_PREFIXES.has(prefix)) continue;
-    }
+      if (known) {
+        // The tenant's own keys decide it. The shape regex is not consulted at all: it is
+        // upper-case-anchored and would miss "api-12", which leaks just as well.
+        if (!matchesTenantIssueKey(q, projectKeys.keys)) continue;
+      } else {
+        const m = q.match(row.re);
+        if (!m) continue;
+        // Subtract the public-standard shapes. `m[0]` is examined here and DISCARDED —
+        // it is never put into the refusal, the log or the tool result.
+        const prefix = String(m[0]).split("-")[0].toUpperCase();
+        if (NON_KEY_PREFIXES.has(prefix)) continue;
+      }
+    } else if (!row.re.test(q)) continue;
     return {
       id: row.id,
       kind: row.kind,
@@ -137,6 +206,32 @@ export const findIdentifierLeak = (query) => {
     };
   }
   return null;
+};
+
+/**
+ * THE MEMO MECHANICS for the project-key read (F-395). The memo CELL lives in ONE home in
+ * src/index.js, beside the provider memo and on the same 30 s window — that is where every
+ * per-container cache in this app lives, and a second cache home is how two surfaces come
+ * to disagree about the same fact. Only the mechanics live here, so that they can be
+ * asserted offline: src/index.js cannot be imported without the Forge runtime, and "a memo
+ * hit does not re-read" is precisely the property a source grep cannot prove.
+ *
+ * A FAILED read is NEVER memoised: the next run should try again rather than inherit a
+ * 30 s window of shape-fallback refusals from one KVS hiccup.
+ */
+export const createProjectKeysMemo = (fetchKeys, ttlMs = 30000, now = () => Date.now()) => {
+  let value = null;
+  let at = 0;
+  return async () => {
+    if (value && now() - at < ttlMs) return value;
+    let r;
+    try { r = await fetchKeys(); } catch { r = null; }
+    const out = r && r.ok === true && Array.isArray(r.keys)
+      ? { ok: true, keys: normalizeProjectKeys(r.keys) }
+      : { ok: false, keys: [] };
+    if (out.ok) { value = out; at = now(); }
+    return out;
+  };
 };
 
 /** Recency → the search MCP's `tbs`-style hint. Unknown values mean "any". */
@@ -213,8 +308,13 @@ export const createSearchBudget = (max = SEARCHES_PER_TURN) => ({ used: 0, max: 
  * `budget` is the shared counter above. `log` is the run's execution log — every refusal
  * is logged, because a tool that quietly returns nothing is indistinguishable from a
  * broken one, and an operator who cannot see the refusal cannot fix the query.
+ *
+ * `deps.projectKeys` (F-395) is the ONE seam to the instance: an async `() => { ok, keys }`
+ * naming the tenant's real project keys. Omitted, it is the memoised reader in
+ * src/index.js. It is a seam rather than a direct import so that the leak rule — the part
+ * of this module that must never regress — stays assertable without the Forge runtime.
  */
-export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = () => {}, deadline = null } = {}) => ({
+export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = () => {}, deadline = null, deps = {} } = {}) => ({
   namespace: "web",
   budget,
   execute: async (name, args) => {
@@ -224,7 +324,21 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
 
     // (1) THE LEAK CHECK RUNS FIRST — before the MCP lookup, before the budget, before
     // anything that could be mistaken for "the request already started".
-    const leak = findIdentifierLeak(query);
+    //
+    // The tenant's project keys decide the issue-key half (F-395). The read is memoised
+    // for 30 s in src/index.js, so this costs one REST call per container per half-minute,
+    // not one per search. If it fails or throws, `ok:false` makes the check fall back to
+    // the SHAPE rule, which REFUSES — a site we could not describe is not a site we guess
+    // about.
+    let projectKeys = { ok: false, keys: [] };
+    try {
+      const read = typeof deps.projectKeys === "function"
+        ? deps.projectKeys
+        : async () => (await idx()).getTenantProjectKeys();
+      const r = await read();
+      if (r && r.ok === true && Array.isArray(r.keys)) projectKeys = r;
+    } catch { projectKeys = { ok: false, keys: [] }; }
+    const leak = findIdentifierLeak(query, projectKeys);
     if (leak) {
       log(`web_search REFUSED — the query contained ${leak.kind} (the value is not recorded).`);
       return { success: false, code: `identifier_leak:${leak.id}`, error: leak.message, rule: RESULT_RULE };

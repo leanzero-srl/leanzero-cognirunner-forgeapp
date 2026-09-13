@@ -18,6 +18,7 @@ import {
   IDENTIFIER_PATTERNS, NON_KEY_PREFIXES, findIdentifierLeak, reduceResults, parseSearchPayload,
   cacheFieldsOf, createSearchBudget, createWebSearchExecutor,
   TOP_RESULTS, SNIPPET_MAX_CHARS, SEARCHES_PER_TURN, RESULT_RULE, WEB_SEARCH_SYSTEM_RULE,
+  matchesTenantIssueKey, normalizeProjectKeys, createProjectKeysMemo, PROJECT_KEY_CAP,
 } from "../../src/web-search-tool.js";
 
 let n = 0;
@@ -76,6 +77,90 @@ ok(findIdentifierLeak("") === null, "an empty query is not a leak (it is refused
 ok(findIdentifierLeak(null) === null, "null does not throw");
 ok(NON_KEY_PREFIXES.has("UTF") && NON_KEY_PREFIXES.has("CVE"), "the deny-list holds the standards that share an issue key's shape");
 ok(!NON_KEY_PREFIXES.has("PROJ") && !NON_KEY_PREFIXES.has("COGTEST"), "…and nothing that looks like a real project key");
+
+/* ========== the TENANT'S REAL PROJECT KEYS decide the issue-key half (F-395) ==========
+
+The shape rule got BOTH errors in one table: a tenant whose project key is API/SQL/UTF had
+its real issue keys sent to a search engine, and every tenant lost "CVE-2024-1234". These
+assert the replacement, and the fallback that must survive a failed read. */
+
+const site = (...keys) => ({ ok: true, keys });
+
+// POSITIVE — the key IS a project on this site, so it is refused whatever it looks like.
+{
+  const leak = findIdentifierLeak("API-12 root cause", site("API", "LZPT"));
+  ok(leak && leak.id === "issueKey", "API-12 is REFUSED on a site whose project key is API (the leak F-395 names)");
+  ok(!leak.message.includes("API-12"), "…and the refusal still names the KIND, never the value");
+  ok(findIdentifierLeak("what broke in api-12", site("API")).id === "issueKey",
+    "…in LOWER CASE too — a model writes api-12 as readily as API-12, and it is the same leak");
+  ok(findIdentifierLeak("COGTEST-1421 regression", site("COGTEST")) !== null, "an ordinary project key is refused");
+  ok(findIdentifierLeak("UTF-8 in UTF-9000", site("UTF")) !== null,
+    "a site that really did name a project UTF has its keys protected — the deny-list used to forbid exactly that");
+}
+
+// NEGATIVE — no such project, so the public question goes through.
+{
+  ok(findIdentifierLeak("CVE-2024-1234 exploitability", site("LZPT", "COGTEST")) === null,
+    "CVE-2024-1234 is ALLOWED when no project is called CVE (the second half of F-395)");
+  ok(findIdentifierLeak("API-12 of the vendor SDK", site("LZPT")) === null,
+    "…and a key shape that is not a project here is a public question, not a leak");
+  ok(findIdentifierLeak("SOMETHING-API-12", site("API")) !== null,
+    "a hyphen-joined token still carries the key, so it is REFUSED — the boundaries exclude letters/digits/_ only, which is the fail-safe direction");
+  ok(findIdentifierLeak("XAPI-12 docs", site("API")) === null,
+    "…but a key glued to a letter is a DIFFERENT token and not this site's key");
+  ok(findIdentifierLeak("API-1234567 build", site("API")) === null,
+    "seven digits is not an issue number — the matcher is <KEY>-<1..6 digits>, like Jira");
+  ok(findIdentifierLeak("who is mihai.perdum@leanzero.net", site("LZPT")).id === "email",
+    "every OTHER kind is untouched by the project list");
+}
+
+// FAIL CLOSED — a failed read falls back to the SHAPE rule, which refuses.
+{
+  for (const failed of [{ ok: false, keys: [] }, null, undefined, { keys: ["API"] }, { ok: true }]) {
+    ok(findIdentifierLeak("PROJ-123 root cause", failed) !== null,
+      "read failure → the SHAPE fallback still REFUSES (fail closed)");
+  }
+  ok(findIdentifierLeak("CVE-2024-1234 exploitability", { ok: false, keys: [] }) === null,
+    "…and under the fallback the deny-list is what keeps the public standards usable");
+  ok(findIdentifierLeak("PROJ-123") !== null, "a caller that passes no list at all gets the fallback, never a free pass");
+}
+
+// The matcher itself, and what it will put into a regex.
+{
+  ok(matchesTenantIssueKey("see LZPT-1", ["LZPT"]) === true, "matcher: a hit");
+  ok(matchesTenantIssueKey("see LZPT-1", ["OTHER"]) === false, "matcher: a miss");
+  ok(matchesTenantIssueKey("see LZPT-1", []) === false, "matcher: no keys means no match (the caller decides what that means)");
+  ok(matchesTenantIssueKey(null, ["LZPT"]) === false, "matcher: null query never throws");
+  eq(normalizeProjectKeys([" lzpt ", "LZPT", "Cog_1"]), ["LZPT", "COG_1"], "keys are upper-cased, trimmed and deduped");
+  eq(normalizeProjectKeys(["A.B", "(", "1AB", "TOOLONGAKEYX", "", null]), [],
+    "anything Jira would not accept as a project key is DROPPED — nothing unescaped reaches new RegExp");
+  ok(normalizeProjectKeys(Array.from({ length: PROJECT_KEY_CAP + 50 }, (_, i) => `K${i}`)).length === PROJECT_KEY_CAP,
+    "the key list is capped");
+  ok(matchesTenantIssueKey("a (.*)-1 b", ["(.*)"]) === false, "a regex metacharacter in a key cannot become a pattern");
+}
+
+// THE MEMO: a hit does not re-read, and a FAILED read is never cached.
+{
+  let reads = 0;
+  let now = 1000;
+  const memo = createProjectKeysMemo(async () => { reads++; return { ok: true, keys: ["LZPT"] }; }, 30000, () => now);
+  const a = await memo();
+  const b = await memo();
+  eq(a, { ok: true, keys: ["LZPT"] }, "the memo reports the tenant's keys");
+  ok(reads === 1, "MEMO HIT: the second call inside the window does NOT re-read");
+  eq(b, a, "…and returns the same value");
+  now += 30001;
+  await memo();
+  ok(reads === 2, "past the 30 s window it reads again");
+
+  let fails = 0;
+  const bad = createProjectKeysMemo(async () => { fails++; throw new Error("kvs hiccup"); }, 30000, () => now);
+  eq(await bad(), { ok: false, keys: [] }, "a THROWING read is reported as ok:false, never thrown at the caller");
+  await bad();
+  ok(fails === 2, "…and a FAILURE is not memoised — one hiccup must not buy 30 s of shape-fallback refusals");
+  const notOk = createProjectKeysMemo(async () => ({ ok: false }), 30000, () => now);
+  eq(await notOk(), { ok: false, keys: [] }, "a reader that reports failure is passed through as failure");
+}
 
 /* ===================== reduction: top 5, 300 chars, allow-list ===================== */
 
@@ -155,6 +240,36 @@ eq(createSearchBudget().max, SEARCHES_PER_TURN, "the default budget is the plan'
 eq(createSearchBudget().used, 0, "a fresh budget starts at zero");
 ok(createSearchBudget() !== createSearchBudget(), "the budget is PER RUN, not module state (a warm container serves many tenants)");
 
+/* ========== the executor asks the instance for the keys, through ONE seam ========== */
+
+{
+  // A site whose project key is API: the search never happens, and the refusal is logged
+  // by kind. This is the whole of F-395 seen from where it matters.
+  let reads = 0;
+  const logs2 = [];
+  const tenant = createWebSearchExecutor({
+    // Budget ZERO deliberately: the leak check runs BEFORE the budget, so a refusal that
+    // says "budget_spent" is proof the query was NOT treated as a leak — and no branch of
+    // this suite ever reaches the network or imports src/index.js.
+    budget: createSearchBudget(0), log: (s2) => logs2.push(s2),
+    deps: { projectKeys: async () => { reads++; return { ok: true, keys: ["API"] }; } },
+  });
+  const r = await tenant.execute("web_search", { query: "API-12 root cause" });
+  ok(r.success === false && r.code === "identifier_leak:issueKey", "the executor refuses a key that IS a project here");
+  ok(reads === 1, "…having asked the instance exactly once for this search");
+  ok(!r.error.includes("API-12") && !logs2.some((l) => l.includes("API-12")), "…and neither the refusal nor the log carries the value");
+
+  const okr = await tenant.execute("web_search", { query: "CVE-2024-1234 exploitability" });
+  ok(okr.code === "budget_spent", "…and the same executor lets the public CVE question PAST the leak check");
+}
+{
+  // A seam that THROWS is the read failing: the tool falls back to the shape rule and
+  // refuses. A leak check that crashes open is worse than one that refuses too much.
+  const broken = createWebSearchExecutor({ budget: createSearchBudget(0), deps: { projectKeys: async () => { throw new Error("no"); } } });
+  const r = await broken.execute("web_search", { query: "PROJ-123 root cause" });
+  ok(r.success === false && r.code === "identifier_leak:issueKey", "a THROWING project read falls back to the shape rule, which refuses");
+}
+
 /* ===================== the two sentences ===================== */
 
 ok(/pages a search engine returned, not answers/.test(RESULT_RULE), "the result rule is the plan's sentence");
@@ -174,5 +289,11 @@ ok(/\$\{webRule\}/.test(src) && /allowed\.includes\("web_search"\) \? `\\n- \$\{
 const idxSrc = await (await import("node:fs/promises")).readFile(new URL("../../src/index.js", import.meta.url), "utf8");
 ok(/export const callBridgeTool = async/.test(idxSrc), "callBridgeTool is exported (the one new export the web tool needs)");
 ok(/export const mcpEnabled = async/.test(idxSrc), "mcpEnabled is exported (the MCP toggle has ONE reader)");
+ok(/export const getTenantProjectKeys = createProjectKeysMemo\(readTenantProjectKeys, PROVIDER_CACHE_TTL_MS\)/.test(idxSrc),
+  "the project-key memo CELL lives in index.js, on the provider memo's TTL — one cache home, not two (F-395)");
+ok(/project\/search\?maxResults=/.test(idxSrc) && /orderBy=key/.test(idxSrc), "…and it reads the tenant's projects, paginated");
+const toolSrc = await (await import("node:fs/promises")).readFile(new URL("../../src/web-search-tool.js", import.meta.url), "utf8");
+ok(/getTenantProjectKeys\(\)/.test(toolSrc), "the tool's DEFAULT dep points at that one reader");
+ok(/deps\.projectKeys/.test(toolSrc), "…reached through the deps seam, so the leak rule stays testable offline");
 
 console.log(`web-search-tool: ${n} passed, 0 failed`);

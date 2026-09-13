@@ -51,6 +51,7 @@ import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATF
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict, safeKeyPart } from "./shared/kvs-keys.js";
 import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js";
+import { createProjectKeysMemo, PROJECT_KEY_CAP } from "./web-search-tool.js";
 import { readHeader } from "./shared/http-headers.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
@@ -13115,6 +13116,53 @@ let _cachedProviderAt = 0;
 // vendor-billed spend.
 let _cachedEditionId = EDITION_IDS.STANDARD;
 let _cachedAllowance = null;
+
+/**
+ * THE TENANT'S REAL PROJECT KEYS (F-395) — one home, beside the provider memo, on the
+ * same 30 s window and for the same reason.
+ *
+ * WHO NEEDS IT: the agent's `web_search` identifier-leak check. It used to decide "is
+ * this an issue key?" by SHAPE, with a deny-list of public prefixes — which leaked the
+ * real keys of any site whose project key is API/SQL/UTF, and refused "CVE-2024-1234"
+ * everywhere. The only authority on whether `API-12` names an issue on THIS site is this
+ * site's project list.
+ *
+ * WHY A MEMO AND NOT A READ PER SEARCH: an agent may search three times a run and runs
+ * are back-to-back on a warm container; the project list changes about as often as the
+ * provider config does. Same TTL, same container-scoped cell, so this app has one cache
+ * story and not two.
+ *
+ * FAILURE IS REPORTED, NEVER GUESSED: `{ ok: false }` on any non-OK response, on a throw,
+ * and on a site with more projects than PROJECT_KEY_CAP — and the caller then falls back
+ * to the broad SHAPE refusal. A half-read list rendered as `ok:true` would silently leak
+ * exactly the keys that did not fit.
+ */
+const PROJECT_KEY_PAGE = 50;
+const readTenantProjectKeys = async () => {
+  const keys = [];
+  let startAt = 0;
+  for (let page = 0; page < Math.ceil(PROJECT_KEY_CAP / PROJECT_KEY_PAGE); page++) {
+    const res = await api.asApp().requestJira(
+      route`/rest/api/3/project/search?maxResults=${String(PROJECT_KEY_PAGE)}&startAt=${String(startAt)}&orderBy=key`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!res.ok) return { ok: false, keys: [] };
+    const data = (await res.json()) || {};
+    const values = Array.isArray(data.values) ? data.values : [];
+    for (const p of values) if (p && p.key) keys.push(String(p.key));
+    if (data.isLast === true || values.length < PROJECT_KEY_PAGE) return { ok: true, keys };
+    startAt += values.length;
+  }
+  // The cap was reached with pages still to come: we do NOT know every key, so say so.
+  return { ok: false, keys: [] };
+};
+
+/**
+ * `{ ok: true, keys: [...] }` (memoised 30 s) or `{ ok: false, keys: [] }`.
+ * EXPORTED for src/web-search-tool.js, which reaches it through its `deps.projectKeys`
+ * seam. Never throws — see createProjectKeysMemo.
+ */
+export const getTenantProjectKeys = createProjectKeysMemo(readTenantProjectKeys, PROVIDER_CACHE_TTL_MS);
 
 /**
  * Get the configured AI provider info: { provider, baseUrl, edition, allowance }.

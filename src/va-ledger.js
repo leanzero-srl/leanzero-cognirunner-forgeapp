@@ -967,19 +967,71 @@ export const readMemory = async (store, agent) => {
  * A caller passing `constraints` is asserting it is acting for a human. There is exactly
  * one such caller; a second one is a finding.
  */
+/**
+ * THE ONE MEASUREMENT OF A MEMORY ROW (F-459): the STORED JSON ENVELOPE, in UTF-8 bytes.
+ *
+ * There used to be three different numbers claiming to be "the size of the memory":
+ *
+ *   · `writeMemory` budgeted `memoryCapBytes - bytesOf(constraints)` and clamped the RAW
+ *     PROSE against it — measuring a string that is not what gets stored;
+ *   · `memoryNeedsCompaction` measured `{text, constraints}` — the envelope WITHOUT
+ *     `updatedAt`, and without the key names, quoting and escaping that JSON adds;
+ *   · the store received `{text, constraints, updatedAt}`, which is bigger than both.
+ *
+ * The consequence is not academic. JSON escaping can nearly DOUBLE a string (every
+ * backslash, quote and newline becomes two bytes), so a row clamped to "the cap" could be
+ * stored well over it — and the ceiling this cap exists to respect is KVS's 240 KiB per
+ * value, a limit that does not care which of our three numbers we believed. The same
+ * mismatch made the compaction trigger fire at a size nobody could reproduce from the row.
+ *
+ * ONE function, the envelope that is actually written, and both callers read it.
+ */
+export const memoryBytes = (memory) => bytesOf({
+  text: (memory && memory.text) || "",
+  constraints: (memory && memory.constraints) || [],
+  updatedAt: (memory && memory.updatedAt) || "",
+});
+
 export const writeMemory = async (store, agent, { text = "", constraints = [] } = {}, { now = Date.now() } = {}) => {
   const pinned = normalizeConstraints(constraints);
-  const budget = Math.max(256, VA_LIMITS.memoryCapBytes - bytesOf(pinned));
-  const clamped = clampUtf8Bytes(defangFence(text == null ? "" : text), budget, "\n[memory clamped]");
-  const memory = { text: clamped.text, constraints: pinned, updatedAt: nowIso(now) };
+  const updatedAt = nowIso(now);
+  const cap = VA_LIMITS.memoryCapBytes;
+  // The room the prose has is the cap MINUS everything else the envelope costs — the
+  // pinned constraints, the key names, the quoting, `updatedAt`. Measured, not estimated.
+  const overhead = memoryBytes({ text: "", constraints: pinned, updatedAt });
+  let budget = Math.max(256, cap - overhead);
+  let clamped = clampUtf8Bytes(defangFence(text == null ? "" : text), budget, "\n[memory clamped]");
+  let memory = { text: clamped.text, constraints: pinned, updatedAt };
+
+  // THE CLAMP IS VERIFIED AGAINST THE ENVELOPE, NOT ASSUMED FROM THE PROSE. Clamping the
+  // raw string to N bytes does not make its JSON form N bytes: a prose full of quotes,
+  // backslashes or newlines escapes to roughly twice its size. So the row is MEASURED as
+  // it will be stored and the budget is reduced by the real overflow until it fits.
+  // Bounded: each pass shrinks the budget by at least the overflow, so it converges, and
+  // the loop stops regardless after a few passes.
+  for (let pass = 0; pass < 8 && memoryBytes(memory) > cap && clamped.text; pass++) {
+    const over = memoryBytes(memory) - cap;
+    budget = Math.max(0, budget - Math.max(over, 32));
+    clamped = clampUtf8Bytes(clamped.text, budget, "\n[memory clamped]");
+    memory = { text: clamped.text, constraints: pinned, updatedAt };
+  }
+  // A LAST RESORT that keeps the promise rather than the prose. If the PINNED constraints
+  // alone overflow the cap, no amount of clamping the prose can help — and the constraints
+  // are what a human typed, so they are the part that survives. The row still goes to
+  // storage (240 KiB is far above this cap, so it is writable), and the caller is told.
+  const overCap = memoryBytes(memory) > cap;
+
   try { await store.set(vaMemoryKey(agent), memory); }
   catch (e) { return fail("memory_write_failed", { detail: String((e && e.message) || e) }); }
-  return { ok: true, memory, clamped: clamped.truncated };
+  return { ok: true, memory, clamped: clamped.truncated, bytes: memoryBytes(memory), overCap };
 };
 
-/** True when the memory is over the compaction trigger and the next tick should compact. */
-export const memoryNeedsCompaction = (memory) =>
-  bytesOf({ text: (memory && memory.text) || "", constraints: (memory && memory.constraints) || [] }) > VA_LIMITS.memoryCompactBytes;
+/**
+ * True when the memory is over the compaction trigger and the next tick should compact.
+ * MEASURED BY `memoryBytes` — the same envelope `writeMemory` clamps against (F-459), so
+ * the trigger and the cap can no longer disagree about what a row's size is.
+ */
+export const memoryNeedsCompaction = (memory) => memoryBytes(memory) > VA_LIMITS.memoryCompactBytes;
 
 /**
  * COMPACTION, AND WHY THE SUMMARISER IS NOT TRUSTED WITH THE CONSTRAINTS (F-423).
@@ -1026,7 +1078,10 @@ export const compactMemory = async (memory, summariser, { now = Date.now() } = {
     reason = `summariser_failed: ${String((e && e.message) || e)}`;
   }
 
-  const budget = Math.max(256, VA_LIMITS.memoryCapBytes - bytesOf(pinned));
+  // The same envelope maths as `writeMemory` (F-459). The final row goes through
+  // `writeMemory` anyway, which re-measures and re-clamps; this keeps the summariser's
+  // target honest so it is not asked for prose that will then be cut.
+  const budget = Math.max(256, VA_LIMITS.memoryCapBytes - memoryBytes({ text: "", constraints: pinned, updatedAt: nowIso() }));
   const clamped = clampUtf8Bytes(defangFence(prose == null ? original : prose), budget, "\n[memory clamped]");
   return {
     ok: true,

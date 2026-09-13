@@ -694,5 +694,57 @@ reset();
   eq(L.capsAllow(await L.readCaps(dead, AG)).allowed, false, "a dead store never permits speech");
 }
 
+
+/* ══ F-459 — ONE MEASUREMENT: THE STORED ENVELOPE ═════════════════════════ */
+{
+  // There used to be three different numbers claiming to be "the size of the memory":
+  // the raw prose (what `writeMemory` clamped), `{text, constraints}` (what the compaction
+  // trigger measured) and `{text, constraints, updatedAt}` (what was actually stored). JSON
+  // escaping can nearly double a string, so a row clamped to "the cap" could be stored well
+  // over it — and the ceiling the cap exists to respect is KVS's 240 KiB per value, which
+  // does not care which of our three numbers we believed.
+  const cap = VA_LIMITS.memoryCapBytes;
+  const enc = new TextEncoder();
+  const stored = (m) => enc.encode(JSON.stringify({ text: m.text, constraints: m.constraints, updatedAt: m.updatedAt })).length;
+
+  const cases = [
+    ["plain ASCII", "a".repeat(cap * 2)],
+    // Every backslash and quote costs TWO bytes in JSON — the case that used to overflow.
+    ["all backslashes", "\\".repeat(cap)],
+    ["all quotes", '"'.repeat(cap)],
+    ["all newlines", "\n".repeat(cap)],
+    // A control character escapes to six bytes (\u0000).
+    ["control characters", "".repeat(cap)],
+    // Multi-byte characters: `.length` is not the byte count.
+    ["CJK", "日".repeat(cap)],
+    ["emoji", "🙂".repeat(Math.floor(cap / 2))],
+  ];
+  for (const [name, text] of cases) {
+    reset();
+    const w = await L.writeMemory(kvs, "job_va1", { text, constraints: [] });
+    ok(w.ok, `memory.bytes.${name}: the write succeeds`);
+    ok(stored(w.memory) <= cap, `memory.bytes.CLAMP_${name.replace(/ /g, "_")} — the STORED row is within memoryCapBytes (${stored(w.memory)} <= ${cap})`);
+    ok(L.memoryBytes(w.memory) === stored(w.memory), `memory.bytes.${name}: memoryBytes measures the stored envelope`);
+    // …and what is read back is what was measured.
+    const back = (await L.readMemory(kvs, "job_va1")).memory;
+    ok(stored(back) <= cap, `memory.bytes.${name}: the row READ BACK is within the cap too`);
+  }
+
+  // Pinned constraints eat into the prose's budget, measured rather than estimated.
+  reset();
+  const big = ["c".repeat(2000), "d".repeat(2000), "e".repeat(2000)];
+  const w2 = await L.writeMemory(kvs, "job_va1", { text: "z".repeat(cap), constraints: big });
+  ok(stored(w2.memory) <= cap, "memory.bytes.CLAMP_with_pinned_constraints — the whole envelope fits");
+  ok(w2.memory.constraints.length === 3, "memory.bytes: …and the human-typed constraints are kept whole");
+
+  // THE TRIGGER AND THE CAP NOW AGREE ABOUT WHAT A ROW'S SIZE IS.
+  const probe = { text: "x".repeat(100), constraints: ["a"], updatedAt: "2026-09-13T00:00:00.000Z" };
+  ok(L.memoryBytes(probe) === stored(probe), "memory.bytes: ONE function, and it is the envelope");
+  ok(L.memoryNeedsCompaction({ ...probe, text: "x".repeat(VA_LIMITS.memoryCompactBytes + 1000) }) === true,
+    "memory.bytes: the compaction trigger fires over its threshold");
+  ok(L.memoryNeedsCompaction(probe) === false, "memory.bytes: …and not under it");
+}
+
+
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} checks passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

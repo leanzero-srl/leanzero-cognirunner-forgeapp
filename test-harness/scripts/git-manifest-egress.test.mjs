@@ -77,12 +77,40 @@ for (const host of GIT_PROVIDER_HOST_NAMES) {
   ok(exact === 1, `${host} is declared exactly once in backend egress (${exact})`);
 }
 
-/* ---- 4. NO NEW SCOPES. The FRAME is explicit: 1.4 commits 1-7 need none. A
-   scope added here is a re-consent on every installed site, and it would be a
-   coordinator decision, never a surgeon's. ---- */
+/* ---- 4. NO SCOPE ARRIVES WITHOUT A DECISION. The FRAME was explicit that 1.4
+   commits 1-7 need none, and this assertion was a bare count of 20. A count is a
+   tripwire, not a statement: it says a scope appeared but never which one was
+   sanctioned, so the only way past it is to retype a bigger number — which is the
+   same edit whether the scope was approved or smuggled.
+
+   So it is now an EXACT SET. Adding a scope means writing it here, next to the
+   release that sanctioned it, and a scope that is not on this list fails the build
+   by NAME. The 1.5 addition is the three Confluence WRITE scopes (commit 7a), which
+   the FRAME states as the entire manifest scope delta of the Confluence half; they
+   are a MAJOR version bump and a re-consent on every installed site, which is a
+   coordinator decision and never a surgeon's. ---- */
+const SANCTIONED_SCOPES = [
+  // Jira, since 1.0-1.3.
+  "read:jira-work", "write:jira-work", "read:jira-user",
+  "read:workflow:jira", "write:workflow:jira", "read:project:jira", "storage:app",
+  "read:issue-type-screen-scheme:jira", "read:screen-scheme:jira", "read:screen-tab:jira",
+  "manage:jira-configuration", "read:screenable-field:jira", "manage:jira-project",
+  "write:sprint:jira-software", "write:board-scope:jira-software", "write:issue:jira-software",
+  // Coder plan Part 0 probes (2026-09-12): JSM queue intake + Confluence reach.
+  "read:servicedesk-request", "read:space:confluence", "read:page:confluence", "search:confluence",
+  // 1.5 commit 7a — the Confluence WRITE half. MAJOR version + `forge install --upgrade`.
+  "write:page:confluence", "read:comment:confluence", "write:comment:confluence",
+];
 const scopeBlock = manifest.slice(manifest.indexOf("  scopes:"), manifest.indexOf("  external:"));
 const scopes = [...scopeBlock.matchAll(/^\s*- ([a-z0-9:_\-]+)\s*$/gim)].map((m) => m[1]);
-ok(scopes.length === 20, `scope count is unchanged at 20 (got ${scopes.length}: ${scopes.join(" ")})`);
+for (const s of scopes) {
+  ok(SANCTIONED_SCOPES.includes(s), `manifest scope "${s}" is on the sanctioned list`);
+}
+for (const s of SANCTIONED_SCOPES) {
+  ok(scopes.includes(s), `sanctioned scope "${s}" is still in the manifest`);
+}
+ok(scopes.length === SANCTIONED_SCOPES.length,
+  `no scope is declared twice (${scopes.length} in the manifest, ${SANCTIONED_SCOPES.length} sanctioned)`);
 for (const s of ["read:jira-work", "write:jira-work", "storage:app"]) {
   ok(scopes.includes(s), `scope ${s} still present`);
 }

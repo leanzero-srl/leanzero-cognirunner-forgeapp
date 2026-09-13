@@ -489,6 +489,25 @@ permissions:
     - read:space:confluence
     - read:page:confluence
     - search:confluence
+    # 1.5 Confluence WRITES (commit 7a). Exactly three scopes are added, and they are
+    # the whole manifest delta the Confluence half of 1.5 needs — the three READ scopes
+    # above already shipped with the Part 0 probes.
+    #   write:page:confluence   — createPage / updatePage (src/confluence-client.js)
+    #   read:comment:confluence — reading a page's comments (the client's comment surface)
+    #   write:comment:confluence— addComment (the deterministic comment post-function)
+    # Adding scopes is a MAJOR version bump: `forge deploy` then `forge install --upgrade`
+    # on every site, and the admin must re-consent. Nothing in the Confluence half works
+    # until that upgrade lands, and until the app is ALSO installed on Confluence
+    # (`forge install -p Confluence`) — which the client's `probeInstalled` reports and
+    # every Confluence rule fails OPEN on.
+    #
+    # THE CONDITION EXPRESSION CHANGE RIDES THIS SAME BUMP. Commit 7c adds a
+    # `confluence-page-linked` branch to the ONE jira:workflowCondition expression above.
+    # An expression edit is a manifest edit, so it is deployed and upgraded together with
+    # these scopes; there is no second upgrade to ask an admin for.
+    - write:page:confluence
+    - read:comment:confluence
+    - write:comment:confluence
   external:
     images:
       - address: "*.atlassian.net"

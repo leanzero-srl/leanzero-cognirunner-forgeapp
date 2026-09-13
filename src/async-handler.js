@@ -869,7 +869,10 @@ Error: ${defangFence(String(error).substring(0, 2000))}${recommendation ? `\nRec
     source: "test",
     projectKey: projectKey || null,
     confidence: 0.6,
-    meta: { errorSig: errorSig || null, ruleId: ruleId || null, stepName: stepName || null },
+    // F-191: only `errorSig` is stored — it is the one meta key with a reader (the
+    // reinforce lookup). `ruleId`/`stepName` stay task PARAMS (the prompt and the warn
+    // below use them); storing them was unread weight inside the byte-guarded value.
+    meta: { errorSig: errorSig || null },
   });
   if (saved.stored === false) {
     // F-159: the memory store is full of higher-value rows and the distilled lesson

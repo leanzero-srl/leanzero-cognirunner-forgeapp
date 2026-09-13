@@ -27,7 +27,7 @@
  * Memory entry shape:
  *   { id, content, source: "user"|"test"|"fix", projectKey: string|null,
  *     confidence: number, reinforcements: number, createdAt, updatedAt,
- *     disabled: boolean, meta?: { errorSig, ruleId, stepName }, createdBy? }
+ *     disabled: boolean, meta?: { errorSig }, createdBy? }
  */
 
 // `storage` was deprecated from @forge/api — this project uses @forge/kvs
@@ -185,19 +185,31 @@ const markMemoryStoreFull = async (reason, source) => {
  * was one line earlier).
  */
 /**
- * Clamp a memory row's `meta` — the ONE home (F-185).
+ * Clamp a memory row's `meta` — the ONE home (F-185/F-191).
  *
  * `meta` arrives from the runtime (index.js's auto-capture) and from the async distill
- * task, carrying a rule id and a STEP NAME that the user typed: both were reaching the
- * stored row unclamped, so a 4 000-character step name rode into the single `pf_memories`
- * value and counted against the byte guard as if it were a lesson. Unknown keys are
- * dropped rather than clamped — a meta key nothing reads is pure weight in the store.
+ * task, and reached the stored row unclamped: a 4 000-character step name rode into the
+ * single `pf_memories` value and counted against the byte guard as if it were a lesson.
+ * Unknown keys are DROPPED rather than clamped — a meta key nothing reads is pure weight
+ * in the store.
+ *
+ * F-191 applies that same rule to the keys this clamp used to exempt. Only `errorSig` has
+ * a reader (the reinforce lookup in index.js — `memories.find(m => m.meta?.errorSig === …)`).
+ * `ruleId` and `stepName` had NONE: no resolver, no prompt block, no column in any of the
+ * four apps read them, and they cost up to 140 chars — ~420 B of CJK per auto-captured row,
+ * ~84 KB across a 200-row store — inside the one value a byte guard is defending. They also
+ * made the store-full probe heavier, so the banner went up earlier to protect metadata
+ * nothing displays. They remain QUEUE PARAMS of the memory_distill task, where they are
+ * read: `stepName` feeds the distill prompt and its dedup tokens, and both name the rule
+ * and step in the "lesson NOT stored" warn. They are simply not stored on the row.
+ * (Rows written before this keep their old keys until they are next rewritten; nothing
+ * reads them, so nothing changes but their weight.)
  *
  * Limits are CHARACTER clamps (like MEMORY_CONTENT_MAX); the byte guard is what decides
  * whether the row fits, and the store-full probe below is built from the worst case of
  * exactly these numbers.
  */
-export const META_LIMITS = { errorSig: 16, ruleId: 60, stepName: 80 };
+export const META_LIMITS = { errorSig: 16 };
 export const clampMemoryMeta = (meta) => {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
   const out = {};
@@ -223,7 +235,7 @@ const HYPOTHETICAL_PROBE_ID = "__memory_store_full_probe__";
  *
  * The probe is MEMORY_CONTENT_MAX emoji — 1602 serialized bytes, i.e. the
  * MEMORY_CONTENT_MAX * 4 worst case — plus a representative `meta` (an
- * auto-captured row always carries errorSig/ruleId/stepName). That is deliberately
+ * auto-captured row always carries an errorSig). That is deliberately
  * HEAVIER than any row that can actually be stored: `substring(0, MEMORY_CONTENT_MAX)`
  * clamps UTF-16 code units, so the true maximum is 400 CJK chars ~= 1200 B (an emoji
  * costs two code units, so only 200 of them survive the clamp). Erring heavy is the
@@ -237,7 +249,7 @@ const PROBE_CONTENT = "\u{1F600}".repeat(MEMORY_CONTENT_MAX);
  * reason PROBE_CONTENT is: the guard counts UTF-8 bytes while META_LIMITS are character
  * clamps. Emoji at the full limit is deliberately heavier than any row that can actually
  * be stored (`substring` clamps UTF-16 code units, so a real maximum meta is ~3 B/char
- * CJK, e.g. 240 B for an 80-char stepName, against 320 B here). Erring heavy holds the
+ * CJK, e.g. 48 B for a 16-char errorSig, against 64 B here). Erring heavy holds the
  * banner up a little early; erring light is F-170 again — a green banner over an instance
  * that is silently discarding everything it learns.
  */

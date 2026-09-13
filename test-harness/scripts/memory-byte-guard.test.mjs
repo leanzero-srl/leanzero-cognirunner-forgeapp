@@ -18,9 +18,11 @@
 //   the mock emits a ForgeKvsAPIError-shaped throw, see lib/mock-kvs.mjs.)
 // F-184 — metadata-only edits (archive/restore, project clear) must never be refused by the byte
 //   guard. Archive (-1 B) succeeded while Restore (+1 B) was refused: a one-way door.
-// F-185 — `meta.stepName` / `meta.ruleId` reached the stored row unclamped from the runtime and
-//   the distill task; they are clamped at the store, unknown keys dropped, and the store-full
-//   probe carries the worst case of those clamps.
+// F-185 — `meta` reached the stored row unclamped from the runtime and the distill task; it is
+//   clamped at the store, unknown keys dropped, and the store-full probe carries the worst case
+//   of those clamps.
+// F-191 — `meta.stepName` / `meta.ruleId` had zero readers in src/ and static/, so they are no
+//   longer stored on the row (they stay memory_distill task params, which ARE read).
 import storage from "../lib/mock-kvs.mjs";
 import {
   saveMemories, saveMemoryCandidate, serializedBytes, clampMemoryMeta, META_LIMITS,
@@ -156,6 +158,8 @@ ok(shrunk.refused !== true && load()[0].content.length === 100, "CONTENT shrink 
 
 // ---------------------------------------------------------------------------
 // F-185: meta is clamped at the store; unknown keys are dropped.
+// F-191: `ruleId`/`stepName` ARE unknown keys now — they had no reader anywhere in src/ or
+// static/, so they are not stored at all (they remain memory_distill task params).
 // ---------------------------------------------------------------------------
 storage.__reset();
 storage.__seed(MEMORIES_KEY, []);
@@ -170,10 +174,12 @@ const withMeta = await saveMemoryCandidate({
 });
 ok(withMeta.stored === true, "the metered candidate stored");
 const meta = load()[0].meta;
-ok(meta.stepName.length === META_LIMITS.stepName, `meta.stepName clamped to ${META_LIMITS.stepName} chars (was 4000)`);
-ok(meta.ruleId.length === META_LIMITS.ruleId, `meta.ruleId clamped to ${META_LIMITS.ruleId} chars (was 500)`);
 ok(meta.errorSig.length === META_LIMITS.errorSig, `meta.errorSig clamped to ${META_LIMITS.errorSig} chars`);
+ok(!("stepName" in meta) && !("ruleId" in meta),
+  `F-191: an unread meta key is not stored at all (got ${JSON.stringify(Object.keys(meta))})`);
 ok(!("payload" in meta) && !("nested" in meta), "unknown meta keys are dropped, not clamped");
+ok(Object.keys(META_LIMITS).length === 1 && META_LIMITS.errorSig,
+  "errorSig — the one meta key with a reader — is the whole clamp");
 ok(clampMemoryMeta(null) === null && clampMemoryMeta({}) === null && clampMemoryMeta("x") === null,
   "clampMemoryMeta returns null for absent/empty/non-object meta");
 

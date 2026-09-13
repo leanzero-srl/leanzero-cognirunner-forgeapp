@@ -207,7 +207,21 @@ confirms the comment id / property / field value, never after "a call that could
 made" (§3.14 law 6; Law 4's "verify the write through a second REST read").
 
 **Memory compaction** at 6 KB → one Haiku-class summarisation call, cap 8 KB, decisions and
-keys preserved verbatim. It is a **queued** task so it inherits the gate.
+keys preserved verbatim.
+
+*Shipped (F-494) as a claimed step INSIDE the prepare tick, not as a queued task.* It runs
+after the paused and capability gates — so it still inherits both — and **before the sweep**,
+because the items a tick fans out are given this memory; compacting after the fan-out means a
+whole tick of turns reading the row that was already over budget. It is not its own queued
+task because, unlike the post phase (F-421), it delivers nothing visible and has no schedule
+of its own: it is one bounded call on a row the tick is about to read anyway, and a second
+task would be a second thing that can be lost. The claim is `va_compact:{agent}:{tickId}`, so
+a duplicate trigger delivery for one 5-minute tick buys exactly one summarisation turn.
+The summariser runs on `getOpenAIModel()` — the CHEAPEST tier, the one deliberate exception
+to F-482's "the VA runs on the agent model", because compaction is a mechanical rewrite of
+the agent's own notes, not reasoning — and it is a bare chat call with **no tools**, since a
+summariser that could call `memory_note` would be a compaction that appends. The receipt
+carries `compacted: {before, after}`, present only when a turn actually ran.
 
 ### Commit 3 — `virtual-admin.js` engine · **cr-rules-surgeon**
 
@@ -511,7 +525,7 @@ them. That is the guarantee (Law 2); a gate would imply a route.
 | 4. Fingerprints, not memory | `va_item.fingerprint` = `{updated, lastCommentId, lastCommentAuthor}` compared against a **fresh** read every sweep | `fingerprint-diff.test.mjs`: unchanged → skip, each field changed → candidate |
 | 5. Two-phase speech with a wall-clock floor | §6's double condition (`stagedTickId` + `minPostGapMinutes`) | the three `post.floor.*` tests |
 | 6. Effects recorded on read-back | `va_effect:{agent}:{invTs}` written **only** after gate 11 | gate 11 BLOCK test asserts **no** effects row |
-| 7. Memory compacted, not truncated | 6 KB trigger → summarisation task → 8 KB cap. **A pinned `constraints[]` list is preserved verbatim BY CODE, not by prompt (F-423)**; `memory_note` is defanged + clamped at write time and the memory is injected in an ADVISORY fence | `memory.compact.PRESERVE_pinned_constraints_verbatim` — the pinned list is compared byte-for-byte, so the property is enforced, not sampled |
+| 7. Memory compacted, not truncated | 6 KB trigger → summarisation step at the head of the prepare tick → 8 KB cap. **A pinned `constraints[]` list is preserved verbatim BY CODE, not by prompt (F-423)**; `memory_note` is defanged + clamped at write time and the memory is injected in an ADVISORY fence. **F-494 wired the trigger** (`compactMemory` had no caller, so the law was prose and the only thing that happened at the cap was a byte clamp) and made the clamp itself law-abiding: over the cap `writeMemory` drops **whole unpinned lines, oldest first** — the prose is an append-only note log, so a tail clamp threw away the NEWEST notes and cut the survivors mid-sentence — and when the **pinned half alone** exceeds the cap it **refuses** (`reason: "memory-full"`) rather than cut human-typed text | `memory.compact.PRESERVE_pinned_constraints_verbatim` — the pinned list is compared byte-for-byte, so the property is enforced, not sampled. F-494 adds `memory.9k.BLOCK_pinned_loss` / `BLOCK_mid_sentence`, `memory.full.BLOCK` (reachable today on a CJK tenant: `constraintMaxChars` counts CHARACTERS, the cap counts BYTES, so 20 × 300 CJK constraints weigh ~18 KB), `compaction.ALLOW_one_model_call`, `compaction.BLOCK_needless_spend`, `compaction.BLOCK_pinned_dropped` (the old memory is KEPT) and `compaction.claim.BLOCK_double_spend` |
 | 8. Every quiet failure is loud | `va_tick` **and** `va-post` receipts with `skipped[]+reasons` (F-421), `va_health:{agent}` as the banner's own counter (F-426), per-item `history[≤10]` + `attempts` (F-414), a solid red banner on `auth_dead` / model unreachable / 3 consecutive failed ticks, "last ran / next run" always rendered | a receipt test per skip reason; a UI case per banner |
 | 9. Kill switches at three levels | tenant cancel epoch (existing) · per-agent `status.paused` · `shadowUntilTick` | `gate.killswitch.BLOCK`, `gate.paused.BLOCK`, `gate.shadow.BLOCK` |
 | 10. Provider-agnostic long turns | `long-queue` / `long-consumer` (`manifest.yml:434-436`) via `LONG_QUEUE_ONLY_TASKS`; a turn where the model never calls a tool ends cleanly with the ledger written | a "model returns prose, no tool call" fixture ends `queued`, not `failed`, and writes a receipt |

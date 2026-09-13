@@ -1607,7 +1607,288 @@ reset();
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8");
   ok(/model: await m\.getAgentModel\(\)/.test(src), "model: the VA loop runs on the AGENT model");
-  ok(!/model: await m\.getOpenAIModel\(\)/.test(src), "model: …and no longer on the rules model");
+  /*
+   * SCOPED TO `runLoop`, not to the whole file (F-494).
+   *
+   * This assertion used to read the entire source for `getOpenAIModel`, which made it a
+   * ban on the rules model ANYWHERE in the VA rather than the guarantee F-482 actually
+   * bought: that the agent's REASONING runs on the model the admin chose. Memory
+   * compaction is not reasoning — it is a mechanical rewrite of the agent's own notes,
+   * with no tools and nothing it can act on — and it deliberately runs on the CHEAPEST
+   * tier, which is exactly `getOpenAIModel()`. So the ban is narrowed to the loop, and
+   * the exception below is asserted rather than merely permitted.
+   */
+  const runLoopBlock = src.slice(src.indexOf("runLoop: async (args)"), src.indexOf("turnBudgetMs:"));
+  ok(runLoopBlock.length > 0, "model: the runLoop dep block is findable");
+  ok(!/getOpenAIModel\(\)/.test(runLoopBlock), "model: …and the LOOP is no longer on the rules model");
+
+  // F-494 — and the compaction summariser IS, on purpose, and calls no loop.
+  const summariserBlock = src.slice(src.indexOf("summariseMemory: async ("), src.indexOf("compactMemory: (memory, summariser"));
+  ok(summariserBlock.length > 0, "compaction: the summariser dep block is findable");
+  ok(/model: await m\.getOpenAIModel\(\)/.test(summariserBlock),
+    "compaction: the summariser runs on the CHEAPEST tier — housekeeping is not reasoning");
+  ok(!/runAgentLoop|runLoop/.test(summariserBlock),
+    "compaction: …and it is a bare chat call — a summariser with TOOLS could append to the memory it is compacting");
+}
+
+
+/* ══ F-494. MEMORY IS COMPACTED, NOT TRUNCATED (§3.14 law 7) ════════════════
+ *
+ * `compactMemory` existed and nothing called it, so the law was prose: the only thing
+ * that happened at the cap was `writeMemory` cutting the row by bytes, mid-sentence,
+ * from the end — which for an append-only note log throws away the NEWEST notes.
+ *
+ * The assertions are about the two things that can be lost and the one thing that can be
+ * overspent: a pinned constraint, a decision, and a model call.
+ */
+reset();
+{
+  /* ── BLOCK 1: a 9 KB write does not cut a pinned constraint ─────────────── */
+  const PIN = "never reply publicly on SEC issues";
+  const PIN2 = "always assign to the on-call before transitioning";
+  // Distinct, findable lines so the test can say WHICH survived rather than only how big.
+  const lines = Array.from({ length: 400 }, (_, i) => `note ${i}: SUP-${i} was escalated because reason ${i}`);
+  const w = await L.writeMemory(kvs, AG, { text: lines.join("\n"), constraints: [PIN, PIN2] });
+  eq(w.ok, true, "memory.9k: the write succeeds");
+  ok(new TextEncoder().encode(JSON.stringify(w.memory)).length <= VA_LIMITS.memoryCapBytes,
+    "memory.9k: the STORED row is within the cap");
+  eq(w.memory.constraints.length, 2, "memory.9k.BLOCK_pinned_loss — both pinned constraints survive a 9 KB write");
+  eq(w.memory.constraints[0], PIN, "memory.9k: …the first one WHOLE, not cut mid-sentence");
+  eq(w.memory.constraints[1], PIN2, "memory.9k: …and the second one too");
+  ok(w.droppedLines > 0, "memory.9k: the overflow was paid for by DROPPING whole unpinned lines");
+
+  // THE END THAT SURVIVES IS THE NEW END. This is the defect that made the old clamp
+  // worse than useless: an agent that keeps March and forgets today is confidently stale.
+  ok(w.memory.text.includes("note 399:"), "memory.9k: the NEWEST note survives");
+  ok(!w.memory.text.includes("note 0:"), "memory.9k: …and the oldest is the one that went");
+  ok(w.memory.text.startsWith("[older notes dropped]"),
+    "memory.9k: the drop is MARKED — a memory that silently shrank reads like one never written");
+  // Every surviving note is a WHOLE line: no half-decisions.
+  for (const line of w.memory.text.split("\n")) {
+    if (line === "[older notes dropped]" || line === "") continue;
+    ok(/^note \d+: SUP-\d+ was escalated because reason \d+$/.test(line),
+      `memory.9k.BLOCK_mid_sentence — every surviving note is whole ("${line.slice(0, 40)}…")`);
+  }
+
+  const back = (await L.readMemory(kvs, AG)).memory;
+  eq(back.constraints[0], PIN, "memory.9k: …and the pinned constraint is there on READ BACK, not only in the return");
+}
+
+reset();
+{
+  /* ── BLOCK 2: pinned text alone over the cap REFUSES, loudly ────────────── */
+  /*
+   * AND IT IS REACHABLE TODAY, on a tenant that does not write in Latin script.
+   *
+   * `constraintMaxChars` (300) clamps CHARACTERS; `memoryCapBytes` (8192) is BYTES. In
+   * ASCII the maximum pinned payload is ~6.1 KB and fits. In CJK every character is three
+   * UTF-8 bytes, so the same twenty constraints an admin is allowed to pin weigh ~18 KB —
+   * more than twice the cap. The old code stored that row anyway (KVS's own ceiling is
+   * 240 KiB, so it succeeded) and set an `overCap` flag neither caller read.
+   *
+   * There is no cut that saves this row: the whole overflow IS human-pinned text. So the
+   * write refuses, and both callers already surface a refusal — `memory_note` tells the
+   * model it could not be remembered, `saveMemory` fails the admin's save with the reason.
+   */
+  const cjk = Array.from({ length: VA_LIMITS.constraintsMax }, () => "日".repeat(VA_LIMITS.constraintMaxChars));
+  const pinnedBytes = new TextEncoder().encode(JSON.stringify({ text: "", constraints: cjk, updatedAt: new Date().toISOString() })).length;
+  ok(pinnedBytes > VA_LIMITS.memoryCapBytes,
+    `memory.full: the fixture really does overflow on pinned text alone (${pinnedBytes} > ${VA_LIMITS.memoryCapBytes})`);
+
+  const r = await L.writeMemory(kvs, AG, { text: "anything", constraints: cjk });
+  eq(r.ok, false, "memory.full.BLOCK — pinned text alone over the cap REFUSES the write");
+  eq(r.reason, "memory-full", "memory.full: …by the name the caller surfaces");
+  eq(r.wrote, false, "memory.full: …and it says nothing was stored");
+  eq((await L.readMemory(kvs, AG)).memory.text, "", "memory.full: the store really is untouched");
+  eq((await L.readMemory(kvs, AG)).memory.constraints.length, 0, "memory.full: …no half-written row either");
+
+  // The same tenant, within its budget, is NOT refused — this is a cap, not a ban on CJK.
+  const few = ["日".repeat(VA_LIMITS.constraintMaxChars), "本".repeat(10)];
+  const okRow = await L.writeMemory(kvs, AG, { text: "日本語のメモ", constraints: few });
+  eq(okRow.ok, true, "memory.full.ALLOW — a CJK memory inside the budget writes normally");
+  eq(okRow.memory.constraints.length, 2, "memory.full: …with its pinned constraints whole");
+  ok(new TextEncoder().encode(JSON.stringify(okRow.memory)).length <= VA_LIMITS.memoryCapBytes,
+    "memory.full: …and inside the cap");
+
+  // The refusal is reachable directly too, whatever the limits happen to be.
+  const survived = L.pinnedSurvived({ constraints: ["a", "b"] }, { constraints: ["a"] });
+  eq(survived.ok, false, "pinnedSurvived.BLOCK — a candidate missing a pinned line does not pass");
+  eq(survived.missing[0], "b", "pinnedSurvived: …and it NAMES the one that went");
+  eq(L.pinnedSurvived({ constraints: ["a"] }, { constraints: ["a", "b"] }).ok, true,
+    "pinnedSurvived.ALLOW — an ADDED constraint is not a dropped one");
+  eq(L.pinnedSurvived({ constraints: [] }, { constraints: [] }).ok, true,
+    "pinnedSurvived.ALLOW — no constraints is not a loss");
+}
+
+/* ── The compaction STEP inside the tick ───────────────────────────────────── */
+
+/** A tick whose only job is the compaction step: nothing to sweep, nothing to fan out. */
+const compactTickDeps = (over = {}) => ({
+  capability: CAP_ON,
+  store: kvs,
+  now: () => Date.parse("2026-09-13T10:00:00Z"),
+  selfAccountId: async () => ({ ok: true, accountId: SELF }),
+  searchJql: async () => ({ issues: [] }),
+  jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+  pushTask: async () => {},
+  ...over,
+});
+
+/** Prose comfortably over the 6 KB trigger, in findable whole lines. */
+const fatProse = (n = 300) => Array.from({ length: n }, (_, i) => `note ${i}: decision ${i} on SUP-${i}`).join("\n");
+
+reset();
+{
+  /* ── ALLOW: over-threshold memory compacts ONCE, and the receipt says so ── */
+  const PIN = "never promise a date";
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [PIN] });
+  const before = L.memoryBytes((await L.readMemory(kvs, AG)).memory);
+  ok(L.memoryNeedsCompaction((await L.readMemory(kvs, AG)).memory), "compaction: the fixture really is over the trigger");
+
+  let calls = 0;
+  let sawTools = false;
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  const r = await V.runVaTick({ job, tickId: "c1", deps: compactTickDeps({
+    summariseMemory: async (args) => {
+      calls++;
+      if (args && args.tools) sawTools = true;
+      // A summariser that tries to hand back its own constraints. They are ignored BY
+      // CODE, which is the whole point of `compactMemory`.
+      return "decisions: SUP-1 escalated, SUP-2 closed as duplicate. open: waiting on finance.";
+    },
+  }) });
+
+  eq(r.ok, true, "compaction.ALLOW — the tick succeeds");
+  eq(calls, 1, "compaction.ALLOW_one_model_call — exactly one summarisation turn, not one per candidate");
+  eq(sawTools, false, "compaction: …and the summariser is given no tools");
+  eq(r.compacted.ran, true, "compaction: the step reports that it ran");
+  ok(r.compacted.after < before, "compaction: the memory got SMALLER");
+
+  const after = (await L.readMemory(kvs, AG)).memory;
+  ok(after.text.includes("SUP-1 escalated"), "compaction: the summariser's prose is what is stored");
+  eq(after.constraints[0], PIN, "compaction.ALLOW_pinned_survives — the pinned constraint is carried across by CODE");
+  ok(!L.memoryNeedsCompaction(after), "compaction: …and the row is back under the trigger");
+
+  const receipt = (await L.readTick(kvs, AG, "c1", "prepare")).receipt;
+  ok(receipt.compacted, "compaction.RECEIPT_written — `compacted` rides the prepare receipt");
+  eq(receipt.compacted.before, before, "receipt: …with the byte size BEFORE");
+  eq(receipt.compacted.after, L.memoryBytes(after), "receipt: …and AFTER, so an admin can see it worked");
+  ok(!receipt.skipped.some((s) => s.key === "(memory)"), "compaction: a clean compaction is not a skip");
+}
+
+reset();
+{
+  /* ── ALLOW: under-threshold does NOTHING, and buys no model call ────────── */
+  await L.writeMemory(kvs, AG, { text: "one small note", constraints: ["never promise a date"] });
+  let calls = 0;
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  const r = await V.runVaTick({ job, tickId: "c2", deps: compactTickDeps({
+    summariseMemory: async () => { calls++; return "should never happen"; },
+  }) });
+
+  eq(r.ok, true, "compaction.ALLOW_under_threshold — the tick succeeds");
+  eq(calls, 0, "compaction.BLOCK_needless_spend — a memory under the trigger buys NO model call");
+  eq(r.compacted.ran, false, "compaction: the step reports it did not run");
+  eq(r.compacted.reason, "under_threshold", "compaction: …by name");
+  eq((await L.readMemory(kvs, AG)).memory.text, "one small note", "compaction: the memory is untouched");
+
+  const receipt = (await L.readTick(kvs, AG, "c2", "prepare")).receipt;
+  ok(!receipt.compacted, "compaction: `compacted` is ABSENT — nothing to compact must not read like a compaction that achieved nothing");
+  ok(!receipt.skipped.some((s) => s.key === "(memory)"), "compaction: …and the everyday case is not a skip either");
+}
+
+reset();
+{
+  /* ── BLOCK: a compaction whose output DROPS A PINNED LINE is rejected ───── */
+  const PIN = "never reply publicly on SEC issues";
+  const PROSE = fatProse();
+  await L.writeMemory(kvs, AG, { text: PROSE, constraints: [PIN] });
+  const kept = (await L.readMemory(kvs, AG)).memory;
+
+  let summarised = 0;
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  // The compactor is injected, so the rejection path is exercised end to end rather than
+  // asserted about a function that cannot produce the input. A future refactor of
+  // `compactMemory` that stopped carrying constraints across would be caught HERE.
+  const r = await V.runVaTick({ job, tickId: "c3", deps: compactTickDeps({
+    summariseMemory: async () => { summarised++; return "tidy"; },
+    compactMemory: async (memory, summariser) => {
+      await summariser(memory);
+      return { ok: true, compacted: true, memory: { text: "tidy", constraints: [], updatedAt: null } };
+    },
+  }) });
+
+  eq(r.ok, true, "compaction.BLOCK_pinned_dropped — the tick still succeeds; compaction is housekeeping");
+  eq(summarised, 1, "compaction: the turn did run — this is a rejection of its RESULT, not a refusal to try");
+  eq(r.compacted.ran, false, "compaction: …and the step reports it did not write");
+  eq(r.compacted.kept, true, "compaction: the OLD memory was kept");
+  ok(/^pinned_dropped:/.test(String(r.compacted.reason)), "compaction: …for the named reason");
+  eq((r.compacted.missing || [])[0], PIN, "compaction: …which NAMES the constraint that would have been lost");
+
+  const after = (await L.readMemory(kvs, AG)).memory;
+  eq(after.text, kept.text, "compaction.BLOCK — the stored prose is UNCHANGED");
+  eq(after.constraints[0], PIN, "compaction.BLOCK — and the pinned constraint is still there");
+
+  const receipt = (await L.readTick(kvs, AG, "c3", "prepare")).receipt;
+  ok(!receipt.compacted, "compaction: a rejected compaction writes no `compacted` row — nothing was compacted");
+  ok(receipt.skipped.some((s) => s.key === "(memory)" && /pinned_dropped/.test(s.reason)),
+    "compaction.RECEIPT_names_the_refusal — an admin can see the memory is still over budget and why");
+}
+
+reset();
+{
+  /* ── The claim: one tick buys ONE turn, however often it is delivered ───── */
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  let calls = 0;
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  const deps = compactTickDeps({ summariseMemory: async () => { calls++; return "tidy notes, SUP-1 escalated"; } });
+
+  await V.runVaTick({ job, tickId: "c4", deps });
+  eq(calls, 1, "compaction.claim: the first delivery of tick c4 summarises");
+  // Re-fatten the memory so the THRESHOLD would fire again: only the CLAIM can stop it.
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  const r2 = await V.runVaTick({ job, tickId: "c4", deps });
+  eq(calls, 1, "compaction.claim.BLOCK_double_spend — a redelivery of the SAME tick buys no second turn");
+  ok(/^not_claimed:/.test(String(r2.compacted.reason)), "compaction.claim: …and says it was already claimed");
+
+  // A DIFFERENT tick is a different claim, and may compact.
+  await V.runVaTick({ job, tickId: "c5", deps });
+  eq(calls, 2, "compaction.claim.ALLOW_next_tick — the next tick's claim is its own");
+}
+
+reset();
+{
+  /* ── Gates before spend, and fail-soft ──────────────────────────────────── */
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  let calls = 0;
+  const summariseMemory = async () => { calls++; return "tidy"; };
+
+  const paused = vaJob({ status: { paused: true, shadowUntilTick: 0 } });
+  paused.va.intake.jql = "status = Open";
+  await V.runVaTick({ job: paused, tickId: "g1", deps: compactTickDeps({ summariseMemory }) });
+  eq(calls, 0, "compaction.BLOCK_paused — a paused agent buys no compaction; pausing stops the SPEND");
+
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  await V.runVaTick({ job, tickId: "g2", deps: compactTickDeps({ capability: CAP_OFF, summariseMemory }) });
+  eq(calls, 0, "compaction.BLOCK_capability_off — nor does an instance that may not run an agent at all");
+
+  // A summariser that THROWS must not fail the tick, and must not lose the memory.
+  const beforeText = (await L.readMemory(kvs, AG)).memory.text;
+  const r = await V.runVaTick({ job, tickId: "g3", deps: compactTickDeps({
+    summariseMemory: async () => { throw new Error("provider down"); },
+  }) });
+  eq(r.ok, true, "compaction.FAIL_SOFT — a dead summariser does not fail the tick");
+  const after = (await L.readMemory(kvs, AG)).memory;
+  ok(after.text.length > 0, "compaction.FAIL_SOFT — and the memory is not lost");
+  // `compactMemory` falls back to the ORIGINAL prose when the summariser dies, so the row
+  // is still written (clamped), never emptied. Either way the notes survive.
+  ok(after.text.includes("decision"), "compaction.FAIL_SOFT — the agent's own notes are still there");
+  ok(beforeText.length > 0, "compaction.FAIL_SOFT — (the fixture had notes to lose)");
 }
 
 

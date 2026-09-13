@@ -148,3 +148,16 @@ export const vaExecClaimKey = (agent, issueKey, tickId) =>
  */
 export const vaPostClaimKey = (agent, issueKey, stagedAt) =>
   assertKvsKey(`va_post:${part(agent)}:${part(issueKey)}:${part(stagedAt)}`);
+
+/**
+ * `va_compact:{agent}:{tickId}` — taken by the MEMORY COMPACTION STEP at the head of the
+ * prepare tick (F-494), FAIL_IF_EXISTS + failClosed, exactly like the item claim.
+ *
+ * The identity is the TICK, not the memory: a compaction turn is one model call, and a
+ * duplicate trigger delivery for the same 5-minute tick must buy exactly one of them. The
+ * step is idempotent under the claim in the direction that matters — a second delivery
+ * does nothing rather than summarising an already-summarised memory, which is how a
+ * memory loses detail twice for one tick's worth of growth.
+ */
+export const vaCompactClaimKey = (agent, tickId) =>
+  assertKvsKey(`va_compact:${part(agent)}:${part(tickId)}`);

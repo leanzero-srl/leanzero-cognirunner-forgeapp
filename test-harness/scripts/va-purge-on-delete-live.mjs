@@ -258,19 +258,38 @@ async function main() {
 
 main()
   .catch((e) => { console.error("\nDRIVER ERROR:", e && e.message); process.exitCode = 1; })
+  /*
+   * RESTORE IS AN ASSERTION, NOT A COURTESY. This script deletes an agent and REWRITES an
+   * instance-wide model slot; a restore that silently no-ops leaves the next run reading a
+   * setting this one planted. So the agent delete is re-read through `getScheduledJob`
+   * (never `success:true` alone), the slot is re-read through the same `?what=kvs` query
+   * that could see it before, and either kind of residue exits non-zero, named.
+   */
   .finally(async () => {
     console.log("\nRESTORE");
+    const residue = [];
     if (restore.agentId && !KEEP) {
       const r = await invoke("deleteScheduledJob", { id: restore.agentId }).catch((e) => ({ body: { error: e.message } }));
       console.log(`        deleteScheduledJob ${restore.agentId}: ${JSON.stringify(r.body).slice(0, 160)}`);
+      const back = await invoke("getScheduledJob", { id: restore.agentId }).catch((e) => ({ body: { error: e.message } }));
+      const survives = !!(back && back.body && back.body.job);
+      console.log(`        second read getScheduledJob ${restore.agentId}: ${survives ? "STILL PRESENT" : "gone"}`);
+      if (survives) residue.push(`the agent ${restore.agentId} survived its delete`);
     }
     if (restore.agentModelSlot !== undefined) {
       const r = await hook({ action: "kvSet", key: AGENT_MODEL_SLOT, value: restore.agentModelSlot }).catch((e) => ({ json: { error: e.message } }));
       console.log(`        kvSet ${AGENT_MODEL_SLOT} -> ${JSON.stringify(r.json).slice(0, 160)}`);
       const back = await kvs(AGENT_MODEL_SLOT).catch(() => null);
-      const ok = back && JSON.stringify(back.value) === JSON.stringify(restore.agentModelSlot);
+      // `back.ok` matters: a FAILED read also yields value:null, which would read as a
+      // successful restore whenever the pre-run value was itself null.
+      const ok = !!(back && back.ok && JSON.stringify(back.value) === JSON.stringify(restore.agentModelSlot));
       console.log(`        ${ok ? "RESTORED" : "NOT RESTORED"}: the slot reads back ${JSON.stringify(back && back.value)} (was ${JSON.stringify(restore.agentModelSlot)})`);
+      if (!ok) residue.push(`${AGENT_MODEL_SLOT} still holds ${JSON.stringify(back && back.value)} instead of the pre-run ${JSON.stringify(restore.agentModelSlot)}`);
       const cap = await invoke("getAgentCapability", {}).catch(() => null);
       console.log(`        getAgentCapability after the restore: ${JSON.stringify(cap && cap.body)}`);
+    }
+    if (residue.length) {
+      console.error(`\nRESTORE FAILED — the instance is NOT as this run found it:\n        ${residue.join("\n        ")}`);
+      process.exitCode = 1;
     }
   });

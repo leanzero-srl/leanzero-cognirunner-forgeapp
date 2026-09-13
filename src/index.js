@@ -79,6 +79,13 @@ import {
   getHookSecret,
   isRepoAllowed,
   normalizeRepoId,
+  // F-460 — the per-repo webhook installation. The behaviour (idempotence by URL,
+  // the provider-first rotation order, the allow-list gate) lives there; the
+  // resolvers below own permission and the webtrigger URL, which only a resolver
+  // can read.
+  setupRepoWebhook,
+  rotateGitHookSecret,
+  listRepoWebhooks,
 } from "./git-connections.js";
 // GIT PIPELINE SETUP (1.4 commit 7). Same rule as the connection layer above: the
 // behaviour lives in src/git-pipeline.js and these resolvers are a permission skin.
@@ -132,6 +139,10 @@ import { isKnownEvent, buildEventPromptBlock, GIT_EVENT_IDS } from "./shared/jir
 // (agentGateFacts, below) and NEVER assembles the context shape itself.
 import {
   buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText,
+  // F-463 — the ONE clamp for a rule's skill binding (shape, count, duplicates). The
+  // Coder's two paths use the same normalizer a listener's agent block does, so four
+  // means four in exactly one place.
+  normalizeAgentKnowledge,
 } from "./shared/agent-actions.js";
 // The premade CODER post-function's ONE mode table (1.4 commit 12) — labels, instruction
 // templates and the per-mode action subset all come from there, never from here.
@@ -6920,6 +6931,14 @@ const premadePostFunctionConfig = (payload) => {
     const note = clampChars(String(payload.instructions || "").trim(), CODER_PF_INSTRUCTIONS_MAX);
     if (note) out.instructions = note;
   }
+  if (params.skillIds === true) {
+    // F-463 — THE SAME clamp a listener's agent block gets (shape, count, duplicates),
+    // never a second one written here. Ids that do not exist are not refused at save:
+    // `buildCoderKnowledge` fails OPEN on a skill it cannot load, so a stale id costs
+    // context, never a transition.
+    const ids = normalizeAgentKnowledge({ skillIds: payload.skillIds }).skillIds;
+    if (ids.length) out.skillIds = ids;
+  }
   if (hasGitGroup(params)) {
     const connectionId = String(payload.connectionId || "").trim().slice(0, 100);
     const repo = normalizeRepoId(payload.repo || "");
@@ -11129,6 +11148,70 @@ resolver.define("deleteGitConnection", async ({ payload, context }) => {
   });
 });
 
+/* ---- PER-REPO WEBHOOKS (F-460) ----------------------------------------------
+ *
+ * The inbound half of the git integration was unusable by a real tenant: the
+ * per-repo signing secret and the provider hook could only be planted by the
+ * harness, so an admin could add a connection, arm a git listener and never see a
+ * delivery. These three resolvers are the missing door.
+ *
+ * THE URL IS READ HERE AND NOWHERE ELSE. `webTrigger.getUrl("git-webhook")` is a
+ * platform call only a Forge function may make, so the resolver reads it (cached in
+ * KVS like the attachment bridges) and hands it to the core, which appends the
+ * `?conn=&repo=` routing pair `gitWebhook` parses. The query-parameter NAMES have
+ * one home — `hookUrlFor` in git-connections.js — and `gitWebhook` reads the same
+ * two; nothing else may retype them.
+ *
+ * NO SECRET IS RETURNED, by any of them, on any path. `publicConnection.hooks` is
+ * the admin-visible fact ("this repo has hook <id>, installed at <time>"), and the
+ * secret has no representation in it.
+ */
+const getGitWebhookUrl = () =>
+  getWebtriggerUrlFor("git-webhook", "webtrigger_url:git-webhook");
+
+// Install (or converge) the webhook for ONE repo. IDEMPOTENT: a second call reuses
+// the hook whose URL already points here rather than creating a twin that would
+// double every delivery.
+resolver.define("setupGitWebhook", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const triggerUrl = await getGitWebhookUrl();
+    const r = await setupRepoWebhook(payload?.connectionId, payload?.repo, { triggerUrl });
+    // `hook` is `{hookId, provider, createdAt, rotatedAt}` — the SAME shape the
+    // connection row carries under `webhooks[repoId]`, which is what the Code tab
+    // re-reads from `listGitConnections` after this call.
+    return r.ok
+      ? { success: true, reused: r.reused === true, repo: r.repo, hook: r.hook, events: r.events, connection: r.connection }
+      : { success: false, error: r.error, code: r.code };
+  });
+});
+
+// New signing secret for one repo's hook. The provider is updated FIRST, so a
+// failure leaves the old secret working on both sides instead of a deaf hook.
+resolver.define("rotateGitWebhookSecret", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const triggerUrl = await getGitWebhookUrl();
+    const r = await rotateGitHookSecret(payload?.connectionId, payload?.repo, { triggerUrl });
+    // `rotatedAt` is WHEN, never WHAT TO — there is no read path for the secret.
+    return r.ok
+      ? { success: true, repo: r.repo, rotatedAt: r.rotatedAt, hook: r.hook, connection: r.connection }
+      : { success: false, error: r.error, code: r.code };
+  });
+});
+
+// READ-ONLY: what the provider actually has on this repo, so the Code tab can show
+// "installed" from the provider's answer rather than from our own record alone.
+resolver.define("listGitWebhooks", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await listRepoWebhooks(payload?.connectionId, payload?.repo);
+    return r.ok
+      ? { success: true, repo: r.repo, hooks: r.hooks, recorded: r.recorded }
+      : { success: false, error: r.error, code: r.code };
+  });
+});
+
 // Store the customer's Atlassian deploy identity. WRITE-ONLY: there is no read
 // path for the token anywhere in this app.
 //
@@ -11296,6 +11379,13 @@ const rememberCoderTurnParams = async (issueKey, threadId, params) => {
         ? params.maxRounds
         : ((existing && typeof existing.maxRounds === "number") ? existing.maxRounds : null),
       savedByRole: params.savedByRole || (existing && existing.savedByRole) || null,
+      // F-463 - the turn's skill binding travels with the rest of its shape, so a
+      // RESUME runs with the skills the owner started the thread with. An absent
+      // value inherits what the row already holds; it is never re-read from the
+      // confirm payload, for the same reason simulation is not.
+      skillIds: Array.isArray(params.skillIds) && params.skillIds.length
+        ? params.skillIds
+        : ((existing && Array.isArray(existing.skillIds)) ? existing.skillIds : []),
       updatedAt: new Date().toISOString(),
     }, CODER_TURN_PARAMS_TTL);
   } catch (e) {
@@ -11323,12 +11413,15 @@ const coderResumeParams = async (issueKey, threadId) => {
       if (thread && typeof thread === "object") src = thread;
     } catch (e) { /* the thread row is a convenience here, never a requirement */ }
   }
-  if (!src) return { simulation: undefined, connectionId: null, maxRounds: undefined, savedByRole: null };
+  if (!src) return { simulation: undefined, connectionId: null, maxRounds: undefined, savedByRole: null, skillIds: [] };
   return {
     simulation: typeof src.simulation === "boolean" ? src.simulation : undefined,
     connectionId: src.connectionId || null,
     maxRounds: typeof src.maxRounds === "number" && Number.isFinite(src.maxRounds) ? src.maxRounds : undefined,
     savedByRole: src.savedByRole || null,
+    // F-463 - the skills the thread was started with. An empty list is the honest
+    // answer for a thread that bound none; nothing here invents a binding.
+    skillIds: Array.isArray(src.skillIds) ? src.skillIds : [],
   };
 };
 
@@ -11359,11 +11452,27 @@ resolver.define("startCoderTurn", async ({ payload, context }) => {
     if (existing && existing.ownerAccountId && existing.ownerAccountId !== context.accountId) {
       return notOwner("continue this Coder thread");
     }
+    // F-463 — THE SKILLS THE PANEL BOUND TO THIS TURN. Clamped through the ONE
+    // normalizer (shape, count, duplicates) and then checked against the skill index
+    // by the same `assertKnownSkillIds` a listener save uses: a picker that silently
+    // binds nothing is a feature whose author believes it is on. The existence check
+    // reports UNKNOWN as "I could not check" and lets the turn through — refusing on a
+    // KVS hiccup would make the Coder unusable for a reason nobody can see.
+    const skillIds = normalizeAgentKnowledge({ skillIds: payload?.skillIds }).skillIds;
+    if (skillIds.length) {
+      try {
+        await listenersMod.assertKnownSkillIds({ skillIds });
+      } catch (e) {
+        if (e && e.reason === "unknown-skill") return { success: false, error: e.message, reason: "unknown-skill" };
+        throw e;
+      }
+    }
     const savedByRole = await savedByRoleFor(context.accountId);
     const taskId = makeTaskId("coder");
     const params = {
       issueKey, threadId, accountId: context.accountId,
       message: message.slice(0, coderMod.CODER_USER_MESSAGE_MAX_CHARS),
+      skillIds,
       simulation: payload?.simulation === true,
       connectionId: payload?.connectionId ? String(payload.connectionId).slice(0, 100) : null,
       maxRounds: payload?.maxRounds,
@@ -11468,6 +11577,8 @@ resolver.define("confirmCoderTicket", async ({ payload, context }) => {
             // the resume. They are the INSTANCE's facts, not the turn's.
             gateFacts: gate.facts,
             savedByRole,
+            // F-463 - inherited, like simulation and maxRounds above.
+            skillIds: prior.skillIds,
           },
         },
         concurrency: { key: `coder:${out.issueKey}`, limit: 1 },
@@ -11475,7 +11586,7 @@ resolver.define("confirmCoderTicket", async ({ payload, context }) => {
       // Keep the row alive (and correct) for the next resume on this thread.
       await rememberCoderTurnParams(out.issueKey, out.threadId, {
         simulation: prior.simulation, connectionId: prior.connectionId,
-        maxRounds: prior.maxRounds, savedByRole,
+        maxRounds: prior.maxRounds, savedByRole, skillIds: prior.skillIds,
       });
       await writeAsyncJob({
         taskId, jobId: pushResult?.jobId || null, taskType: "coder", status: "queued",
@@ -19961,6 +20072,12 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, privileg
       connectionId,
       gateFacts: facts,
       savedByRole,
+      // F-463 — THE RULE'S SKILL BINDING. `buildCoderKnowledge` (src/async-handler.js)
+      // has had a skills half since 1.4 commit 13b and no caller ever passed ids, so
+      // the one surface that writes code into somebody's repository was the only agent
+      // in the product running with no skills at all. Re-clamped here because the row
+      // was written by a save that may predate the clamp.
+      skillIds: normalizeAgentKnowledge({ skillIds: config?.skillIds }).skillIds,
       // PROVENANCE, and the thing the consumer turns into the engine's `headless` flag
       // (isHeadlessTrigger, src/coder-engine.js). One label, one derivation.
       triggerSource: "postfunction",

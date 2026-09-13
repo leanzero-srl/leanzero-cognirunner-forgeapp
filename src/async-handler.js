@@ -1306,9 +1306,10 @@ const executeGitEvent = async (params) => {
  * to disagree about which budget or which setting applies.
  *
  * WHAT IT TAKES, and why each is the rule it is:
- *  · SKILLS come from the RULE's `skillIds` when the delivery carries them (a post-function
- *    binds skills the way a listener does) and from nothing otherwise. A panel turn has no
- *    rule, so it has no bound skills — auto-matching would be guessing at authorship.
+ *  · SKILLS come from the delivery's `skillIds` and from nothing else. Both producers now
+ *    carry them (F-463): the post-function binds them on the RULE, the way a listener does,
+ *    and a panel turn binds them on the composer. Nothing is auto-matched here — guessing
+ *    at authorship is not the same as being told.
  *  · MEMORIES follow the INSTANCE setting (`injection`), not a per-rule flag, because the
  *    Coder is not configured per rule the way a listener's agent is, and `injection` is the
  *    switch an admin already understands as "let learned facts into prompts".
@@ -1319,6 +1320,13 @@ const executeGitEvent = async (params) => {
  * an agent better, it does not make it correct. A skill that will not load or a memory store
  * having a bad minute must never turn into a Coder turn that did not run.
  */
+/* F-463 — EXPOSED FOR THE SUITES, and for nothing else. The two producers of a coder
+ * task (`startCoderTurn` and `enqueueCoderPostFunction`, src/index.js) are proven to
+ * hand their `skillIds` all the way to a real `knowledge.skillsBlock` by feeding the
+ * PUSHED params through this exact function; coder-engine.test.mjs already proves a
+ * `skillsBlock` reaches the model payload. Runtime callers use the handler below. */
+export const __coderKnowledgeInternals = { buildCoderKnowledge: (params) => buildCoderKnowledge(params) };
+
 const buildCoderKnowledge = async (p) => {
   const out = {};
   const budget = knowledgeBudget("coderTurn");

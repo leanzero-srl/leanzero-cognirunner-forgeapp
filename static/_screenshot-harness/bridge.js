@@ -30,6 +30,10 @@
    re-states the frontier ids or invents feature ids stops being able to catch a
    drift between the app and src/shared/edition.js — it just agrees with itself. */
 import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES } from "../../src/shared/edition.js";
+/* F-465: the pipeline step ids, from the ONE home. src/git-pipeline.js cannot be
+   imported here (it pulls @forge/kvs and node:crypto), which is why the ids moved to a
+   dependency-free shared module instead of being mirrored by hand in this file. */
+import { pipelineStepNames } from "../../src/shared/git-pipeline-steps.js";
 /* F-090: the allowance block the mock serves is COMPUTED by the same function the
    backend calls (forgeLlmAllowanceStatus), from the same seat->dollars rule
    (allowanceUsdForSeats). It used to be hand-written, and it hand-wrote `pct: 46`
@@ -962,11 +966,10 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
    fixture carrying one would let a leak pass), and `publicPipelineRow` from
    src/git-pipeline.js for a pipeline row.
 
-   THE STEP NAMES ARE A MIRROR, not an import: `pipelineStepNames` lives in
-   src/git-pipeline.js, which imports @forge/kvs and node:crypto and therefore cannot be
-   pulled into a browser bundle. Keep this list identical to it; code-tab.test.mjs
-   asserts the rendered names, so a rename in the backend shows up here as a diff to
-   make by hand.
+   THE STEP NAMES ARE AN IMPORT, not a mirror (F-465): `pipelineStepNames` moved to
+   src/shared/git-pipeline-steps.js, which is dependency-free and bundles into both the
+   backend and this harness. A rename in the backend now arrives here on its own, and
+   git-pipeline.test.mjs holds the ids to that module.
 
    THE HOOK AND THE ROW ARE MUTABLE per page load, because both journeys are a write
    followed by a re-read: register a hook -> the list reloads -> the chip flips; queue a
@@ -984,12 +987,11 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
                                  "scope_not_allowed" (carries scopes),
                                  "identity_required".
      window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed. */
-const PIPELINE_STEP_NAMES = (kind) => [
-  ...(kind === "bitbucket" ? ["enable-pipelines"] : []),
-  "secret:FORGE_EMAIL", "secret:FORGE_API_TOKEN",
-  "var:FORGE_SITE", "var:FORGE_PRODUCT", "var:FORGE_ENV",
-  "commit-scaffold",
-];
+/* F-465: the step ids are IMPORTED from the one home now
+   (src/shared/git-pipeline-steps.js), not mirrored. They used to be retyped here with a
+   note asking the next person to keep them in step with src/git-pipeline.js — a fixture
+   that re-states a rule only ever agrees with itself. */
+const PIPELINE_STEP_NAMES = pipelineStepNames;
 const HOOK_STORE = { seeded: false };
 const HOOKS = () => {
   if (typeof window !== "undefined" && window.__CODE_HOOK__ && !HOOK_STORE.seeded) {

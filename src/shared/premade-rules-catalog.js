@@ -787,7 +787,12 @@ export const PREMADE_POSTFUNCTIONS = [
     category: "Git",
     network: true,
     requiresCapability: "git",
-    params: { git: { prMatch: false }, coderMode: true, instructions: true },
+    // F-463 — `skillIds` renders the SAME skills picker a listener's agent has (≤4,
+    // ids from the Skills tab, never typed). Without it the Coder was the only agent
+    // in the product that could not be bound to a skill: `buildCoderKnowledge`
+    // (src/async-handler.js) has had a skills half since 1.4 commit 13b and nothing
+    // ever passed ids to it, on either path.
+    params: { git: { prMatch: false }, coderMode: true, instructions: true, skillIds: true },
     execution: "queued",
     availability: "available",
   },

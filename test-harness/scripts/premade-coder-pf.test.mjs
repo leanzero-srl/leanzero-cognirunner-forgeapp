@@ -54,6 +54,8 @@ const { AGENT_ACTIONS, normalizeAllowedActions, buildAgentGateContext } =
   ok(row && row.requiresCapability === "git", "it declares the git capability");
   ok(row && row.params && row.params.coderMode === true && row.params.instructions === true,
     "it declares the coderMode + instructions params the form renders");
+  ok(row && row.params.skillIds === true,
+    "F-463: it declares the skillIds param, so the form draws the skills picker the Coder now reads");
   ok(row && row.params.git && row.params.git.prMatch === false,
     "it reuses the GIT group with prMatch switched OFF (nothing here locates a PR from the property)");
   ok(getCatalog("postfunction") === PREMADE_POSTFUNCTIONS, "getCatalog('postfunction') returns the post-function list");
@@ -222,6 +224,45 @@ if (CAP_OFF) {
   ok(l && l.type === "postfunction-coder" && l.isValid === true, "an accepted enqueue logs a success entry");
   ok(l && Array.isArray(l.stepResults) && l.stepResults[0].status === "success",
     "…with a stepResults row, never a silent success");
+}
+
+/* ══════════ F-463 — THE RULE'S SKILL BINDING REACHES THE TURN ══════════
+ *
+ * `buildCoderKnowledge` (src/async-handler.js) has had a skills half since 1.4 commit
+ * 13b and `enqueueCoderPostFunction` never passed `skillIds`, so a skill written for
+ * Forge app generation was ignored by the Coder post-function. Proven end to end on
+ * the real code: rule config → the PUSHED task params → the knowledge builder the
+ * task handler actually calls (coder-engine.test.mjs proves a skillsBlock then reaches
+ * the model payload).
+ */
+{
+  const { saveSkillInternal } = await import("../../src/skills.js");
+  const { __coderKnowledgeInternals } = await import("../../src/async-handler.js");
+  for (const [id, text] of [["skill_pf_a", "Prefer the repo's own lint config."], ["skill_pf_b", "Never edit generated files."],
+    ["skill_pf_c", "Spare c."], ["skill_pf_d", "Spare d."], ["skill_pf_e", "Spare e."]]) {
+    await saveSkillInternal({ id, name: `PF ${id}`, category: "Other" }, { instructions: text });
+  }
+  const before = pushed.length;
+  await fire("LZPT-160", cfg({
+    // seven ids: one duplicated, one malformed, and a fifth real one the CAP must drop.
+    skillIds: ["skill_pf_a", "skill_pf_b", "skill_pf_a", "not a skill id", "skill_pf_c", "skill_pf_d", "skill_pf_e"],
+  }));
+  const p = pushed.slice(before)[0].body.params;
+  ok(Array.isArray(p.skillIds) && p.skillIds.length === 4,
+    `F-463: the PF task carries the rule's skills, clamped to four (${JSON.stringify(p.skillIds)})`);
+  ok(p.skillIds[0] === "skill_pf_a" && p.skillIds[1] === "skill_pf_b" && !p.skillIds.includes("not a skill id"),
+    "…in the author's order, de-duplicated, with the malformed id dropped");
+  const knowledge = await __coderKnowledgeInternals.buildCoderKnowledge(p);
+  ok(typeof knowledge.skillsBlock === "string" && /Prefer the repo's own lint config/.test(knowledge.skillsBlock),
+    `…and the knowledge builder turns them into a skills block carrying their text (${String(knowledge.skillsBlock).slice(0, 60)})`);
+
+  // A rule that binds nothing is unchanged: no block is conjured.
+  const before2 = pushed.length;
+  await fire("LZPT-161", cfg({}));
+  const p2 = pushed.slice(before2)[0].body.params;
+  ok(Array.isArray(p2.skillIds) && p2.skillIds.length === 0, "a rule with no binding pushes an empty list");
+  ok((await __coderKnowledgeInternals.buildCoderKnowledge(p2)).skillsBlock === undefined,
+    "…and no skills block is built for it");
 }
 
 /* ══════════ F-391 — the instructions clamp is code-point safe ══════════ */
@@ -443,6 +484,20 @@ if (CAP_OFF) {
     "…and carries the catalogue's declared params");
   ok(saved && !("prMatch" in saved),
     "…and NOT a sub-control this rule does not have (params.git.prMatch === false)");
+
+  // F-463 — the catalogue declares `skillIds`, and the SERVER clamps it after the
+  // lookup (shape, count, duplicates) through the same normalizer a listener's agent
+  // block uses. The client is not trusted with the count.
+  const withSkills = await call("registerPostFunction", premadePayload({
+    id: "pf-premade-skills",
+    skillIds: ["s_one", "s_two", "s_one", "not an id!", "s_three", "s_four", "s_five"],
+  }), ADMIN);
+  ok(withSkills.success === true, "a premade Coder rule may bind skills");
+  const savedSkills = (await rowById("pf-premade-skills")) || {};
+  ok(Array.isArray(savedSkills.skillIds) && savedSkills.skillIds.length === 4,
+    `…and the stored binding is clamped to four (${JSON.stringify(savedSkills.skillIds)})`);
+  ok(savedSkills.skillIds.join(",") === "s_one,s_two,s_three,s_four",
+    "…de-duplicated, in the author's order, with the malformed id dropped");
   ok(saved && saved.savedByRole === "admin", "…stamped with the saver's role (F-394)");
 
   // The client is not trusted with the catalogue.

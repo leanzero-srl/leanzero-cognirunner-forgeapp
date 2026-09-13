@@ -28,7 +28,7 @@
  * Also hosts the AI CONDITION evaluator (a one-shot yes/no gate shared by both
  * execution modes).
  */
-import { toolDefinitionsFor, normalizeAllowedActions, getAgentAction, normalizeAgentIssueReferences, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { toolDefinitionsFor, normalizeAllowedActions, getAgentAction, normalizeAgentIssueReferences, agentActionNamespace, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { resolveIssueKey } from "./shared/sandbox-api-spec.js";
 import { defangFence } from "./memories.js";
 
@@ -108,6 +108,16 @@ export const evaluateAiCondition = async ({ condition, contextText, deadline = D
 export const runAgentTask = async ({
   instructions, allowedActions, maxRounds, issueKey = null, config = {}, contextTitle = "Context",
   contextText = "", deadline = Date.now() + 100000, cancelToken = null, extraContext = null,
+  // Namespace executors. `jira` is executed inline below through the sandbox api;
+  // every other namespace arrives here as a module built by the caller (the caller
+  // owns the credentials). A namespace with no executor REFUSES — it never falls
+  // through to a Jira branch and never silently succeeds.
+  executors = {},
+  // Run-time gate context for normalizeAllowedActions (capability / products /
+  // triggerSource / savedByRole). OMITTED means the most restrictive context — the
+  // 13 Jira actions behave exactly as before and nothing from another namespace is
+  // held, so a caller that forgot to pass it cannot become the way past the gate.
+  gate = undefined,
 }) => {
   const m = await idx();
   const started = Date.now();
@@ -119,10 +129,19 @@ export const runAgentTask = async ({
   const apiKey = await m.getOpenAIKey();
   if (!apiKey) { result.error = "No AI provider key configured — set one in CogniRunner Settings."; log(`ERROR: ${result.error}`); return result; }
   const model = await m.getOpenAIModel();
-  const allowed = normalizeAllowedActions(allowedActions);
+  // ONE gate (src/shared/agent-actions.js). Run time DROPS a refused action rather
+  // than refusing the whole run — a permission or edition change must not become an
+  // outage — but it says so in the log, because a quiet drop is how an operator comes
+  // to believe an action ran.
+  const gated = gate === undefined ? { allowed: normalizeAllowedActions(allowedActions), refused: [] } : normalizeAllowedActions(allowedActions, gate);
+  const allowed = gated.allowed;
   const tools = toolDefinitionsFor(allowed);
   const rounds = clampInt(maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS);
   log(`Agent start: model=${model}, actions=[${allowed.join(", ")}], maxRounds=${rounds}${simulated ? ", SIMULATION (writes recorded, not executed)" : ""}`);
+  if (gated.refused.length) {
+    result.refusedActions = gated.refused;
+    log(`Actions not available for this run: ${gated.refused.map((r) => `${r.id} (${r.reason})`).join(", ")}`);
+  }
 
   const baseApi = session.createApi();
   const apiFor = (key) => (key && key !== issueKey ? baseApi.forIssue(key) : baseApi);
@@ -134,6 +153,17 @@ export const runAgentTask = async ({
     const a = getAgentAction(name);
     if (!a) throw new Error(`Unknown action "${name}"`);
     if (a.kind !== "control" && !allowed.includes(name)) throw new Error(`Action "${name}" is not allowed for this rule`);
+    // DELEGATION BY NAMESPACE (plan §3.5). This switch must never learn an id from
+    // another namespace: a new namespace is a new executor module plus one row in
+    // AGENT_ACTION_NAMESPACES, not a new case below.
+    const ns = agentActionNamespace(a);
+    if (ns !== "jira" && ns !== "control") {
+      const executor = executors && executors[ns];
+      if (!executor || typeof executor.execute !== "function") {
+        return { success: false, code: "not_configured", error: `"${name}" needs a ${ns} connection, and none is configured for this rule.` };
+      }
+      return executor.execute(name, args);
+    }
     args = normalizeAgentIssueReferences(a, args);
     // ONE issue-key rule, ONE message. "No current issue" is resolved (and complained
     // about) by the SAME helper the sandbox's key-optional methods use — see
@@ -257,6 +287,11 @@ ${simulated ? "- SIMULATION MODE: write tools are recorded but not executed; beh
         if (Date.now() >= deadline - 2000) throw new Error("Time budget exhausted");
         if (parseError) throw new Error(parseError);
         out = await execute(name, args);
+        // A namespace executor REPORTS its failures ({success:false, code}) instead of
+        // throwing, so that the model gets a usable reason. The operator's log must
+        // still read it as a failure — a refused step that logs "tool ok" is the
+        // "failed step reads as success" defect in another costume.
+        if (out && typeof out === "object" && out.success === false) ok = false;
       } catch (e) { ok = false; out = { error: String(e && e.message).slice(0, 500) }; }
       const argsShort = JSON.stringify(args).slice(0, 300);
       result.toolCalls.push({ name, args: argsShort, ok, ms: Date.now() - ts });

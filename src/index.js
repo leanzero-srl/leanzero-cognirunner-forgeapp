@@ -282,11 +282,39 @@ const getUserPermissions = async (accountId) => {
   // Seed the first admin row, but only for a caller Jira has just confirmed is an
   // administrator. Never called on the non-admin path: a non-admin first caller
   // gets role null and nothing is written.
+  //
+  // F-229 — this used to be a BLIND WHOLE-KEY WRITE of a flag captured before four
+  // network calls: `rosterEmpty` is read at step 1, then the mypermissions probe and
+  // up to three group reads happen, and only then does this overwrite `app_admins`
+  // with a single-element array. Two admins opening the app together both saw the
+  // empty roster, both were confirmed by Jira, and the second one's `set` ERASED the
+  // first — last writer wins, and the erased admin is left with no role at all.
+  //
+  // The write is now serialized by an ATOMIC claim (FAIL_IF_EXISTS on a short-lived
+  // `bootstrap_admin` key) and is never blind: the roster is RE-READ after the claim,
+  // and if anyone got there first the caller is APPENDED rather than substituted.
+  const BOOTSTRAP_CLAIM_KEY = "bootstrap_admin";
+  const selfRow = () => ({ accountId, displayName: "Auto (first admin)", role: "admin", scope: "all" });
   const bootstrapFirstAdmin = async () => {
     if (!rosterEmpty) return;
     try {
+      // A lost claim means a concurrent bootstrap is mid-flight, not that we are done:
+      // the winner may not have written its row yet. Either way the re-read + append
+      // below is what actually preserves both callers; the claim only narrows the
+      // window to a single KVS set. claimRuleExecution fails OPEN on infrastructure
+      // error (returns true) — acceptable here because nothing downstream overwrites.
+      const won = await claimRuleExecution(
+        storage, BOOTSTRAP_CLAIM_KEY, { ttl: { value: 5, unit: "MINUTES" } }, "bootstrap-admin");
+      let current = (await storage.get(APP_ADMINS_KEY)) || [];
+      if (!won && current.length === 0) {
+        // The winner is between its claim and its write. Give it one short beat
+        // before concluding the roster is genuinely still empty.
+        await new Promise((r) => setTimeout(r, 250));
+        current = (await storage.get(APP_ADMINS_KEY)) || [];
+      }
+      if (current.some((a) => (typeof a === "string" ? a : a.accountId) === accountId)) return;
       console.log(`No app users configured — bootstrapping Jira admin ${accountId} as first app admin`);
-      await storage.set(APP_ADMINS_KEY, [{ accountId, displayName: "Auto (first admin)", role: "admin", scope: "all" }]);
+      await storage.set(APP_ADMINS_KEY, current.length ? [...current, selfRow()] : [selfRow()]);
     } catch (e) { /* the role still stands for this call; we retry on the next one */ }
   };
 

@@ -168,4 +168,26 @@ assert.equal(restricted.restricted, true);
 assert.deepEqual(restricted.configs, []);
 assert.equal(forgeApi.__calls.filter((c) => c.path.includes("workflow")).length, 0);
 
-console.log("permission bootstrap: 11 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed, F-227 anonymous getConfigs refused)");
+// ── F-229: two first admins bootstrapping AT THE SAME TIME must both survive.
+// The old code captured "roster is empty" before four network calls and then blindly
+// set the whole key to a one-element array, so the second writer erased the first.
+const ADMIN2 = "acct-admin-two";
+storage.__reset(); forgeApi.__reset();
+forgeApi.__respond((path) => (path.includes("mypermissions")
+  // Both callers are real Jira admins. The mock has no identity on asUser(), so
+  // ADMINISTER is true for whoever is asking — which is the concurrent case.
+  ? forgeApi.__response(200, { permissions: { ADMINISTER: { havePermission: true } } })
+  : forgeApi.__response(200, { values: [] })));
+const [r1, r2] = await captureLogs(() => Promise.all([invoke(ADMIN), invoke(ADMIN2)])).then(([v]) => v);
+assert.equal(r1.isAdmin, true);
+assert.equal(r2.isAdmin, true);
+const bothRoster = (await storage.get("app_admins")) || [];
+const ids = bothRoster.map((a) => a.accountId).sort();
+assert.deepEqual(ids, [ADMIN, ADMIN2].sort(), `both concurrent bootstraps must be on the roster, got ${JSON.stringify(bothRoster)}`);
+assert.ok(bothRoster.every((a) => a.role === "admin"), "both rows keep the admin role");
+
+// And a repeat call by an already-rostered admin appends nothing.
+await captureLogs(() => invoke(ADMIN));
+assert.equal(((await storage.get("app_admins")) || []).length, 2, "an existing roster row is never duplicated");
+
+console.log("permission bootstrap: 13 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed, F-227 anonymous getConfigs refused, F-229 concurrent bootstrap)");

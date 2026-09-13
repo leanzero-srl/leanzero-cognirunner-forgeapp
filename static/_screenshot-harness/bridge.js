@@ -566,7 +566,7 @@ function getContext() {
     /* F-398 - a SAVED Coder post-function in the READ-ONLY view. The module signal is the
        post-function one, which is what the summary identity must read: before the fix this
        config rendered as "Premade Validator". */
-    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "In Review" } }, postFunctionConfig: JSON.stringify({ ...CFG_PREMADE_PF, type: "postfunction-coder", ruleType: "postfunction-coder", mode: "build", instructions: "Follow the repository's CONTRIBUTING.md and keep the diff small.", connectionId: "gc_1", repo: "acme/web", strict: true }) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "In Review" } }, postFunctionConfig: JSON.stringify({ ...CFG_PREMADE_PF, type: "postfunction-coder", ruleType: "postfunction-coder", mode: "build", instructions: "Follow the repository's CONTRIBUTING.md and keep the diff small.", connectionId: "gc_1", repo: "acme/web", strict: true, skillIds: ["sk1", "sk3"], skillNames: ["Create a linked issue", "Build an ADF comment"] }) } };
   if (s === "cfg-semantic")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_SEMANTIC) } };
   if (s === "cfg-managed") {
@@ -1188,6 +1188,25 @@ function coderInvoke(name, payload) {
       return Promise.resolve({ success: true, thread: { messages: t.messages.slice(), turns: t.turns, ...(t.pendingTicketId ? { pendingTicketId: t.pendingTicketId } : {}) } });
     case "startCoderTurn": {
       CODER_POLLS = 0;
+      /* F-463 - the resolver validates `skillIds` BEFORE it queues anything and answers
+         `{success:false, error, reason:"unknown-skill"}` for an id no skill carries. The
+         refusal is SYNCHRONOUS (nothing was queued, so there is no task to poll), and the
+         fixture keeps that shape: a panel that rendered it as an outage, or that lost the
+         message the reader had typed, would pass against a softer mock. */
+      if (typeof window !== "undefined" && window.__CODER_UNKNOWN_SKILL__) {
+        if (typeof window !== "undefined") window.__CODER_LAST_START__ = payload;
+        /* The flag NAMES the id the store has lost - the real shape of this refusal is a
+           skill DELETED while a conversation had it picked, so the sent id is one the
+           panel still holds a row for and can therefore name. */
+        const gone = String(window.__CODER_UNKNOWN_SKILL__);
+        const sent = (payload && payload.skillIds) || [];
+        const unknown = sent.filter((id) => id === gone);
+        return Promise.resolve({
+          success: false, reason: "unknown-skill",
+          unknownSkillIds: unknown.length ? unknown : (sent.length ? sent : [gone]),
+          error: "One or more of the chosen skills no longer exists.",
+        });
+      }
       t.messages.push({ role: "user", content: String((payload && payload.message) || ""), at: new Date().toISOString() });
       if (typeof window !== "undefined") window.__CODER_LAST_START__ = payload;
       return Promise.resolve({ success: true, async: true, taskId: "coder_turn_1", threadId: (payload && payload.threadId) || "p_demo" });

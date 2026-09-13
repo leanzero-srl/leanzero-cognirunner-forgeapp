@@ -52,6 +52,11 @@ import { isPermissionRefusal } from "./refusal";
 // executor had dropped: the cognirunner.git property NOMINATES a pull request number and
 // nothing more, so "property" and "both" are the same check and the picker now says so.
 
+/* F-463 - the skills cap. The SAME number the knowledge panel enforces per static step
+   and the resolver enforces on a Coder turn: four instruction packs is what a prompt
+   carries without the rule's own words being crowded out. */
+const MAX_RULE_SKILLS = 4;
+
 export default function PremadeRuleForm({ mode = "validator", fields = [], initial, onChange }) {
   const catalog = getCatalog(mode);
 
@@ -90,6 +95,15 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
      than quietly picking "build" and pushing code nobody asked for. */
   const [coderMode, setCoderMode] = useState("");
   const [instructions, setInstructions] = useState("");
+  /* ---- the Coder's SKILLS (F-463) -------------------------------------------------
+     `skillIds` is the third key `enqueueCoderPostFunction` reads, and it is a rule-level
+     choice: the same instruction packs ride every transition this rule fires on. At most
+     MAX_RULE_SKILLS, enforced here and again in the resolver. `skillNames` travels beside
+     it exactly as `fieldName` travels beside `fieldId` - DISPLAY ONLY, so a summary can
+     name what was picked without a second read; every runtime decision is made from the
+     ids. A rule with no skills omits both keys rather than saving empty arrays. */
+  const [skillIds, setSkillIds] = useState([]);
+  const [skillRows, setSkillRows] = useState([]);
   /* ---- the CONFLUENCE param group (F-447) ---------------------------------------
      The keys `premadeConfluenceConfig` (src/index.js) clamps and stores, and nothing
      else: spaceKey, mode, cqlTemplate, prompt, titleTemplate, parentId, commentTemplate,
@@ -187,6 +201,9 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
     // picker showing a mode the executor would refuse.
     setCoderMode(findRule(mode, rt)?.params?.coderMode && getCoderPfMode(initial.mode) ? initial.mode : "");
     setInstructions(typeof initial.instructions === "string" ? initial.instructions.slice(0, CODER_PF_INSTRUCTIONS_MAX) : "");
+    setSkillIds(Array.isArray(initial.skillIds)
+      ? initial.skillIds.filter((v) => typeof v === "string" && v).slice(0, MAX_RULE_SKILLS)
+      : []);
     // The Confluence group. `mode` is a key THREE groups write (dateRel, the Coder and
     // this one), so it is only read as a Confluence mode when the catalogue says this
     // rule has one, and only when it names a mode the executor knows.
@@ -274,6 +291,13 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   if (p.instructions) {
     const text = instructions.trim().slice(0, CODER_PF_INSTRUCTIONS_MAX);
     if (text) config.instructions = text;
+  }
+  // F-463 - the ids the engine reads, and the names only a reader needs. Nothing is
+  // written when nothing was picked: the Coder simply runs with no skills, which is what
+  // every Coder rule did before this control existed.
+  if (p.skillIds && skillIds.length) {
+    config.skillIds = skillIds.slice(0, MAX_RULE_SKILLS);
+    config.skillNames = config.skillIds.map((id) => (skillRows.find((sk) => sk.id === id) || {}).name || id);
   }
   if (hasGitGroup(p)) {
     config.connectionId = connectionId;
@@ -370,6 +394,27 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   // premade rule must never see a permission refusal it did not provoke.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (hasGitGroup(p)) loadGitConnections(); }, [hasGitGroup(p)]);
+  /* F-463 - the skills catalogue, fetched only once a rule that HAS the param is picked,
+     for the same reason the git read is: a reader opening any other premade rule must
+     never provoke a refusal for a question they did not ask. A refusal or an outage both
+     leave the list empty, which renders NO picker - the rule saves and runs exactly as it
+     did before the control existed, rather than blocking on a list nobody can read. */
+  const skillsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!p.skillIds || skillsLoadedRef.current) return;
+    skillsLoadedRef.current = true;
+    invoke("getSkills")
+      .then((res) => {
+        if (res?.success && Array.isArray(res.skills)) setSkillRows(res.skills.filter((sk) => sk && sk.id && sk.enabled !== false));
+      })
+      .catch(() => { /* no picker, same as a refusal */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!p.skillIds]);
+  const toggleRuleSkill = (id) => {
+    setSkillIds((prev) => (prev.includes(id)
+      ? prev.filter((v) => v !== id)
+      : (prev.length >= MAX_RULE_SKILLS ? prev : [...prev, id])));
+  };
   /* The editor-floor rows, normalised to the admin row's field names so ONE renderer
      serves both paths. `repos` is what decides whether this path can narrow (F-369). */
   const gitFallback = (lists.gitconnections || [])
@@ -431,6 +476,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
     // written for one rule mean nothing on another, and `mode` is a key TWO groups use.
     setCoderMode("");
     setInstructions("");
+    setSkillIds([]);
     // The Confluence params never survive a rule-type switch either: a space, a query and
     // a title written for one rule mean nothing on another, and `mode` is a key three
     // groups write.
@@ -476,6 +522,8 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
     // would hand a transition to the Coder because a sentence sounded like it.
     setCoderMode("");
     setInstructions("");
+    // Same reason: nothing in KNOWN_PARAM_TYPES names a skill, so a draft can only clear.
+    setSkillIds([]);
     /* The draft builder DOES have a Confluence vocabulary (src/shared/build-rule.js), and
        what it could not resolve it leaves in `unresolved` for the human - so an absent
        value lands as an empty control the reader must fill, never as a half-real one. */
@@ -838,6 +886,40 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
             {hasConfluenceGroup(p)
               ? "The page's author reads this as a note from you. It never changes where the page is written or what the rule is allowed to do."
               : "The Coder reads this as a note from you, never as permission to do more than the mode above allows."}
+          </p>
+        </div>
+      )}
+
+      {/* ---- the Coder's SKILLS (F-463) --------------------------------------------
+          The same hand-rolled multi-select the Coder panel's composer uses: one solid chip
+          per skill, the pressed state on aria-pressed, never a native select and never a
+          checkbox. The chosen chips are the skills hue #7c3aed (dark #8b5cf6) with white
+          text; the rest carry a full border. Optional: a Coder rule with no skills is a
+          valid rule, so nothing here can make the form invalid. */}
+      {!unavailable && p.skillIds && skillRows.length > 0 && (
+        <div className="form-group">
+          <label className="label">Skills <span className="pr-opt">optional</span></label>
+          <div className="pr-skill-list" role="group" aria-label="Skills for this rule">
+            {skillRows.map((sk) => {
+              const on = skillIds.includes(sk.id);
+              return (
+                <button
+                  key={sk.id}
+                  type="button"
+                  className={`pr-skill-chip${on ? " is-on" : ""}`}
+                  aria-pressed={on}
+                  onClick={() => toggleRuleSkill(sk.id)}
+                  disabled={!on && skillIds.length >= MAX_RULE_SKILLS}
+                >
+                  {sk.name}
+                </button>
+              );
+            })}
+          </div>
+          <p className="hint">
+            {skillIds.length >= MAX_RULE_SKILLS
+              ? `That is the most a turn can carry: ${MAX_RULE_SKILLS} skills. Unpick one to choose another.`
+              : `Up to ${MAX_RULE_SKILLS} skills ride every run of this rule. They are instructions for the Coder, never permission to do more than the mode above allows.`}
           </p>
         </div>
       )}

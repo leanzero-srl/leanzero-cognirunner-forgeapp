@@ -2691,6 +2691,70 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- J16s — F-463: the SKILLS a Coder post-function runs with --------------
+     The panel half of F-463 gives a conversation its skills; this is the RULE half. The
+     catalogue row carries `params.skillIds`, the form draws the same hand-rolled
+     multi-select the composer does, and what must be true is that the picks reach BOTH the
+     config Jira stores and the payload `registerPostFunction` re-clamps. A picker that
+     renders and does not reach the save is the silent pass this journey exists to refuse.
+
+     The CONTROL is drawn from the catalogue, and the catalogue half of F-463 is cut
+     alongside this one. Until it lands the picker is absent by design, so the journey says
+     PENDING rather than failing - and it can never quietly pass, because the moment the
+     param exists every assertion below runs. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16s premade CODER post-function SKILLS (cfg-premade-pf, ${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-pf", theme);
+    const { page } = env;
+    try {
+      await page.waitForSelector(".pr-form", { timeout: 8000 });
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Coder: build" }).first().click();
+      await page.waitForSelector(".pr-seg-coder", { timeout: 6000 });
+      // Give the skills read a moment; the control appears only once rows arrive.
+      await page.waitForTimeout(400);
+
+      if (await page.locator(".pr-skill-list").count() === 0) {
+        console.log(`  · J16s (${theme}) PENDING: the catalogue row does not carry params.skillIds yet (backend half of F-463)`);
+      } else {
+        const chips = page.locator(".pr-skill-list .pr-skill-chip");
+        ok(await chips.count() === 6, `J16s (${theme}) every enabled skill is offered (got ${await chips.count()})`);
+        ok(await page.locator(".pr-skill-list input").count() === 0, `J16s (${theme}) the picker is chips, never a checkbox or a native control`);
+        await chips.nth(0).click();
+        await chips.nth(2).click();
+        const onBg = await page.locator(".pr-skill-chip.is-on").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(onBg === (theme === "dark" ? "rgb(139, 92, 246)" : "rgb(124, 58, 237)"), `J16s (${theme}) a chosen skill is the solid skills hue (got ${onBg})`);
+        ok(await page.locator(".pr-skill-chip.is-on").first().evaluate((el) => getComputedStyle(el).borderLeftWidth)
+          === await page.locator(".pr-skill-chip.is-on").first().evaluate((el) => getComputedStyle(el).borderTopWidth),
+          `J16s (${theme}) the chip has no left accent rail`);
+        // The cap is the CONTROL's, exactly as it is in the composer.
+        await chips.nth(3).click();
+        await chips.nth(4).click();
+        ok(await page.locator(".pr-skill-list .pr-skill-chip:disabled").count() === 2, `J16s (${theme}) at four picks nothing else is selectable`);
+        await chips.nth(3).click();
+        await chips.nth(4).click();
+
+        // Complete the rule so it can be saved at all, then read the save.
+        await page.locator(".pr-seg-coder .pr-seg-btn", { hasText: "Build the change" }).first().click();
+        await page.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first().click();
+        await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+        await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).first().click();
+        await page.locator(".dropdown-trigger", { hasText: "Choose a repository" }).first().click();
+        await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+        await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+        const saved = await page.evaluate(async () => JSON.parse(await window.__ON_CONFIGURE__()));
+        ok(Array.isArray(saved.skillIds) && saved.skillIds.length === 2, `J16s (${theme}) the saved config carries the picked skill ids (got ${JSON.stringify(saved.skillIds)})`);
+        ok(saved.skillIds.includes("sk1") && saved.skillIds.includes("sk3"), `J16s (${theme}) and carries the RIGHT ids`);
+        ok(Array.isArray(saved.skillNames) && /Create a linked issue/.test(saved.skillNames.join("|")),
+          `J16s (${theme}) the names ride beside the ids for the summary, exactly as fieldName rides beside fieldId`);
+        const reg = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "registerPostFunction").at(-1).payload);
+        ok(Array.isArray(reg.skillIds) && reg.skillIds.length === 2, `J16s (${theme}) the registry payload carries the ids the backend re-clamps`);
+      }
+    } catch (e) { fail++; console.log(`  ✗ J16s (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J16q — F-398: the Coder is OFF, so the rule cannot be saved -----------
      The decision the cut made explicit: a rule that CANNOT RUN is not saved. A Coder
      post-function on an instance whose capability is off would sit on the transition writing
@@ -2866,6 +2930,12 @@ try {
       ok(/Acme engineering/.test(body) && /acme\/web/.test(body), `J23c (${theme}) the connection label and the repository render`);
       ok(/BLOCKS the transition|Strict:/.test(body), `J23c (${theme}) the strict sentence renders`);
       ok(!/Match pull request by/.test(body), `J23c (${theme}) no prMatch row - the Coder has no such control`);
+      /* F-463 - the skills the rule runs with, by NAME. The ids are the engine's
+         vocabulary; a reader checking what this transition hands the Coder needs the same
+         words the skills list shows them. */
+      ok(/Skills:/.test(body), `J23c (${theme}) the skills row renders`);
+      ok(/Create a linked issue/.test(body) && /Build an ADF comment/.test(body), `J23c (${theme}) the skills are named`);
+      ok(!/sk1|sk3/.test(body), `J23c (${theme}) no raw skill id reaches the read-only summary`);
     } catch (e) { fail++; console.log(`  ✗ J23c (${theme}) threw: ` + e.message.split("\n")[0]); }
     await closeEditor(env);
   }

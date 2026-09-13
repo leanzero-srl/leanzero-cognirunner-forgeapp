@@ -203,6 +203,17 @@ export const premadeSummaryRows = (config, connections) => {
   if (isCoderMode && typeof config.instructions === "string" && config.instructions.trim()) {
     rows.push({ label: "Extra instructions:", value: config.instructions.trim().slice(0, CODER_PF_INSTRUCTIONS_MAX) });
   }
+  /* F-463 - the skills the Coder runs with. The IDS are what the engine reads, but an id
+     tells a reader nothing, so the form saves `skillNames` beside them exactly as it saves
+     `fieldName` beside `fieldId` - display only. A registry row that carries only the ids
+     (the backend stores those and nothing else) falls back to them rather than dropping the
+     row: "this rule runs with skills you cannot see" would be worse than an id. */
+  if (isCoderMode && Array.isArray(config.skillIds) && config.skillIds.length) {
+    const ids = config.skillIds.filter((v) => typeof v === "string" && v).slice(0, 4);
+    const names = Array.isArray(config.skillNames) ? config.skillNames : [];
+    const labels = ids.map((id, i) => String(typeof names[i] === "string" && names[i].trim() ? names[i] : id).slice(0, 120));
+    if (labels.length) rows.push({ label: "Skills:", value: labels.join(", ") });
+  }
   if (config.errorMessage) rows.push({ label: "Message:", value: config.errorMessage });
   return rows;
 };

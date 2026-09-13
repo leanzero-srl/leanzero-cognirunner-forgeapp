@@ -6004,6 +6004,20 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #f59e0b; color: #1c1207; }
     html[data-color-mode="dark"] .pr-coder-count-full { color: #f59e0b; }
 
+    /* The Coder's SKILLS picker (F-463) - a hand-rolled multi-select, one chip per skill.
+       The SKILLS hue is #7c3aed (dark #8b5cf6) everywhere in the app, so a chosen chip is
+       that colour SOLID with white text and an unchosen one is the neutral surface with a
+       full 1px border. A chip that cannot be picked (the cap is reached) is a solid
+       neutral, never a faded copy of a live one. No rail, no tint, no native control. */
+    .pr-skill-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pr-skill-chip { font: inherit; font-size: 12px; font-weight: 700; padding: 5px 11px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-secondary); }
+    .pr-skill-chip:hover:not(:disabled) { border-color: var(--text-secondary); }
+    .pr-skill-chip.is-on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+    .pr-skill-chip:disabled { cursor: default; background: var(--code-bg); color: var(--text-muted); }
+    .pr-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+    html[data-color-mode="dark"] .pr-skill-chip.is-on { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    html[data-color-mode="dark"] .pr-skill-chip.is-on:disabled { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+
     /* CONFLUENCE param group (F-447) - the same visual language as the git group above:
        solid fills, white text on the chip, no rail and no tint. The hue is CONFLUENCE
        (#1d4ed8; #3b82f6 in dark), which is also the hue config-view gives the

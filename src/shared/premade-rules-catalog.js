@@ -734,3 +734,29 @@ export const findRule = (mode, key) =>
 /** Operator label for a `field-comparison` op key (used by config-view summaries). */
 export const opLabel = (op) =>
   (COMPARE_OPS.find((o) => o.value === op) || {}).label || op || "equals";
+
+/**
+ * IS ONE SUB-CONTROL OF THE GIT PARAM GROUP ON FOR THIS RULE?
+ *
+ * `params.git` has TWO legal shapes: `true` (the whole group, the F-350 validators) and an
+ * OBJECT that switches individual sub-controls OFF (`{ prMatch: false }` — the Coder
+ * post-function, which locates its own pull request and would silently ignore a prMatch
+ * a form had drawn). Every reader of the group — the form that renders it and the summary
+ * that puts it into words — asks THIS function, so the two can never disagree about which
+ * controls a rule actually has (LAW 1: one rule, one home). A boolean `params.git` read
+ * with `=== true` is exactly how F-388 drew a prMatch control the executor ignores.
+ *
+ * Absent from the object means ON: the object names only what it turns OFF.
+ */
+export const gitSubEnabled = (params, name) => {
+  const g = (params || {}).git;
+  if (g === true) return true;
+  if (!g || typeof g !== "object") return false;
+  return g[name] !== false;
+};
+
+/** Does this rule have a git param group at all (either shape)? */
+export const hasGitGroup = (params) => {
+  const g = (params || {}).git;
+  return g === true || (!!g && typeof g === "object");
+};

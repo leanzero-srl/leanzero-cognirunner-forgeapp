@@ -25,7 +25,10 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 // component is byte-copied into admin-panel, so its CSS has the same four homes and the
 // same drift risk; these two tokens cover every class in the block.
 const SHARED_CSS_CLASSES = [".hard-stop", ".step-busy-note", ".async-error-note", ".memory-card",
-  ".memory-source-badge", ".doc-empty", ".pr-git", ".pr-seg"];
+  ".memory-source-badge", ".doc-empty", ".pr-git", ".pr-seg",
+  // F-388 — the Coder post-function's mode picker and instructions counter live in the
+  // same component and therefore in the same four homes.
+  ".pr-coder"];
 
 const read = (rel) => readFileSync(path.join(repo, rel), "utf8");
 

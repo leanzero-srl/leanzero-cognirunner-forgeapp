@@ -17,7 +17,10 @@
  * once via the getRuleLists resolver.
  *
  * Props:
- *   mode      "validator" | "condition" — which catalog half to show.
+ *   mode      "validator" | "condition" | "postfunction" — which catalog half to show.
+ *             "postfunction" is the premade POST-FUNCTION half (the Coder, 1.4 commit 12):
+ *             it has no error message and no gate copy, because it runs after the
+ *             transition and can never block one.
  *   fields    [{ id, name, ... }] — the issue fields (loaded by the parent).
  *   initial   the saved premade config to hydrate on edit (or null for new).
  *   onChange  (config, valid) => void — config is { ruleType, ...params }.
@@ -25,7 +28,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
-import { getCatalog, findRule, COMPARE_OPS, PR_MATCH_OPTIONS, PR_MATCH_DEFAULT, EXPRESSION_BACKED_CONDITIONS, CONDITION_NOT_EXPRESSIBLE_REASON, conditionFieldSupport } from "../../../../src/shared/premade-rules-catalog.js";
+import {
+  getCatalog, findRule, COMPARE_OPS, EXPRESSION_BACKED_CONDITIONS, CONDITION_NOT_EXPRESSIBLE_REASON,
+  conditionFieldSupport, PR_MATCH_OPTIONS, PR_MATCH_DEFAULT, gitSubEnabled, hasGitGroup,
+  CODER_PF_MODES, CODER_PF_INSTRUCTIONS_MAX, getCoderPfMode,
+} from "../../../../src/shared/premade-rules-catalog.js";
 import { redosRisk } from "../../../../src/shared/regex-safety.js";
 import { gitProviderKindMeta, normalizeRepoId } from "../../../../src/shared/git-ids.js";
 import { isPermissionRefusal } from "./refusal";
@@ -66,6 +73,14 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   const [repo, setRepo] = useState("");
   const [prMatch, setPrMatch] = useState("both");
   const [strict, setStrict] = useState(false);
+  /* ---- the CODER params (F-388) --------------------------------------------------
+     `coderMode` writes `mode` and `instructions` writes `instructions` — the two keys
+     `enqueueCoderPostFunction` (src/index.js) reads beside the git group. There is no
+     default mode on purpose: a coder rule saved with no mode is an ERROR at every
+     transition in both strict columns, so the form refuses to save without one rather
+     than quietly picking "build" and pushing code nobody asked for. */
+  const [coderMode, setCoderMode] = useState("");
+  const [instructions, setInstructions] = useState("");
   /* Rich connection rows (kind, status, per-connection repo allow-list) from
      `listGitConnections`. That resolver is requireAdmin, so a workflow EDITOR gets a
      permission REFUSAL — not an outage, and not something to retry. In that case the
@@ -142,6 +157,12 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
     setRepo(initial.repo || "");
     setPrMatch(initial.prMatch === "property" || initial.prMatch === "branch" ? initial.prMatch : "both");
     setStrict(initial.strict === true);
+    // `mode` is shared with the dateRel group (future/within), so it is only read as a
+    // coder mode when the catalogue says this rule HAS one — and only when it names a
+    // real mode, so a row from a newer build hydrates as "unset" rather than as a
+    // picker showing a mode the executor would refuse.
+    setCoderMode(findRule(mode, rt)?.params?.coderMode && getCoderPfMode(initial.mode) ? initial.mode : "");
+    setInstructions(typeof initial.instructions === "string" ? initial.instructions.slice(0, CODER_PF_INSTRUCTIONS_MAX) : "");
     setErrorMessage(initial.errorMessage || "");
   }, [initial, mode]);
 
@@ -205,15 +226,27 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
     config.mode = dateMode;
     if (dateMode === "within" && days.trim() !== "") config.days = Number(days);
   }
-  if (p.git) {
+  // The Coder's two keys. `mode` is only ever one of CODER_PF_MODE_IDS (the control cannot
+  // produce anything else) and `instructions` is clamped HERE as well as at the prompt
+  // seam, because a config that saves 40KB of notes is a 240KiB KVS value waiting to
+  // happen — the clamp belongs where the value is created, not only where it is read.
+  if (p.coderMode) config.mode = coderMode;
+  if (p.instructions) {
+    const text = instructions.trim().slice(0, CODER_PF_INSTRUCTIONS_MAX);
+    if (text) config.instructions = text;
+  }
+  if (hasGitGroup(p)) {
     config.connectionId = connectionId;
     // normalizeRepoId is the SINGLE way a repo id is written down (src/shared/git-ids.js).
     // The picker already offers normalised values; running it here means a hydrated legacy
     // value or an AI draft cannot save a differently-cased id that isRepoAllowed would
     // then reject — which fails CLOSED and would read as "this rule is broken".
     config.repo = normalizeRepoId(repo);
-    config.prMatch = prMatch;
-    config.strict = strict === true;
+    // Only the sub-controls this rule actually has reach the config: writing a prMatch a
+    // rule switched OFF would put a key in the saved config that nothing ever reads, and
+    // every reader would then have to guess whether it meant anything.
+    if (gitSubEnabled(p, "prMatch")) config.prMatch = prMatch;
+    if (gitSubEnabled(p, "strict")) config.strict = strict === true;
   }
   if (mode === "validator" && errorMessage.trim()) config.errorMessage = errorMessage.trim();
 
@@ -244,7 +277,10 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   if (p.dateRel && dateMode === "within" && !(Number(days) > 0)) valid = false; // within needs a positive day count
   // Both git keys are required. Without them runGitValidator returns allow("not-configured")
   // — a gate that saves and then permits everything, which is the fiction F-350 is about.
-  if (p.git && (!connectionId.trim() || !normalizeRepoId(repo))) valid = false;
+  if (hasGitGroup(p) && (!connectionId.trim() || !normalizeRepoId(repo))) valid = false;
+  // A Coder rule with no mode ERRORS on every transition in BOTH strict columns (the
+  // fail-open/closed table beside enqueueCoderPostFunction), so it must not be savable.
+  if (p.coderMode && !getCoderPfMode(coderMode)) valid = false;
 
   /* ---- git derived values ---------------------------------------------------------
      One place decides what rows the two pickers see. `gitRows` (admin, rich) wins; the
@@ -254,7 +290,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   // Fetched only once a git rule is actually picked — a non-admin opening any other
   // premade rule must never see a permission refusal it did not provoke.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (p.git) loadGitConnections(); }, [!!p.git]);
+  useEffect(() => { if (hasGitGroup(p)) loadGitConnections(); }, [hasGitGroup(p)]);
   /* The editor-floor rows, normalised to the admin row's field names so ONE renderer
      serves both paths. `repos` is what decides whether this path can narrow (F-369). */
   const gitFallback = (lists.gitconnections || [])
@@ -312,6 +348,10 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
     setConnectionId("");
     setRepo("");
     setPrMatch("both");
+    // The Coder's params never survive a rule-type switch either: a mode and a note
+    // written for one rule mean nothing on another, and `mode` is a key TWO groups use.
+    setCoderMode("");
+    setInstructions("");
     // Strict resets to OFF, never carried across rule types: arming the fail-CLOSED
     // behaviour on a transition is always an explicit choice (build-rule.js says the
     // same about the AI draft).
@@ -342,6 +382,11 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
     setRepo(built.repo || "");
     setPrMatch(built.prMatch === "property" || built.prMatch === "branch" ? built.prMatch : "both");
     setStrict(built.strict === true);
+    // The draft builder's vocabulary is KNOWN_PARAM_TYPES (src/shared/build-rule.js), which
+    // has no coder params — so a draft can only ever CLEAR them, never invent a mode that
+    // would hand a transition to the Coder because a sentence sounded like it.
+    setCoderMode("");
+    setInstructions("");
     // errorMessage persists (validator-wide) — not cleared.
   };
 
@@ -627,7 +672,65 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
           at the transition whatever `strict` says. No native select, no rail, no tint:
           solid chips, a solid segmented control, and a solid red block for a dead
           credential — the same treatment the admin Code tab gives it. */}
-      {!unavailable && p.git && (
+      {/* ---- the CODER mode (F-388) ------------------------------------------------
+          The same segmented control the prMatch group uses, because it is the same kind
+          of question: a short, closed list where every option must be readable at once.
+          The chosen mode's `help` is the hint below it, from the ONE table in
+          premade-rules-catalog.js — the words the Coder is actually instructed with.
+          Solid, no rail, no tint, no native select. */}
+      {!unavailable && p.coderMode && (
+        <div className="form-group">
+          <label className="label">What the Coder does <span className="required">*</span></label>
+          <div className="pr-seg pr-seg-wrap pr-seg-coder" role="radiogroup" aria-label="What the Coder does">
+            {CODER_PF_MODES.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                role="radio"
+                aria-checked={coderMode === m.id}
+                className={`pr-seg-btn${coderMode === m.id ? " active" : ""}`}
+                onClick={() => setCoderMode(m.id)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <p className="hint">
+            {getCoderPfMode(coderMode)
+              ? getCoderPfMode(coderMode).help
+              : "Pick what this transition hands the Coder. Nothing runs until one is chosen."}
+          </p>
+        </div>
+      )}
+
+      {/* ---- the Coder's extra instructions (F-388) --------------------------------
+          UNTRUSTED text. It is clamped here, clamped again in the saved config, and
+          fenced + defanged as DATA by renderCoderPfMessage (src/index.js) — the counter
+          exists so the admin sees the clamp before it silently takes their last
+          paragraph away. */}
+      {!unavailable && p.instructions && (
+        <div className="form-group">
+          <label className="label">Extra instructions <span className="pr-opt">optional</span></label>
+          <textarea
+            className="input pr-coder-notes"
+            rows={4}
+            maxLength={CODER_PF_INSTRUCTIONS_MAX}
+            placeholder="Anything the Coder should know about this repository: the test command, a coding standard, a directory to stay out of."
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value.slice(0, CODER_PF_INSTRUCTIONS_MAX))}
+          />
+          <div className="pr-coder-count">
+            <span className={instructions.length >= CODER_PF_INSTRUCTIONS_MAX ? "pr-coder-count-full" : ""}>
+              {instructions.length} / {CODER_PF_INSTRUCTIONS_MAX}
+            </span>
+          </div>
+          <p className="hint">
+            The Coder reads this as a note from you, never as permission to do more than the mode above allows.
+          </p>
+        </div>
+      )}
+
+      {!unavailable && hasGitGroup(p) && (
         <>
           <div className="form-group">
             <label className="label">Git connection <span className="required">*</span></label>
@@ -695,6 +798,11 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
             )}
           </div>
 
+          {/* prMatch is drawn ONLY for the rules that read it. The Coder post-function
+              switches it off (`git: { prMatch: false }`) because it locates its own pull
+              request from the mode's instruction — a control here would be a promise the
+              executor never keeps. */}
+          {gitSubEnabled(p, "prMatch") && (
           <div className="form-group">
             <label className="label">Which pull request counts</label>
             <div className="pr-seg" role="radiogroup" aria-label="Which pull request counts">
@@ -713,18 +821,30 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
             </div>
             <p className="hint">{(PR_MATCH_OPTIONS.find((o) => o.value === prMatch) || PR_MATCH_OPTIONS.find((o) => o.value === PR_MATCH_DEFAULT)).hint}</p>
           </div>
+          )}
 
+          {gitSubEnabled(p, "strict") && (
           <div className="form-group">
             <label className="pr-git-toggle-row">
               <input type="checkbox" checked={strict} onChange={(e) => setStrict(e.target.checked)} />
               <span className="pr-git-toggle-label">Strict</span>
             </label>
+            {/* A post-function runs AFTER the transition is applied, so nothing it does can
+                block anything — for that half, `strict` chooses between a red execution-log
+                entry and a quiet skip. These are the two columns of the fail-open/fail-closed
+                table beside enqueueCoderPostFunction (src/index.js); if that table changes,
+                these sentences change in the same commit. */}
             <p className="hint">
-              {strict
-                ? "If GitHub or Bitbucket cannot be reached, the transition is blocked until the connection works again."
-                : "If GitHub or Bitbucket cannot be reached, the transition is allowed and a banner shows why."}
+              {mode === "postfunction"
+                ? (strict
+                  ? "If the connection, its token or the git capability is unavailable, the run is recorded as a FAILURE for an admin to act on."
+                  : "If the connection, its token or the git capability is unavailable, the run is recorded as a skip that says why. Nothing is written.")
+                : (strict
+                  ? "If GitHub or Bitbucket cannot be reached, the transition is blocked until the connection works again."
+                  : "If GitHub or Bitbucket cannot be reached, the transition is allowed and a banner shows why.")}
             </p>
           </div>
+          )}
         </>
       )}
 
@@ -743,9 +863,14 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
       {!unavailable && !valid && ruleType && <p className="hint">Fill in the rule's details to finish.</p>}
 
       <p className="hint pr-foot">
-        {mode === "condition"
+        {mode === "postfunction"
+          // A premade post-function is not a gate: it runs after the transition and reports
+          // on the issue. The Coder also takes MINUTES, which is the one thing a designer
+          // must know before saving it onto a transition people use.
+          ? "This runs AFTER the transition, so it never blocks anyone. The Coder works in the background for several minutes and posts its plan, its log and its result onto the issue."
+          : mode === "condition"
           ? "If the rule isn't met, the transition is hidden (no message). If the check can't run, the transition is shown (it never silently hides one). No AI is used."
-          : p.git && strict
+          : hasGitGroup(p) && strict
           // Strict is the admin opting OUT of the app-wide fail-OPEN contract for this one
           // rule, so the footer must stop promising the opposite (it is the sentence a
           // reader trusts when the gate starts refusing during an outage).

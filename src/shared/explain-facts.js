@@ -20,15 +20,21 @@
  * and (b) the agentic line only when enableTools is a defined boolean.
  */
 
-import { findRule, opLabel, prMatchWords } from "./premade-rules-catalog.js";
+import {
+  findRule, opLabel, prMatchWords, gitSubEnabled, hasGitGroup,
+  getCoderPfMode, CODER_PF_INSTRUCTIONS_MAX,
+} from "./premade-rules-catalog.js";
 
 // Human-readable label for a premade (non-AI) rule. Reads premadeRuleType (admin
 // registry) OR ruleType (config-view saved config).
 // The catalogue entry behind a saved premade config, or null. ONE lookup, shared by
 // the label and the git-group rows below — the key can arrive under either name.
+// All THREE halves of the catalogue are searched: the premade POST-FUNCTIONS (the Coder,
+// 1.4 commit 12) are premade rows too, and a lookup that skipped them would render a saved
+// Coder rule as a bare key with none of its params (F-388).
 const premadeRuleDef = (config) => {
   const key = config?.premadeRuleType || config?.ruleType;
-  return findRule("validator", key) || findRule("condition", key) || null;
+  return findRule("validator", key) || findRule("condition", key) || findRule("postfunction", key) || null;
 };
 
 export const premadeRuleLabel = (config) => {
@@ -67,7 +73,7 @@ const strictWords = (strict) => (strict === true
  * were a name. Never invents a label for an id the list does not contain — an id that
  * names no connection is exactly the misconfiguration that fails closed at run time.
  */
-const gitSummaryRows = (config, connections) => {
+const gitSummaryRows = (config, connections, params) => {
   const rows = [];
   const id = config.connectionId;
   if (id) {
@@ -77,8 +83,10 @@ const gitSummaryRows = (config, connections) => {
       : { label: "Connection:", value: `${id} (connection id)`, code: true });
   }
   if (config.repo) rows.push({ label: "Repository:", value: config.repo, code: true });
-  rows.push({ label: "Match pull request by:", value: prMatchWords(config.prMatch) });
-  rows.push({ label: "Strict:", value: strictWords(config.strict === true) });
+  // Only the sub-controls this rule HAS (gitSubEnabled is the one home for that question).
+  // A "Match pull request by" line on a Coder rule would describe a key nothing reads.
+  if (gitSubEnabled(params, "prMatch")) rows.push({ label: "Match pull request by:", value: prMatchWords(config.prMatch) });
+  if (gitSubEnabled(params, "strict")) rows.push({ label: "Strict:", value: strictWords(config.strict === true) });
   return rows;
 };
 
@@ -91,7 +99,19 @@ export const premadeSummaryRows = (config, connections) => {
   if (config.value != null && config.value !== "") rows.push({ label: "Equals:", value: String(config.value) });
   if (config.min != null) rows.push({ label: "Min:", value: String(config.min) });
   if (config.max != null) rows.push({ label: "Max:", value: String(config.max) });
-  if (config.mode) rows.push({ label: "When:", value: config.mode === "within" ? `within ${config.days} day(s)` : "in the future" });
+  // `mode` is a key TWO param groups write: the dateRel one (future/within) and the
+  // Coder's. The catalogue entry decides which it is; without that check a Coder rule
+  // rendered as "When: in the future", which is a sentence about a rule that does not exist.
+  const defForMode = premadeRuleDef(config);
+  const isCoderMode = !!(defForMode && defForMode.params && defForMode.params.coderMode);
+  if (config.mode && !isCoderMode) rows.push({ label: "When:", value: config.mode === "within" ? `within ${config.days} day(s)` : "in the future" });
+  if (isCoderMode) {
+    // The mode's LABEL, never its id: the id is the executor's vocabulary and means
+    // nothing to a reader. An unknown id is named as unset, because that is what the
+    // executor does with it (an ERROR on every transition, in both strict columns).
+    const coderRow = getCoderPfMode(config.mode);
+    rows.push({ label: "What the Coder does:", value: coderRow ? coderRow.label : "not set — this rule fails on every transition" });
+  }
   for (const k of ["issueTypeName", "statusName", "resolutionName", "linkTypeName", "priorityName"]) {
     if (config[k]) rows.push({ label: "Value:", value: config[k] });
   }
@@ -99,9 +119,20 @@ export const premadeSummaryRows = (config, connections) => {
   // are the fallback for a config whose rule key the catalogue no longer knows (an
   // export from a newer build), so a git rule never renders bare.
   const def = premadeRuleDef(config);
-  const isGit = (def && def.params && def.params.git === true)
+  // `params.git` has two legal shapes (true, or an object switching sub-controls off), so
+  // hasGitGroup asks the question and gitSubEnabled decides which rows follow. Reading it
+  // with `=== true` drew the whole group for an object form and none of it for a Coder rule.
+  const isGit = (def && hasGitGroup(def.params))
     || (!def && (config.connectionId != null || config.repo != null));
-  if (isGit) rows.push(...gitSummaryRows(config, connections));
+  // A config the catalogue no longer knows keeps its old behaviour: both sub-rows, because
+  // there is nothing left to say which ones it had.
+  if (isGit) rows.push(...gitSummaryRows(config, connections, def ? def.params : { git: true }));
+  // The admin's own note. UNTRUSTED — clamped to the SAME cap the form and the prompt
+  // renderer use, and rendered as TEXT by every caller (the summary card escapes it, and
+  // the explain prompt defangs + fences it at the backend seam).
+  if (isCoderMode && typeof config.instructions === "string" && config.instructions.trim()) {
+    rows.push({ label: "Extra instructions:", value: config.instructions.trim().slice(0, CODER_PF_INSTRUCTIONS_MAX) });
+  }
   if (config.errorMessage) rows.push({ label: "Message:", value: config.errorMessage });
   return rows;
 };

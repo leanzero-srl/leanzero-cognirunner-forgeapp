@@ -5691,6 +5691,18 @@ const injectCopiedComponentStyles = () => {
     .pr-seg-btn.active { background: #2563eb; color: #fff; font-weight: 700; }
     html[data-color-mode="dark"] .pr-seg-btn.active { background: #3b82f6; }
 
+    /* The Coder's mode picker (F-388) — the SAME segmented control as prMatch, wrapped
+       because five named modes do not fit one editor-width line, and carrying the AGENTS
+       hue (#b45309, #f59e0b dark) because this control is the one that hands a transition
+       to the agent. Solid fill, white text, 700 weight; no rail, no tint. */
+    .pr-seg-wrap { flex-wrap: wrap; }
+    .pr-seg-coder .pr-seg-btn.active { background: #b45309; }
+    .pr-coder-notes { min-height: 84px; resize: vertical; font-family: inherit; line-height: 1.5; }
+    .pr-coder-count { display: flex; justify-content: flex-end; margin-top: 4px; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
+    .pr-coder-count-full { color: #b45309; font-weight: 700; }
+    html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #f59e0b; color: #1c1207; }
+    html[data-color-mode="dark"] .pr-coder-count-full { color: #f59e0b; }
+
     /* NL-to-rule builder ("Build from a description") — solid accent button, inset
        result card. Existing tokens only (dark variants present); no left rail/tint. */
     .br-bar { margin-bottom: 14px; }

@@ -23,7 +23,12 @@
 import {
   findRule, opLabel, prMatchWords, gitSubEnabled, hasGitGroup,
   getCoderPfMode, CODER_PF_INSTRUCTIONS_MAX,
+  confluenceSubEnabled, hasConfluenceGroup,
+  CONFLUENCE_VALIDATOR_MODES, CONFLUENCE_VALIDATOR_MODE_DEFAULT,
 } from "./premade-rules-catalog.js";
+/* The template caps come from the ONE home the form and the server-side clamp read, so
+   a summary can never quote a length the app does not enforce. */
+import { CQL_MAX_CHARS, TITLE_MAX_CHARS, COMMENT_TEMPLATE_MAX_CHARS, CONFLUENCE_DEFAULT_TITLE_TEMPLATE } from "./confluence-rules.js";
 
 // Human-readable label for a premade (non-AI) rule. Reads premadeRuleType (admin
 // registry) OR ruleType (config-view saved config).
@@ -90,6 +95,65 @@ const gitSummaryRows = (config, connections, params) => {
   return rows;
 };
 
+/*
+ * F-447 - the CONFLUENCE parameter group, in words.
+ *
+ * Same job as gitSummaryRows above and the same failure it closes: a saved Confluence
+ * rule stored a space, a mode, a query and a strict flag, and a reviewer on the
+ * read-only screen saw one line naming the rule type. The strict sentences below say
+ * what the F-416 degradation table beside `runConfluenceValidator` (src/premade-rules.js)
+ * says, including the half strict does NOT change - an incomplete rule blocks either way.
+ */
+const confluenceStrictWords = (strict) => (strict === true
+  ? "On - Confluence being unreachable, uninstalled, refusing access, too slow, or its AI judge being unavailable BLOCKS the transition. An incomplete rule (no space, no query, no prompt in Semantic mode) blocks whatever this is set to."
+  : "Off - Confluence being unreachable, uninstalled, refusing access, too slow, or its AI judge being unavailable ALLOWS the transition (fail-open) and the execution log carries a banner. An incomplete rule (no space, no query, no prompt in Semantic mode) blocks whatever this is set to.");
+
+// The template rows are CLAMPED to the same caps the form and the backend enforce: this
+// text is the admin's own and is rendered as TEXT by every caller, but a summary that
+// printed 40KB of it would be a screen nobody can read.
+const confluenceSummaryRows = (config, params) => {
+  const rows = [];
+  if (confluenceSubEnabled(params, "spaceKey")) {
+    rows.push(config.spaceKey
+      ? { label: "Confluence space:", value: config.spaceKey, code: true }
+      : { label: "Confluence space:", value: "not set - this rule blocks every transition until a space is picked" });
+  }
+  if (confluenceSubEnabled(params, "mode")) {
+    const m = CONFLUENCE_VALIDATOR_MODES.find((o) => o.value === (config.mode || CONFLUENCE_VALIDATOR_MODE_DEFAULT))
+      || CONFLUENCE_VALIDATOR_MODES.find((o) => o.value === CONFLUENCE_VALIDATOR_MODE_DEFAULT);
+    rows.push({ label: "What counts as a pass:", value: m.label });
+  }
+  if (confluenceSubEnabled(params, "cqlTemplate") && config.cqlTemplate) {
+    rows.push({ label: "Page query:", value: String(config.cqlTemplate).slice(0, CQL_MAX_CHARS), code: true });
+  }
+  // The prompt only means anything in Semantic mode - in CQL mode nothing reads it.
+  if (confluenceSubEnabled(params, "prompt") && config.prompt && (config.mode || CONFLUENCE_VALIDATOR_MODE_DEFAULT) === "semantic") {
+    rows.push({ label: "The page must say:", value: String(config.prompt).slice(0, CQL_MAX_CHARS) });
+  }
+  if (confluenceSubEnabled(params, "titleTemplate")) {
+    rows.push({
+      label: "Page title:",
+      value: String(config.titleTemplate || CONFLUENCE_DEFAULT_TITLE_TEMPLATE).slice(0, TITLE_MAX_CHARS)
+        + (config.titleTemplate ? "" : " (the default)"),
+      code: true,
+    });
+  }
+  if (confluenceSubEnabled(params, "parentId") && config.parentId) {
+    rows.push({ label: "Parent page:", value: String(config.parentId), code: true });
+  }
+  if (confluenceSubEnabled(params, "commentTemplate")) {
+    rows.push(config.commentTemplate
+      ? { label: "Comment text:", value: String(config.commentTemplate).slice(0, COMMENT_TEMPLATE_MAX_CHARS) }
+      : { label: "Comment text:", value: "not set - this rule records an error on every run until it is written" });
+  }
+  // Strict belongs to the VALIDATOR alone, and the CATALOGUE says so (both post-function
+  // rows switch it off): after the transition, "block or allow" is not a choice.
+  if (confluenceSubEnabled(params, "strict")) {
+    rows.push({ label: "Strict:", value: confluenceStrictWords(config.strict === true) });
+  }
+  return rows;
+};
+
 export const premadeSummaryRows = (config, connections) => {
   const rows = [{ label: "Premade rule:", value: premadeRuleLabel(config) }];
   if (config.fieldId) rows.push({ label: "Field:", value: config.fieldId, code: true });
@@ -127,6 +191,12 @@ export const premadeSummaryRows = (config, connections) => {
   // A config the catalogue no longer knows keeps its old behaviour: both sub-rows, because
   // there is nothing left to say which ones it had.
   if (isGit) rows.push(...gitSummaryRows(config, connections, def ? def.params : { git: true }));
+  /* The Confluence group, same two questions and the same fallback: a config whose key
+     the catalogue no longer knows keeps every sub-row, because nothing is left to say
+     which ones it had. `isValidator` decides only the strict row. */
+  const isConfluence = (def && hasConfluenceGroup(def.params))
+    || (!def && (config.spaceKey != null || config.cqlTemplate != null || config.commentTemplate != null));
+  if (isConfluence) rows.push(...confluenceSummaryRows(config, def ? def.params : { confluence: true }));
   // The admin's own note. UNTRUSTED — clamped to the SAME cap the form and the prompt
   // renderer use, and rendered as TEXT by every caller (the summary card escapes it, and
   // the explain prompt defangs + fences it at the backend seam).

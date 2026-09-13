@@ -300,7 +300,14 @@ export const PREMADE_VALIDATORS = [
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",
-    params: { confluence: true },
+    /* F-447 - the OBJECT form, naming what this rule does NOT have. `confluence: true`
+       used to sit here, and `true` means EVERY sub-control: the form that renders the
+       group then drew a page title, a parent page id and a comment box on a VALIDATOR,
+       and the server-side clamp stored all three - keys the validator never reads. The
+       three switched off below are the post-functions' own, and `confluenceSubEnabled`
+       is now the single answer to "does this rule have that control" for the form, the
+       summary and the clamp alike. */
+    params: { confluence: { titleTemplate: false, parentId: false, commentTemplate: false } },
     availability: "available",
   },
 ];
@@ -795,7 +802,14 @@ export const PREMADE_POSTFUNCTIONS = [
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",
-    params: { confluence: { mode: false, commentTemplate: false }, instructions: true },
+    // `strict: false` because a post-function runs AFTER the transition: the choice strict
+    // offers a validator - block or allow - does not exist here, and the fail-open/closed
+    // table beside these rules in src/index.js says so in as many words (F-447).
+    // F-447 - `cqlTemplate` and `prompt` are OFF as well: this rule finds its page by the
+    // advisory property and the rendered TITLE, never by a query, and nothing in
+    // `executeConfluencePagePostFunction` reads either key. A form that drew them would
+    // make the rule unsavable on a control the executor ignores.
+    params: { confluence: { mode: false, commentTemplate: false, strict: false, cqlTemplate: false, prompt: false }, instructions: true },
     execution: "queued",
     availability: "available",
   },
@@ -806,7 +820,7 @@ export const PREMADE_POSTFUNCTIONS = [
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",
-    params: { confluence: { mode: false, cqlTemplate: false, titleTemplate: false, parentId: false, prompt: false } },
+    params: { confluence: { mode: false, cqlTemplate: false, titleTemplate: false, parentId: false, prompt: false, strict: false } },
     execution: "inline",
     availability: "available",
   },

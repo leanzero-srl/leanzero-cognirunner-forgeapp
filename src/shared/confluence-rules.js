@@ -162,6 +162,14 @@ export const SEMANTIC_MAX_PAGES = 3;
 
 /** A page title, and the comment body a deterministic post-function writes. */
 export const TITLE_MAX_CHARS = 200;
+
+/**
+ * The page title used when a rule names no template. ONE home (F-447): the page
+ * post-function falls back to it at run time AND the rule form shows it as the default
+ * in its placeholder, so a reader of the form sees the title their transition will
+ * actually write. A second copy in the form is how the two start disagreeing.
+ */
+export const CONFLUENCE_DEFAULT_TITLE_TEMPLATE = "{issueKey} \u2014 {summary}";
 export const COMMENT_TEMPLATE_MAX_CHARS = 2000;
 
 /**

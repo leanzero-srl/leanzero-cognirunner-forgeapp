@@ -430,6 +430,24 @@ html[data-color-mode="dark"] .lt-condition { background: #8b5cf6; }
 html[data-color-mode="dark"] .lt-pf, html[data-color-mode="dark"] .lt-pf-semantic { background: #14b8a6; }
 html[data-color-mode="dark"] .lt-pf-static { background: #64748b; }
 
+/* Execution-log banners (F-447) - solid saturated fills, white text, no rail and no
+   tint. The git family keeps the red the dead-credential block already uses; the
+   Confluence family carries the Confluence hue (#1d4ed8, one shade lighter in dark),
+   the same hue PremadeRuleForm gives the Confluence group. */
+.log-banner {
+  display: flex; flex-direction: column; gap: 3px;
+  margin-top: 10px; padding: 10px 12px;
+  border-radius: var(--r-md, 8px); color: #fff;
+}
+.log-banner-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+.log-banner-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+.log-banner-auth_dead { background: #dc2626; }
+.log-banner-git_unavailable { background: #ea580c; }
+.log-banner-confluence_unavailable { background: #1d4ed8; }
+html[data-color-mode="dark"] .log-banner-auth_dead { background: #ef4444; }
+html[data-color-mode="dark"] .log-banner-git_unavailable { background: #fb923c; color: #2a1602; }
+html[data-color-mode="dark"] .log-banner-confluence_unavailable { background: #3b82f6; }
+
 .log-tools-badge {
   display: inline-block;
   padding: 1px 6px;

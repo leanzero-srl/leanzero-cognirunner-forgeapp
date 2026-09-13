@@ -20,6 +20,10 @@
  *   view-active      -> config-view rule summary (active) + logs
  *   view-disabled    -> config-view rule summary (disabled) + logs
  *   view-premade-git -> config-view read-only summary of a saved GIT premade rule (F-380)
+ *   cfg-premade-confluence    -> config-ui premade VALIDATOR, empty, for the Confluence group (F-447)
+ *   cfg-premade-confluence-pf -> config-ui premade POST-FUNCTION slot, for the two Confluence rules (F-447)
+ *   view-premade-confluence   -> config-view summary of a saved Confluence rule + a
+ *                                fail-open execution log carrying the confluence_unavailable banner
  */
 
 /* F-085: the edition facts below come from the ONE home for them. A harness that
@@ -300,6 +304,40 @@ const CFG_PREMADE_COND = {
 // connection → repository (narrowed to that connection's allow-list) → prMatch → strict.
 // A validator, not a condition: the `git` param GROUP only exists on the validator half
 // of the catalogue (conditions carry a single `repo` picker instead).
+/* F-447 - the CONFLUENCE group, driven from EMPTY exactly like the git one: the journey
+   picks the rule itself, so a form that renders nothing for `params.confluence` fails the
+   arm instead of being photographed with a hydrated config that hides the gap. */
+const CFG_PREMADE_CONFLUENCE = {
+  id: "validator::Software Simplified Workflow::21::i-premade-conf",
+  workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
+  ruleKind: "premade", ruleType: "",
+};
+// The premade POST-FUNCTION slot, empty: both Confluence post-functions live there.
+const CFG_PREMADE_CONFLUENCE_PF = {
+  id: "postfunction-coder::Software Simplified Workflow::21::i-premade-conf-pf",
+  workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
+  ruleKind: "premade", ruleType: "",
+};
+// A SAVED Confluence validator in the read-only view, with the execution log that a
+// fail-open run actually writes: result allowed, `banner: "confluence_unavailable"`.
+const VIEW_CONFLUENCE_LOGS = {
+  success: true,
+  logs: [
+    {
+      id: "log-c1", type: "validator", ruleKind: "premade", premadeRuleType: "confluence-page-exists",
+      fieldId: "", isValid: true, issueKey: "PROJ-901", executionTimeMs: 8120,
+      timestamp: "2026-09-12T11:04:10.000Z",
+      reason: "Allowed - Confluence could not be checked (unreachable); failed OPEN, turn Strict on to block instead",
+      banner: "confluence_unavailable", confluenceReason: "unreachable", mode: "premade",
+    },
+    {
+      id: "log-c2", type: "validator", ruleKind: "premade", premadeRuleType: "confluence-page-exists",
+      fieldId: "", isValid: true, issueKey: "PROJ-900", executionTimeMs: 940,
+      timestamp: "2026-09-12T10:41:02.000Z", reason: "Passed", mode: "premade",
+    },
+  ],
+};
+
 const CFG_PREMADE_GIT = {
   id: "validator::Software Simplified Workflow::21::i-premade-git",
   workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
@@ -512,6 +550,16 @@ function getContext() {
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_PREMADE_COND) } };
   if (s === "cfg-premade-git")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "ai-text-field-validator", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, validatorConfig: JSON.stringify(CFG_PREMADE_GIT) } };
+  if (s === "cfg-premade-confluence")
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "ai-text-field-validator", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, validatorConfig: JSON.stringify(CFG_PREMADE_CONFLUENCE) } };
+  if (s === "cfg-premade-confluence-pf")
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_PREMADE_CONFLUENCE_PF) } };
+  if (s === "view-premade-confluence")
+    /* F-447 - the READ-ONLY view of a saved Confluence validator. The arm reads two
+       things off this: the summary rows (space, mode, query, strict) and the execution
+       log's fail-open BANNER, which is the only place a designer can see that a gate
+       stopped gating. */
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: { ...CFG_PREMADE_CONFLUENCE, type: "validator", ruleType: "confluence-page-exists", spaceKey: "ENG", mode: "cql", cqlTemplate: "title ~ {issueKey}", strict: false } } };
   if (s === "cfg-premade-pf")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_PREMADE_PF) } };
   if (s === "view-premade-coder")
@@ -1419,7 +1467,7 @@ function invoke(name, payload) {
       success: true, removed: (payload?.ids || []).length,
       results: (payload?.ids || []).map((id) => ({ id: String(id), ok: true, detached: true, reason: "detached" })),
     });
-    case "getLogs": return Promise.resolve(isAdmin ? ADMIN_LOGS : VIEW_LOGS);
+    case "getLogs": return Promise.resolve(shot() === "view-premade-confluence" ? VIEW_CONFLUENCE_LOGS : (isAdmin ? ADMIN_LOGS : VIEW_LOGS));
     case "getRuleStatus": return Promise.resolve({ found: true, disabled: s === "view-disabled", registryId: "validator::cfg-abc123" });
     case "explainRule": {
       // Render the degraded note for the premade-condition row so both states show.
@@ -1445,6 +1493,14 @@ function invoke(name, payload) {
       priorities: [{ value: "High", label: "High" }],
       gitconnections: CODE_CONNS().map((c) => ({ id: c.id, kind: c.kind, label: c.label, repos: (c.repos || []).slice() })),
       gitrepos: [...new Set(CODE_CONNS().flatMap((c) => c.repos || []))].sort().map((r) => ({ value: r, label: r })),
+      /* F-447 - the Confluence SPACE picker's source. The backend shape is
+         `{value: <space key>, label: "<name> (<key>)"}` (listConfluenceSpacesForPicker,
+         src/index.js), and a site with no Confluence degrades to an EMPTY list rather
+         than an error - which is what window.__NO_CONFLUENCE__ reproduces here. */
+      confluencespaces: (typeof window !== "undefined" && window.__NO_CONFLUENCE__) ? [] : [
+        { value: "ENG", label: "Engineering (ENG)" },
+        { value: "OPS", label: "Operations (OPS)" },
+      ],
     } });
     // F-077: THIS IS THE BACKEND SHAPE — `usage`, `seats` and `forgeLlm` are
     // SIBLINGS on the result (src/index.js getAiUsage). The mock used to nest

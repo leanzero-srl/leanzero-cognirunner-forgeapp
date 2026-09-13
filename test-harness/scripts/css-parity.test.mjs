@@ -28,7 +28,10 @@ const SHARED_CSS_CLASSES = [".hard-stop", ".step-busy-note", ".async-error-note"
   ".memory-source-badge", ".doc-empty", ".pr-git", ".pr-seg",
   // F-388 — the Coder post-function's mode picker and instructions counter live in the
   // same component and therefore in the same four homes.
-  ".pr-coder"];
+  ".pr-coder",
+  // F-447 — the Confluence param group's controls (placeholder legend chips, the live
+  // example block, the mode segment's hue) ship in the same byte-copied component.
+  ".pr-conf"];
 
 const read = (rel) => readFileSync(path.join(repo, rel), "utf8");
 

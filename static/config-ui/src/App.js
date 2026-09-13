@@ -37,7 +37,7 @@ import {
 // called and which instance capability it needs are the CATALOGUE's answers, never
 // this file's: a second list here is how a rule ships with a gate in one place and
 // not the other.
-import { getCatalog as getPremadeCatalog, findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
+import { getCatalog as getPremadeCatalog, findRule as findPremadeRule, premadeRequiresCapability } from "../../../src/shared/premade-rules-catalog.js";
 
 // Static-PF code offload: the workflow editor caps a rule's embedded config at
 // ~32KB. Above the threshold the step code moves to app storage (KVS) and the
@@ -52,16 +52,19 @@ const stepMeta = (fns) => (fns || []).map((f) => ({
 
 /* F-398 - DOES THIS PREMADE POST-FUNCTION NEED THE CODER CAPABILITY?
  *
- * The catalogue entry declares `requiresCapability`, so the question is asked ONCE here and
- * answered from there. Today every premade post-function is the Coder and every one of them
- * answers yes; the day one does not, this returns false for it without a line changing.
+ * The catalogue entry declares `requiresCapability` and `premadeRequiresCapability`
+ * (src/shared/premade-rules-catalog.js) READS that declaration, so the question is asked
+ * once here and answered in ONE place for all three UI sites that ask it. F-489: this used
+ * to compare to the literal "git", which answers "needs nothing" for any second capability
+ * value the catalogue grows and puts the refusal back at Save.
  * An UNKNOWN rule key answers true - the restrictive side, the same discipline the backend's
- * own catalogue lookup applies when it refuses a key it does not know.
+ * own catalogue lookup applies when it refuses a key it does not know. That is this call
+ * site's answer to keep, not the shared reader's: an unknown key is not a row.
  */
 const premadePfNeedsCoder = (ruleType) => {
   if (!ruleType) return false;
   const def = findPremadeRule("postfunction", ruleType);
-  return def ? def.requiresCapability === "git" : true;
+  return def ? premadeRequiresCapability(def) : true;
 };
 
 // Inject styles directly - more reliable in Forge iframe

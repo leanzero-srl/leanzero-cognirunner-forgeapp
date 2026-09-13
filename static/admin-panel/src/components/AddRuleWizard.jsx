@@ -32,7 +32,7 @@ import SubtaskConfig from "./SubtaskConfig";
 import LinkConfig from "./LinkConfig";
 import FunctionBuilder from "./FunctionBuilder";
 import PremadeRuleForm from "./PremadeRuleForm";
-import { getCatalog as getPremadeCatalog, findRule as findPremadeRule } from "../../../../src/shared/premade-rules-catalog.js";
+import { getCatalog as getPremadeCatalog, findRule as findPremadeRule, premadeRequiresCapability } from "../../../../src/shared/premade-rules-catalog.js";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 // F-436 - the capability read (retry ladder + the loading/unknown/verdict contract) and the
 // ONE wording for a read that never came back. Byte-identical with config-ui's copy.
@@ -68,13 +68,16 @@ const RULE_TYPE_OPTIONS = [
     .map((r) => ({ value: r.key, label: r.label, desc: r.help, premade: true })),
 ];
 
-/* F-398 - is this rule type a premade POST-FUNCTION, and does it need the Coder?
-   Both questions are the catalogue's, asked once here. An unknown key answers "needs it",
-   the restrictive side, which is the same answer the backend gives a key it does not know. */
+/* F-398 - is this rule type a premade POST-FUNCTION, and does it need a capability?
+   Both questions are the catalogue's, asked once here and answered by the catalogue's own
+   reader `premadeRequiresCapability`. F-489: this used to compare `requiresCapability` to the
+   literal "git", so a row declaring any OTHER capability would have been offered freely and
+   refused at Save. An unknown key answers "needs it", the restrictive side, which is the same
+   answer the backend gives a key it does not know - that stays here, since it is not a row. */
 const isPremadePfType = (t) => !!t && !!findPremadeRule("postfunction", t);
 const premadePfNeedsCoder = (t) => {
   if (!isPremadePfType(t)) return false;
-  return findPremadeRule("postfunction", t).requiresCapability === "git";
+  return premadeRequiresCapability(findPremadeRule("postfunction", t));
 };
 
 /**

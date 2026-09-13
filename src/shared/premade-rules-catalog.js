@@ -857,6 +857,28 @@ export const getCatalog = (mode) =>
 export const findRule = (mode, key) =>
   getCatalog(mode).find((r) => r.key === key) || null;
 
+/**
+ * F-489 - DOES THIS CATALOGUE ROW NEED AN INSTANCE CAPABILITY?
+ *
+ * The catalogue declares `requiresCapability` on the rows that cannot run unless the
+ * instance can DO something (today the only value is "git", the Coder toolset). Three
+ * UI sites ask this question - the admin wizard, config-ui's rule form and the listeners
+ * tab - and two of them used to ask it by comparing to the LITERAL "git". That is a
+ * predicate that answers "needs nothing" for any SECOND value the catalogue grows
+ * (e.g. "confluence"), which moves the refusal back to Save, after all of the work.
+ *
+ * The question is the catalogue's, so it is answered here, once, by the SHAPE of the
+ * declaration and never by its value: any non-empty `requiresCapability` string means
+ * this row needs a capability; a row that declares none needs none.
+ *
+ * This deliberately does NOT decide what an UNKNOWN key answers - a key the catalogue
+ * has never heard of is not a row at all, and each call site keeps its own restrictive
+ * answer for that case (the wizard and config-ui answer "needs it", which is the answer
+ * the backend gives a key it does not know).
+ */
+export const premadeRequiresCapability = (row) =>
+  !!(row && typeof row.requiresCapability === "string" && row.requiresCapability.trim());
+
 /** Operator label for a `field-comparison` op key (used by config-view summaries). */
 export const opLabel = (op) =>
   (COMPARE_OPS.find((o) => o.value === op) || {}).label || op || "equals";

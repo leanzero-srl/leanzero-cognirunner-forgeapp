@@ -10252,7 +10252,7 @@ const savedByRoleFor = async (accountId) => {
  *
  * EXPORTED so `errBody` in src/rules-api.js can converge onto it rather than keep a
  * second list of the same four field names — that file is another surgeon's
- * territory this commit, so the convergence is filed (F-323) instead of taken as a
+ * territory this commit, so the convergence is filed (F-331) instead of taken as a
  * drive-by edit. Until then this is the one home and that one is the copy.
  *
  * Everything is clamped: the payload may come from a throw we did not author.
@@ -10662,7 +10662,7 @@ export {
   storeLog, callAIChat, getOpenAIKey, getOpenAIModel, getProviderConfig, isTransientAIError, raceDeadline,
   requireRole, requireAdmin, getUserPermissions, hasRole, canActOnConfig, makeTaskId, coerceToAdf,
   // F-307: the ONE builder for the machine-readable half of a refusal. src/rules-api.js'
-  // `errBody` is the second copy of this field list and converges here (F-323).
+  // `errBody` is the second copy of this field list and converges here (F-331).
   refusalFields,
   getRuntimeMemorySection, formatDurationHuman, getWebtriggerUrlFor,
 };

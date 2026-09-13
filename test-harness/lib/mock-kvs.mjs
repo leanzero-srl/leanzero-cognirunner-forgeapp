@@ -88,10 +88,16 @@ let pendingSetFaultWhen = null;
 // faults must be distinguishable from one that reads an empty roster, so a suite
 // needs a get() that throws exactly once.
 let pendingGetFault = null;
+let pendingGetFaultWhen = null;
 
 const storage = {
   async get(key) {
     enforceKey(key, "/api/v1/get");
+    if (pendingGetFaultWhen && pendingGetFaultWhen.match(key)) {
+      const fault = pendingGetFaultWhen.error;
+      pendingGetFaultWhen = null;
+      throw fault;
+    }
     if (pendingGetFault) {
       const fault = pendingGetFault;
       pendingGetFault = null;
@@ -158,7 +164,7 @@ const storage = {
     return transaction;
   },
   // test helpers (not part of the real API)
-  __reset() { store.clear(); pendingSetFault = null; pendingSetFaultWhen = null; pendingGetFault = null; },
+  __reset() { store.clear(); pendingSetFault = null; pendingSetFaultWhen = null; pendingGetFault = null; pendingGetFaultWhen = null; },
   // Arm ONE throw from the next `set` — a transient fault, not the size ceiling.
   __failNextSet(error) {
     const fault = error instanceof Error ? error : new Error(String(error || "KVS write failed"));
@@ -189,6 +195,19 @@ const storage = {
       fault.responseDetails = { status: 500, statusText: "Internal Server Error", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/get" };
     }
     pendingGetFault = fault;
+  },
+  // Arm ONE throw from the next `get` for a SPECIFIC key — the selective half of
+  // `__failNextGet`, mirroring `__failSetWhen` (F-593). A read path that touches several
+  // keys in order cannot use the unconditional form: the fault lands on whichever read
+  // happens to be next, which is a different test from the one being written.
+  __failGetWhen(match, error) {
+    const fault = error instanceof Error ? error : new Error(String(error || "KVS read failed"));
+    if (!error || !(error instanceof Error)) {
+      fault.name = "ForgeKvsError";
+      fault.code = "INTERNAL_SERVER_ERROR";
+      fault.responseDetails = { status: 500, statusText: "Internal Server Error", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/get" };
+    }
+    pendingGetFaultWhen = { match, error: fault };
   },
   __seed(key, value) { store.set(key, clone(value)); },
   __raw(key) { return store.get(key); },

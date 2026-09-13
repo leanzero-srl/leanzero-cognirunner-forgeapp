@@ -499,5 +499,79 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
     "…and the turn carries the edited skill, once, in the prefix");
 }
 
+/* ===== 10. F-593 — A STORAGE BLIP IS NOT A KNOWLEDGE CHANGE ========================
+ *
+ * F-578 wrote, in three docblocks, "a null epoch means cannot tell, and cannot-tell
+ * replays… a storage hiccup must never move a prompt prefix". `memoryEpoch()` then
+ * swallowed its own read error and answered `0` — a LEGITIMATE epoch — so the branch those
+ * comments describe could not be reached by the fault it was written for. On an instance at
+ * epoch 5 one transient KVS read fault read as `5 → 0`: the pin was dropped, the thread's
+ * whole stored history was re-billed at write price, the pin was re-stamped at `0`, and the
+ * NEXT turn read `5` again and moved the prefix a second time — twice, for a memory edit
+ * that never happened, with the turn log blaming the admin.
+ *
+ * Proven here against the real store, on the fault itself and on the two things around it:
+ * the reader distinguishes "could not read" from "nothing has ever been deleted", the
+ * builder keeps the pin on a fault, and a bump that cannot READ the counter does not WRITE
+ * a broken one (`null + 1` is `NaN`, which would invalidate every pin on the instance for
+ * ever after).
+ */
+{
+  const THREAD = "t_epoch_blip";
+  const { memoryEpoch, MEMORY_EPOCH_KEY, loadMemories, saveMemories, saveMemoryCandidate } =
+    await import("../../src/memories.js");
+  const { buildKnowledgeMessages } = await import("../../src/agent-runner.js");
+  const failEpochRead = () => storage.__failGetWhen((key) => key === MEMORY_EPOCH_KEY);
+
+  // THE READER, on its own. An absent or zero counter is a READING; a fault is not.
+  const settled = await memoryEpoch();
+  ok(typeof settled === "number", `the epoch reads as a number when the store answers (${settled})`);
+  failEpochRead();
+  ok((await memoryEpoch()) === null, "THE FINDING: a read fault answers null — 'cannot tell' — and never 0");
+  ok((await memoryEpoch()) === settled, "…and the very next read is the real value again");
+
+  // THE BUILDER. Turn 1 pins; turn 2 hits the blip.
+  await storage.set(coder.coderThreadKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "turn one" }], turns: 1,
+  });
+  const turn = (message) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message, skillIds: ["skill_house"],
+  });
+  const b1 = await turn("turn one");
+  ok(typeof b1.memoryEpoch === "number", `turn 1 stamps the epoch it rendered under (${b1.memoryEpoch})`);
+  await storage.set(coder.coderPinKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD,
+    skillsBlock: b1.skillsBlock || "", memoryBlock: b1.memoryBlock || "",
+    skillIds: b1.skillIds || [], memoryCount: b1.memoryCount || 0,
+    memoryEpoch: b1.memoryEpoch, skillEpoch: b1.skillEpoch, at: new Date().toISOString(),
+  });
+
+  failEpochRead();
+  const b2 = await turn("turn two");
+  ok(b2.repin === undefined && b2.pinInvalidated === undefined,
+    `THE FINDING: a blip on the epoch read KEEPS the pin (repin=${b2.repin}, reason=${b2.pinInvalidated})`);
+  ok(JSON.stringify(buildKnowledgeMessages(b2)) === JSON.stringify(buildKnowledgeMessages(b1)),
+    "…and the prompt prefix does not move");
+  ok(b2.memoryEpoch === undefined, "…an epoch that was never read is not stamped onto the pin either");
+
+  // AND THE TURN AFTER THE BLIP is ordinary — the pin was never re-stamped at 0, so there
+  // is no second prefix move chasing the first.
+  const b3 = await turn("turn three");
+  ok(b3.repin === undefined, "the turn after the blip does not invalidate either");
+  ok(Number(b3.memoryEpoch) === settled, `…and stamps the store's real epoch again (${b3.memoryEpoch})`);
+
+  // THE WRITER. A bump that cannot read the counter leaves it alone rather than storing NaN.
+  await saveMemoryCandidate({ content: "Blip probe: the CI runner image is pinned to 22.04.", source: "user" });
+  const before = storage.__raw(MEMORY_EPOCH_KEY);
+  const rows = await loadMemories();
+  failEpochRead();
+  await saveMemories(rows.slice(0, -1));
+  const after = storage.__raw(MEMORY_EPOCH_KEY);
+  ok(after === before, `an unreadable counter is not advanced (${JSON.stringify(before)} → ${JSON.stringify(after)})`);
+  ok(Number.isFinite(Number(await memoryEpoch())),
+    "…and the epoch is still a readable number, not NaN, for every thread on the instance");
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

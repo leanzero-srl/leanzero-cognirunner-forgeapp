@@ -1437,7 +1437,12 @@ const buildCoderKnowledge = async (p) => {
    * repeat — and `repin` asks the engine to re-pin today's bytes.
    *
    * FAIL-OPEN on every fault: a null epoch means "cannot tell", and cannot-tell replays.
-   * A storage hiccup must never move a prompt prefix, and must never cost a turn.
+   * A storage hiccup must never move a prompt prefix, and must never cost a turn. That
+   * promise was only true on paper until F-593: `memoryEpoch()` swallowed its own read
+   * error and returned `0`, a legitimate epoch, so this branch was unreachable by the very
+   * fault it was written for. Both readers now return `null` on a read fault and `null` is
+   * handled HERE, as a non-event: the pin is KEPT, the turn says `epoch unreadable`, and
+   * nothing is treated as a change that was not read as one.
    */
   // Read BEFORE the blocks are built, never after: if a delete lands between this read and
   // `buildMemoryBlock` below, the block already excludes the row while the stamp is the OLD
@@ -1454,13 +1459,19 @@ const buildCoderKnowledge = async (p) => {
     try {
       const { skillEpochFor } = await import("./skills.js");
       const liveSkillEpoch = await skillEpochFor(Array.isArray(pinned.skillIds) ? pinned.skillIds : []);
-      if (liveMemoryEpoch === null) throw new Error("memory epoch unreadable");
+      // F-593 — AN UNREADABLE EPOCH IS NOT A CHANGED EPOCH. Each store is judged on its own
+      // reading: a memory epoch that could not be read leaves the memory comparison out of
+      // the verdict entirely (and the skill one is already guarded the same way below), so a
+      // blip on one store cannot drop a pin whose other store says nothing moved.
+      if (liveMemoryEpoch === null) {
+        console.warn("[coder] memory epoch unreadable — the pin is kept and this turn replays it; a storage fault is never a knowledge change");
+      }
       // A pin written before this finding carries neither epoch. It is invalidated ONCE —
       // its bytes were never validated against anything and may already be the stale ones
       // this finding is about — and the re-pin below stamps both, after which it is stable.
       if (pinned.memoryEpoch === undefined || pinned.skillEpoch === undefined) {
         verdict = "pin predates epoch stamping";
-      } else if (Number(pinned.memoryEpoch) !== Number(liveMemoryEpoch)) {
+      } else if (liveMemoryEpoch !== null && Number(pinned.memoryEpoch) !== Number(liveMemoryEpoch)) {
         verdict = `memoryEpoch ${Number(pinned.memoryEpoch) || 0}→${liveMemoryEpoch}`;
       } else if (liveSkillEpoch !== null && String(pinned.skillEpoch) !== String(liveSkillEpoch)) {
         verdict = "skillEpoch changed — a pinned skill was edited, disabled or deleted";
@@ -1652,6 +1663,8 @@ const buildCoderKnowledge = async (p) => {
    *
    * Both are advisory: a null one is simply not stamped, the engine pins without it, and the
    * next turn treats the unstamped pin as "cannot tell" in the direction of one rebuild.
+   * `null` here means ONLY "the store could not be read" (F-593) — an epoch of 0 on a store
+   * nothing has ever deleted from is a real reading and is stamped like any other.
    */
   if (liveMemoryEpoch !== null) out.memoryEpoch = liveMemoryEpoch;
   try {

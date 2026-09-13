@@ -369,31 +369,75 @@ export const pruneForSave = (arr, protectId = null) => {
 export const serializedBytes = (arr) => utf8Len(JSON.stringify(Array.isArray(arr) ? arr : []));
 
 /**
- * Write the store.
+ * Write the store — and the ONE home of the serialized-byte ceiling (F-183/F-184).
  *
  * `protectId` — a just-inserted newcomer: the prune runs and may evict (non-archived
- * AUTO rows only, see pruneOne).
+ * AUTO rows only, see pruneOne) and, as a last resort, drops the newcomer itself.
  *
- * No `protectId` (an edit / delete / archive / reinforce) — F-178: NOTHING is evicted.
- * Such a save may still leave the store over the serialized-byte guard, and the caller
- * decides what that means:
- *  - `refuseIfOverBytes: true` + `priorBytes` (updateMemory): when the store is at or over
- *    the guard, refuse any edit that GROWS it and return `{ refused: true, reason: "bytes" }`
- *    with the store untouched. Edits that SHRINK it still proceed, because shortening rows is
- *    the only repair an admin has short of deleting — refusing those would trap them in a
- *    store they cannot fix. (Every edit also re-stamps `updatedAt`, so in practice a
- *    metadata-only toggle on an already-over-guard store grows it by a few bytes and is
- *    refused too; that is intended — nothing may grow a value this close to the 240KiB
- *    platform cap, and the refusal costs only a toggle, never a memory.)
- *  - default (deleteMemory, the reinforce/merge path): write. A delete only shrinks, and
- *    a reinforce rewrites the same rows; neither can be the thing that broke the guard.
+ * No `protectId` (an edit / delete / archive / reinforce / merge) — F-178: NOTHING is
+ * evicted. The byte ceiling is nevertheless enforced HERE, on EVERY write, because this
+ * is the only place every write passes through. F-183: three writes reached KVS with no
+ * guard at all (the distill `mergeWithId` merge, the dedup reinforce, the runtime
+ * error-signature reinforce); each of them can REPLACE a row's text with model-emitted
+ * content, so an instance parked just under the guard walked the value up to the 245 760 B
+ * platform cap, at which point KVS rejects the write outright. MEASURED on the pre-fix
+ * module (test-harness/scripts/memory-byte-guard.test.mjs, whose mock now enforces the real
+ * platform limit): starting 400 B under the guard, the 76th full-length merge throws
+ * VALUE_TOO_LARGE at 245 831 B, and from there every write that does not SHRINK the store
+ * fails the same way — the reinforce path itself can no longer record anything, and an
+ * addMemory or a growing edit only ever returns an error. (A delete still gets through,
+ * because the rejected write was never stored; the store is stuck, not bricked.)
+ *
+ * The rule, in order:
+ *  - Under the guard → write, whatever the caller is doing.
+ *  - At/over the guard but NOT growing (a delete, an archive, a shortened row) → write.
+ *    Shrinking is the only repair an admin has short of deleting, and a delete must
+ *    never be the write that throws.
+ *  - At/over the guard AND growing — only CONTENT growth is the problem:
+ *      · default path (merge/reinforce, unsupervised): the longer text is DROPPED and
+ *        the OLD stored text kept, while the reinforcement counter and the `updatedAt`
+ *        stamp survive. Refusing outright would lose the reinforcement; accepting grew
+ *        the value past the platform cap.
+ *      · `refuseIfOverBytes: true` (updateMemory — a human editing one row): the edit is
+ *        REFUSED, `{ refused: true, reason: "bytes" }`, store untouched. Silently keeping
+ *        the old text under a "saved" toast would lie to the person who typed the new one.
+ *  - Growth that is NOT content (a `disabled` toggle, a `projectKey` change) is left alone:
+ *    only text can materially grow this value.
+ *
+ * `priorBytes` is an optimisation only: when the caller already measured the store it is
+ * used, otherwise the stored value is re-read (once, and only when over the guard).
  */
 export const saveMemories = async (arr, { protectId = null, refuseIfOverBytes = false, priorBytes = null } = {}) => {
-  const { out, evicted, protectedKept, reason } = pruneForSave(arr, protectId);
-  if (!protectId && refuseIfOverBytes) {
-    const bytes = serializedBytes(out);
-    if (bytes >= MEMORY_MAX_SERIALIZED_BYTES && (priorBytes === null || bytes > priorBytes)) {
-      return { memories: null, refused: true, reason: "bytes", evicted: [] };
+  const { out: pruned, evicted, protectedKept, reason } = pruneForSave(arr, protectId);
+  let out = pruned;
+  if (!protectId && serializedBytes(out) >= MEMORY_MAX_SERIALIZED_BYTES) {
+    const stored = await loadMemories();
+    const prior = priorBytes === null || priorBytes === undefined ? serializedBytes(stored) : priorBytes;
+    if (serializedBytes(out) > prior) {
+      // Growing an already-over-guard store. Isolate the CONTENT growth: any row whose
+      // text got longer than the text currently in KVS.
+      const byId = new Map(stored.map((m) => [m.id, m]));
+      const grew = [];
+      const repaired = out.map((m) => {
+        const old = byId.get(m.id);
+        if (!old || old.content === m.content) return m;
+        if (utf8Len(String(m.content ?? "")) <= utf8Len(String(old.content ?? ""))) return m;
+        grew.push(m.id);
+        return { ...m, content: old.content };
+      });
+      if (grew.length && refuseIfOverBytes) return { memories: null, refused: true, reason: "bytes", evicted: [] };
+      if (grew.length) {
+        console.warn(`memories: at the ${MEMORY_MAX_SERIALIZED_BYTES}B guard — kept the stored text for ${grew.length} row(s) (${grew.join(", ")}); the reinforcement was still recorded`);
+        out = repaired;
+      }
+      // Growth that the revert cannot undo — rows this save ADDS. There is no old text to
+      // fall back to, so the write is refused outright rather than handed to KVS, which
+      // rejects anything over 245 760 B anyway (and leaves the caller with an exception
+      // instead of an answer).
+      if (out.some((m) => !byId.has(m.id)) && serializedBytes(out) > prior) {
+        return { memories: null, refused: true, reason: "bytes", evicted: [] };
+      }
+      // Whatever delta is left is metadata (F-184) — always allowed.
     }
   }
   await storage.set(MEMORIES_KEY, out);

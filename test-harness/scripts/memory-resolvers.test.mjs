@@ -158,25 +158,46 @@ ok(storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
   const beforeBytes = new TextEncoder().encode(JSON.stringify(load())).length;
   ok(beforeBytes >= 230000, `fixture is over the byte guard (${beforeBytes} B)`);
   const beforeJson = JSON.stringify(load());
-  // An edit that GROWS the store (scoping a row to a project). A content edit cannot be used
-  // here — updateMemory clamps to MEMORY_CONTENT_MAX, so it always shrinks a 12000-char row.
+  // F-184 AMENDS the old expectation here. A METADATA edit (scope, archive, restore) cannot
+  // materially grow the store — archiving a row is -1 B ("false" → "true"), restoring is +1 B,
+  // and the updatedAt re-stamp measures ZERO (a fixed-length ISO stamp; the old docblock's
+  // "+4 bytes" was wrong). Refusing them built a ONE-WAY DOOR: Archive succeeded and Restore
+  // was refused, so an admin could archive a memory on an over-guard store and never get it
+  // back. Metadata edits now always proceed — and, per F-178, still evict nothing.
   const edit = await call("updateMemory", { id: "b3", projectKey: "PROJA" });
-  ok(edit.success === false && edit.reason === "bytes",
-    `the EDIT is refused with reason "bytes" (got ${JSON.stringify({ success: edit.success, reason: edit.reason })})`);
-  ok(JSON.stringify(edit.evicted) === "[]", `the refused edit reports evicted: [] (got ${JSON.stringify(edit.evicted)})`);
-  ok(JSON.stringify(load()) === beforeJson, "the store is BYTE-IDENTICAL after the refused edit — nothing evicted, nothing written");
+  ok(edit.success === true && load().find((m) => m.id === "b3").projectKey === "PROJA",
+    `a METADATA edit on an over-guard store proceeds (got ${JSON.stringify({ success: edit.success, reason: edit.reason })})`);
+  ok(JSON.stringify(edit.evicted) === "[]" && load().length === 20,
+    `…and evicts nothing (${JSON.stringify(edit.evicted)}, ${load().length} rows)`);
   ok(load().some((m) => m.id === "b7" && m.disabled === true), "the ARCHIVED hand-authored row is still there");
-  ok(typeof edit.error === "string" && /Memories tab/.test(edit.error), `the refusal names the tab: "${edit.error}"`);
 
-  // Characterization of the edge: every edit also stamps a fresh `updatedAt` (4 bytes longer
-  // than a seeded "…00:00:00Z"), so on a store ALREADY over the guard even an archive grows
-  // the value and is refused. That is the rule doing its job — no growth over a ceiling that
-  // is one step from the 240KiB platform cap — and it costs nothing: archiving frees no
-  // capacity since F-176, and the store is left untouched rather than raided for a row.
   const arch178 = await call("updateMemory", { id: "b5", disabled: true });
-  ok(arch178.success === false && arch178.reason === "bytes" && load().find((m) => m.id === "b5").disabled === false,
-    "an ARCHIVE on an already-over-guard store is refused, not written, and evicts nothing");
+  ok(arch178.success === true && load().find((m) => m.id === "b5").disabled === true,
+    "ARCHIVE on an already-over-guard store proceeds");
+  const rest178 = await call("updateMemory", { id: "b5", disabled: false });
+  ok(rest178.success === true && load().find((m) => m.id === "b5").disabled === false,
+    "RESTORE proceeds too — the one-way door F-184 filed is closed");
   ok(load().length === 20, "…still 20 rows");
+
+  // CONTENT growth is what the byte guard refuses. (These fixture rows are 12000 chars, which
+  // updateMemory clamps to MEMORY_CONTENT_MAX, so any content edit here SHRINKS — the refusal
+  // is proved on a store of maximum-length rows instead.)
+  {
+    const cjk = (id, n) => ({ id, content: "漢".repeat(n), source: "user", confidence: 1.0, reinforcements: 0, disabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" });
+    const maxed = [];
+    for (let i = 0; i < 198; i++) maxed.push(cjk(`c${i}`, 350));
+    reset(maxed);
+    const bytesNow = new TextEncoder().encode(JSON.stringify(load())).length;
+    ok(bytesNow >= 230000, `CJK fixture is over the byte guard (${bytesNow} B)`);
+    const beforeJson2 = JSON.stringify(load());
+    const grow = await call("updateMemory", { id: "c3", content: "漢".repeat(MEMORY_CONTENT_MAX) });
+    ok(grow.success === false && grow.reason === "bytes",
+      `a CONTENT-GROWING edit is refused with reason "bytes" (got ${JSON.stringify({ success: grow.success, reason: grow.reason })})`);
+    ok(JSON.stringify(grow.evicted) === "[]" && JSON.stringify(load()) === beforeJson2,
+      "the refused content edit left the store BYTE-IDENTICAL and evicted nothing");
+    ok(typeof grow.error === "string" && /Memories tab/.test(grow.error), `the refusal names the tab: "${grow.error}"`);
+    reset(heavy178);
+  }
 
   // …and a SHRINKING edit still proceeds — shortening rows is the recovery path out of an
   // over-size store, so it must never be refused.

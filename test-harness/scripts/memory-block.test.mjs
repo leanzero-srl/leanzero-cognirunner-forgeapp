@@ -291,9 +291,19 @@ ok(s.runtimeInjection === true && s.injection === true && s.autoCapture === fals
   const arr = [];
   for (let i = 0; i < 32; i++) arr.push(mk({ id: `big${i}`, content: `${i} ${fat}`, source: "test", confidence: 0.1 }));
   ok(bytes(arr) >= 230000, `fixture is over the byte guard (${bytes(arr)} bytes)`);
+  const beforeFat = JSON.stringify(storage.__raw(MEMORIES_KEY));
   const res = await saveMemories(arr);
-  ok(res.memories.length === 32 && res.evicted.length === 0 && res.refused === false,
-    `an over-BYTES save with no protectId evicts nothing and still writes (${res.evicted.length} evicted)`);
+  // F-183 AMENDS F-178 here. F-178's contract was "evicts nothing and still writes"; the
+  // "still writes" half was only ever true below the PLATFORM cap — this fixture is 288 KB,
+  // and KVS rejects any value over 245 760 B, so the old behaviour handed the caller an
+  // exception instead of an answer. A save that ADDS rows over the guard has no old text to
+  // fall back to, so it is refused outright. The F-178 half that matters is intact: nothing
+  // is evicted and the store is untouched.
+  ok(res.evicted.length === 0 && res.refused === true && res.reason === "bytes" && res.memories === null,
+    `an over-BYTES save with no protectId evicts nothing and REFUSES rather than writing a value the platform rejects (got ${JSON.stringify({ refused: res.refused, reason: res.reason, evicted: res.evicted.length })})`);
+  ok(JSON.stringify(storage.__raw(MEMORIES_KEY)) === beforeFat, "…and the store is byte-identical after that refusal");
+  // seed the fat array directly (bypassing the guard) for the refuseIfOverBytes case below
+  storage.__seed(MEMORIES_KEY, arr);
   // …unless the caller asks to be refused instead (updateMemory does), in which case NOTHING is written
   const before = JSON.stringify(storage.__raw(MEMORIES_KEY));
   const refused = await saveMemories(arr.concat([mk({ id: "grow", content: "one more", source: "user" })]),

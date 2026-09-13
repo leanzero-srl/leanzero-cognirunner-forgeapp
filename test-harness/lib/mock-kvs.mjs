@@ -11,6 +11,24 @@
 // (both resolve to this file URL → node caches one instance → shared state).
 const store = new Map();
 
+/*
+ * The REAL platform limit: KVS refuses a value over 240 KiB. The mock enforces it so that
+ * a suite can prove the app's own byte guard (MEMORY_MAX_SERIALIZED_BYTES = 230 000) is
+ * what keeps `pf_memories` writable — F-183 was "the store grows past the platform cap and
+ * then EVERY write, including the delete that would repair it, throws", which a mock with
+ * no ceiling cannot show.
+ */
+const KVS_MAX_VALUE_BYTES = 245760;
+const enforceValueSize = (key, value) => {
+  if (value === undefined) return;
+  const bytes = new TextEncoder().encode(JSON.stringify(value) ?? "").length;
+  if (bytes > KVS_MAX_VALUE_BYTES) {
+    const error = new Error(`Value for key ${key} is ${bytes} bytes, over the ${KVS_MAX_VALUE_BYTES} byte limit`);
+    error.code = "VALUE_TOO_LARGE";
+    throw error;
+  }
+};
+
 const storage = {
   async get(key) { return store.has(key) ? clone(store.get(key)) : undefined; },
   async set(key, value, options = {}) {
@@ -21,6 +39,7 @@ const storage = {
       error.code = "KEY_ALREADY_EXISTS";
       throw error;
     }
+    enforceValueSize(key, value);
     store.set(key, clone(value)); return { key };
   },
   async delete(key) { store.delete(key); },
@@ -47,6 +66,7 @@ const storage = {
       async execute() {
         // No await between mutations: all-or-nothing visibility to other calls.
         for (const { key, options } of sets) if (options?.keyPolicy === "FAIL_IF_EXISTS" && store.has(key)) throw new Error("Key already exists");
+        for (const { key, value } of sets) enforceValueSize(key, value);
         for (const { key, value } of sets) store.set(key, clone(value));
         for (const key of deletes) store.delete(key);
       },

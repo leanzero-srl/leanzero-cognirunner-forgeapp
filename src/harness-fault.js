@@ -575,9 +575,43 @@ export const HARNESS_FAULT_SWEEP_MAX_PAGES = 10;
 /** THE TIME BOUND (F-673), in ms: the default, and the ceiling no caller may raise. */
 export const HARNESS_FAULT_SWEEP_DEFAULT_MS = 15_000;
 export const HARNESS_FAULT_SWEEP_MAX_MS = 20_000;
-/** Deletes per `Promise.allSettled` batch, and the cap on the returned row LIST. */
-export const HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY = 10;
+/** The cap on the returned row LIST (the counters keep counting past it). */
 export const HARNESS_FAULT_SWEEP_MAX_ROWS = 200;
+
+/** Deletes per `Promise.allSettled` batch. */
+export const HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY = 10;
+
+/*
+ * F-674 - THE RESUME TOKEN IS OURS, NOT THE RAW KVS CURSOR.
+ *
+ * The budget break used to answer with `resume`, the KVS cursor captured at the TOP of the
+ * page being worked - and on page 0 of any call that cursor is the caller's own start
+ * cursor, which is `null` on a fresh sweep. So the one case the budget exists for answered
+ * `truncated: true, reason: "budget", cursor: null`, and a caller looping `while (r.cursor)`
+ * read that as "finished" with hundreds of rows still in the keyspace. Measured: 400 expired
+ * rows, 30 ms latency on ALL of them, `maxMs: 60` -> `deleted: 20, cursor: null`, 370 left.
+ *
+ * A raw KVS cursor cannot express "the beginning of the keyspace" - only `null` can, and
+ * `null` is already spoken for as "finished". So the token the sweep RETURNS and ACCEPTS is
+ * its own: base64 JSON carrying the KVS cursor, which may legitimately be `null`. The token
+ * is therefore ALWAYS a non-empty string while work remains, and `cursor === null` means
+ * finished and nothing else. Raw KVS cursors from an older caller are still accepted
+ * verbatim, so nothing that already holds one is broken by this.
+ */
+const encodeSweepCursor = (kvsCursor) =>
+  Buffer.from(JSON.stringify({ c: kvsCursor === undefined ? null : kvsCursor }), "utf8").toString("base64");
+
+export const decodeSweepCursor = (token) => {
+  if (typeof token !== "string" || !token) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(token, "base64").toString("utf8"));
+    if (parsed && typeof parsed === "object" && "c" in parsed) {
+      return typeof parsed.c === "string" && parsed.c ? parsed.c : null;
+    }
+  } catch { /* not one of ours - fall through to the back-compat reading */ }
+  // Back-compat: a raw KVS cursor handed back by a caller that predates the token.
+  return token;
+};
 
 /**
  * THE one place a caller's `maxMs` becomes a budget. Anything that is not a finite number is
@@ -590,6 +624,22 @@ export const sweepBudgetMs = (maxMs) => {
   return Math.min(Math.max(Math.floor(maxMs), 1), HARNESS_FAULT_SWEEP_MAX_MS);
 };
 
+/*
+ * F-674 - PROGRESS PER CALL IS GUARANTEED, and that is what makes the loop terminate.
+ *
+ * The budget is honoured only once this call has actually MOVED: at least one delete batch
+ * has landed, or at least one page has been advanced. Before that, `overBudget()` is not
+ * allowed to stop anything - a `maxMs` so small that the very first check trips would
+ * otherwise produce a call that scans a page, deletes nothing, and hands back a cursor
+ * identical to the one it was given, forever. `progressed` is that gate, and it is the
+ * whole termination argument: every call either deletes rows (the page shrinks) or advances
+ * the cursor (the page moves), so a `while (r.cursor)` caller strictly converges.
+ *
+ * The resume point on a mid-page break is THIS page's own cursor, deliberately: the rows it
+ * already deleted are GONE, so re-fetching the same page returns the remainder and nothing
+ * is re-deleted. No skip count is needed and none is kept - the deletes themselves are the
+ * progress the cursor does not have to encode.
+ */
 export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startCursor = null } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
   const dry = dryRun === true;
@@ -600,11 +650,13 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
   const rows = [];
   let scanned = 0, deleted = 0, failed = 0, rowsTruncated = false;
   let truncated = false, reason = null;
-  let cursor = typeof startCursor === "string" && startCursor ? startCursor : null;
+  // Anything the caller hands back - our token, a legacy raw cursor, or nothing at all.
+  let cursor = decodeSweepCursor(typeof startCursor === "string" && startCursor ? startCursor : null);
+  let progressed = false;
   for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
-    // The cursor that re-fetches THIS page — the resume point for anything that stops inside it.
+    // The cursor that re-fetches THIS page - the resume point for anything that stops inside it.
     const resume = cursor;
-    if (overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+    if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
     let query = storage.query()
       .where("key", { condition: "BEGINS_WITH", values: [HARNESS_FAULT_KEY_PREFIX] })
       .limit(HARNESS_FAULT_SWEEP_PAGE_SIZE);
@@ -617,7 +669,7 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
       const deadline = faultRowDeadline(row);
       const expired = faultRowExpired(row, now);
       scanned++;
-      // `until` is what the ROW says; `deadline` is what BOUNDS it — they differ exactly for
+      // `until` is what the ROW says; `deadline` is what BOUNDS it - they differ exactly for
       // the legacy no-`until` row this sweep exists to reach, and a reader is owed both.
       if (rows.length < HARNESS_FAULT_SWEEP_MAX_ROWS) {
         rows.push({
@@ -633,14 +685,16 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
     }
     if (!dry) {
       for (let i = 0; i < doomed.length; i += HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY) {
-        if (overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+        if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
         const batch = doomed.slice(i, i + HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY);
         const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
         for (const outcome of settled) { if (outcome.status === "fulfilled") deleted++; else failed++; }
+        progressed = true;
       }
       if (truncated) break;
     }
     cursor = (result && result.nextCursor) || null;
+    progressed = true;
     if (!cursor) break;
     if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) { truncated = true; reason = "pages"; }
   }
@@ -649,6 +703,7 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
     truncated, reason, budgetMs, rows, rowsTruncated,
     // Carried ONLY when there is more to do, so a `truncated: false` answer with a null
     // cursor is the one unambiguous way a caller reads "finished" rather than "stopped".
-    cursor: truncated ? cursor : null,
+    // NEVER null while work remains (F-674): the token encodes a null KVS cursor too.
+    cursor: truncated ? encodeSweepCursor(cursor) : null,
   };
 };

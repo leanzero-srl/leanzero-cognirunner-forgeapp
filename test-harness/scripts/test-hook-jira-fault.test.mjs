@@ -413,8 +413,18 @@ process.env.HARNESS_SECRET = SECRET;
    * reach a time bound — so the ENUMERATION is given latency here, and `maxMs: 1` then makes
    * the stop land deterministically after the first page is fetched and before anything is
    * deleted, rather than racing the machine's clock granularity. */
-  const budgetKey = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_673", "d-door");
-  await storage.set(budgetKey, { count: 1, armedAt: new Date(Date.now() - 3_600_000).toISOString() });
+  /* F-674 — AND THE OUT-OF-BUDGET ANSWER MUST STILL HAVE MOVED. The old door test planted
+   * ONE row and asserted the starved sweep "deleted nothing" — which is the F-674 defect
+   * written down as an expectation: a call that lists a page, deletes nothing and hands back
+   * the cursor it was given (or, on a fresh call, `null`) is a loop that never converges. So
+   * the fixture plants MORE THAN ONE DELETE BATCH and the contract is the opposite one:
+   * progress first, budget second, and a token that is never null while rows remain. */
+  const budgetKeys = [];
+  for (let i = 0; i < 15; i++) {
+    const key = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_673", `d-door-${i}`);
+    budgetKeys.push(key);
+    await storage.set(key, { count: 1, armedAt: new Date(Date.now() - 3_600_000).toISOString() });
+  }
   const realQuery = kvs.query;
   kvs.query = function slowQuery(...args) {
     const q = realQuery.apply(this, args);
@@ -429,12 +439,26 @@ process.env.HARNESS_SECRET = SECRET;
   kvs.query = realQuery;
   ok(starved.status === 200 && starved.body.truncated === true && starved.body.reason === "budget",
     `an out-of-budget sweep still ANSWERS 200, truncated with reason "budget" (got ${JSON.stringify(starved.body && { status: starved.status, truncated: starved.body.truncated, reason: starved.body.reason })})`);
-  ok(starved.body.budgetMs === 1 && "cursor" in starved.body,
-    `…echoing the budget it honoured and carrying the resume cursor (got ${JSON.stringify({ budgetMs: starved.body.budgetMs, cursor: starved.body.cursor })})`);
-  ok((await storage.get(budgetKey)) !== undefined, "…and having stopped before the first page, it deleted nothing");
-  const resumed = await post({ action: "sweepHarnessFaults", cursor: starved.body.cursor });
-  ok(resumed.status === 200 && resumed.body.truncated === false && (await storage.get(budgetKey)) === undefined,
-    "…and POSTing that cursor back to the SAME action finishes the job");
+  ok(starved.body.budgetMs === 1 && typeof starved.body.cursor === "string" && starved.body.cursor.length > 0,
+    `…echoing the budget it honoured and carrying a NON-NULL resume cursor (got ${JSON.stringify({ budgetMs: starved.body.budgetMs, cursor: starved.body.cursor })})`);
+  ok(starved.body.deleted > 0,
+    `…and having honoured the budget only AFTER a delete batch landed, it MOVED (deleted ${starved.body.deleted})`);
+  let leftAfterStarve = 0;
+  for (const key of budgetKeys) if ((await storage.get(key)) !== undefined) leftAfterStarve++;
+  ok(leftAfterStarve > 0, `…with rows still to do, which is what makes the resume cursor meaningful (left ${leftAfterStarve})`);
+
+  let doorToken = starved.body.cursor, doorCalls = 0;
+  while (doorToken && doorCalls < 50) {
+    const r = await post({ action: "sweepHarnessFaults", cursor: doorToken });
+    ok(r.status === 200, "…every resumed POST answers 200");
+    doorToken = r.body.cursor;
+    doorCalls++;
+  }
+  let leftAfterDrain = 0;
+  for (const key of budgetKeys) if ((await storage.get(key)) !== undefined) leftAfterDrain++;
+  ok(doorToken === null && leftAfterDrain === 0,
+    `…and POSTing that cursor back to the SAME action until it answers null finishes the job (${doorCalls} calls, left ${leftAfterDrain})`);
+
   // A caller cannot buy more time than the trigger has: the clamp is the module's, not the door's.
   const greedy = await post({ action: "sweepHarnessFaults", maxMs: 600_000, dryRun: true });
   ok(greedy.body.budgetMs === fault.HARNESS_FAULT_SWEEP_MAX_MS,

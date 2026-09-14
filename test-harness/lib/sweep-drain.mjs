@@ -25,9 +25,29 @@
  *
  * THE ANSWERS AND WHAT EACH EARNS:
  *   · `deletes-failing` — nothing landed on this page. PAUSE with exponential back-off
- *     (500 ms, 1 s, 2 s) and resume, at most `DELETES_FAILING_BACKOFF_MS.length` times.
- *     A store that refuses three paced retries is not going to answer the fourth, and the
- *     stop says `not-converging` rather than the driver's generic "bound".
+ *     (500 ms, 1 s, 2 s) and resume, at most `DELETES_FAILING_BACKOFF_MS.length` times
+ *     CONSECUTIVELY. A store that refuses three paced retries OF A PAGE THAT NEVER MOVES is
+ *     not going to answer the fourth, and the stop says `not-converging` rather than the
+ *     driver's generic "bound".
+ *
+ *     F-703 — THE CAP COUNTS CONSECUTIVE NON-PROGRESS, NOT LIFETIME REFUSALS. `failingTries`
+ *     used to be a per-DRAIN counter that only ever incremented, so three `deletes-failing`
+ *     pages ANYWHERE in a long drain — with healthy deleting pages between them — exhausted
+ *     it and stopped a demonstrably converging sweep. Measured: `deletes-failing(p1)`,
+ *     `budget(deleted:5,p2)`, `deletes-failing(p3)`, `budget(deleted:5,p4)`,
+ *     `deletes-failing(p5)`, `budget(deleted:5,p6)`, `deletes-failing(p7)` stopped as
+ *     `not-converging` after FIFTEEN rows had been deleted across three DIFFERENT refusing
+ *     pages — and the stop sentence asserted "3 paced retries of a page all landed no
+ *     delete", a cause the answers contradict (LAW: never assert a cause the result did not
+ *     contain). The counter now RESETS on any answer that made progress, where progress is
+ *     `deleted > 0` OR a cursor that moved off the page the last answer named. What remains
+ *     capped is the real refusal: the SAME page, answered three times, landing nothing.
+ *
+ *     Why the cursor counts as progress: a refusing page answers with ITS OWN cursor
+ *     (F-682), so a genuine "the store is refusing" spin re-presents the identical token and
+ *     the cap still fires. A cursor that MOVED means the sweep walked on, which is the
+ *     "legitimately progressing" case the back-off was never meant to kill. When the whole
+ *     answer repeats byte for byte, `IDENTICAL_ANSWER_LIMIT` fires first and independently.
  *   · the SAME ANSWER `IDENTICAL_ANSWER_LIMIT` times — byte-identical counters, reason and
  *     cursor — is the spin itself, made visible. It stops immediately with `not-converging`
  *     whatever the reason was, because a loop whose answer never changes cannot converge by
@@ -71,7 +91,10 @@ export const answerSignature = (j) => JSON.stringify({
 export const newDrainState = () => ({
   lastSignature: null,
   identical: 0,
+  /* CONSECUTIVE non-progress `deletes-failing` answers (F-703). Reset by `madeProgress`. */
   failingTries: 0,
+  /* The cursor the PREVIOUS answer carried, so "the page moved" is answerable (F-703). */
+  lastCursor: null,
   resumedAfterFailed: false,
 });
 
@@ -81,6 +104,20 @@ export const newDrainState = () => ({
  */
 export const answerComplete = (j) =>
   (typeof j?.complete === "boolean" ? j.complete : j?.truncated !== true);
+
+/**
+ * DID THIS ANSWER MOVE ANYTHING? (F-703) — the predicate that resets the back-off cap.
+ *
+ * Progress is either row(s) actually deleted, or a resume token that no longer names the page
+ * the previous answer named. `prevCursor === null` is the FIRST answer of a drain, which
+ * cannot have moved off anything and is treated as non-progress; the cap is zero there
+ * anyway, so the distinction only matters for clarity.
+ */
+export const madeProgress = (answer, prevCursor) => {
+  if (Number(answer?.deleted || 0) > 0) return true;
+  const cursor = typeof answer?.cursor === "string" && answer.cursor ? answer.cursor : null;
+  return prevCursor !== null && cursor !== null && cursor !== prevCursor;
+};
 
 /**
  * ONE STEP of the drain loop, decided from the answer and the carried state.
@@ -99,6 +136,14 @@ export function decideSweepStep(answer, state) {
   const stop = (stopReason) => ({ action: "stop", sleepMs: 0, cursor: null, stopReason, state: next });
   const reason = answer?.reason ?? null;
 
+  /* F-703 — the back-off cap counts CONSECUTIVE non-progress answers, so an answer that
+     deleted something or walked on to another page clears it. Computed before every branch
+     (progress is progress whatever the reason) and recorded for the next step's comparison. */
+  const progressed = madeProgress(answer, prev.lastCursor);
+  const failingTries = progressed ? 0 : prev.failingTries;
+  next.failingTries = failingTries;
+  next.lastCursor = typeof answer?.cursor === "string" && answer.cursor ? answer.cursor : null;
+
   if (answerComplete(answer)) {
     return { action: "done", sleepMs: 0, cursor: null, stopReason: null, state: next };
   }
@@ -115,10 +160,10 @@ export function decideSweepStep(answer, state) {
   }
 
   if (reason === "deletes-failing") {
-    if (prev.failingTries >= DELETES_FAILING_BACKOFF_MS.length) {
-      return stop(`not-converging: ${prev.failingTries} paced retries of a "deletes-failing" page all landed no delete (failed:${answer?.failed ?? null}) — the store is refusing and further resumes only double the load on it`);
+    if (failingTries >= DELETES_FAILING_BACKOFF_MS.length) {
+      return stop(`not-converging: ${failingTries} CONSECUTIVE paced retries of the same "deletes-failing" page all landed no delete and did not advance the cursor (failed:${answer?.failed ?? null}) — the store is refusing and further resumes only double the load on it`);
     }
-    next.failingTries = prev.failingTries + 1;
+    next.failingTries = failingTries + 1;
     return {
       action: "resume",
       sleepMs: DELETES_FAILING_BACKOFF_MS[next.failingTries - 1],
@@ -135,4 +180,81 @@ export function decideSweepStep(answer, state) {
   }
 
   return { action: "resume", sleepMs: 0, cursor, stopReason: null, state: next };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * THE DRAIN LOOP ITSELF — F-702. ONE HOME FOR THE I/O TOO, NOT JUST THE DECISION.
+ *
+ * F-690 moved the DECISION here and left every caller to write its own loop around it. That
+ * was enough for exactly one driver: `plant-sweep-live.mjs` landed in the SAME range with a
+ * hand-rolled loop that never imported this module — so the contract had two homes again,
+ * and `decideSweepStep` had a single caller. The hand-rolled copy re-derived finishedness
+ * from `truncated` (the derivation F-692 deprecates), backed off a flat 1 s instead of
+ * 500/1000/2000, had no byte-identical detection and no `deletes-failed`-resumed-once rule,
+ * so the SAME refusing store produced "still not complete after 10 resume call(s)" in one
+ * driver and a named `not-converging` in the other.
+ *
+ * So the loop is here as well, and a driver supplies only the POST. Finishedness is READ
+ * from the answer's `complete` (via `answerComplete`) and never re-derived at a call site;
+ * `evidence-redaction.test.mjs` enforces that as a directory rule over `scripts/*-live.mjs`.
+ *
+ * @param post   (cursor) => Promise<{status, json}> — one sweep call. `cursor` is null on the
+ *               first call and the resume token thereafter.
+ * @param opts.maxCalls  the bound; a drain needing more is a finding, not a retry.
+ * @param opts.first     an answer ALREADY received (a driver that judged call 1 itself), so
+ *                       it is decided and counted exactly like any other.
+ * @param opts.onAnswer  (json, callNumber) => void — the driver's own accounting/ledger.
+ * @param opts.sleep     injectable for tests; defaults to a real timer.
+ * @returns {{drained, stopReason, calls, pausedMs, last}} — `drained` is the ONLY success.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+export async function drainSweep(post, opts = {}) {
+  const {
+    maxCalls = 20,
+    first = null,
+    onAnswer = null,
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  } = opts;
+
+  let state = newDrainState();
+  let calls = 0, cursor = null, pausedMs = 0;
+  let drained = false, stopReason = null, last = null;
+  let answer = first ?? null;
+
+  for (;;) {
+    if (answer === null) {
+      if (calls >= maxCalls) {
+        stopReason = `the sweep was still incomplete (reason "${last?.reason ?? null}") after the ${maxCalls}-call bound`;
+        break;
+      }
+      const res = await post(cursor);
+      calls++;
+      if (!res || res.status !== 200 || res.json?.ok !== true) {
+        stopReason = `sweep call ${calls} did not answer 200/ok (HTTP ${res?.status ?? 0})`;
+        break;
+      }
+      answer = res.json;
+    } else {
+      /* The seeded answer is a CALL — it cost a web-trigger invocation and it counts against
+         the bound exactly like one the loop made itself. */
+      calls++;
+    }
+
+    last = answer;
+    if (onAnswer) onAnswer(answer, calls);
+
+    const step = decideSweepStep(answer, state);
+    state = step.state;
+    if (step.action === "done") { drained = true; break; }
+    if (step.action === "stop") { stopReason = `${step.stopReason} (after ${calls} call(s))`; break; }
+    if (step.sleepMs > 0) {
+      /* The BACK-OFF, actually taken. Sleeping is the whole point of the `deletes-failing`
+         answer: the page will not start landing deletes because it was asked again sooner. */
+      pausedMs += step.sleepMs;
+      await sleep(step.sleepMs);
+    }
+    cursor = step.cursor;
+    answer = null;
+  }
+
+  return { drained, stopReason, calls, pausedMs, last };
 }

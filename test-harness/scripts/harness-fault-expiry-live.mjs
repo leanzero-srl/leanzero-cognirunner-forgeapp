@@ -90,7 +90,7 @@ import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
-import { decideSweepStep, newDrainState } from "../lib/sweep-drain.mjs";
+import { drainSweep as runDrain } from "../lib/sweep-drain.mjs";
 
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 /* The provider slot this driver faults. Declared up here because the F-679 refusal names
@@ -233,34 +233,25 @@ const MAX_SWEEP_CALLS = 20;
  */
 const drainSweep = async (dryRun) => {
   const totals = { scanned: 0, deleted: 0, failed: 0, expiredRows: 0, liveRows: 0, legacyNoUntil: 0 };
-  let calls = 0, cursor = null, lastShape = null, drained = false, stopReason = null, rowsTruncatedAny = false;
-  let state = newDrainState(), pausedMs = 0;
-  while (calls < MAX_SWEEP_CALLS) {
-    const res = await sweep(dryRun, cursor);
-    calls++;
-    if (res.status !== 200 || res.json?.ok !== true) {
-      stopReason = `sweep call ${calls} did not answer 200/ok (HTTP ${res.status})`;
-      break;
-    }
-    const shape = sweepShape(res.json);
-    lastShape = shape;
-    for (const k of Object.keys(totals)) totals[k] += Number(shape[k] || 0);
-    if (shape.rowsTruncated === true) rowsTruncatedAny = true;
-
-    const step = decideSweepStep(res.json, state);
-    state = step.state;
-    if (step.action === "done") { drained = true; break; }
-    if (step.action === "stop") { stopReason = `${step.stopReason} (after ${calls} call(s))`; break; }
-    if (step.sleepMs > 0) {
-      /* The BACK-OFF, actually taken. Sleeping is the whole point of the `deletes-failing`
-         answer: the page will not start landing deletes because it was asked again sooner. */
-      pausedMs += step.sleepMs;
-      await new Promise((r) => setTimeout(r, step.sleepMs));
-    }
-    cursor = step.cursor;
-  }
-  if (!drained && !stopReason) stopReason = `sweep still incomplete (reason "${lastShape?.reason}") after the ${MAX_SWEEP_CALLS}-call bound`;
-  return { drained, stopReason, calls, rowsTruncatedAny, pausedMs, ...totals, last: lastShape };
+  let lastShape = null, rowsTruncatedAny = false;
+  /* F-702 — THE LOOP IS THE LIBRARY'S TOO, not just the decision. This function is now only
+     the driver's ACCOUNTING: the per-answer shape, the totals and the row-cap flag. Calling,
+     deciding, pausing and resuming live in `lib/sweep-drain.mjs`, which is also what
+     `plant-sweep-live.mjs` obeys, so the two drivers cannot answer a refusing store
+     differently. */
+  const d = await runDrain((cursor) => sweep(dryRun, cursor), {
+    maxCalls: MAX_SWEEP_CALLS,
+    onAnswer: (json) => {
+      const shape = sweepShape(json);
+      lastShape = shape;
+      for (const k of Object.keys(totals)) totals[k] += Number(shape[k] || 0);
+      if (shape.rowsTruncated === true) rowsTruncatedAny = true;
+    },
+  });
+  return {
+    drained: d.drained, stopReason: d.stopReason, calls: d.calls,
+    rowsTruncatedAny, pausedMs: d.pausedMs, ...totals, last: lastShape,
+  };
 };
 
 /*

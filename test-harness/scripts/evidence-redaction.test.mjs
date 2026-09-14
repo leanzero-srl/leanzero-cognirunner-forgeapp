@@ -782,17 +782,66 @@ const stripComments = (src) => src
   .replace(/\/\*[\s\S]*?\*\//g, " ")
   .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
+/**
+ * THE ARGUMENT TEXT OF EVERY CALL TO `name`, BRACE-BALANCED (F-705).
+ *
+ * The predicates below used to use a non-greedy window — `makeRosterUI\s*\(\{[\s\S]{0,400}?\}\)`
+ * — which has two failure modes and both of them PASS a broken driver:
+ *   · `code.match` returns the FIRST call only, so a second builder in the same file was
+ *     never examined at all;
+ *   · an options object longer than the window makes the match `null`, and `!m` was returned
+ *     as `true`. The rule answered "this driver is fine" for the one input it could not read.
+ * A parenthesis walk has neither: every call is found, and a call it cannot close is `null`,
+ * which the callers treat as a FAILURE rather than a pass.
+ */
+const callArgs = (code, name) => {
+  const out = [];
+  for (const m of code.matchAll(new RegExp(`\\b${name}\\s*\\(`, "g"))) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0, end = -1;
+    for (let j = open; j < code.length; j++) {
+      if (code[j] === "(") depth++;
+      else if (code[j] === ")") { depth--; if (depth === 0) { end = j; break; } }
+    }
+    out.push(end < 0 ? null : code.slice(open + 1, end));
+  }
+  return out;
+};
+
+/** The brace-balanced value of `key:` inside an argument list, or null if it is not an object. */
+const objectValue = (args, key) => {
+  const m = args && args.match(new RegExp(`\\b${key}\\s*:\\s*\\{`));
+  if (!m) return null;
+  const open = m.index + m[0].length - 1;
+  let depth = 0;
+  for (let j = open; j < args.length; j++) {
+    if (args[j] === "{") depth++;
+    else if (args[j] === "}") { depth--; if (depth === 0) return args.slice(open, j + 1); }
+  }
+  return null;
+};
+
 /** Every `makeShot(` call in the file is passed an object literal carrying a `pass:` key. */
 const hasPassWriter = (code) => {
-  const calls = [...code.matchAll(/makeShot\s*\(([\s\S]{0,160}?)\)/g)].map((m) => m[1]);
-  return calls.length > 0 && calls.every((a) => /^\s*\{/.test(a) && /\bpass\s*:/.test(a));
+  const calls = callArgs(code, "makeShot");
+  /* `every` over an empty list is vacuously true, which is CORRECT here: a roster-only
+     driver binds no `makeShot` and is held by `rosterRecordHasPass` instead. The cohort —
+     not this predicate — is what guarantees at least one of the two applies. */
+  return calls.every((a) => a !== null && /^\s*\{/.test(a) && /\bpass\s*:/.test(a));
 };
-/** …and `makeRosterUI`'s `record`, WHERE THE DRIVER BUILDS ONE. */
+/** …and `makeRosterUI`'s `record`, for EVERY call, with a missing/unreadable one a FAILURE. */
 const rosterRecordHasPass = (code) => {
-  const m = code.match(/makeRosterUI\s*\(\{[\s\S]{0,400}?\}\)/);
-  return !m || /record\s*:\s*\{[^}]*\bpass\s*:/.test(m[0]);
+  const calls = callArgs(code, "makeRosterUI");
+  return calls.length > 0 && calls.every((a) => {
+    if (a === null) return false;               // an unclosed call is not a proven one
+    const record = objectValue(a, "record");
+    return record !== null && /\bpass\s*:/.test(record);
+  });
 };
 const usesRosterUI = (code) => /makeRosterUI\s*\(/.test(code);
+/* F-705 — THE COHORT PREDICATE, shared by the filter and its controls so the thing asserted
+   is the thing that runs. Either door into the camera puts a driver inside all three rules. */
+const captureCohort = (code) => /makeShot\s*\(/.test(code) || usesRosterUI(code);
 /** The ledger is assigned onto the evidence object before it is written. */
 const writesShotLedger = (code) => /\bev\.shots\s*=/.test(code)
   || /\bev\.[A-Za-z_$][\w$]*\s*=\s*[^=;]*\bshots\b/.test(code);
@@ -812,16 +861,73 @@ ok(!hasPassWriter("const shot_ = makeShot(NV);"),
   "POSITIVE CONTROL (F-689): the PASS-writer rule FIRES on the pre-fix `makeShot(NV)` — the shape three drivers carried");
 ok(!hasPassWriter("const shot_ = makeShot({ nv: NV, fail: FAIL });"),
   "POSITIVE CONTROL: …and on an object with no `pass:` key, which is the same defect wearing braces");
-ok(!hasPassWriter("await shot_(page, frame, p);"),
-  "POSITIVE CONTROL: a file with no makeShot call at all does not satisfy the rule by vacuous truth");
+/* F-705 — WHERE THE "NO CALLS AT ALL" GUARANTEE NOW LIVES. `hasPassWriter` used to demand
+   `calls.length > 0`, which made it the thing that excluded a file with no `makeShot`. That
+   is exactly why a roster-only driver could not be admitted to the cohort. The emptiness
+   check moved UP to the cohort — a file with NEITHER door is not a capture driver — and this
+   predicate is now vacuously true on a file it does not govern, which is correct and is
+   asserted here rather than left to be rediscovered. */
+ok(hasPassWriter("await shot_(page, frame, p);"),
+  "a file with no makeShot call is not held by the makeShot rule — the cohort, not this predicate, decides who is governed");
+ok(!captureCohort("await shot_(page, frame, p);"),
+  "POSITIVE CONTROL (F-705): …and a file with NEITHER makeShot nor makeRosterUI is not in the cohort at all, so nothing is excused by vacuous truth");
 ok(!hasPassWriter("const a = makeShot({ pass: PASS });\nconst b = makeShot(NV);"),
   "POSITIVE CONTROL: EVERY call must carry the writer — one conforming sibling does not cover an unconverted one");
 ok(!rosterRecordHasPass("makeRosterUI({ withAdminPanel, rosterRows: rosterRaw, out: OUT, record: NV })"),
   "POSITIVE CONTROL (F-689): the roster-record rule FIRES on the pre-fix `record: NV`");
 ok(rosterRecordHasPass("makeRosterUI({ withAdminPanel, out: OUT, record: { pass: PASS, nv: NV, fail: FAIL } })"),
   "…and ACCEPTS the triple");
-ok(rosterRecordHasPass("const shot_ = makeShot({ pass: PASS, nv: NV, fail: FAIL });"),
-  "NEGATIVE CONTROL: a driver that builds no roster UI is not held to a `record` it never passes");
+/* The loop applies this predicate only `if (usesRosterUI(code))`, so a driver that builds no
+   roster is never asked. The predicate itself answers FALSE on "no calls found" ON PURPOSE
+   (F-705): the old version returned TRUE for a `null` match, so the one input it could not
+   read — an options object past its 400-char window — was reported as compliant. */
+ok(!rosterRecordHasPass("const shot_ = makeShot({ pass: PASS, nv: NV, fail: FAIL });"),
+  "F-705: 'I found no makeRosterUI call' is NOT a pass — unreadable and absent both answer false, and the cohort gate decides applicability");
+ok(usesRosterUI("makeRosterUI({ record: { pass: PASS } })") && !usesRosterUI("const shot_ = makeShot({ pass: PASS });"),
+  "…and `usesRosterUI` is the gate that keeps a makeShot-only driver from ever being asked");
+/* ── F-705 POSITIVE CONTROLS · THE ROSTER-ONLY DRIVER, THE SHAPE THAT ESCAPED ──────
+   The breaker's `perm-scope-own-live.mjs`: every capture taken through `makeRosterUI`, no
+   `makeShot` anywhere. Under the old cohort it was governed by nothing at all. Each control
+   below is that file, and each must be SEEN and then JUDGED — an exclusion is not evidence
+   until the matcher is shown to see the object. */
+{
+  const rosterOnly = `const { withAdminPanel, rosterRows } = await makeRosterUI({ withAdminPanel, rosterRows: rosterRaw, out: OUT, record: NV });
+await grantRole(page, acc);`;
+  ok(captureCohort(rosterOnly),
+    "POSITIVE CONTROL (F-705): a driver that captures ONLY through makeRosterUI is INSIDE the cohort — the old `makeShot(`-derived cohort excluded it from all three rules");
+  ok(!rosterRecordHasPass(rosterOnly),
+    "…and once inside, its `record: NV` is FAILED — grantRole/removeAccount capture on its behalf and a bare N/V records a successful capture nowhere");
+  ok(hasPassWriter(rosterOnly),
+    "…while the makeShot rule stays silent on it, because that is not the door it took");
+}
+/* EVERY call, not the first: `code.match` examined one builder and left a second unchecked. */
+ok(!rosterRecordHasPass("makeRosterUI({ record: { pass: PASS } });\nmakeRosterUI({ out: OUT, record: NV });"),
+  "POSITIVE CONTROL (F-705): a SECOND makeRosterUI call is checked too — matchAll, not first-match");
+ok(rosterRecordHasPass("makeRosterUI({ record: { pass: PASS } });\nmakeRosterUI({ out: OUT, record: { pass: PASS, fail: FAIL } });"),
+  "…and two conforming builders both pass");
+/* THE NULL MATCH. An options object past the old 400-char window made `code.match` return
+   null, and `!m` handed that back as TRUE: the rule called a driver compliant precisely
+   because it could not read it. The walk reads any length, and an UNCLOSED call is false. */
+{
+  const long = `makeRosterUI({ withAdminPanel, rosterRows, out: OUT, note: "${"x".repeat(500)}", record: NV })`;
+  ok(long.length > 400, "the control really is past the window that used to produce a null match");
+  ok(!rosterRecordHasPass(long),
+    "POSITIVE CONTROL (F-705): a long options object is READ and its `record: NV` failed — it used to return true by null match");
+  const longOk = `makeRosterUI({ withAdminPanel, note: "${"x".repeat(500)}", record: { pass: PASS } })`;
+  ok(rosterRecordHasPass(longOk), "…and a long options object with a proper record still passes");
+}
+ok(!rosterRecordHasPass("makeRosterUI({ record: { pass: PASS }"),
+  "POSITIVE CONTROL: an UNCLOSED call is not a proven one — unreadable is a FAIL, never a pass");
+/* A nested object inside `record` no longer terminates the scan early: the old `[^}]*` gave
+   up at the first inner `}`, so a `pass:` after one was invisible. */
+ok(rosterRecordHasPass("makeRosterUI({ record: { opts: { deep: 1 }, pass: PASS } })"),
+  "POSITIVE CONTROL: `record` is brace-balanced, so a `pass:` after a nested object is found");
+/* KNOWN LOOSENESS, STATED RATHER THAN HIDDEN: a `pass:` nested deeper inside `record` is
+   accepted. The rule is "a writer was handed over", and no driver has ever written that
+   shape; tightening it to a DIRECT key is a separate question, not smuggled in here. */
+ok(rosterRecordHasPass("makeRosterUI({ record: { opts: { pass: 1 } } })"),
+  "a `pass:` nested inside record is accepted — the documented limit of this predicate");
+
 ok(!writesShotLedger("const allShots = [...shot_.shots];"),
   "POSITIVE CONTROL (F-689): the ledger rule FIRES when the shots are computed but never assigned into the evidence");
 ok(writesShotLedger("ev.shots = shot_.shots;"),
@@ -845,10 +951,20 @@ ok(!leakFailNamesArtefacts("FAIL('a capture was REFUSED because an address survi
 ok(!leakFailNamesArtefacts("FAIL('something unrelated', { paths });"),
   "POSITIVE CONTROL: …and is not satisfied by a `paths:` on some OTHER failure arm");
 
-const shotDrivers = liveFiles.filter((f) => /makeShot\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
-ok(shotDrivers.length >= 4,
-  `the PASS-writer rule found every driver that binds makeShot (${shotDrivers.join(", ")})`);
-for (const f of shotDrivers) {
+/* F-705 — THE COHORT IS EVERY DRIVER THAT CAPTURES, NOT EVERY DRIVER THAT BINDS `makeShot`.
+   `makeRosterUI({ record })` calls `makeShot(record)` internally and `grantRole` /
+   `removeAccount` capture on its behalf, so a driver that takes all its Permissions-tab
+   captures through the roster builder sat OUTSIDE all three rules: no PASS writer required,
+   no `ev.shots` ledger required, no run-level leak FAIL required. Its successful captures
+   would be recorded nowhere and a PII refusal inside `restoreRosterToSnapshot`'s `attempt()`
+   seam would become an `actions[].threw` sentence in a run that exits 0 — byte for byte the
+   pre-F-681 state this rule was written to make impossible. The rule's own stated purpose is
+   that "the fifth driver written next month is inside it on the day it is written", and that
+   only holds if the cohort names both doors into the camera. */
+const captureDrivers = liveFiles.filter((f) => captureCohort(stripComments(readFileSync(path.join(here, f), "utf8"))));
+ok(captureDrivers.length >= 4,
+  `the PASS-writer rule found every driver that captures, through makeShot OR makeRosterUI (${captureDrivers.join(", ")})`);
+for (const f of captureDrivers) {
   const code = stripComments(readFileSync(path.join(here, f), "utf8"));
   ok(hasPassWriter(code),
     `${f}: every makeShot( call is handed the writer TRIPLE — a bare N/V records a SUCCESSFUL capture nowhere (F-681/F-689)`);
@@ -1060,6 +1176,103 @@ for (const f of armingDrivers) {
   ok(!!call && /faults\s*:\s*\[\s*[^\]\s]/.test(call[0]),
     `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);
 }
+
+/* ── 4h. F-702 — THE SWEEP DRAIN HAS ONE HOME, AND THE LEDGER STORES A STRING ────
+   F-690 moved the drain DECISION into `lib/sweep-drain.mjs` and left the loop to each
+   caller. That held for exactly one driver: `plant-sweep-live.mjs` landed in the SAME
+   range with a hand-rolled loop that never imported the module, so the contract had two
+   homes again and the pure function had one caller. The copy re-derived finishedness from
+   `truncated` (deprecated by F-692 now that `complete` exists), paced a flat 1 s instead of
+   500/1000/2000, and had neither spin detection nor the resumed-once rule — so the SAME
+   refusing store failed with "still not complete after 10 resume call(s)" in one driver and
+   a named `not-converging` in the other.
+
+   A DIRECTORY RULE, not a per-file one, for the reason F-689 gives: the next drain driver
+   is inside it on the day it is written, without anyone remembering to add it. */
+const sweepDrivers = liveFiles.filter((f) => /sweepHarnessFaults|clearPlantedFaults/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
+ok(sweepDrivers.length >= 2,
+  `the drain rule found every driver that sweeps the fault keyspace (${sweepDrivers.join(", ")})`);
+
+/** The local helpers a driver binds to a sweeping web-trigger action. */
+const sweepHelpers = (code) =>
+  [...code.matchAll(/const\s+([A-Za-z_$][\w$]*)\s*=[^;]*?action:\s*"(?:sweepHarnessFaults|clearPlantedFaults)"/g)].map((m) => m[1]);
+
+/**
+ * Every LOOP BODY in the file, brace-balanced from the loop keyword. Regexes cannot match
+ * nested braces, and a drain loop is nothing but nested braces, so the body is walked.
+ */
+const loopBodies = (code) => {
+  const out = [];
+  for (const m of code.matchAll(/\b(?:while|for)\s*\(|\bdo\s*\{/g)) {
+    let i = code.indexOf("{", m.index);
+    if (i < 0) continue;
+    let depth = 0;
+    for (let j = i; j < code.length; j++) {
+      if (code[j] === "{") depth++;
+      else if (code[j] === "}") { depth--; if (depth === 0) { out.push(code.slice(i, j + 1)); break; } }
+    }
+  }
+  return out;
+};
+
+for (const f of sweepDrivers) {
+  const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+
+  /* (a) FINISHEDNESS IS READ, NEVER RE-DERIVED. `complete` is the library's single source;
+     the two agree on every answer the current library can emit, which is exactly what makes
+     a private copy dangerous — it keeps agreeing right up until the answer is reshaped. */
+  ok(!/truncated\s*(?:!==|===)\s*true/.test(code),
+    `${f}: no \`truncated !== true\` / \`truncated === true\` finishedness test — read \`complete\` (or \`answerComplete\`), the one source F-692 deprecates the derivation for`);
+
+  /* (b) THE LOOP IS THE LIBRARY'S. A sweeping driver imports the drain and does not write
+     its own around a sweep call. */
+  ok(/from\s+"\.\.\/lib\/sweep-drain\.mjs"/.test(code),
+    `${f}: imports the drain from lib/sweep-drain.mjs rather than hand-rolling the contract`);
+  const helpers = sweepHelpers(code);
+  ok(helpers.length > 0, `${f}: the rule can SEE this driver's sweep helper(s) — a rule that matches nothing proves nothing`);
+  for (const body of loopBodies(code)) {
+    for (const h of helpers) {
+      ok(!new RegExp(`\\b${h}\\s*\\(`).test(body),
+        `${f}: \`${h}(\` is called inside a hand-written loop — the resume loop belongs to drainSweep(), or the back-off and the spin detector exist only in the other driver`);
+    }
+  }
+
+  /* (c) THE DRAIN LEDGER STORES COPIED PRIMITIVES, NEVER A SECOND REFERENCE. `redactSecrets`
+     is cycle-safe by WeakSet: an object already reachable from `ev` is written as
+     `[CIRCULAR]` the second time it is met. `{ call: 1, ...ev.firstReal }` is a SHALLOW
+     copy — it re-used the very cursor object `ev.firstReal.cursor` held — so call 1's cursor,
+     the one field this driver exists to prove, was erased from the ledger. */
+  ok(!/\.\.\.ev\./.test(code),
+    `${f}: an evidence sub-object is spread into another evidence node — the spread is SHALLOW, so the redactor meets the nested object twice and writes [CIRCULAR] over it; copy the token as a STRING`);
+}
+
+/* POSITIVE CONTROLS. Each is the pre-cut shape, and each must FIRE — an empty match set is
+   not evidence until the matcher is shown to see the thing at all. */
+ok(/truncated\s*(?:!==|===)\s*true/.test("if (s.truncated !== true) { complete = s.failed === 0; }"),
+  "POSITIVE CONTROL: the derivation ban SEES the exact line plant-sweep-live carried");
+ok(/truncated\s*(?:!==|===)\s*true/.test("res.json.complete === true || res.json.truncated !== true"),
+  "POSITIVE CONTROL: …and the cleanup loop's OR, whose right arm calls a refusing page finished");
+{
+  const before = `const sweep = (body) => hook({ action: "sweepHarnessFaults", ...body });
+    while (!complete && n < MAX) { const res = await sweep({ cursor }); n++; }`;
+  const helpers = sweepHelpers(before);
+  ok(helpers.includes("sweep"), "POSITIVE CONTROL: the helper finder binds `sweep` to the sweeping action");
+  const bodies = loopBodies(before);
+  ok(bodies.length === 1 && /\bsweep\s*\(/.test(bodies[0]),
+    "POSITIVE CONTROL: …and the loop walker FINDS the hand-rolled resume loop around it");
+}
+{
+  /* Brace balance, not a regex: a loop whose body nests objects and closures is still one body,
+     and a sweep call after the loop is NOT in it. */
+  const nested = `while (x) { if (y) { const s = { a: { b: 1 } }; } }\nawait sweep({ cursor });`;
+  const bodies = loopBodies(nested);
+  ok(bodies.length === 1 && !/\bsweep\s*\(/.test(bodies[0]),
+    "POSITIVE CONTROL: the walker balances nested braces and does not swallow the call AFTER the loop");
+}
+ok(/\.\.\.ev\./.test("const calls = [{ call: 1, ...ev.firstReal }];"),
+  "POSITIVE CONTROL: the [CIRCULAR] ban SEES the exact seeding line that erased call 1's cursor");
+ok(!/\.\.\.ev\./.test("const calls = [{ call: 1, ...shape(first.json) }];"),
+  "POSITIVE CONTROL: …and does not fire on a freshly built shape, which shares nothing");
 
 /* ── 5. the hardened drivers redact in the writers themselves ──────────────────── */
 for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "perm-namesake-ui-live.mjs"]) {

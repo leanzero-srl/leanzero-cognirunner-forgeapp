@@ -18,13 +18,14 @@
  *
  * This driver plants ballast and drains it, recording the fields an operator would act on:
  *
- *   1. PLANT 200 expired rows in one call, WALL-CLOCKED. The lever has no `maxMs` and no
- *      resume (F-696, filed, not cut): at `KVS_DELETE_BATCH`=3 / `KVS_DELETE_PAUSE_MS`=200
- *      that is 67 batches and 66 mandatory pauses = 13.2 s of pure sleep before any KVS
- *      latency, inside a web trigger the platform kills at 25 s. 200 is chosen to sit
- *      inside that budget AND to leave the tenant well under the plant lever's own 500 cap.
- *      If it times out, the count is recovered through a dry-run sweep and NOTHING is filed
- *      — F-696 already covers it.
+ *   1. PLANT 200 expired rows AS A POPULATION, WALL-CLOCKED — F-696 gave the lever the
+ *      sweep's own contract (a budget, a `startIndex`, a `nextIndex`), so this is a LOOP:
+ *      POST, then resume on `startIndex: nextIndex` until the rows are actually there. The
+ *      total across calls must be 200 and `reason:"writes-failed"` is a FAILURE, never a
+ *      resume. A fresh call is capped at `HARNESS_FAULT_PLANT_CALL_MAX` (150) and — F-710 —
+ *      is clamped SILENTLY and still answered `complete:true`, so the loop counts ROWS and
+ *      does not believe that flag; the clamp is recorded as N/V, not failed. If the plant
+ *      cannot be reached the count is recovered through a dry-run sweep.
  *   2. A DRY-RUN sweep lists them. The two truncation flags are independent and both are
  *      recorded verbatim: `truncated` (the sweep STOPPED — budget or page cap) and
  *      `rowsTruncated` (the COUNTERS are whole, the `rows` LIST was capped at 200).
@@ -33,10 +34,12 @@
  *      `truncated`, `reason` and the cursor are recorded; the cursor is DECODED LOCALLY to
  *      prove it is our base64 token AND that its inner `c` is a real, non-null Forge cursor
  *      string rather than the offline mock's key — the one claim no offline suite can make.
- *   4. RESUME with that token until `complete:true` (bounded at 10 calls, backing off 1 s on
- *      `deletes-failing`, which says outright "this is not converging"). The per-call
- *      counters are kept, the total `deleted` is compared against what was planted, and a
- *      final dry run must show zero planted rows left.
+ *   4. RESUME with that token until `complete:true`, THROUGH `lib/sweep-drain.mjs` — the one
+ *      home of the drain (F-690 for the decision, F-702 for the loop). Finishedness is READ
+ *      from `complete`, the `deletes-failing` back-off is the published 500/1000/2000, a
+ *      byte-identical answer is named as the spin it is, and `deletes-failed` earns exactly
+ *      one resume. The per-call counters are kept, the total `deleted` is compared against
+ *      what was planted, and a final dry run must show zero planted rows left.
  *   5. `clearPlantedFaults` on an already-empty keyspace is a NO-OP: `deleted:0`,
  *      `complete:true`.
  *
@@ -64,6 +67,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
+import { drainSweep, answerComplete } from "../lib/sweep-drain.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -85,6 +89,8 @@ const SECRET = requireEnv("HARNESS_SECRET");
 const N = Math.max(1, Math.min(200, Number(arg("n", "200")) || 200));
 /** The bound on the resume loop. A drain that needs more than this is a finding, not a retry. */
 const MAX_RESUME_CALLS = 10;
+/** The bound on the PLANT resume loop (F-696). 200 rows at a 150-row call cap is two calls. */
+const MAX_PLANT_CALLS = 10;
 const PLANT_PREFIX = "harness_fault:plant:";
 
 const OUT = new URL("../results/plant-sweep", import.meta.url).pathname;
@@ -104,7 +110,7 @@ const step = (s) => console.log(`\n── ${s}`);
 const readRes = async (res) => { let t = ""; try { t = await res.text(); } catch { return { status: 0, json: null }; } let j = null; try { j = JSON.parse(t); } catch {} return { status: res.status, json: j, text: t }; };
 const hook = async (body) => readRes(await fetch(HOOK_URL, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + SECRET }, body: JSON.stringify(body) }));
 
-const plant = (n, expired) => hook({ action: "plantHarnessFaults", n, expired });
+const plant = (n, expired, startIndex) => hook({ action: "plantHarnessFaults", n, expired, ...(startIndex ? { startIndex } : {}) });
 const sweep = (body) => hook({ action: "sweepHarnessFaults", ...body });
 const clear = (cursor) => hook({ action: "clearPlantedFaults", ...(cursor ? { cursor } : {}) });
 
@@ -149,7 +155,91 @@ const decodeCursor = (token) => {
   };
 };
 
+/*
+ * F-702 — THE DRAIN LEDGER STORES A STRING, NEVER THE DECODED OBJECT.
+ *
+ * The per-call ledger used to be seeded with `{ call: 1, ...ev.firstReal }`, commented as
+ * "a COPY". A spread is SHALLOW: `cursor` stayed the very same object that
+ * `ev.firstReal.cursor` already referenced, so `redactSecrets` — which is cycle-safe by
+ * WeakSet — met it a second time and wrote `[CIRCULAR]` into the evidence file. Call 1's
+ * cursor, the one field this driver exists to prove, was erased from the drain ledger by the
+ * guard against cycles.
+ *
+ * So the ledger records a freshly built SENTENCE instead. It carries the same masked facts
+ * (a length and a four-character head — an opaque KVS cursor may encode a key, and the keys
+ * here carry faulted paths) and it is a new primitive every time, so no two entries can
+ * share a reference.
+ */
+const cursorNote = (rcur) => {
+  if (!rcur || rcur.present !== true) return "none";
+  if (rcur.decodable !== true) return `opaque, not decodable (grammar ${rcur.grammar})`;
+  const head = rcur.innerHead ? `, head "${rcur.innerHead}"` : "";
+  const innerLen = rcur.innerLength === null || rcur.innerLength === undefined ? "" : ` len ${rcur.innerLength}`;
+  return `token len ${rcur.tokenLength}, c:${rcur.innerType}${innerLen}${head}`;
+};
+
 const ok200 = (res) => res.status === 200 && res.json?.ok === true;
+
+/*
+ * THE PLANT, AS A POPULATION RATHER THAN A CALL (F-696 / F-710).
+ *
+ * `plantHarnessFaults` cannot write its documented 500-row maximum inside the web trigger:
+ * at `KVS_DELETE_BATCH`=3 / `KVS_DELETE_PAUSE_MS`=200 that is 33.2 s of pure sleep in a 25 s
+ * invocation. F-696 gave the lever the sweep's contract — a budget, a `startIndex` and a
+ * `nextIndex` — so REACHING a population is a loop, exactly as draining one is. This driver
+ * asked for its 200 rows in a single call and asserted `planted === 200`, which is why it is
+ * red on `main` today.
+ *
+ * TWO TRAPS THIS LOOP IS WRITTEN AROUND:
+ *   · `complete: true` DOES NOT MEAN "the population you asked for exists" (F-710). A fresh
+ *     call asking for more than `HARNESS_FAULT_PLANT_CALL_MAX` (150) is clamped SILENTLY and
+ *     answered `complete: true, n: 150, nextIndex: 150`. A loop that trusts `complete` stops
+ *     at 150 believing it planted 200. So the loop runs until THE ROWS ARE THERE —
+ *     `totalPlanted >= n` — and `complete` is permission to stop only once they are. The
+ *     clamp is RECORDED against F-710 (which is filed against the answer's silence, not
+ *     against this driver) and is explicitly NOT a failure here.
+ *   · `reason: "writes-failed"` is a FAILURE, not a resume. The store refused writes, the
+ *     population is short by an amount nothing will make up, and every assertion downstream
+ *     would be measuring a keyspace nobody planted.
+ */
+const plantPopulation = async (n, expired) => {
+  const calls = [];
+  let startIndex = 0, totalPlanted = 0, totalFailed = 0;
+  let planted = false, stopReason = null, clamped = null;
+  while (calls.length < MAX_PLANT_CALLS) {
+    const res = await plant(n, expired, startIndex);
+    const nth = calls.length + 1;
+    if (!ok200(res)) { stopReason = `plant call ${nth} did not answer 200/ok (HTTP ${res.status})`; break; }
+    const j = res.json;
+    calls.push({
+      call: nth, n: j.n ?? null, startIndex: j.startIndex ?? null, planted: j.planted ?? null,
+      failed: j.failed ?? null, nextIndex: j.nextIndex ?? null, truncated: j.truncated ?? null,
+      reason: j.reason ?? null, complete: j.complete ?? null, expired: j.expired ?? null,
+      ttlSeconds: j.ttlSeconds ?? null, budgetMs: j.budgetMs ?? null,
+      keysReturned: (j.keys || []).length,
+    });
+    totalPlanted += Number(j.planted || 0);
+    totalFailed += Number(j.failed || 0);
+    /* F-710 — the ONLY way a caller can see the silent clamp is to compare its own request
+       against the `n` it was answered back. Neither shipped helper made that comparison. */
+    if (nth === 1 && Number(j.n) < n) {
+      clamped = { requested: n, answered: Number(j.n), nextIndex: j.nextIndex ?? null, complete: j.complete ?? null };
+    }
+    if (j.reason === "writes-failed") {
+      stopReason = `plant call ${nth} answered reason:"writes-failed" (planted ${j.planted}, failed ${j.failed}) — the store refused writes, so the population is short and nothing downstream may be asserted over it`;
+      break;
+    }
+    if (totalPlanted >= n) { planted = true; break; }
+    const next = Number(j.nextIndex);
+    if (!Number.isFinite(next) || next <= startIndex) {
+      stopReason = `plant call ${nth} answered complete=${j.complete} with only ${totalPlanted}/${n} row(s) planted and no advancing nextIndex (${JSON.stringify(j.nextIndex ?? null)}) — the population cannot be reached`;
+      break;
+    }
+    startIndex = next;
+  }
+  if (!planted && !stopReason) stopReason = `the plant was still ${totalPlanted}/${n} after the ${MAX_PLANT_CALLS}-call bound`;
+  return { planted, stopReason, calls, totalPlanted, totalFailed, clamped };
+};
 
 async function main() {
   console.log(`\nPLANT + SWEEP — env=${ENV_NAME}  n=${N}`);
@@ -168,21 +258,44 @@ async function main() {
   PASS(`baseline dry-run sweep answered: ${baseShape.scanned} row(s) scanned`, baseShape);
   if (baseShape.plantedRows > 0) NV(`${baseShape.plantedRows} planted row(s) were ALREADY present — someone else's ballast, or a previous run's; the totals below are read against this baseline`, { plantedRows: baseShape.plantedRows });
 
-  /* ── 1 · THE PLANT, WALL-CLOCKED (F-696 is about exactly this number). */
-  step(`1 · PLANT ${N} expired rows in ONE call — wall-clocked against the 25 s trigger`);
+  /* ── 1 · THE PLANT, RESUMED TO A POPULATION AND WALL-CLOCKED (F-696 / F-710). */
+  step(`1 · PLANT ${N} expired rows, resuming on startIndex until the rows are there`);
   const t0 = Date.now();
-  const planted = await plant(N, true);
+  const p = await plantPopulation(N, true);
   const plantMs = Date.now() - t0;
-  ev.plant = { ms: plantMs, status: planted.status, planted: planted.json?.planted ?? null, failed: planted.json?.failed ?? null, expired: planted.json?.expired ?? null, ttlSeconds: planted.json?.ttlSeconds ?? null, keysReturned: (planted.json?.keys || []).length };
-  if (!ok200(planted)) {
-    FAIL(`plant did not answer 200/ok in ${plantMs} ms (HTTP ${planted.status}) — the lever has no partial answer, so the row count is now UNKNOWN from the response alone (F-696, already filed)`, { ms: plantMs, reason: planted.json?.reason ?? null });
+  const lastPlant = p.calls[p.calls.length - 1] || null;
+  ev.plant = {
+    ms: plantMs, calls: p.calls.length, totalPlanted: p.totalPlanted, totalFailed: p.totalFailed,
+    perCall: p.calls, ...(p.clamped ? { clampedFirstCall: p.clamped } : {}),
+    ...(p.stopReason ? { stopReason: p.stopReason } : {}),
+  };
+  if (!p.planted) {
+    FAIL(`the plant did not reach ${N} rows — ${p.stopReason}`, ev.plant);
+    /* An unreached population is still a population: recover the count by a SECOND READ so
+     * the operator is not left with the "unknown number of rows" F-696 is about. */
     const recover = await sweep({ dryRun: true });
     if (ok200(recover)) NV(`count recovered by dry-run sweep instead: ${shape(recover.json).plantedRows} planted row(s) visible`, shape(recover.json));
     return;
   }
-  if (planted.json.planted === N && planted.json.failed === 0) PASS(`planted ${planted.json.planted}/${N} rows, 0 failed, in ${plantMs} ms (inside the trigger budget)`, ev.plant);
-  else FAIL(`plant returned planted=${planted.json.planted} failed=${planted.json.failed} for n=${N}`, ev.plant);
-  if (planted.json.expired !== true) FAIL("the plant did not report expired:true — the rows are LIVE and the sweep will not delete them", ev.plant);
+  /* THE ASSERTION IS THE TOTAL ACROSS CALLS, not one call's `planted` — that is the whole
+   * F-696 contract, and asserting a single call's count is what made this driver red. */
+  if (p.totalPlanted === N && p.totalFailed === 0) {
+    PASS(`planted ${p.totalPlanted}/${N} rows across ${p.calls.length} call(s), 0 failed, in ${plantMs} ms`, { ms: plantMs, calls: p.calls.length, totalPlanted: p.totalPlanted });
+  } else if (p.totalFailed > 0) {
+    FAIL(`the plant totalled ${p.totalPlanted}/${N} rows with ${p.totalFailed} failed write(s) across ${p.calls.length} call(s)`, ev.plant);
+  } else {
+    /* Over-planting is not possible (the keys are `i`-derived and idempotent), so this is
+       only reachable as an under-count that the loop somehow called done. */
+    FAIL(`the plant totalled ${p.totalPlanted} rows for n=${N}`, ev.plant);
+  }
+  /* F-710, RECORDED AND NOT FAILED. The clamp is the lever's silence, not this driver's bug:
+   * a fresh call over `HARNESS_FAULT_PLANT_CALL_MAX` is cut to 150 and still answered
+   * `complete: true`. The loop above survives it by counting rows instead of trusting the
+   * flag; the row stays filed because a caller who does trust the flag still gets 150. */
+  if (p.clamped) {
+    NV(`the first plant call was CLAMPED SILENTLY: asked for n=${p.clamped.requested}, answered n=${p.clamped.answered} with complete=${p.clamped.complete} (F-710) — this run reached ${N} only by resuming on startIndex and counting rows rather than believing \`complete\``, p.clamped);
+  }
+  if (lastPlant && lastPlant.expired !== true) FAIL("the plant did not report expired:true — the rows are LIVE and the sweep will not delete them", ev.plant);
 
   /* ── 2 · THE DRY RUN. Both truncation flags, recorded verbatim. */
   step("2 · DRY-RUN sweep — does it list the ballast, and what does it say about its own limits");
@@ -216,41 +329,51 @@ async function main() {
     ev.firstReal = { ...s, cursor: rcur };
     PASS(`real sweep call 1: deleted=${s.deleted} failed=${s.failed} truncated=${s.truncated} reason=${s.reason} complete=${s.complete} budgetMs=${s.budgetMs}`, ev.firstReal);
     if (s.failed > 0) NV(`${s.failed} delete(s) FAILED on call 1 — this is the F-677 pacing evidence; forge logs must carry the matching RATE_LIMIT lines`, s);
-    if (s.truncated === true) {
+    /* F-702 — "is there more to do" is READ from the library's `complete`, never re-derived
+     * from `truncated` here. The two coincide on every answer the current library can emit
+     * (`failed > 0` implies `truncated`), which is exactly why a private derivation is
+     * dangerous: it agrees right up until the answer is reshaped, and then this driver's
+     * verdict moves and the other drain driver's does not. */
+    if (!answerComplete(first.json)) {
       if (rcur.present && rcur.decodable && rcur.hasCKey) PASS("the partial answer carries OUR base64 token, decodable, with a `c` key (F-674: never null while work remains)", rcur);
       else FAIL("the partial answer's cursor is not a decodable token of ours", rcur);
       if (rcur.innerIsRealCursor) PASS(`and its inner \`c\` is a REAL non-null Forge cursor string (len ${rcur.innerLength}, head "${rcur.innerHead}") — the claim no offline suite can make`, rcur);
       else NV(`its inner \`c\` is ${rcur.innerType}, not a cursor string — the sweep stopped at a page boundary with nothing more to fetch`, rcur);
     } else {
-      NV(`the sweep FINISHED in one call (truncated:false, complete:${s.complete}) — ${N} rows fitted inside the 15 s budget, so the multi-call resume path is not exercised by this run`, s);
+      NV(`the sweep FINISHED in one call (complete:${s.complete}, truncated:${s.truncated}) — ${N} rows fitted inside the 15 s budget, so the multi-call resume path is not exercised by this run`, s);
     }
   }
 
   /* ── 4 · THE DRAIN. Bounded, and it backs off on the one reason that says "not converging". */
   step(`4 · RESUME until complete — bounded at ${MAX_RESUME_CALLS} calls`);
-  const calls = ev.firstReal ? [{ call: 1, ...ev.firstReal }] : [];   // a COPY: the redactor marks a second reference to the same object [CIRCULAR], which would erase call 1 from the drain ledger
-  let totalDeleted = ev.firstReal?.deleted || 0, totalFailed = ev.firstReal?.failed || 0;
-  let cursor = first.json?.cursor || null;
-  let complete = first.json?.complete === true, stopReason = null;
-  let n = 0;
-  while (!complete && typeof cursor === "string" && cursor && n < MAX_RESUME_CALLS) {
-    const res = await sweep({ maxMs: 15000, cursor });
-    n++;
-    if (!ok200(res)) { stopReason = `resume call ${n} did not answer 200/ok (HTTP ${res.status})`; break; }
-    const s = shape(res.json);
-    const rcur = decodeCursor(res.json.cursor);
-    calls.push({ call: n + 1, ...s, cursor: rcur });
-    totalDeleted += Number(s.deleted || 0); totalFailed += Number(s.failed || 0);
-    if (s.complete === true) { complete = true; break; }
-    if (s.truncated !== true) { complete = s.failed === 0; stopReason = s.failed > 0 ? `call ${n + 1} answered truncated:false with failed=${s.failed}` : null; break; }
-    if (s.reason === "deletes-failing") { await sleep(1000); }   // the answer that says "back off"
-    cursor = res.json.cursor;
-    if (typeof cursor !== "string" || !cursor) { stopReason = `call ${n + 1} answered truncated:true (reason "${s.reason}") with NO resumable cursor — the rest of the keyspace is unreachable`; break; }
-  }
-  if (!complete && !stopReason) stopReason = `still not complete after ${n} resume call(s)`;
-  ev.drain = { calls, resumeCalls: n, totalDeleted, totalFailed, complete, ...(stopReason ? { stopReason } : {}) };
-  if (complete) PASS(`drained to complete:true in ${calls.length} sweep call(s): deleted=${totalDeleted} failed=${totalFailed}`, { calls: calls.length, totalDeleted, totalFailed });
-  else FAIL(`drain did not reach complete:true — ${stopReason}`, ev.drain);
+  /* F-702 — THE DRAIN IS `lib/sweep-drain.mjs`'s, NOT THIS FILE'S. This loop used to be hand
+   * rolled beside the pure function it ignored: it re-derived finishedness from `truncated`
+   * (the derivation F-692 deprecates now that `complete` exists), backed off a flat 1 s
+   * instead of the published 500/1000/2000, and had neither byte-identical detection nor the
+   * `deletes-failed`-resumed-once rule — so the SAME refusing store answered "still not
+   * complete after 10 resume call(s)" here and a named `not-converging` in
+   * `harness-fault-expiry-live.mjs`. Call 1 is handed to the library as `first` so it is
+   * decided and counted exactly like the resumes it seeds. */
+  const calls = [];
+  let totalDeleted = 0, totalFailed = 0;
+  const d = await drainSweep((cursor) => sweep({ maxMs: 15000, cursor }), {
+    maxCalls: MAX_RESUME_CALLS + 1,   // + the call step 3 already made
+    first: ok200(first) ? first.json : null,
+    onAnswer: (json, call) => {
+      const s = shape(json);
+      /* The token as a STRING, built fresh here: a shallow spread of the decoded object put
+         the same reference in twice and the redactor wrote `[CIRCULAR]` over it. */
+      calls.push({ call, ...s, cursor: cursorNote(decodeCursor(json.cursor)) });
+      totalDeleted += Number(s.deleted || 0);
+      totalFailed += Number(s.failed || 0);
+    },
+  });
+  ev.drain = {
+    calls, sweepCalls: d.calls, resumeCalls: Math.max(0, d.calls - 1), pausedMs: d.pausedMs,
+    totalDeleted, totalFailed, complete: d.drained, ...(d.stopReason ? { stopReason: d.stopReason } : {}),
+  };
+  if (d.drained) PASS(`drained to complete:true in ${d.calls} sweep call(s), ${d.pausedMs} ms of back-off: deleted=${totalDeleted} failed=${totalFailed}`, { calls: d.calls, pausedMs: d.pausedMs, totalDeleted, totalFailed });
+  else FAIL(`drain did not reach complete:true — ${d.stopReason}`, ev.drain);
   /* The sweep deletes EVERY expired row, not only mine, so the baseline's own expired rows
    * are part of the expected total. A resumed sweep may re-LIST a page it already cleaned
    * but never re-deletes a gone row, so this total cannot over-count. */
@@ -288,21 +411,24 @@ async function main() {
  * lever, and it runs on every path including the throw. */
 const cleanup = async () => {
   step("CLEANUP · clear the ballast, whatever happened above");
-  let cursor = null, guard = 0, deleted = 0, done = false;
-  while (guard < MAX_RESUME_CALLS) {
-    const res = await clear(cursor);
-    guard++;
-    if (!ok200(res)) { FAIL(`cleanup clear call ${guard} did not answer 200/ok (HTTP ${res.status}) — PLANTED ROWS MAY REMAIN (their own 60 s TTL is then the only bound)`, { reason: res.json?.reason ?? null }); return; }
-    deleted += Number(res.json.deleted || 0);
-    if (res.json.complete === true || res.json.truncated !== true) { done = true; break; }
-    cursor = res.json.cursor;
-    if (typeof cursor !== "string" || !cursor) break;
+  /* F-702 — the SECOND hand-rolled loop in this file, and the one that read `complete === true
+   * || truncated !== true`: an OR whose right arm calls a `deletes-failing` page finished the
+   * moment the library stops setting `truncated`. `clearPlantedFaults` answers through the
+   * same `sweepAnswerTail` as the sweep, so it obeys the same drain. */
+  let deleted = 0;
+  const d = await drainSweep((cursor) => clear(cursor), {
+    maxCalls: MAX_RESUME_CALLS,
+    onAnswer: (json) => { deleted += Number(json.deleted || 0); },
+  });
+  if (!d.drained && d.calls === 0) {
+    FAIL(`cleanup clear did not answer 200/ok — PLANTED ROWS MAY REMAIN (their own 60 s TTL is then the only bound): ${d.stopReason}`, { stopReason: d.stopReason });
+    return;
   }
   const verify = await sweep({ dryRun: true });
   const left = ok200(verify) ? shape(verify.json).plantedRows : null;
-  ev.cleanup = { calls: guard, deleted, done, plantedRowsLeft: left };
-  if (done && left === 0) PASS(`cleanup: ${deleted} row(s) cleared in ${guard} call(s); a second read shows 0 planted rows left`, ev.cleanup);
-  else FAIL(`cleanup incomplete: done=${done}, planted rows still visible: ${left}`, ev.cleanup);
+  ev.cleanup = { calls: d.calls, deleted, done: d.drained, pausedMs: d.pausedMs, plantedRowsLeft: left, ...(d.stopReason ? { stopReason: d.stopReason } : {}) };
+  if (d.drained && left === 0) PASS(`cleanup: ${deleted} row(s) cleared in ${d.calls} call(s); a second read shows 0 planted rows left`, ev.cleanup);
+  else FAIL(`cleanup incomplete: done=${d.drained}${d.stopReason ? ` (${d.stopReason})` : ""}, planted rows still visible: ${left}`, ev.cleanup);
 };
 
 main()

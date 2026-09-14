@@ -625,22 +625,71 @@ const sweepPause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * `null` is already spoken for as "finished". So the token the sweep RETURNS and ACCEPTS is
  * its own: base64 JSON carrying the KVS cursor, which may legitimately be `null`. The token
  * is therefore ALWAYS a non-empty string while work remains, and `cursor === null` means
- * finished and nothing else. Raw KVS cursors from an older caller are still accepted
- * verbatim, so nothing that already holds one is broken by this.
+ * finished and nothing else. (F-685: raw KVS cursors from a pre-token caller were accepted
+ * verbatim for one deploy and are NOT any more - the grammar below admits our token only.)
  */
-const encodeSweepCursor = (kvsCursor) =>
+export const encodeSweepCursor = (kvsCursor) =>
   Buffer.from(JSON.stringify({ c: kvsCursor === undefined ? null : kvsCursor }), "utf8").toString("base64");
 
+/*
+ * F-685 - THE CURSOR GRAMMAR HAS ONE HOME, AND IT IS THIS ONE.
+ *
+ * There were two readings of "what a resume cursor may be": the web trigger admitted
+ * `[A-Za-z0-9+/=_.:-]+` under 2 KB with no doubled dot, while `decodeSweepCursor` accepted
+ * ANY non-empty string verbatim as a legacy raw KVS cursor. The narrow one sat at the door,
+ * so the library's back-compat path could never be reached through the only caller there is
+ * - and a raw cursor carrying a space or a `#` (both legal in a KVS key) was refused
+ * `bad-cursor` at the door by the same build that went out of its way to support it.
+ *
+ * LEGACY RAW CURSORS ARE NO LONGER ACCEPTED. The base64 token has shipped for exactly one
+ * deploy, the only callers are this repo's own drivers, and a raw KVS cursor presented today
+ * is refused as `bad-cursor` like any other string that is not one of our tokens. That is a
+ * deliberate narrowing of an input, not of a fail-open: the grammar admits our own token and
+ * nothing else needs admitting, and every refusal is a 400 with a reason.
+ *
+ * The 2 KB ceiling stays (an unbounded string is a body no door has reason to accept) and so
+ * does the doubled-dot refusal: `.` and `/` are both in base64's neighbourhood, our tokens
+ * never contain `..`, and defence-in-depth on a value bound for a storage API is free.
+ */
+export const SWEEP_CURSOR_MAX_BYTES = 2048;
+const SWEEP_CURSOR_PATTERN = /^[A-Za-z0-9+/=_-]+$/;
+export const sweepCursorWellFormed = (value) =>
+  typeof value === "string" && value.length > 0 && value.length <= SWEEP_CURSOR_MAX_BYTES
+  && SWEEP_CURSOR_PATTERN.test(value) && !value.includes("..");
+
+/*
+ * F-684 - A REFUSAL THE DOOR CAN TELL APART FROM A DEAD TENANT.
+ *
+ * `decodeSweepCursor` REFUSES by throwing this, and it does so synchronously, before the
+ * sweep has touched KVS at all. That ordering is the whole point: the door names
+ * `bad-cursor` only for an error that could not possibly have come from the platform, and
+ * every other throw - a rejected query, a throttle, an outage - is `sweep-failed`.
+ */
+export const BAD_SWEEP_CURSOR_CODE = "BAD_SWEEP_CURSOR";
+const badSweepCursor = (detail) => {
+  const error = new Error(`bad sweep cursor: ${detail}`);
+  error.code = BAD_SWEEP_CURSOR_CODE;
+  return error;
+};
+
+/**
+ * A caller's token -> the KVS cursor inside it. `null`/`undefined`/absent is a FRESH sweep
+ * (and so is our own token for "the beginning of the keyspace", which is the value a raw KVS
+ * cursor cannot express). Anything else that is not one of our tokens THROWS
+ * `BAD_SWEEP_CURSOR_CODE` - it never silently becomes a fresh sweep, because a resume loop
+ * that quietly restarts from the top is the failure this token was introduced to end.
+ */
 export const decodeSweepCursor = (token) => {
-  if (typeof token !== "string" || !token) return null;
+  if (token === null || token === undefined) return null;
+  if (!sweepCursorWellFormed(token)) throw badSweepCursor("outside the token grammar");
+  let parsed;
   try {
-    const parsed = JSON.parse(Buffer.from(token, "base64").toString("utf8"));
-    if (parsed && typeof parsed === "object" && "c" in parsed) {
-      return typeof parsed.c === "string" && parsed.c ? parsed.c : null;
-    }
-  } catch { /* not one of ours - fall through to the back-compat reading */ }
-  // Back-compat: a raw KVS cursor handed back by a caller that predates the token.
-  return token;
+    parsed = JSON.parse(Buffer.from(token, "base64").toString("utf8"));
+  } catch {
+    throw badSweepCursor("not a decodable token");
+  }
+  if (!parsed || typeof parsed !== "object" || !("c" in parsed)) throw badSweepCursor("not one of ours");
+  return typeof parsed.c === "string" && parsed.c ? parsed.c : null;
 };
 
 /**
@@ -708,8 +757,8 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
   const rows = [];
   let scanned = 0, deleted = 0, failed = 0, rowsTruncated = false;
   let truncated = false, reason = null;
-  // Anything the caller hands back - our token, a legacy raw cursor, or nothing at all.
-  let cursor = decodeSweepCursor(typeof startCursor === "string" && startCursor ? startCursor : null);
+  // Our token, or nothing at all - and NOT a legacy raw KVS cursor any more (F-685).
+  let cursor = decodeSweepCursor(startCursor === undefined ? null : startCursor);
   let progressed = false;
   // The resume point of the FIRST page a delete failed on - where a retry should pick up.
   let failedResume = null;

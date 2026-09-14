@@ -195,19 +195,6 @@ export async function runJsmCommentProbe({ issueKey, mode, calls }) {
   return out;
 }
 
-/* F-676 — the `sweepHarnessFaults` resume-token grammar. Opaque on purpose: base64 (the
- * shape of our own F-674 token) plus the URL-safe alphabet and the separators a real KVS
- * cursor can carry. 2 KB is a ceiling, not a measurement — no legitimate cursor is close
- * to it, and an unbounded string is a body this door has no reason to accept. */
-const SWEEP_CURSOR_PATTERN = /^[A-Za-z0-9+/=_.:-]+$/;
-const SWEEP_CURSOR_MAX_BYTES = 2048;
-/* `.` and `/` both belong to the grammar (a raw KVS key cursor carries the first, base64 the
- * second), which on its own would admit `../../` — a shape no token ever has and the one an
- * operator reading a 500 would most regret. A doubled dot is refused outright. */
-const sweepCursorWellFormed = (value) =>
-  typeof value === "string" && value.length <= SWEEP_CURSOR_MAX_BYTES
-  && SWEEP_CURSOR_PATTERN.test(value) && !value.includes("..");
-
 export async function testStateTrigger(req) {
   const secret = process.env.HARNESS_SECRET;
   if (!secret) return notFound();
@@ -448,21 +435,28 @@ export async function testStateTrigger(req) {
      * other refusal here is a 400 with a reason. A resume loop then cannot tell "bad token"
      * from "the tenant is down".
      *
-     * So: an opaque-token grammar (base64 plus the URL-safe and separator characters real
-     * KVS cursors and our own F-674 tokens use), a 2 KB ceiling, and a try/catch that turns
-     * any throw from the sweep into JSON. This is a DOOR guard, not a tightening of a
-     * fail-open: `sweepHarnessFaults` still applies its own `BEGINS_WITH` prefix predicate
-     * (the key shape has ONE home, in harness-fault.js, and is not retyped here) and still
-     * deletes only expired rows, so a cursor that slips through the grammar can no more
-     * reach a live lever than one that does not. */
+     * So: an opaque-token grammar, a 2 KB ceiling, and a try/catch that turns any throw from
+     * the sweep into JSON. This is a DOOR guard, not a tightening of a fail-open:
+     * `sweepHarnessFaults` still applies its own `BEGINS_WITH` prefix predicate (the key
+     * shape has ONE home, in harness-fault.js, and is not retyped here) and still deletes
+     * only expired rows, so a cursor that slips through the grammar can no more reach a live
+     * lever than one that does not.
+     *
+     * F-685: the grammar itself is not retyped here either. It is
+     * `sweepCursorWellFormed` in harness-fault.js, next to the encoder that produces the
+     * only tokens it admits — the door used to hold a WIDER-charactered but narrower-in-
+     * effect copy while the library accepted any string as a legacy raw cursor, which is two
+     * answers to one question. Legacy raw cursors are refused now; see that docblock. */
     if (body.action === "sweepHarnessFaults") {
+      const { sweepHarnessFaults, sweepCursorWellFormed } = await import("./harness-fault.js");
       const rawCursor = body.cursor;
       let cursor = null;
       if (rawCursor !== undefined && rawCursor !== null) {
+        // The same predicate the library applies, run early so an over-long or non-string
+        // body is refused before anything else looks at it.
         if (!sweepCursorWellFormed(rawCursor)) return json(400, { ok: false, reason: "bad-cursor" });
         cursor = rawCursor;
       }
-      const { sweepHarnessFaults } = await import("./harness-fault.js");
       let r;
       try {
         r = await sweepHarnessFaults({

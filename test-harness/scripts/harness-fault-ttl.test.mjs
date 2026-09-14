@@ -434,8 +434,30 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   // THE TOKEN ROUND-TRIPS, including the one value a raw KVS cursor cannot express.
   ok(fault.decodeSweepCursor(first.cursor) === null,
     "the resume token for \"the beginning of the keyspace\" decodes to a null KVS cursor - the value that used to be indistinguishable from \"finished\"");
-  ok(fault.decodeSweepCursor("harness_fault:git:x") === "harness_fault:git:x",
-    "…and a legacy RAW cursor from an older caller is still accepted verbatim");
+  /* F-685 - ONE CURSOR GRAMMAR, AND THE LEGACY RAW CURSOR IS NOT IN IT.
+   * `decodeSweepCursor` used to accept ANY non-empty string verbatim as a raw KVS cursor,
+   * while the web trigger admitted a narrower alphabet - two answers to "what may a resume
+   * cursor be", with the narrow one at the only door there is. The token has shipped for one
+   * deploy and the only callers are this repo's drivers, so the raw path is gone: the
+   * predicate lives here, the door imports it, and anything that is not one of our tokens is
+   * REFUSED (not silently turned into a fresh sweep from the top). */
+  ok(typeof fault.sweepCursorWellFormed === "function" && fault.sweepCursorWellFormed(first.cursor) === true,
+    "the grammar is exported from harness-fault.js and admits our own token");
+  for (const [why, value] of [
+    ["a legacy RAW KVS cursor", "harness_fault:git:x"],
+    ["a traversal shape", "../../etc/passwd"],
+    ["a string outside the alphabet", "abc def"],
+    ["over the 2 KB ceiling", "A".repeat(2100)],
+    ["not a string at all", 42],
+    ["base64 that is not one of ours", "dGhpcy1pcy1ub3QteW91cnM="],
+  ]) {
+    let code = null;
+    try { fault.decodeSweepCursor(value); } catch (e) { code = e && e.code; }
+    ok(code === fault.BAD_SWEEP_CURSOR_CODE,
+      `…and ${why} is REFUSED with ${fault.BAD_SWEEP_CURSOR_CODE}, before any KVS call (got ${JSON.stringify(code)})`);
+  }
+  ok(fault.decodeSweepCursor(null) === null && fault.decodeSweepCursor(undefined) === null,
+    "…while an absent cursor is a fresh sweep, which is the only thing that may mean \"start at the top\"");
 
   latencyMs = 0;
   for (const key of keys) await storage.delete(key);

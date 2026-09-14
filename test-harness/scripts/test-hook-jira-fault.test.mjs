@@ -472,6 +472,11 @@ process.env.HARNESS_SECRET = SECRET;
     ["over the 2 KB ceiling", "A".repeat(2100)],
     ["whitespace, which is not a token", "   "],
     ["not a string at all", 42],
+    // F-685 — the library's back-compat path accepted this verbatim while this door refused
+    // it, which was two answers to one question. There is one grammar now and it says no.
+    ["a legacy RAW KVS cursor, which is no longer a grammar", "harness_fault:git:x"],
+    // In the grammar, but not one of our tokens: refused by the LIBRARY, before any KVS call.
+    ["base64 that is not one of our tokens", "dGhpcy1pcy1ub3QteW91cnM="],
   ];
   for (const [why, value] of badCursors) {
     const r = await post({ action: "sweepHarnessFaults", cursor: value, dryRun: true });

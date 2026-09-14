@@ -39,6 +39,10 @@
 
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+/* F-776 - the flip decision has ONE home. The capability READ below is NOT converged on
+   purpose: this driver needs capability OFF and grades an instance where it is ON as
+   un-runnable - the inverse of the precondition the lib judges. */
+import { resolveFlipModel } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -68,8 +72,14 @@ const KEEP = flag("keep");
  * va-purge-on-delete-live.mjs uses (the resolver answers a FALLBACK when the slot is
  * empty and `saveAgentModel` refuses to write a non-frontier value back, so restoring
  * "what the resolver said" would leave the slot dirty).
+ *
+ * F-776: WHETHER the flip happens is decided in `lib/agent-capability-precondition.mjs`
+ * (off by default on dev, which is this driver's default environment; `--flip-model` turns it
+ * on, `--no-flip-model` off). What a capability that is OFF MEANS is NOT taken from that lib
+ * here: this script PROVES the refusal, so OFF is its premise and ON is what makes it
+ * un-runnable - the inverse of the precondition the lib judges.
  */
-const FLIP_MODEL = flag("flip-model");
+const { flipModel: FLIP_MODEL, reason: FLIP_MODEL_REASON } = resolveFlipModel({ envName: ENV_NAME, argv: process.argv.slice(2) });
 const FRONTIER = arg("model", "claude-sonnet-5");
 const AGENT_MODEL_SLOT = "COGNIRUNNER_AGENT_MODEL_atlassian";
 let agentModelSlotBefore;   // undefined = never touched, so the finally must not write
@@ -153,6 +163,7 @@ async function main() {
 
   /* ── STEP 1 — create the agent ───────────────────────────────────────────── */
   console.log("\nSTEP 1 - bring an agent into existence, then take the capability away underneath it");
+  info(`model flip: ${FLIP_MODEL ? "ON" : "OFF"} - ${FLIP_MODEL_REASON}`);
   if (FLIP_MODEL) {
     const slot = await kvs(AGENT_MODEL_SLOT);
     agentModelSlotBefore = slot.value;

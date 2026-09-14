@@ -48,8 +48,9 @@
  * rather than faked with an unpinned line.
  *
  * Usage (from test-harness/):
- *   node scripts/va-compaction-live.mjs --env=staging --flip-model
- *   node scripts/va-compaction-live.mjs --env=staging --flip-model --no-break   # steps 1-2 only
+ *   node scripts/va-compaction-live.mjs --env=staging                 # the flip is ON by default here
+ *   node scripts/va-compaction-live.mjs --env=staging --no-break       # steps 1-2 only
+ *   node scripts/va-compaction-live.mjs --env=staging --no-flip-model  # leave the slot as the tenant holds it
  *
  * Env: STAGING_TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID.
  * NOTHING secret is printed — not the trigger URLs, not a key slot's value.
@@ -61,6 +62,9 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
  * ceiling". This driver REPLACES a BYOK key, so it is the one the stash door was cut for;
  * see the STEP 3 / `finally` comments below. */
 import { readKeySlotWitness, describeKeySlot, sameKeySlot } from "../lib/key-slot-witness.mjs";
+/* F-767/F-776 - the ONE home of "should this run flip the agent model slot", and of what a
+   capability that is off MEANS: a precondition, never a defect in compaction. */
+import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "memories", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -71,7 +75,10 @@ const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const PROJECT = arg("project", "JT");
 const FRONTIER = arg("model", "claude-sonnet-5");
-const FLIP_MODEL = flag("flip-model");
+/* F-776 - converged onto lib/agent-capability-precondition.mjs: ON BY DEFAULT on staging
+   (providerSlot is already declared in this run's mutates list and replayed in the finally),
+   with `--no-flip-model` as the explicit opt-out. */
+const { flipModel: FLIP_MODEL, reason: FLIP_MODEL_REASON } = resolveFlipModel({ envName: ENV_NAME, argv: process.argv.slice(2) });
 const NO_BREAK = flag("no-break");
 const KEEP = flag("keep");
 const TICK_WAIT_S = Number(arg("tickwait", "300"));
@@ -255,6 +262,7 @@ async function main() {
   PASS(`hook reachable on ${ENV_NAME}, secret accepted`);
 
   /* ── STEP 0 — the model, and an agent that can never speak ───────────────── */
+  info(`model flip: ${FLIP_MODEL ? "ON" : "OFF"} - ${FLIP_MODEL_REASON}`);
   if (FLIP_MODEL) {
     const slot = await kvs(AGENT_MODEL_SLOT);
     slotsBefore[AGENT_MODEL_SLOT] = slot.value;
@@ -265,7 +273,11 @@ async function main() {
   }
   const cap = (await invoke("getAgentCapability", {})).body || {};
   info(`getAgentCapability -> enabled=${cap.enabled} reason="${cap.reason}" provider=${cap.provider} agentModel=${cap.agentModel}`);
-  if (cap.enabled !== true) { FAIL(`the instance cannot hold an agent (${cap.reason})`); return; }
+  /* F-767/F-776 - a provider-slot precondition that did not hold leaves everything below it
+     UNPROVEN, and the sentence names the remedy. One home; the reasoning is in the lib. */
+  const capVerdict = judgeAgentCapability({ cap, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });
+  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  if (!capVerdict.proceed) return;
 
   console.log("\nSTEP 0 — create the fixture agent (500 shadow ticks: it must never post)");
   const created = await invoke("saveScheduledJob", { job: { name: `Compaction proof ${Date.now().toString(36)}`, mode: "va", enabled: true, va: vaRecord() } });

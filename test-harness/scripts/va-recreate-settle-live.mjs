@@ -58,6 +58,9 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+/* F-776 - the flip decision and the capability verdict have ONE home; see the lib for why a
+   capability that is off is N/V and not a FAIL. `--no-flip-model` is the explicit opt-out. */
+import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -72,6 +75,7 @@ const FRONTIER = arg("model", "claude-sonnet-5");
 const TICK_WAIT_S = Number(arg("tickwait", "300"));
 const SETTLE_MS = 5 * 60 * 1000; // VA_PURGE_SETTLE_MS, src/shared/va-keys.js
 const KEEP = flag("keep");
+const { flipModel: FLIP_MODEL, reason: FLIP_MODEL_REASON } = resolveFlipModel({ envName: ENV_NAME, argv: process.argv.slice(2) });
 const AGENT_MODEL_SLOT = "COGNIRUNNER_AGENT_MODEL_atlassian";
 const OUT = new URL("../results/va-recreate-settle", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
@@ -195,7 +199,8 @@ async function main() {
   /* ── capability ─────────────────────────────────────────────────────────── */
   const cap0 = await invoke("getAgentCapability", {});
   info(`getAgentCapability before: ${JSON.stringify(cap0.body)}`);
-  if (cap0.body && cap0.body.enabled !== true) {
+  info(`model flip: ${FLIP_MODEL ? "ON" : "OFF"} - ${FLIP_MODEL_REASON}`);
+  if (cap0.body && cap0.body.enabled !== true && FLIP_MODEL) {
     if (cap0.body.reason !== "needs-frontier-model") { NV(`capability is off for "${cap0.body.reason}" and this script may not change that`); return; }
     const slot = await kvs(AGENT_MODEL_SLOT);
     restore.agentModelSlot = slot.value;
@@ -206,8 +211,11 @@ async function main() {
     await sleep(35000);
   }
   const cap1 = await invoke("getAgentCapability", {});
-  if (!(cap1.body && cap1.body.enabled === true)) { FAIL("capability is still off", { cap: cap1.body }); return; }
-  PASS(`capability is ON (edition=${cap1.body.edition} agentModel=${cap1.body.agentModel})`);
+  /* F-767/F-776 - ONE home. A provider slot that never came on leaves the settle window
+     UNPROVEN, with the remedy named; it is not a defect in the settle window. */
+  const capVerdict = judgeAgentCapability({ cap: cap1.body || {}, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });
+  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  if (!capVerdict.proceed) return;
 
   const cBefore = await commentTotal();
   info(`${PROJECT} before: ${JSON.stringify(cBefore)}`);

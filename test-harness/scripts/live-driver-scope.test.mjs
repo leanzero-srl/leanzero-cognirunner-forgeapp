@@ -70,7 +70,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { maskNonCode } from "../lib/js-source-scan.mjs";
+import { maskNonCode, maskComments } from "../lib/js-source-scan.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const libDir = path.join(here, "..", "lib");
@@ -269,6 +269,100 @@ for (const f of drivers) {
     "RULE 1 (F-711) " + f + ": uses shared-env-guard export(s) it never imports: " + v.missingGuardImport.join(", "));
   ok(v.unbound.length === 0,
     "RULE 2 (F-712) " + f + ": uses SCREAMING_SNAKE name(s) nothing in the file binds: " + v.unbound.join(", "));
+}
+
+/* ── RULE 4 (F-776) · THE AGENT-CAPABILITY PRECONDITION HAS ONE HOME ─────────────────
+ *
+ * F-767 was cut against ONE driver and the same rule turned out to live in SIX:
+ * `const FLIP_MODEL = flag("flip-model")` and `if (cap.enabled !== true) FAIL("the instance
+ * cannot hold an agent")` were copied verbatim into va-shadow-door, va-compaction,
+ * va-rest-doors, va-capability-gate, va-pinned-survival and va-recreate-settle. Fixing one
+ * left five drivers red-by-default on staging AND made the six copies DISAGREE about what a
+ * missing precondition means — worse than all six being wrong the same way, because a reader
+ * cannot tell which verdict was intended. The decision now lives in
+ * `lib/agent-capability-precondition.mjs`; this rule keeps it there.
+ *
+ * 4a — NO DRIVER READS THE FLAG ITSELF. `--flip-model` / `--no-flip-model` are the lib's
+ * vocabulary: `resolveFlipModel` owns the precedence (the opt-out wins over the opt-in) and
+ * the staging default. A driver that re-reads the flag from argv gets a second, simpler
+ * answer — which is exactly how the default-on decision failed to reach five files.
+ * The scan runs over source with COMMENTS masked but STRINGS INTACT (`maskComments`, not
+ * `maskNonCode`): the flag name only ever appears inside a string literal, so the usual
+ * stripper would mask the very thing being policed. Usage blocks and prose keep saying
+ * `--no-flip-model`, and must.
+ *
+ * 4b — NO DRIVER WRITES THE PRECONDITION'S VERDICT. `judgeAgentCapability` owns the sentence
+ * "the instance cannot hold an agent (…)" and grades it N/V with the remedy named. A driver
+ * that spells that sentence itself has re-acquired the F-767 verdict, whatever it grades it.
+ *
+ * WHAT THIS RULE DELIBERATELY DOES NOT FORBID: judging `cap.enabled` at all.
+ * `va-rest-doors-live` asserts that the SAVE DOOR refuses an agent on an incapable instance
+ * (F-485) and `va-capability-gate-live` needs capability OFF as its premise — for both, an
+ * incapable instance is the SUBJECT under test, not a precondition, and their FAILs are real
+ * assertions. A rule that banned the expression would have forced those two to lie. The two
+ * things that are always the lib's are the FLAG and the SENTENCE, so those are what is
+ * policed; both of those drivers import `resolveFlipModel` and say in their own comments why
+ * the verdict half is not converged.
+ */
+const PRECONDITION_LIB = "agent-capability-precondition.mjs";
+/** The two things only the lib may do, found in source that still has its strings. */
+export function preconditionViolations(src) {
+  const code = maskComments(src);
+  const out = [];
+  /* The flag name, in whatever form it is read: `flag("flip-model")`, a bare
+     `argv.includes("--flip-model")`, or the opt-out. The dashes are NOT required by the
+     pattern — the first draft demanded them and answered CLEAN on `flag("flip-model")`,
+     which is the exact line five drivers carried. */
+  if (/flip-model/.test(code)) out.push("reads the --flip-model flag itself");
+  if (/cannot hold an agent/.test(code)) out.push("writes the precondition verdict sentence itself");
+  return out;
+}
+{
+  /* The lib really does own both halves, so this rule points at a home that exists. */
+  const libSrc = fs.readFileSync(path.join(libDir, PRECONDITION_LIB), "utf8");
+  ok(/export function resolveFlipModel/.test(libSrc) && /export function judgeAgentCapability/.test(libSrc),
+    "RULE 4 (F-776): lib/" + PRECONDITION_LIB + " exports both halves of the precondition");
+  ok(preconditionViolations(libSrc).length === 2,
+    "...and the lib is where BOTH policed things live (it is exempt by not being a driver)");
+
+  for (const f of drivers) {
+    const v = preconditionViolations(fs.readFileSync(path.join(here, f), "utf8"));
+    ok(v.length === 0,
+      "RULE 4 (F-776) " + f + ": " + v.join(" and ") + " — both belong to lib/" + PRECONDITION_LIB
+      + " (import resolveFlipModel / judgeAgentCapability)");
+  }
+
+  /* NOT POLICED HERE: "every driver that calls saveAgentModel must ask resolveFlipModel".
+     It was drafted and MEASURED — five more drivers flip the slot without any operator flag
+     (_probe-shadow-badge, coder-skills-live, va-purge-on-delete-live, va-receipt-copy-live,
+     va-settling-carrier-live), each deciding from the instance's OWN capability read rather
+     than from argv. That is a different question from the one the lib answers, and a rule
+     that turned all five red would only teach the next author to route around it. They are
+     recorded as their own finding instead; F-776's claim is about the FLAG and the SENTENCE,
+     and this rule says exactly that much. */
+
+  /* ── POSITIVE CONTROLS — the six-home shape, verbatim ──────────────────────── */
+  const f776flag = 'const FLIP_MODEL = flag("flip-model");\nif (FLIP_MODEL) await invoke("saveAgentModel", { model: FRONTIER });';
+  ok(preconditionViolations(f776flag).includes("reads the --flip-model flag itself"),
+    'POSITIVE CONTROL (F-776): a driver reading the flag with its own flag("flip-model") is caught');
+  const f776verdict = 'if (cap.enabled !== true) { FAIL(`the instance cannot hold an agent (${cap.reason})`); return; }';
+  ok(preconditionViolations(f776verdict).includes("writes the precondition verdict sentence itself"),
+    "POSITIVE CONTROL (F-776): va-compaction-live's line verbatim — the sentence the lib owns, graded FAIL inside a driver");
+  ok(preconditionViolations('const on = process.argv.includes("--flip-model");').length === 1,
+    "POSITIVE CONTROL (F-776): the flag read bare off argv, without the flag() helper, is the same violation");
+  ok(preconditionViolations('const off = process.argv.slice(2).includes("--no-flip-model");').length === 1,
+    "POSITIVE CONTROL (F-776): re-reading the OPT-OUT is policed too — a second reader of --no-flip-model is how the precedence rule comes to disagree with itself");
+  const f776fixed = [
+    'import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";',
+    'const { flipModel: FLIP_MODEL } = resolveFlipModel({ envName: ENV_NAME, argv: process.argv.slice(2) });',
+    'const capVerdict = judgeAgentCapability({ cap, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });',
+  ].join("\n");
+  ok(preconditionViolations(f776fixed).length === 0,
+    "NEGATIVE CONTROL (F-776): the converged shape — both halves taken from the lib — is clean");
+  ok(preconditionViolations("/* --flip-model: the instance cannot hold an agent without it */\n// usage: --no-flip-model\n").length === 0,
+    "NEGATIVE CONTROL (F-776): PROSE may say both — a usage block that documents the flag is not a second home");
+  ok(preconditionViolations('if (cap.enabled !== true) { FAIL("F-485 REGRESSED: the save door accepted it"); }').length === 0,
+    "NEGATIVE CONTROL (F-776): judging cap.enabled is NOT forbidden — va-rest-doors-live asserts that refusal, and it is its subject, not a precondition");
 }
 
 /* RULE 3 (F-715) HAS MOVED. It lived here only because `evidence-redaction.test.mjs` was

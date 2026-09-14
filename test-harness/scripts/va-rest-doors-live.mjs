@@ -52,6 +52,10 @@
 
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+/* F-776 - the flip decision has ONE home. The capability VERDICT below is NOT converged on
+   purpose: on this driver an incapable instance is the SUBJECT (F-485 - the save door must
+   refuse), not a precondition, so its FAILs are assertions and must stay FAILs. */
+import { resolveFlipModel } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "listeners", "providerSlot", "kvs"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -62,7 +66,7 @@ const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const PROJECT = arg("project", "JT");
 const KEEP = flag("keep");
-const FLIP_MODEL = flag("flip-model");
+const { flipModel: FLIP_MODEL, reason: FLIP_MODEL_REASON } = resolveFlipModel({ envName: ENV_NAME, argv: process.argv.slice(2) });
 const FRONTIER = arg("model", "claude-sonnet-5");
 
 /*
@@ -204,6 +208,7 @@ async function main() {
 
   /* ── STEP 1 — a PAUSED agent, IF the instance can hold one at all ────────── */
   console.log("\nSTEP 1 - F-485: create a PAUSED Virtual Administrator (through the resolver, as va-shadow-live does)");
+  info(`model flip: ${FLIP_MODEL ? "ON" : "OFF"} - ${FLIP_MODEL_REASON}`);
   if (FLIP_MODEL) {
     const slot = await kvs(AGENT_MODEL_SLOT);
     agentModelSlotBefore = slot.value;

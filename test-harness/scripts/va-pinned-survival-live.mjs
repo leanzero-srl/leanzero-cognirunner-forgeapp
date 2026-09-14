@@ -25,11 +25,16 @@
  * agent pins anything on a given turn is the MODEL's judgement, not a guarantee. A run
  * that earns no constraint reports exactly that.
  *
- * Usage:  node scripts/va-pinned-survival-live.mjs --env=staging --flip-model
+ * Usage:  node scripts/va-pinned-survival-live.mjs --env=staging                 # the flip is ON by default here
+ *         node scripts/va-pinned-survival-live.mjs --env=staging --no-flip-model  # leave the slot alone
  */
 
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+/* F-776 - the flip decision and the capability verdict have ONE home. This driver used to
+   read neither: it flipped only on an explicit flag and then let saveScheduledJob fail,
+   so an incapable instance was reported as a broken CREATE. */
+import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "memories", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -39,7 +44,7 @@ const flag = (n) => process.argv.slice(2).includes(`--${n}`);
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const PROJECT = arg("project", "JT");
-const FLIP_MODEL = flag("flip-model");
+const { flipModel: FLIP_MODEL, reason: FLIP_MODEL_REASON } = resolveFlipModel({ envName: ENV_NAME, argv: process.argv.slice(2) });
 const FRONTIER = arg("model", "claude-sonnet-5");
 const TICK_WAIT_S = Number(arg("tickwait", "300"));
 const TURN_WAIT_S = Number(arg("turnwait", "180"));
@@ -145,11 +150,20 @@ async function main() {
   const ping = await hook(null, "GET");
   if (ping.status !== 200) throw new Error(`hook unreachable (${ping.status})`);
   PASS("hook reachable, secret accepted");
+  info(`model flip: ${FLIP_MODEL ? "ON" : "OFF"} - ${FLIP_MODEL_REASON}`);
   if (FLIP_MODEL) {
     slotBefore = (await kvs(AGENT_MODEL_SLOT)).value;
     await invoke("saveAgentModel", { model: FRONTIER });
     PASS(`agent model flipped to "${FRONTIER}" (slot replayed in the finally)`);
   }
+  /* F-767/F-776 - ASK THE INSTANCE BEFORE CREATING. A saveScheduledJob refused because the
+     instance cannot hold an agent at all is a precondition that did not hold, and reporting it
+     as a failed CREATE names the wrong subject. */
+  const cap = (await invoke("getAgentCapability", {})).body || {};
+  info(`getAgentCapability -> enabled=${cap.enabled} reason="${cap.reason}" edition=${cap.edition} provider=${cap.provider} agentModel=${cap.agentModel}`);
+  const capVerdict = judgeAgentCapability({ cap, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });
+  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  if (!capVerdict.proceed) return;
   const created = await invoke("saveScheduledJob", { job: { name: `Pinned survival ${Date.now().toString(36)}`, mode: "va", enabled: true, va: vaRecord() } });
   if (!(created.body && created.body.success)) { FAIL(`saveScheduledJob refused: ${JSON.stringify(created.body).slice(0, 300)}`); return; }
   const jobId = created.body.job.id;

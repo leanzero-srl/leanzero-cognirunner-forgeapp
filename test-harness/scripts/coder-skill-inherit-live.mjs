@@ -76,6 +76,26 @@ const check = (label, ok, data = {}) => {
   evidence.checks.push({ label, ok, ...data });
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
 };
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-786 — THE THIRD GRADE. `check()` is boolean, and a boolean has no room for the one
+ * answer this file most needs to give: "the precondition did not hold, so nothing below it
+ * ran, and here is how to make it run". F-783 routed the capability answer through
+ * `judgeAgentCapability`, which already returns N/V with a remedy — and then this file threw
+ * the remedy away by grading it FAIL, which is the F-767 defect surviving its own fix.
+ *
+ * An N/V row is `ok: null`, NOT `ok: false`: a reader (or a script) filtering
+ * `checks.filter(c => !c.ok)` must not pick it up as a failure, and `null` is the only value
+ * that is neither true nor false while staying valid JSON. `nv: true` is what an N/V-aware
+ * reader keys on, and `remedy` is the lib's sentence, unedited — it is the whole point.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+let unproven = 0;
+const nv = (label, remedy, data = {}) => {
+  unproven += 1;
+  evidence.checks.push({ label, ok: null, nv: true, remedy, ...data });
+  console.log(`N/V   ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
+  console.log(`      REMEDY: ${remedy}`);
+};
+
 const note = (label, data) => { evidence.measurements[label] = data; console.log(`NOTE  ${label} ${JSON.stringify(data)}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fetchRetry = async (url, init, tries = 5) => {
@@ -161,8 +181,16 @@ const main = async () => {
        `flipped: true` because this run flipped a slot; `slot` names the provider slot, which is
        the one it actually flipped. `reason === "managed"` stays — it is the SUBJECT. */
     const capVerdict = judgeAgentCapability({ cap, flipped: true, envName: ENV_NAME, frontier: "managed", slot: `provider slot (${PROVIDER_SLOT})` });
-    check('the Coder is ENABLED on the managed engine (reason "managed")', capVerdict.proceed === true && cap.reason === "managed", { enabled: cap.enabled, reason: cap.reason, edition: cap.edition, verdict: capVerdict.verdict });
-    if (!capVerdict.proceed) throw new Error(capVerdict.what);
+    /* F-786 — AND THE GRADE FOLLOWS THE VERDICT. Same conversion, same reason, as
+       coder-pin-epoch-live: the lib already answered N/V with a remedy and this line threw it
+       away as a FAIL, recording a red for a provider-slot precondition that reads exactly like
+       a real skill-inheritance defect. ENABLED is the precondition (N/V, the lib's sentence
+       verbatim, a clean `return` so the finally still replays the slot); reason "managed" is
+       this driver's SUBJECT and stays a boolean assertion. */
+    const capLabel = 'the Coder is ENABLED on the managed engine (reason "managed")';
+    const capData = { enabled: cap.enabled, reason: cap.reason, edition: cap.edition, verdict: capVerdict.verdict };
+    if (!capVerdict.proceed) { nv(capLabel, capVerdict.what, capData); return; }
+    check(capLabel, cap.reason === "managed", capData);
 
     // ── two REAL skill ids, read from the store (never invented) ──────────────
     const sk = await call("getSkills");
@@ -249,7 +277,11 @@ const main = async () => {
     const now = await kvGet(PROVIDER_SLOT);
     check(`${PROVIDER_SLOT} restored to its recorded value`, JSON.stringify(now) === JSON.stringify(providerBefore), { now: mask(now), before: mask(providerBefore) });
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(evidence, null, 2));
-    console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURE(S)"} — evidence at ${OUT}/evidence.json`);
+    /* F-786 — "ALL PASS" is claimed only when there is nothing unproven either. A run that
+       stopped at the provider-slot precondition proved none of what this file exists to prove,
+       and a summary line that says otherwise is why the N/V grade was added at all. */
+    const verdictWord = failures ? `${failures} FAILURE(S)` : unproven ? `NOT VERIFIED (${unproven} row(s) — the run stopped at a precondition)` : "ALL PASS";
+    console.log(`\n${verdictWord} — evidence at ${OUT}/evidence.json`);
   }
 };
 

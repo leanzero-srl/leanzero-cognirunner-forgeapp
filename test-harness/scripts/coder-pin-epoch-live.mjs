@@ -77,6 +77,26 @@ const check = (label, ok, data = {}) => {
   evidence.checks.push({ label, ok, ...data });
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
 };
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-786 — THE THIRD GRADE. `check()` is boolean, and a boolean has no room for the one
+ * answer this file most needs to give: "the precondition did not hold, so nothing below it
+ * ran, and here is how to make it run". F-783 routed the capability answer through
+ * `judgeAgentCapability`, which already returns N/V with a remedy — and then this file threw
+ * the remedy away by grading it FAIL, which is the F-767 defect surviving its own fix.
+ *
+ * An N/V row is `ok: null`, NOT `ok: false`: a reader (or a script) filtering
+ * `checks.filter(c => !c.ok)` must not pick it up as a failure, and `null` is the only value
+ * that is neither true nor false while staying valid JSON. `nv: true` is what an N/V-aware
+ * reader keys on, and `remedy` is the lib's sentence, unedited — it is the whole point.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+let unproven = 0;
+const nv = (label, remedy, data = {}) => {
+  unproven += 1;
+  evidence.checks.push({ label, ok: null, nv: true, remedy, ...data });
+  console.log(`N/V   ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
+  console.log(`      REMEDY: ${remedy}`);
+};
+
 const note = (label, data) => { evidence.measurements[label] = data; console.log(`NOTE  ${label} ${JSON.stringify(data)}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fetchRetry = async (url, init, tries = 5) => {
@@ -161,9 +181,17 @@ const main = async () => {
      itself by that reason is this driver's SUBJECT, and the EQUALITY form is deliberately not
      policed (see the F-782 negative control). */
   const capVerdict = judgeAgentCapability({ cap, flipped: true, envName: ENV_NAME, frontier: "managed", slot: `provider slot (${PROVIDER_SLOT})` });
-  check('the Coder is ENABLED on the managed engine (reason "managed")', capVerdict.proceed === true && cap.reason === "managed",
-    { enabled: cap.enabled, reason: cap.reason, edition: cap.edition, verdict: capVerdict.verdict });
-  if (!capVerdict.proceed) throw new Error(capVerdict.what);
+  /* F-786 — AND THE GRADE FOLLOWS THE VERDICT. F-783 got the lib's N/V answer to this line and
+     then graded it FAIL and threw, which records a red for a PROVIDER-SLOT PRECONDITION that is
+     indistinguishable from a real pin-epoch defect — the exact harm F-767 exists to remove.
+     The two halves are now separate because they are different questions: whether the Coder is
+     ENABLED at all is the precondition (N/V, with the lib's remedy verbatim, and a clean return
+     so the finally still restores the slot), while whether the managed engine identifies itself
+     by reason "managed" is this driver's SUBJECT and stays a real, boolean assertion. */
+  const capLabel = 'the Coder is ENABLED on the managed engine (reason "managed")';
+  const capData = { enabled: cap.enabled, reason: cap.reason, edition: cap.edition, verdict: capVerdict.verdict };
+  if (!capVerdict.proceed) { nv(capLabel, capVerdict.what, capData); return; }
+  check(capLabel, cap.reason === "managed", capData);
 
   // ── the memory that must reach the pinned prefix ─────────────────────────────
   const epoch0 = await kvGet(EPOCH_KEY);
@@ -263,6 +291,8 @@ finally {
     check("the provider slot was restored to its recorded value", r.status === 200 && String(r.body && r.body.now) === String(providerBefore), { nowMasked: mask(r.body && r.body.now) });
   } catch (e) { console.error("PROVIDER RESTORE FAILED", e.message); failures += 1; }
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(evidence, null, 2));
-  console.log(`\n${failures} failure(s). Evidence: ${OUT}/evidence.json`);
+  /* F-786 — the N/V rows are COUNTED here. A summary that says "0 failure(s)" over a run that
+     never reached its subject is the same lie in a smaller font than grading it FAIL was. */
+  console.log(`\n${failures} failure(s), ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
   process.exit(failures ? 1 : 0);
 }

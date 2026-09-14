@@ -2953,5 +2953,141 @@ reset();
   eq(receipt.postedBefore, undefined, "F-921: …nor a `postedBefore`");
 }
 
+
+
+/* ══ F-924 — THE POST PASS ORDERS ITS SCAN; INDEX ORDER STARVED A ROW ═════
+ *
+ * The pass walked `listItemIds` in the index's own order, so the per-tick cap and
+ * F-921's stop cut the same end off every window: the front of the index posted again
+ * and again while a draft sitting late in it waited, window after window. The order is
+ * now owed first, then the OLDEST draft, then the key — one comparator, one home.
+ */
+reset();
+{
+  // Four drafts, inserted NEWEST FIRST so index order and draft age disagree completely.
+  // SUP-1 is the youngest draft and the first id in the index; SUP-4 is the oldest.
+  const ages = [["SUP-1", 20], ["SUP-2", 40], ["SUP-3", 60], ["SUP-4", 80]];
+  for (const [key, mins] of ages) {
+    await L.saveItem(kvs, AG, key, { state: "queued" }, { now: T0 });
+    await L.saveItem(kvs, AG, key, {
+      state: "staged",
+      staged: { audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "r", baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - mins * MIN).toISOString() },
+    }, { now: T0 });
+  }
+  const capped = vaJob({ guardrails: { ...vaJob().va.guardrails, maxItemsPerTick: 2 } });
+  const d = postDeps();
+  const r = await V.runVaPost({ agent: capped, tickId: "t-order", deps: d });
+  eq(r.posted, 2, "F-924.ALLOW_cap_still_bounds_the_pass — two comments, cap 2");
+  eq(d.__commented.map((c) => c.k).join(","), "SUP-4,SUP-3", "F-924.BLOCK_index_order — the TWO OLDEST drafts post, oldest first, though they are LAST in the index");
+  const over = r.skipped.filter((x) => x.reason === "over_post_budget").map((x) => x.key).sort().join(",");
+  eq(over, "SUP-1,SUP-2", "F-924: …and the two YOUNGEST are the ones held for budget");
+}
+
+reset();
+{
+  // OWED OUTRANKS AGE. SUP-9 is staged LAST and is the YOUNGEST draft, but the ledger
+  // shows we already posted on it — a human came back to us and nobody has answered.
+  for (const key of ["SUP-1", "SUP-2"]) {
+    await L.saveItem(kvs, AG, key, { state: "queued" }, { now: T0 });
+    await L.saveItem(kvs, AG, key, {
+      state: "staged",
+      staged: { audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "r", baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - 90 * MIN).toISOString() },
+    }, { now: T0 });
+  }
+  await L.saveItem(kvs, AG, "SUP-9", { state: "queued" }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-9", { state: "staged", staged: { audience: "internal", body: "b", reason: "r", baseline: "c-1", tickId: "t-0", stagedAt: new Date(T0 - 200 * MIN).toISOString() } }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-9", { state: "posted", staged: null, event: "posted", reason: "internal comment old-1" }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-9", { state: "queued" }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-9", {
+    state: "staged",
+    staged: { audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "r", baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - 20 * MIN).toISOString() },
+  }, { now: T0 });
+  ok(V.owedForOrder((await L.readItem(kvs, AG, "SUP-9")).row), "F-924: the ledger alone says SUP-9 is owed — we posted on it and it came back");
+  ok(!V.owedForOrder((await L.readItem(kvs, AG, "SUP-1")).row), "F-924: …and says SUP-1 is not");
+  const d = postDeps();
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-owed-first", deps: d });
+  eq(r.posted, 3, "F-924.ALLOW_owed_first — all three still go out under the cap");
+  eq(d.__commented[0].k, "SUP-9", "F-924.BLOCK_owed_waits_behind_age — the OWED row posts FIRST although it is last in the index and the youngest draft");
+}
+
+{
+  // The comparator is TOTAL and deterministic: an unparseable `stagedAt` sorts LAST
+  // (a missing timestamp is not evidence of age), and the key breaks a dead heat.
+  const at = (issueKey, stagedAt, over = {}) => ({ issueKey, row: { state: "staged", staged: { stagedAt }, history: [], ...over } });
+  const sorted = [at("SUP-2", "nonsense"), at("SUP-1", "2026-09-13T10:00:00.000Z"), at("SUP-3", "2026-09-13T09:00:00.000Z")]
+    .sort(V.comparePostOrder).map((x) => x.issueKey).join(",");
+  eq(sorted, "SUP-3,SUP-1,SUP-2", "F-924: oldest first, and an unparseable stagedAt sorts LAST rather than jumping the queue");
+  const tie = [at("SUP-2", "2026-09-13T10:00:00.000Z"), at("SUP-1", "2026-09-13T10:00:00.000Z")]
+    .sort(V.comparePostOrder).map((x) => x.issueKey).join(",");
+  eq(tie, "SUP-1,SUP-2", "F-924: two drafts staged in the same millisecond are ordered by key, so a pass is reproducible");
+}
+
+
+
+/* ══ F-925 — A STOPPED PASS COUNTS EVERYTHING, AND IS NOT A HEALTHY TICK ══
+ *
+ * F-921's `break` left the receipt's `candidates` and `heldWrites` counting only the
+ * rows the pass had reached, and `recordTickHealth(..., true)` recorded the pass an
+ * admin had just stopped as a clean run — wiping the failure history of the agent they
+ * stopped. The scan now finishes WITHOUT posting, and the health row is left untouched.
+ */
+reset();
+{
+  await stageThree();
+  // A fourth row that is not a candidate, carrying a shadow-held write: the held-write
+  // count must be complete on a stopped pass too, since it is what the Agents tab shows.
+  await L.saveItem(kvs, AG, "SUP-4", { state: "queued", heldWrites: [{ action: "transition", target: "SUP-4", args: "{}" }] }, { now: T0 });
+  const live = vaJob();
+  const d = postDeps({ getJob: async () => live });
+  const inner = d.addComment;
+  d.addComment = async (k, body, opts) => {
+    const written = await inner(k, body, opts);
+    live.va.status = { ...live.va.status, paused: true };
+    return written;
+  };
+  const r = await V.runVaPost({ agent: live, tickId: "t-stop-counts", deps: d });
+  eq(d.__commented.length, 1, "F-925: exactly one comment went out — F-921's brake is unchanged");
+  const held = r.skipped.filter((x) => String(x.reason || "").startsWith("held."));
+  eq(held.length, 2, "F-925.BLOCK_undercount — the two drafts the stop held are NAMED, not dropped off the end of the scan");
+  eq(held.map((x) => x.key).sort().join(","), THREE.filter((k) => k !== d.__commented[0].k).sort().join(","), "F-925: …and they are exactly the drafts that did not go out");
+  eq((await stillStaged(THREE)).length, 2, "F-925: the held drafts are still staged — the finished scan wrote nothing");
+  eq((await attemptsOf(THREE)).join(","), "0,0,0", "F-925: …and counted no attempt");
+  const receipt = (await L.readTick(kvs, AG, "t-stop-counts", "post")).receipt;
+  // Every one of the three staged rows is accounted for — one posted, two named held —
+  // plus the `(agent)` sentinel row that names the stop itself. Before this, the two the
+  // `break` never reached were in neither place.
+  eq(receipt.candidates, 4, "F-925: the receipt counts every candidate the pass had, not the ones it reached");
+  const accounted = new Set(receipt.skipped.filter((x) => x.key !== "(agent)").map((x) => x.key));
+  eq(accounted.size + receipt.staged, 3, "F-925: …so posted + held equals every staged row in the index");
+  eq(receipt.heldWrites, 1, "F-925: the shadow-held write on a row BEYOND the stop is still counted");
+  eq(receipt.reason, "paused", "F-925: the receipt still names what stopped the pass (F-921)");
+  eq(receipt.postedBefore, 1, "F-925: …and how many had gone out");
+}
+
+reset();
+{
+  // HEALTH. The agent has failed twice; the admin pauses it mid-pass. That pass must not
+  // reset the counter to zero (it did not run fine) and must not raise it to three (the
+  // banner is for a broken agent, not an obedient one).
+  await stageThree();
+  await L.recordTickHealth(kvs, AG, false, { reason: "tick:post_failed:boom", now: T0 });
+  await L.recordTickHealth(kvs, AG, false, { reason: "tick:post_failed:boom", now: T0 });
+  eq((await L.readHealth(kvs, AG)).consecutiveFailures, 2, "F-925: two real failures on the record before the pause");
+  const live = vaJob();
+  const d = postDeps({ getJob: async () => live });
+  const inner = d.addComment;
+  d.addComment = async (k, body, opts) => { const w = await inner(k, body, opts); live.va.status = { ...live.va.status, paused: true }; return w; };
+  await V.runVaPost({ agent: live, tickId: "t-stop-health", deps: d });
+  const h = await L.readHealth(kvs, AG);
+  eq(h.consecutiveFailures, 2, "F-925.BLOCK_stopped_counts_as_healthy — the stopped pass did NOT wipe the agent's failure history");
+  eq(h.lastReason, "tick:post_failed", "F-925: …and the last real failure's id survives it");
+  // And a stopped pass is not a failure either: a paused agent must not walk to a banner.
+  eq(h.banner, false, "F-925.ALLOW_stopped_is_not_a_failure — no banner from being stopped");
+  const direct = await L.recordTickHealth(kvs, AG, null, { now: T0 });
+  eq(direct.stopped, true, "F-925: `recordTickHealth` names the third state in its return");
+  eq(direct.consecutiveFailures, 2, "F-925: …and moves nothing");
+  eq((await L.recordTickHealth(kvs, AG, true, { now: T0 })).consecutiveFailures, 0, "F-925: a genuinely clean tick still resets, exactly as before");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

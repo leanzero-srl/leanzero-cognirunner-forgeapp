@@ -1823,6 +1823,57 @@ export const isOwed = ({ row, issue, selfAccountId = null } = {}) => {
 };
 
 /**
+ * F-924 — THE ORDER THE POST PASS SENDS IN. ONE COMPARATOR, ONE HOME.
+ *
+ * WHY AN ORDER EXISTS AT ALL. Two things truncate a post pass: the per-tick cap and
+ * F-921's mid-pass stop. Walking the index in its own order means both of them cut the
+ * same end off every window, so an agent with more staged drafts than `maxItemsPerTick`
+ * re-sends the same front of the index for ever and a draft late in the index STARVES —
+ * silently, because `over_post_budget` reads identically on every receipt.
+ *
+ * THE ORDER, and it is the same product decision `diffCandidates` already makes for the
+ * prepare tick (`CANDIDATE_ORDER` in src/va-ledger.js), so the two phases cannot disagree
+ * about who is waiting longest:
+ *   1. OWED first — a human replied to us and nobody has answered them.
+ *   2. then OLDEST DRAFT first, by `stagedAt` ascending: the row that has waited through
+ *      the most windows goes this window.
+ *   3. then the issue key, so the order is TOTAL and a pass is reproducible. Two drafts
+ *      staged in the same millisecond must not depend on object order for who speaks.
+ *
+ * `owedForOrder` IS NOT `isOwed`, AND MUST NOT BECOME IT. `isOwed` answers from a FRESH
+ * issue read, deliberately (see its docblock), and it is what gate 7 spends the owed cap
+ * on — that is untouched here. Ordering happens before any issue is read, so it answers
+ * from the LEDGER alone: the row is in the `owed` state, or its history shows we have
+ * already posted on this item, which is the ledger's record of "we spoke and the thread
+ * came back to us". It is a HINT that decides who goes first, never who is allowed to go
+ * or which counter is spent, so being wrong about it costs an ordering, not a cap.
+ *
+ * AN UNPARSEABLE `stagedAt` SORTS LAST rather than first. A missing timestamp is not
+ * evidence of age, and the alternative — treating unknown as oldest — would let a
+ * malformed row jump the queue every window, which is the starvation this is removing
+ * pointed the other way. The key tie-break still gives it a stable, reachable position.
+ */
+const POSTED_EVENTS = Object.freeze(["posted", "posted_with_error"]);
+export const owedForOrder = (row) => {
+  if (!isObj(row)) return false;
+  if (row.state === "owed") return true;
+  return asArray(row.history).some((h) => isObj(h) && POSTED_EVENTS.includes(h.event));
+};
+export const comparePostOrder = (a, b) => {
+  const ao = owedForOrder(a && a.row) ? 0 : 1;
+  const bo = owedForOrder(b && b.row) ? 0 : 1;
+  if (ao !== bo) return ao - bo;
+  const at = Date.parse(String((a && a.row && a.row.staged && a.row.staged.stagedAt) || ""));
+  const bt = Date.parse(String((b && b.row && b.row.staged && b.row.staged.stagedAt) || ""));
+  const an = Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
+  const bn = Number.isFinite(bt) ? bt : Number.POSITIVE_INFINITY;
+  if (an !== bn) return an < bn ? -1 : 1;
+  const ak = String((a && a.issueKey) || "");
+  const bk = String((b && b.issueKey) || "");
+  return ak < bk ? -1 : ak > bk ? 1 : 0;
+};
+
+/**
  * THE DOUBLE WALL-CLOCK FLOOR (§3.14 law 5). TWO conditions, deliberately.
  *
  * `minPostGapMinutes` alone can be satisfied INSIDE ONE LONG TICK — a 900 s item turn
@@ -2241,25 +2292,51 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
     // twenty without anything in the UI saying so.
     const cap = Math.max(0, Math.trunc(guard(va, "maxItemsPerTick")));
 
-    let considered = 0;
+    /*
+     * F-924 — THE SCAN IS READ FIRST AND ORDERED, NOT WALKED IN INDEX ORDER.
+     *
+     * The pass used to post in the index's own order, and the two things that truncate a
+     * pass — the per-tick cap and F-921's stop — always truncate the SAME END of it. An
+     * agent holding more staged drafts than `maxItemsPerTick` therefore posted the same
+     * front of the index every window while a draft sitting late in it waited behind them
+     * window after window: not a delay, a STARVATION, and an invisible one, because
+     * `over_post_budget` says the same sentence every time.
+     *
+     * EVERY ROW IS STILL READ EXACTLY ONCE. The read pass below keeps the staged rows and
+     * drops the rest after counting their held writes, so this is an ordering change, not
+     * a second scan. The read-failure note and the F-910 held-write count keep the exact
+     * position they had — before any filter, because a held write lives on a row in
+     * whatever state the item turn left it and most of them are not `staged`.
+     *
+     * NON-CANDIDATE ROWS ARE STILL READ after the budget is spent (F-457): the receipt
+     * must never call a parked or a posted row `over_post_budget`. That cost is bounded
+     * by the index, which the per-agent row cap and the 90-day TTL already bound (F-413).
+     */
+    const candidates = [];
     for (const issueKey of index.ids) {
       const read = await readItem(deps.store, agentId, issueKey);
       if (read.readFailed) { note(issueKey, "item_read_failed"); continue; }
       const row = read.row;
-      // F-910 — counted BEFORE the staged filter, because a held write lives on a row in
-      // whatever state the item turn left it, and most of them are not `staged`.
+      // F-910 — counted BEFORE the staged filter (see above).
       if (row && Array.isArray(row.heldWrites)) heldWrites += row.heldWrites.length;
-      // FILTER FIRST, THEN BUDGET (F-457). The budget check used to run BEFORE the row was
-      // read, so once the cap was reached every remaining id in the index was recorded as
-      // `over_post_budget` — including the parked, the posted and the plain queued ones,
-      // which were never candidates for this pass at all. The receipt then told an
-      // operator that forty items had been skipped for budget when three existed, which
-      // is the kind of number somebody raises a cap over.
-      //
-      // The cost is that a non-candidate row is READ even after the budget is spent. That
-      // is bounded by the index itself, which the per-agent row cap and the 90-day TTL
-      // already bound (F-413); an honest receipt is worth the reads.
       if (!row || row.state !== "staged" || !row.staged) continue;
+      candidates.push({ issueKey, row });
+    }
+    candidates.sort(comparePostOrder);
+
+    let considered = 0;
+    for (const { issueKey, row } of candidates) {
+      /*
+       * F-925 — AFTER A STOP, THE SCAN FINISHES WITHOUT POSTING.
+       *
+       * F-921 `break`ed, so the receipt counted only the rows the pass had happened to
+       * reach: a pause on the first of forty staged drafts wrote a receipt saying the
+       * agent had two candidates, and the counts an admin reads in the seconds after
+       * pressing Pause were the one thing that had to be complete. Nothing is spent on
+       * these rows and nothing is written to them — they are NAMED as held and stay
+       * staged and unattempted for the next window, exactly as F-921 promised.
+       */
+      if (stoppedBy) { note(issueKey, `held.${stoppedBy}`); continue; }
       if (considered >= cap) { note(issueKey, "over_post_budget"); continue; }
 
       /*
@@ -2281,7 +2358,11 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
       if (stop) {
         stoppedBy = stop;
         note("(agent)", `stopped.${stop}`);
-        break;
+        // F-925 — NOT a `break`. The remainder of the scan runs with `stoppedBy` set,
+        // which posts nothing and completes the receipt's counts; THIS row is the first
+        // one held, and it is named the same way as the rest.
+        note(issueKey, `held.${stop}`);
+        continue;
       }
       considered++;
 
@@ -2458,7 +2539,22 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
       posted++;
     }
 
-    await recordTickHealth(deps.store, agentId, true, { now });
+    /*
+     * F-925 — A STOPPED PASS IS NEITHER HEALTHY NOR FAILED.
+     *
+     * `true` RESET the consecutive-failure counter, so an operator who paused an agent
+     * that had already failed twice had its health record wiped by the very pass their
+     * pause stopped: the instance counted "the admin stopped me" as "I ran fine". It is
+     * not a failure either — nothing is broken about an agent doing what it was told, and
+     * counting it as one walks a paused agent towards a red banner.
+     *
+     * `null` is the third state `recordTickHealth` now understands: the counter is left
+     * EXACTLY as it was, `lastOkAt` does not move, the last failure's id survives, and
+     * only `lastTickAt` advances. The Agents tab's health reader (`agentStatus`,
+     * src/va-admin.js) asks the health row only for `consecutiveFailures`/`banner`, so an
+     * untouched counter is already the honest neutral answer there and no tab changes.
+     */
+    await recordTickHealth(deps.store, agentId, stoppedBy ? null : true, { now });
     return await finish(errors ? `${errors} post(s) could not be verified` : null);
   } catch (e) {
     const error = String((e && e.message) || e).slice(0, 300);

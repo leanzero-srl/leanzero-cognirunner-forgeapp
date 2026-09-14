@@ -1528,6 +1528,23 @@ export const splitHealthReason = (reason) => {
  * and it is the reason this small counter is a row of its own with NO TTL.
  *
  * A successful tick RESETS it to zero. Two failures are not a banner; three are.
+ *
+ * F-925 — `okTick` HAS THREE VALUES, AND `null` IS THE THIRD.
+ *
+ *   true   the tick ran     → the counter RESETS
+ *   false  the tick failed  → the counter INCREMENTS and the reason is filed
+ *   null   the tick was STOPPED by the instance (paused, cancelled) → NOTHING MOVES
+ *
+ * The third one exists because a post pass that an admin's Pause stopped mid-way used to
+ * report `true`, which wiped the failure history of the agent they had just stopped: the
+ * instance recorded "the operator stopped me" as "I ran fine". `false` is equally untrue —
+ * nothing is broken about an agent obeying its own brake, and counting it as a failure
+ * walks a paused agent towards a red banner nobody can clear without un-pausing it.
+ *
+ * So `null` leaves `consecutiveFailures`, `lastOkAt`, `lastReason` and `lastDetail`
+ * exactly as it found them and advances only `lastTickAt`. No reader needs a fourth
+ * state: `readHealth` and `agentStatus` (src/va-admin.js) ask this row for the counter
+ * and the banner, and an untouched counter is already the honest neutral answer to both.
  */
 export const recordTickHealth = async (store, agent, okTick, { reason = "", now = Date.now(), phase = null } = {}) => {
   const tomb = await purgedGuard(store, agent);   // F-553
@@ -1536,7 +1553,11 @@ export const recordTickHealth = async (store, agent, okTick, { reason = "", now 
   try { prev = await store.get(vaHealthKey(agent)); }
   catch (e) { return fail("health_read_failed", { detail: String((e && e.message) || e) }); }
   const current = Number(prev && prev.consecutiveFailures) || 0;
-  const consecutiveFailures = okTick ? 0 : current + 1;
+  // F-925 — `null` is the STOPPED tick and is neither arm (see the docblock). Written as
+  // an identity check so that only a caller that MEANT the third state gets it: an
+  // `undefined` from a caller that forgot the argument is still a failure, loudly.
+  const stopped = okTick === null;
+  const consecutiveFailures = stopped ? current : (okTick ? 0 : current + 1);
   // THE AGENT'S OWN PREPARE-TICK COUNT (F-454). Shadow mode means "run, stage, and post
   // NOTHING until you have been watched for N of YOUR OWN ticks", and it used to be
   // measured by dividing the agent's age by five minutes — the SCHEDULER's cadence, not
@@ -1551,20 +1572,22 @@ export const recordTickHealth = async (store, agent, okTick, { reason = "", now 
   const prepareTicks = (Number(prev && prev.prepareTicks) || 0) + (phase === "prepare" ? 1 : 0);
   // F-524 — the ID is what is stored and shown; the detail is filed separately and is
   // never projected to the tab. See the long note above `splitHealthReason`.
-  const split = okTick ? { id: "", detail: "" } : splitHealthReason(reason);
+  const split = okTick || stopped ? { id: "", detail: "" } : splitHealthReason(reason);
   const row = {
     consecutiveFailures,
     prepareTicks,
     lastTickAt: nowIso(now),
-    lastOkAt: okTick ? nowIso(now) : ((prev && prev.lastOkAt) || null),
-    lastReason: okTick ? null : (safeText(split.id, 120) || null),
-    lastDetail: okTick || !split.detail ? null : safeText(split.detail, VA_HEALTH_DETAIL_MAX),
+    // F-925 — a STOPPED tick carries the previous verdict forward, whatever it was: it is
+    // not evidence that the agent is well and not evidence that it is broken.
+    lastOkAt: stopped ? ((prev && prev.lastOkAt) || null) : (okTick ? nowIso(now) : ((prev && prev.lastOkAt) || null)),
+    lastReason: stopped ? ((prev && prev.lastReason) || null) : (okTick ? null : (safeText(split.id, 120) || null)),
+    lastDetail: stopped ? ((prev && prev.lastDetail) || null) : (okTick || !split.detail ? null : safeText(split.detail, VA_HEALTH_DETAIL_MAX)),
   };
   // The TTL is REFRESHED here, on every tick (F-469): a live agent's counter can never
   // expire, and one that stopped ticking 90 days ago is not a counter anybody reads.
   try { await store.set(vaHealthKey(agent), row, VA_HEALTH_TTL); }
   catch (e) { return fail("health_write_failed", { detail: String((e && e.message) || e) }); }
-  return { ok: true, ...row, banner: consecutiveFailures >= VA_HEALTH_BANNER_AT };
+  return { ok: true, ...row, banner: consecutiveFailures >= VA_HEALTH_BANNER_AT, ...(stopped ? { stopped: true } : {}) };
 };
 
 export const readHealth = async (store, agent) => {

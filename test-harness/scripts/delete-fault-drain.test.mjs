@@ -204,6 +204,29 @@ console.log("\n4 · THE WHOLE REFUSE DRAIN, JUDGED — THE SEQUENCE AN 8-UNIT LE
   ok(rows.some((r) => r.verdict === "N/V" && r.what.includes("`f`-PRESENT half")),
     "…and it records the half of F-691 a single-page plant CANNOT exercise, instead of letting a green run imply it");
 
+  /* ── F-758 · THE N/V NAMES THE CAUSE THE RUN RECORDED, NOT THE ONE THE PLAN ASSUMED ──
+     The sentence used to end "60 rows fit one 100-row page", a hard-coded claim about the
+     population that was already false for `--n=150` and that told the next reader to raise
+     the population when the real cause might be something else entirely. The three causes
+     below are the three states the grader can actually distinguish from the answers. */
+  {
+    const nv = (r) => (r.find((x) => x.verdict === "N/V" && x.what.includes("`f`-PRESENT half")) || {}).what || "";
+    ok(nv(rows).includes("the last unresolved failure was at call")
+      && nv(rows).includes("NO answer after it broke on the 15 s sweep budget"),
+      "POSITIVE CONTROL (F-758): the expected live sequence leaves a failure unresolved and never breaks on budget after it, and the N/V says exactly that — with the per-call reasons, so the cause is arguable from the sentence");
+    const clean = [{ reason: "complete", failed: 0, deleted: 10, complete: true, cursor: null }];
+    ok(nv(judgeRefuseDrain({ answers: clean, drained: true, pausedMs: 0, deleteBatch: 3 }))
+      .includes("no answer ever reported an unresolved failure"),
+      "POSITIVE CONTROL (F-758): a drain with no unresolved failure at all gets the OTHER cause — there was no failed page for a cursor to land past, which is a different missing precondition and a different fix");
+    const budgetAfter = [
+      { reason: "deletes-failing", failed: 3, deleted: 0, complete: false, cursor: "aaa", failedResume: "aaa" },
+      { reason: "budget", failed: 0, deleted: 90, complete: false, cursor: "bbb" },
+    ];
+    ok(nv(judgeRefuseDrain({ answers: budgetAfter, drained: true, pausedMs: 500, deleteBatch: 3 }))
+      .includes("yet no cursor decoded to a position ahead of the failure — if that recurs it is a finding, not a gap in coverage"),
+      "POSITIVE CONTROL (F-758): when BOTH preconditions are met and the half still is not exercised, the N/V stops calling it a coverage gap and calls it a finding — the old sentence would have blamed the row count either way");
+  }
+
   /* THE GRADER MUST FAIL THE THINGS IT EXISTS TO FAIL. Each of these is a shape the module
      could emit if one of the four fixes regressed, and an empty match set is not evidence
      until the matcher is shown to see the thing at all. */

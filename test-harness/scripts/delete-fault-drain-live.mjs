@@ -21,7 +21,7 @@
  * real write latency inside a 25 s trigger and `settleDeletes`' sequential decrement is a real
  * read-modify-write against a real store:
  *
- *   1. PLANT 60 expired rows as a POPULATION (F-696): POST, resume on `startIndex: nextIndex`
+ *   1. PLANT 400 expired rows as a POPULATION (F-696): POST, resume on `startIndex: nextIndex`
  *      until the rows are actually there. `complete:true` is NOT "the population exists"
  *      (F-710 — a fresh call over 150 is clamped SILENTLY and still answered complete), so the
  *      loop counts ROWS, and the answer's own `resume` says how it continues — `"stop"`,
@@ -46,15 +46,19 @@
  *      record, per call: `deleted`/`failed`/`reason`/`complete`, the token's SHAPE, and the
  *      back-off actually slept. The expected shape is calls 1 and 2 `deletes-failing` with
  *      `failed>0` and the page-0 cursor, paced 500 ms then 1000 ms; call 3 spends the last two
- *      units mid-batch, lands the rest of the page and ends `deletes-failed`; call 4 clears the
- *      leftovers and answers `complete:true` with `deleted` totalling the 60 planted.
+ *      units mid-batch, lands the rest of the page and ends `deletes-failed`; the calls after
+ *      it walk the remaining pages — a 400-row population is about three 15 s budgets — until
+ *      one answers `complete:true` with `deleted` totalling the 400 planted.
  *   4. F-691's IDENTITY RULE, ASSERTED ON EVERY ANSWER rather than described: `f` rides the
  *      token ONLY while a failure is unresolved AND the answer resumes somewhere AHEAD of it.
  *      When the answer's own cursor IS the failing page — which is every `deletes-failing`
  *      break, mid-page with that page's cursor — `f` must be ABSENT, because resuming at the
- *      failure IS the retry. The 60 rows fit one 100-row page, so the `f`-PRESENT half needs a
- *      budget break landing past a failed page; it is asserted when it occurs and recorded N/V
- *      with its reason when it does not. Never silently skipped.
+ *      failure IS the retry. The `f`-PRESENT half needs a budget break landing PAST a failed
+ *      page, which is why the population is 400 and not 60 (F-758: at 60 the walk never breaks
+ *      on budget at all, so that half was unreachable by construction and two live runs both
+ *      recorded f-ABSENT). It is asserted when it occurs and recorded N/V when it does not —
+ *      with the reason READ OFF THE RUN's own answers, never asserted from the plan. Never
+ *      silently skipped.
  *   5. A `mode:"throttle"` variant with `count: 3` — one whole batch — drives the exact code
  *      F-677/F-682 were written about. `RATE_LIMIT_EXCEEDED` must surface as `failed` and as
  *      NOTHING ELSE: the answer is 200/`ok:true` with no `code` and no `error`, because a
@@ -63,7 +67,7 @@
  *   6. THE LEVER IS SPENT AND THE KEYSPACE IS CLEAN, each by a SECOND READ: `readDeleteFault`
  *      answers no armed count, and a dry-run sweep shows zero planted rows. Both negatives are
  *      proven READABLE FIRST — the lever is read back immediately after every arm, and the
- *      final dry run is the same query that listed the 60 rows — because an empty answer from a
+ *      final dry run is the same query that listed the planted rows — because an empty answer from a
  *      query never shown to see the object is not evidence.
  *
  * ⚠️ BLAST RADIUS — AND WHY `faults: []` IS THE TRUTH HERE, NOT A SILENCED GUARD.
@@ -316,7 +320,24 @@ export const judgeRefuseDrain = ({ answers, drained, pausedMs, deleteBatch }) =>
     else if (v.kind !== "finished") add("N/V", `call ${i + 1}: ${v.why}`);
   }
   if (!list.some((a) => carryVerdict(a).kind === "ahead-of-failure")) {
-    add("N/V", "no answer resumed AHEAD of an unresolved failure, so the `f`-PRESENT half of F-691 is NOT exercised by this run: 60 rows fit one 100-row page, so no budget break can land past a failed page. The `f`-ABSENT half above IS the live proof; the other half stays offline-only until a plant bigger than one page is drained under a fault");
+    /* F-758 — THE REASON IS READ OFF THE RUN, NOT ASSERTED FROM THE PLAN.
+       This sentence used to say "60 rows fit one 100-row page, so no budget break can land
+       past a failed page" — a claim about the population, hard-coded, and FALSE the moment
+       anyone passed `--n=150` (two pages) while the verdict stayed N/V for a quite different
+       reason. The next reader then raises the population per the sentence and concludes the
+       rule is unprovable. What the grader actually knows is which calls happened and why
+       each one stopped, so that is what it reports: whether a failure was ever left
+       unresolved, and whether the 15 s sweep budget ever tripped AFTER one. Those two facts
+       are the precondition, and naming the missing one names the fix. */
+    const reasons = list.map((a, i) => `call ${i + 1}:${JSON.stringify(a?.reason ?? null)}`).join(", ");
+    const lastUnresolved = list.reduce((acc, a, i) => (a?.failedResume ? i + 1 : acc), 0);
+    const budgetAfter = list.findIndex((a, i) => a?.reason === "budget" && i + 1 > lastUnresolved) + 1;
+    const cause = lastUnresolved === 0
+      ? `no answer ever reported an unresolved failure (${reasons}), so there was no failed page for a later cursor to land past — the armed lever refused nothing that outlived its own call`
+      : budgetAfter === 0
+        ? `the last unresolved failure was at call ${lastUnresolved} and NO answer after it broke on the 15 s sweep budget (${reasons}), so every cursor handed back was the failing page's own — which is precisely the f-ABSENT case, correctly graded above`
+        : `the budget broke at call ${budgetAfter}, after the unresolved failure at call ${lastUnresolved} (${reasons}), yet no cursor decoded to a position ahead of the failure — if that recurs it is a finding, not a gap in coverage`;
+    add("N/V", `no answer resumed AHEAD of an unresolved failure, so the \`f\`-PRESENT half of F-691 is NOT exercised by this run: ${cause}. The \`f\`-ABSENT half above IS the live proof; the other half needs a population big enough that a budget break lands past a failed page (F-758 raised the default to make that the ordinary case)`);
   }
 
   const replay = replayPausedMs(list);
@@ -408,8 +429,32 @@ async function run(state) {
   const SECRET = requireEnv("HARNESS_SECRET");
 
   const argOf = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-  /** 60 expired rows: comfortably more than an 8-unit lever can refuse, inside one 100-row page. */
-  const N = Math.max(12, Math.min(150, Number(argOf("n", "60")) || 60));
+  /* ── F-758 · THE POPULATION HAS TO OUTGROW ONE BUDGET, OR HALF OF F-691 IS UNPROVABLE ──
+     The old population was 60 and the clamp 150, and both kept the `f`-PRESENT half of
+     F-691 unreachable BY CONSTRUCTION. `f` rides the resume token only when the 15 s sweep
+     budget trips AFTER a partially-refused batch (src/harness-fault.js:930) — i.e. when the
+     walk has to continue past a failed page. At the ~178 deletes a single budget was
+     measured to manage on a live tenant, a 60-row run never breaks on budget at all and a
+     150-row run breaks at most once, so two live runs (60 and 150) both recorded f-ABSENT
+     and the half stayed offline-only. 400 rows is about three budgets, which puts at least
+     one break past the failed page.
+
+     The clamp moves with it. `plantPopulation` resumes on `startIndex`, and the producer's
+     own per-call ceiling is 150, so 400 is three POSTs rather than one silently-clamped one
+     — which is F-710's whole point and is already asserted by the `clamped` comparison.
+
+     COST. The call budget is what bounds the wall clock: 3 plant calls, at most
+     MAX_DRAIN_CALLS drain calls, the throttle pass and a handful of reads, each one web
+     trigger bounded by its own 25 s. The realistic run is a few minutes; the arithmetic
+     ceiling if every call ran to the trigger limit is on the order of a quarter of an hour.
+     The lever is untouched by the change: it is spent by COUNT (8 units, inside the first
+     three calls) long before its 120 s `until`.
+
+     The arm count is deliberately NOT raised. ARM_COUNT leaves the lever spent INSIDE a
+     batch — a PARTIAL refusal — which is exactly the precondition for a later budget break
+     to land ahead of the failure. A count on a batch boundary would refuse cleanly and give
+     the walk nothing to carry. */
+  const N = Math.max(12, Math.min(400, Number(argOf("n", "400")) || 400));
   /** The rows for the throttle pass — one batch refused, then the count is gone. */
   const N_THROTTLE = 12;
   const MAX_DRAIN_CALLS = 12;

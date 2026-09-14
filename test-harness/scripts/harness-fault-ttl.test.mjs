@@ -105,8 +105,26 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     `SOURCE: there is exactly ONE storage.set in the module — the single write home (got ${(faultCode.match(/storage\.set\(/g) || []).length})`);
   ok((faultCode.match(/storage\.get\(/g) || []).length === 1,
     `SOURCE: …and exactly ONE storage.get — the single read home (got ${(faultCode.match(/storage\.get\(/g) || []).length})`);
-  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 9,
-    "SOURCE: the helpers are NOT exports — the gated-export count is exactly the nine storage-touching exports, no more (F-688 added two)");
+  /* F-694 — THE GATED-EXPORT RULE HAS ONE HOME, AND IT IS THE MODULE'S OWN LIST.
+   * This count used to be the literal 9, here and again in async-handler-helpers.test.mjs,
+   * so every new gated export turned two suites red and was answered by editing two numbers
+   * instead of by reading the rule. Both suites now assert against `HARNESS_GATED_EXPORTS`:
+   * the count comes from its LENGTH, the names come from IT, and each named export's source
+   * must open with the gate. The helpers are still excluded — they are not exports. */
+  ok(Array.isArray(fault.HARNESS_GATED_EXPORTS) && Object.isFrozen(fault.HARNESS_GATED_EXPORTS),
+    "F-694: the list of storage-touching exports is exported, and frozen — it is the rule, not a hint");
+  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === fault.HARNESS_GATED_EXPORTS.length,
+    `SOURCE: the helpers are NOT exports — the gated-export count is exactly HARNESS_GATED_EXPORTS.length (${fault.HARNESS_GATED_EXPORTS.length}), no more (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
+  for (const name of fault.HARNESS_GATED_EXPORTS) {
+    ok(typeof fault[name] === "function", `F-694: ${name} is listed as gated and really is an export of the module`);
+    const body = faultSrc.split(`${name} = async`)[1] || "";
+    ok(/^\s*\([^)]*\)\s*=>\s*\{\s*if \(!harnessEnabled\(\)\)/.test(body),
+      `F-694: the gate is the FIRST statement of ${name} — before any storage call`);
+  }
+  for (const name of ["keyReadFaultMode", "jiraFaultStatus"]) {
+    ok(!fault.HARNESS_GATED_EXPORTS.includes(name),
+      `F-694: ${name} is NOT on the list — it touches storage only through readHarnessFault and inherits the gate`);
+  }
 }
 
 /* ═════ 2. A ROW PAST `until` READS AS ABSENT, AND IS DELETED ═════ */
@@ -795,8 +813,8 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     `…and so does clearPlantedFaults (got ${JSON.stringify(offClear)})`);
   ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 0, "…and neither refused call touched the keyspace");
   process.env.HARNESS_SECRET = SECRET;
-  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 9,
-    `SOURCE: the two new storage-touching exports each carry the gate — nine, not seven (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
+  ok(fault.HARNESS_GATED_EXPORTS.includes("plantHarnessFaults") && fault.HARNESS_GATED_EXPORTS.includes("clearPlantedFaults"),
+    "SOURCE: the two levers F-688 added are ON the gated-export list (F-694) — which is what the count above is taken from");
 
   /* ── 7b. `n` IS CLAMPED, and the clamp lives with the constant it bounds ── */
   ok(fault.HARNESS_FAULT_PLANT_MAX === 500, "the ceiling is five hundred rows — five pages of the sweep's page size");

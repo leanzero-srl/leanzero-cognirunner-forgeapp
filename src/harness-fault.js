@@ -193,18 +193,45 @@ export class HarnessFault extends Error {
 
 /**
  * THE gate, in ONE home. `process.env.HARNESS_SECRET` is set in development and staging
- * builds and NEVER in production, exactly as in src/test-hook.js. ALL SEVEN exports that
- * touch storage ask this — `harnessFaultArmed` (consume), `armHarnessFault` (F-517),
- * `disarmHarnessFault` and `readHarnessFault` (F-522), `armKeyReadFault` (F-629),
- * `armJiraFault` (F-655), `sweepHarnessFaults` (F-667), `plantHarnessFaults` and
- * `clearPlantedFaults` (F-688) — and each asks it as its FIRST statement, before any storage call, so a production
- * deployment performs no KVS access through this module at all. Adding a TENTH
- * storage-touching export means adding this line to it; the offline test counts
- * operations, so a new one that forgets shows up as a non-zero count rather than as a
- * comment nobody read. (`keyReadFaultMode` and `jiraFaultStatus` are not ones: they touch storage only through
+ * builds and NEVER in production, exactly as in src/test-hook.js. EVERY export that touches
+ * storage asks this, as its FIRST statement, before any storage call, so a production
+ * deployment performs no KVS access through this module at all. WHICH exports those are is
+ * not prose: it is `HARNESS_GATED_EXPORTS` below (F-694), and the offline suites assert the
+ * count, the names and the first statement against that list. Adding a storage-touching
+ * export means adding this line to it AND adding its name there; a new one that forgets the
+ * line shows up as a non-zero operation count rather than as a comment nobody read.
+ * (`keyReadFaultMode` and `jiraFaultStatus` are not ones: they touch storage only through
  * `readHarnessFault` and so inherit the gate instead of restating it.)
  */
 export const harnessEnabled = () => Boolean(process.env.HARNESS_SECRET);
+
+/*
+ * F-694 — THE LIST OF WHO MUST ASK IS DATA, NOT A MAGIC NUMBER IN TWO TEST FILES.
+ *
+ * The rule above ("every storage-touching export opens with the gate") was enforced by a
+ * hard-coded COUNT in `harness-fault-ttl.test.mjs` and again in `async-handler-helpers.test.mjs`
+ * — two copies, one of them outside the surgeon's own territory — plus a third hand-written
+ * list of names that F-688 forgot to extend when it added two exports. So adding a gated
+ * export turned two suites red in a way that was fixed by editing the number rather than by
+ * reading the rule, which is the opposite of what a gate is for.
+ *
+ * The list lives HERE, next to the gate it describes, and the tests assert AGAINST IT: the
+ * count, the names, and that each named export's source really does open with the gate. A
+ * new storage-touching export that is not added here is still caught — by the count of
+ * `if (!harnessEnabled())` occurrences in the file, which the tests take from this list's
+ * length rather than from a literal.
+ */
+export const HARNESS_GATED_EXPORTS = Object.freeze([
+  "harnessFaultArmed",   // consume (F-517)
+  "armHarnessFault",     // F-517
+  "disarmHarnessFault",  // F-522
+  "readHarnessFault",    // F-522
+  "armKeyReadFault",     // F-629
+  "armJiraFault",        // F-655
+  "sweepHarnessFaults",  // F-667
+  "plantHarnessFaults",  // F-688
+  "clearPlantedFaults",  // F-688
+]);
 
 /*
  * F-664 — THE ONE WRITE AND THE ONE READ OF A FAULT ROW, AND WHY THE PLATFORM TTL IS NOT

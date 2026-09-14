@@ -278,6 +278,46 @@ export function positionalArgs(argv = process.argv.slice(2)) {
 /** The usage line a driver declared, spliced after the script name in a hint (F-760). */
 const usageBit = (usage) => (usage ? ` ${usage}` : "");
 
+/*
+ * F-773 — THE COMMANDS A REFUSAL OFFERS, BUILT ONCE, FROM THE SAME FACTS THE REFUSAL USED.
+ *
+ * Two refusals in this file end with "here is what to type instead", and they disagreed.
+ * The shared-tenant refusal built its offer out of `defaultEnv` and never consulted
+ * `forceEnv` — so on a PINNED driver it printed `node scripts/<name>` with
+ * `# staging, the default`, a command that cannot reach staging (the pin overrides argv at
+ * `envName`) and therefore lands straight back on the identical wall of text. An operator
+ * who runs the first thing a refusal offers and gets the refusal again concludes the guard
+ * is broken, and the next one skips reading it — which is how a guard stops working.
+ *
+ * The forced branch already had the right sentence. It is here now, and both branches ask
+ * for it, so the offer cannot drift from the pin again.
+ *
+ * THE THREE CASES, AND WHY EACH READS AS IT DOES:
+ *   · PINNED (`forceEnv`): ONE command. There is no safer environment to offer — the
+ *     acknowledgement is the whole of the decision — so the ack flag rides the only line
+ *     there is, and the comment says the driver has no choice rather than naming a default
+ *     it does not have.
+ *   · DEFAULT IS SHARED: offer the UNSHARED environment BY NAME. "Run it with no --env"
+ *     would land back here, which is the same bug one shape over.
+ *   · DEFAULT IS UNSHARED: offer the bare command, then the explicit dev + ack.
+ */
+const envHintLines = ({ name, usage, defaultEnv, forceEnv }) => {
+  const cmd = `  node scripts/${name}${usageBit(usage)}`;
+  if (forceEnv !== undefined) {
+    return [
+      `${cmd}${ENVS[forceEnv].shared ? " --i-know-dev-is-shared" : ""}`,
+      `      # ${forceEnv}, the only environment this driver has`,
+    ];
+  }
+  return [
+    ...(ENVS[defaultEnv].shared
+      ? [`${cmd} --env=${ENV_NAMES.find((n) => !ENVS[n].shared)}`,
+        `      # the unshared environment — note this driver DEFAULTS to dev`]
+      : [cmd, `      # ${defaultEnv}, the default`]),
+    `${cmd} --env=dev --i-know-dev-is-shared`,
+  ];
+};
+
 /** One exit door, so every refusal in this file reads the same way. */
 function die(lines) {
   console.error(["", ...lines, ""].join("\n"));
@@ -386,8 +426,7 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
         "your argv and the first `--env` won, so this exact command ran against dev with the",
         "shared-tenant refusal skipped, and a TYPO would have been louder than the bypass.",
         "",
-        `  node scripts/${name}${usageBit(usage)}${ENVS[forceEnv].shared ? " --i-know-dev-is-shared" : ""}`,
-        `      # ${forceEnv}, the only environment this driver has`,
+        ...envHintLines({ name, usage, defaultEnv, forceEnv }),
       ]);
     }
   }
@@ -460,13 +499,10 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
           "person whose agent, job or provider slot just moved that a harness run did it."]),
       "Schedule the run, or tell whoever is on the tenant — do not discover it afterwards.",
       "",
-      /* A driver whose DEFAULT is dev must not be told "just run it with no --env": that
-         lands right back here. Offer the other environment by name instead. */
-      ...(ENVS[defaultEnv].shared
-        ? [`  node scripts/${name}${usageBit(usage)} --env=${ENV_NAMES.find((n) => !ENVS[n].shared)}`,
-          `      # the unshared environment — note this driver DEFAULTS to dev`]
-        : [`  node scripts/${name}${usageBit(usage)}`, `      # ${defaultEnv}, the default`]),
-      `  node scripts/${name}${usageBit(usage)} --env=dev --i-know-dev-is-shared`,
+      /* F-773 — the SAME builder the forced refusal uses. A driver whose DEFAULT is dev must
+         not be told "just run it with no --env", and a driver PINNED to dev must not be
+         offered a `--env` at all: both land right back on this text. */
+      ...envHintLines({ name, usage, defaultEnv, forceEnv }),
     ]);
   }
 

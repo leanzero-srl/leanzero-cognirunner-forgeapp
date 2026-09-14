@@ -23,6 +23,7 @@ import {
 } from "../../src/confluence-actions.js";
 import { ConfluenceError } from "../../src/confluence-client.js";
 
+import { maskComments } from "../lib/js-source-scan.mjs";
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("  ✗ " + m); } };
 const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`);
@@ -415,16 +416,21 @@ console.log("=== Confluence agent actions (1.5 commit 4b) ===");
  */
 {
   const { readFileSync } = await import("node:fs");
-  const isrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  const isrc = maskComments(readFileSync(new URL("../../src/index.js", import.meta.url), "utf8"));
   const defRe = (name) => new RegExp(`(?:const|let|var|function|export\\s+const)\\s+${name}\\s*[=(]`);
   ok(!defRe("getConfluenceInstallState").test(isrc), "index.js defines no getConfluenceInstallState (F-473)");
   ok(!defRe("peekConfluenceInstalled").test(isrc), "index.js defines no peekConfluenceInstalled (F-473)");
+  /* F-805 — "index.js defines no X" is a ban on the very name the comment recording the
+     move must write down. maskComments blanks comments, keeps literals. */
+  ok(!/_cachedConfluenceInstall/.test(maskComments("// the memo _cachedConfluenceInstall moved to confluence-client.js\nlet x;\n"))
+    && /_cachedConfluenceInstall/.test(maskComments("let _cachedConfluenceInstall = null;\n")),
+    "F-805 control: the memo name in a COMMENT is not a definition; in CODE it is");
   ok(!/_cachedConfluenceInstall/.test(isrc), "index.js keeps no install memo of its own");
   ok(/from\s+"\.\/confluence-client\.js"/.test(isrc) && /peekConfluenceInstalled/.test(isrc),
     "…it imports the ONE memo from the client instead");
 
   // The client's own source is the only definition site.
-  const csrc = readFileSync(new URL("../../src/confluence-client.js", import.meta.url), "utf8");
+  const csrc = maskComments(readFileSync(new URL("../../src/confluence-client.js", import.meta.url), "utf8"));
   ok(defRe("getConfluenceInstallState").test(csrc), "confluence-client.js is where the memo is defined");
 
   // The space picker warms that ONE memo through the exported door rather than a

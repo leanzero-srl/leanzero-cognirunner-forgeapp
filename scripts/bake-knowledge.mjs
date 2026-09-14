@@ -867,11 +867,20 @@ export const bake = ({ dryRun = false, check = false, tiers = null, write = fals
     const hit = violatesNever(source.root || source.id, never);
     if (hit) die(`source "${source.id}" resolves to a path matching the NEVER list ("${hit}"). Refusing.`, 2);
 
+    // F-956 - a source must have a HUMAN NAME, and the bake refuses one that does not.
+    // The id is a slug ("forge-security-review"); the Knowledge tab shows an admin the
+    // name ("LeanZero Forge Skills"). Defaulting a missing name to the id would put the
+    // slug back on screen silently, which is the defect this field exists to close, so
+    // the omission stops the bake instead.
+    if (!source.sourceName || !String(source.sourceName).trim()) {
+      die(`source "${source.id}" has no "sourceName". Provenance is shown to admins by NAME, not by id: add one in knowledge/sources.json.`, 2);
+    }
+
     if (source.reauthor) {
       const authored = resolveAuthored(source);
       if (!authored.ok) { problems.push(authored.message); continue; }
       docs.push({
-        sourceId: source.id, tier: source.tier, pack: source.pack,
+        sourceId: source.id, sourceName: source.sourceName, tier: source.tier, pack: source.pack,
         audience: source.audience || ["codegen", "coder", "agent", "va", "review"],
         tags: source.tags || [], licence: source.licence || "ours (re-authored)",
         path: `knowledge/authored/${path.basename(authored.file)}`,
@@ -894,7 +903,7 @@ export const bake = ({ dryRun = false, check = false, tiers = null, write = fals
       scrubDeleted += scrubbed.deleted;
       scrubReplaced += scrubbed.replaced;
       docs.push({
-        sourceId: source.id, tier: source.tier, pack: f.pack,
+        sourceId: source.id, sourceName: source.sourceName, tier: source.tier, pack: f.pack,
         audience: f.audience || ["codegen"], tags: f.tags || [],
         licence: source.licence || "unstated",
         path: `${source.root}/${f.path}`, rawPath: rel,
@@ -933,7 +942,11 @@ export const bake = ({ dryRun = false, check = false, tiers = null, write = fals
         title: c.title || docTitle,
         tags,
         audience: d.audience,
-        provenance: { source: d.sourceId, path: d.path, hash: d.hash.slice(0, 16), licence: d.licence },
+        /* F-956 - `sourceName` rides BESIDE `source`, never instead of it. The name is
+           what an admin reads; the id is what a developer greps, what MANIFEST.md keys on
+           and what the Knowledge tab keeps in a title attribute. Dropping the id to make
+           room for the name would have traded one unreadable audience for another. */
+        provenance: { source: d.sourceId, sourceName: d.sourceName, path: d.path, hash: d.hash.slice(0, 16), licence: d.licence },
         bytes: utf8(body),
         body,
       });
@@ -966,6 +979,11 @@ export const bake = ({ dryRun = false, check = false, tiers = null, write = fals
     sections: list.length,
     bytes: list.reduce((n, s) => n + s.bytes, 0),
     pinned: cfg.packs?.[pack]?.pinned || [],
+    // F-956 - WHO the pins are for, carried beside WHAT is pinned. The Knowledge tab has
+    // to name the surfaces that lose their core when a pinned pack is switched off, and
+    // the audience list already lives here as `pinnedFor`. Emitting it is what stops the
+    // tab hard-coding "Virtual Administrators" beside a chip whose audience is data.
+    pinnedFor: cfg.packs?.[pack]?.pinnedFor || [],
   })).sort((a, b) => a.id.localeCompare(b.id));
 
   for (const p of packSummaries) {

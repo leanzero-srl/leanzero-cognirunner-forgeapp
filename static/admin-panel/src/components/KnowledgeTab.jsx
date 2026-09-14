@@ -53,6 +53,21 @@
  * Neither is invented from the build clock in this file. If the resolver sends no date, the
  * sentence simply stops at the licence: a number that looks like provenance and is not is
  * worse than no number, which was the whole F-917 finding.
+ *
+ * WHAT THE SECOND COLD WALK CHANGED (F-956). Three things on this tab were written by the
+ * build for the build, and are now written for the admin who has to decide what to switch
+ * off:
+ *
+ *   • The pack PURPOSES were rewritten at their one home (knowledge/sources.json). One of
+ *     them literally described a source file. They now say what a pack teaches, which
+ *     surfaces read it, and what degrades without it.
+ *   • PROVENANCE names a SOURCE, not a slug: "From LeanZero Forge Skills, Apache-2.0
+ *     (NOTICE retained), baked 14 September 2026". The ids survive in a title attribute.
+ *   • The "1 pinned section" chip now SAYS what a pin is, and a pack with pins that is
+ *     switched off carries a solid red sentence naming the surfaces that lose their core.
+ *     That sentence is INFORMATIONAL: the switch beside it still works, every time. A
+ *     consequence an admin is told about is a decision; a control that refuses is a wall,
+ *     and the owner's rule is that a warning never becomes one.
  */
 
 import React, { useState, useEffect, useCallback } from "react";
@@ -73,6 +88,34 @@ const AUDIENCE_LABEL = {
   review: "AI review",
 };
 const AUDIENCE_ORDER = ["codegen", "fix", "validator", "agent", "va", "coder", "review"];
+
+/**
+ * The same surfaces, named as they read INSIDE a sentence about a single turn (F-956).
+ * "Every Virtual administrators turn" is not English, and the budget table's plural labels
+ * are right where they are, so the pinned-section sentences take this second, singular set
+ * rather than bending the first one out of shape. Both maps are keyed by the same audience
+ * ids the bake emits, so an audience added to a pin is a one-line addition here and a
+ * missing one falls back to its raw id rather than vanishing from the sentence.
+ */
+const AUDIENCE_TURN = {
+  codegen: "code generation",
+  fix: "AI fix",
+  validator: "validator",
+  agent: "listener and job agent",
+  va: "Virtual Administrator",
+  coder: "Coder",
+  review: "AI review",
+};
+
+/** "a and b", "a, b and c": a list an admin reads, not a JSON array. */
+const andList = (parts) => {
+  const xs = parts.filter(Boolean);
+  if (xs.length <= 1) return xs[0] || "";
+  return `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
+};
+
+/** The surfaces a pack's pinned sections are sent to, as a readable list. */
+const pinnedSurfaces = (pack) => andList((pack.pinnedFor || []).map((a) => AUDIENCE_TURN[a] || a));
 
 /**
  * Bytes as an admin reads them. Whole KB above 1 KB, because nobody switches a pack off to
@@ -277,10 +320,49 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
                 </span>
               )}
             </div>
-            {/* Provenance comes from the backend as already-joined "source, licence" lines,
-                one per distinct source in the pack. Printed verbatim: re-splitting and
-                re-joining them here would be a second formatter for a string that has one
-                author (describeKnowledgePacks, src/knowledge-packs.js).
+            {/* F-956 - WHAT "1 pinned section" MEANS, and what it costs to switch off.
+                The chip was a bare count sitting on the two packs whose switch does the most
+                damage, and a count is not a meaning: an admin reading "1 pinned section" has
+                no way to learn that this one section is sent on EVERY turn of a named
+                surface, rather than only when it happens to score against the prompt.
+
+                The surfaces are `pinnedFor` from the bake, not a list typed here. A pack
+                with pins and no audience prints the generic half of the sentence rather than
+                "sent on every turn of ", which is what a bare join would have produced.
+
+                THE RED LINE IS INFORMATIONAL, NEVER A BLOCK (the owner's standing rule).
+                The switch above stays live and the write still goes through; what changes is
+                that the consequence is named in the one place the decision is made, instead
+                of being discoverable only by watching an agent get worse. */}
+            {(pack.pinned || []).length > 0 && (
+              <span className="kn-pack-pin-note">
+                {pinnedSurfaces(pack)
+                  ? `Pinned sections are sent on every ${pinnedSurfaces(pack)} turn, whatever the prompt asks.`
+                  : "Pinned sections are sent on every turn of the surfaces that read this pack, whatever the prompt asks."}
+              </span>
+            )}
+            {(pack.pinned || []).length > 0 && !pack.enabled && (
+              <strong className="kn-pack-pin-warn" role="status">
+                {pinnedSurfaces(pack)
+                  ? `Every ${pinnedSurfaces(pack)} turn loses its ${pack.title} core while this is off.`
+                  : `Every surface that reads this pack loses its ${pack.title} core while this is off.`}
+                {/* The title is printed AS AUTHORED, not lower-cased: "cognirunner sandbox
+                    traps" is a product name with its case knocked out, and a sentence that
+                    mangles the name of the thing it is warning about reads like a template. */}
+              </strong>
+            )}
+            {/* Provenance comes from the backend as { name, licence, ids } rows, already
+                folded so that one named source feeding several documents is ONE row
+                (describeKnowledgePacks, src/knowledge-packs.js). The fold and the wording of
+                the name have one author; what this file decides is only which of the two
+                identifiers a reader SEES.
+
+                F-956 - the line used to read "From forge-security-review, Apache-2.0
+                (leanzero-forge-skills, NOTICE retained)": three slugs and a parenthetical,
+                none of which an admin has ever seen anywhere else in the product. It now
+                reads "From LeanZero Forge Skills, Apache-2.0 (NOTICE retained), baked
+                14 September 2026" and the pack/source ids move to the title attribute, where
+                whoever needs to grep the corpus can still find them.
 
                 F-917 — what changed is the LABEL, not the lines. A bare
                 "jira-forge, Apache-2.0 (leanzero-forge-skills, NOTICE retained)" under a
@@ -290,9 +372,17 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
             {(pack.provenance || []).length > 0 && (
               <div className="kn-pack-prov">
                 <span className="kn-prov-head">Source and licence</span>
-                {pack.provenance.map((line, i) => (
-                  <span className="kn-prov-line" key={i}>
-                    From {line}
+                {pack.provenance.map((row, i) => (
+                  <span
+                    className="kn-prov-line"
+                    key={i}
+                    /* F-956 - the source IDS live here and only here. They are what a
+                       developer greps the corpus with, so they are not thrown away; they are
+                       simply not the answer to "where did this text come from", which is
+                       what the visible line is for. */
+                    title={(row.ids || []).length ? `Source ${(row.ids || []).join(", ")}` : undefined}
+                  >
+                    From {[row.name, row.licence].filter(Boolean).join(", ")}
                     {/* F-933 - the bake date closes the LAST source line, so the block reads
                         as one sentence ("From x, y, baked 14 September 2026") instead of a
                         date repeated once per source. No date, no clause. */}

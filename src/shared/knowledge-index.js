@@ -30,7 +30,7 @@ export const KNOWLEDGE_CONTENT_VERSION = "58c15fd5c7e54c25";
  * a clock in a hash would make every re-bake look like a metadata change, and
  * `npm run bake:check` normalises this line away before it compares.
  */
-export const KNOWLEDGE_BAKED_AT = "2026-09-14T19:42:10.977Z";
+export const KNOWLEDGE_BAKED_AT = "2026-09-14T20:48:11.906Z";
 
 /**
  * Fingerprint of this file's METADATA — pack pin lists, the pin map, section audiences.
@@ -43,80 +43,96 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "administrator-practice",
     "title": "Administrator practice",
-    "purpose": "The confidence ladder, proven negatives, speaking vs changing, blast radius, the effects ledger, guard discipline, unattended operation, burstiness. Pinned for every Virtual Administrator turn.",
+    "purpose": "How a careful Jira administrator works: proving a negative before acting on it, judging the blast radius of a change, keeping a record of effects, and knowing when to speak rather than change something. Every Virtual Administrator turn is sent its core, and the Coder, code generation, listener and job agents and AI review read the rest. Switch it off and Virtual Administrators lose the judgement that holds them back from unrequested changes.",
     "sections": 9,
     "bytes": 23557,
     "pinned": [
       "administrator-practice#administrator-practice"
+    ],
+    "pinnedFor": [
+      "va"
     ]
   },
   {
     "id": "automation-semantics",
     "title": "Automation semantics",
-    "purpose": "Smart values, loops, and what Jira Automation can and cannot be driven to do over REST.",
+    "purpose": "What Jira Automation can and cannot be driven to do, including smart values, branch loops, and the limits that bite on large rules. The Coder, code generation, listener and job agents, Virtual Administrators, validators and AI review read it. Switch it off and advice about automation drifts into things Jira will not actually do.",
     "sections": 4,
     "bytes": 12385,
-    "pinned": []
+    "pinned": [],
+    "pinnedFor": []
   },
   {
     "id": "cognirunner-sandbox-traps",
     "title": "CogniRunner sandbox traps",
-    "purpose": "The traps this app has paid for, re-keyed to the sandbox API. Pinned for codegen and fix, because these are the mistakes the model makes unprompted.",
+    "purpose": "The mistakes this product has already paid for, re-keyed to the automation sandbox your rules run inside. Code generation and AI fix are sent its core on every turn, and the Coder and AI review read the rest. Switch it off and generated steps start repeating traps that were fixed long ago.",
     "sections": 5,
     "bytes": 12702,
     "pinned": [
       "cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt"
+    ],
+    "pinnedFor": [
+      "codegen",
+      "fix"
     ]
   },
   {
     "id": "confluence-rest-correctness",
     "title": "Confluence REST correctness",
-    "purpose": "Confluence modules, auth, macros, ADF and storage format, points-based rate limiting.",
+    "purpose": "How Confluence is built and addressed: its modules, permissions and scopes, macros, page bodies in both formats, and the points-based rate limiting that throttles bulk work. The Coder, code generation, AI fix, listener and job agents, Virtual Administrators and AI review read it. Switch it off and anything writing to Confluence gets the page format and the throttling wrong.",
     "sections": 46,
     "bytes": 115555,
-    "pinned": []
+    "pinned": [],
+    "pinnedFor": []
   },
   {
     "id": "forge-app-builder",
     "title": "Forge app builder",
-    "purpose": "What the Coder needs to produce a Forge app that deploys: modules, manifest shape, resolver and Custom UI patterns, production patterns, FaaS limits and cost, async events, Forge LLM, the security golden rules.",
+    "purpose": "Teaches the models how a Forge app is actually shaped: modules and manifests, resolvers and their Custom UI, async queues, the platform's limits and cost, and the security rules an app has to pass before it ships. The Coder, code generation, validators and AI review read it. Switch it off and generated apps start guessing at structure the platform will reject.",
     "sections": 61,
     "bytes": 144374,
     "pinned": [
       "forge-app-builder#core-forge-concepts"
+    ],
+    "pinnedFor": [
+      "coder"
     ]
   },
   {
     "id": "forge-platform-facts",
     "title": "Forge platform facts",
-    "purpose": "The reconciled traps: what the platform actually does, as opposed to what the docs imply. Rate limits, quotas, the gotchas.",
+    "purpose": "The reconciled traps: what the Atlassian platform really does, as opposed to what its documentation implies, including rate limits, quotas and the failures that only appear under real load. The Coder, code generation, AI fix, listener and job agents, Virtual Administrators, validators and AI review all read it. Switch it off and the models stop anticipating the limits that break a rule at runtime.",
     "sections": 23,
     "bytes": 59949,
-    "pinned": []
+    "pinned": [],
+    "pinnedFor": []
   },
   {
     "id": "jira-rest-correctness",
     "title": "Jira REST correctness",
-    "purpose": "Problem patterns and gotchas for the Jira Cloud REST API.",
+    "purpose": "How the Jira API behaves when it is asked to do real work: the recurring problem patterns, the error shapes, and the calls that look correct and are not. Code generation, AI fix, listener and job agents, Virtual Administrators and validators read it. Switch it off and the models write Jira calls that fail on the first real issue.",
     "sections": 11,
     "bytes": 24317,
-    "pinned": []
+    "pinned": [],
+    "pinnedFor": []
   },
   {
     "id": "jsm-correctness",
     "title": "Jira Service Management correctness",
-    "purpose": "Queues, sd.public.comment, agent visibility, audience.",
+    "purpose": "How Jira Service Management differs from an ordinary project: queues, request types, agent-only versus customer-visible comments, and who is allowed to see what. Listener and job agents, Virtual Administrators, code generation, AI fix and validators read it. Switch it off and the models risk posting an internal note where a customer can read it.",
     "sections": 11,
     "bytes": 26437,
-    "pinned": []
+    "pinned": [],
+    "pinnedFor": []
   },
   {
     "id": "voice-rules",
     "title": "Voice rules",
-    "purpose": "DATA tables consumed by src/shared/voice-lint.js, not prose for the model.",
+    "purpose": "The house rules for how written output should read: the phrasings that are blocked outright, the ones that only earn a warning, and the hedges and stock openers that give AI text away. It feeds the wording checks applied to drafted comments and documents. Switch it off and drafted text stops being measured against the house voice.",
     "sections": 9,
     "bytes": 21923,
-    "pinned": []
+    "pinned": [],
+    "pinnedFor": []
   }
 ];
 
@@ -159,6 +175,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2906,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -185,6 +202,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2652,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -210,6 +228,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2624,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -235,6 +254,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2364,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -262,6 +282,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2310,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -288,6 +309,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3207,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -311,6 +333,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1863,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -334,6 +357,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2072,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -357,6 +381,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3559,
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -383,6 +408,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3008,
     "provenance": {
       "source": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "path": "knowledge/authored/automation-semantics.md",
       "hash": "ad709467d2e3b15b",
       "licence": "ours (re-authored)"
@@ -413,6 +439,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3255,
     "provenance": {
       "source": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "path": "knowledge/authored/automation-semantics.md",
       "hash": "ad709467d2e3b15b",
       "licence": "ours (re-authored)"
@@ -447,6 +474,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2259,
     "provenance": {
       "source": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "path": "knowledge/authored/automation-semantics.md",
       "hash": "ad709467d2e3b15b",
       "licence": "ours (re-authored)"
@@ -474,6 +502,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3863,
     "provenance": {
       "source": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "path": "knowledge/authored/automation-semantics.md",
       "hash": "ad709467d2e3b15b",
       "licence": "ours (re-authored)"
@@ -509,9 +538,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2296,
     "provenance": {
       "source": "cognirunner-gotchas",
+      "sourceName": "CogniRunner development notes",
       "path": "~/Projects/CogniRunner/.claude/skills/cognirunner-development/references/GOTCHAS.md",
       "hash": "813bd11877c55a90",
-      "licence": "ours (CogniRunner development skill)"
+      "licence": "ours"
     }
   },
   {
@@ -554,9 +584,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3191,
     "provenance": {
       "source": "cognirunner-gotchas",
+      "sourceName": "CogniRunner development notes",
       "path": "~/Projects/CogniRunner/.claude/skills/cognirunner-development/references/GOTCHAS.md",
       "hash": "813bd11877c55a90",
-      "licence": "ours (CogniRunner development skill)"
+      "licence": "ours"
     }
   },
   {
@@ -590,9 +621,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2196,
     "provenance": {
       "source": "cognirunner-gotchas",
+      "sourceName": "CogniRunner development notes",
       "path": "~/Projects/CogniRunner/.claude/skills/cognirunner-development/references/GOTCHAS.md",
       "hash": "813bd11877c55a90",
-      "licence": "ours (CogniRunner development skill)"
+      "licence": "ours"
     }
   },
   {
@@ -624,9 +656,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2134,
     "provenance": {
       "source": "cognirunner-gotchas",
+      "sourceName": "CogniRunner development notes",
       "path": "~/Projects/CogniRunner/.claude/skills/cognirunner-development/references/GOTCHAS.md",
       "hash": "813bd11877c55a90",
-      "licence": "ours (CogniRunner development skill)"
+      "licence": "ours"
     }
   },
   {
@@ -658,9 +691,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2885,
     "provenance": {
       "source": "cognirunner-gotchas",
+      "sourceName": "CogniRunner development notes",
       "path": "~/Projects/CogniRunner/.claude/skills/cognirunner-development/references/GOTCHAS.md",
       "hash": "813bd11877c55a90",
-      "licence": "ours (CogniRunner development skill)"
+      "licence": "ours"
     }
   },
   {
@@ -690,9 +724,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 841,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/gotchas.md",
       "hash": "15cada9d99696f26",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -721,9 +756,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2273,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/gotchas.md",
       "hash": "15cada9d99696f26",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -755,9 +791,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2387,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/gotchas.md",
       "hash": "15cada9d99696f26",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -781,9 +818,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 190,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/problem-patterns.md",
       "hash": "29b62a6169bb7df6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -811,9 +849,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2553,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/problem-patterns.md",
       "hash": "29b62a6169bb7df6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -842,9 +881,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2825,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/problem-patterns.md",
       "hash": "29b62a6169bb7df6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -871,9 +911,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2777,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/problem-patterns.md",
       "hash": "29b62a6169bb7df6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -903,9 +944,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3645,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/problem-patterns.md",
       "hash": "29b62a6169bb7df6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -935,9 +977,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2219,
     "provenance": {
       "source": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/confluence-api-skill/docs/problem-patterns.md",
       "hash": "29b62a6169bb7df6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -967,9 +1010,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2976,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md",
       "hash": "573e3415e6d86909",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -994,9 +1038,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2658,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md",
       "hash": "573e3415e6d86909",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1019,9 +1064,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3047,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md",
       "hash": "573e3415e6d86909",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1044,9 +1090,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2008,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md",
       "hash": "573e3415e6d86909",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1081,9 +1128,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 4020,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md",
       "hash": "573e3415e6d86909",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1107,9 +1155,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1710,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md",
       "hash": "573e3415e6d86909",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1131,9 +1180,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1619,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md",
       "hash": "573e3415e6d86909",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1168,9 +1218,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3823,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md",
       "hash": "573e3415e6d86909",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1194,9 +1245,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3239,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1225,9 +1277,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3691,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1255,9 +1308,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2647,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1290,9 +1344,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2841,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1320,9 +1375,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2675,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1352,9 +1408,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2148,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1383,9 +1440,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3039,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1416,9 +1474,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2952,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1448,9 +1507,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2244,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1481,9 +1541,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3745,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1507,9 +1568,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2418,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1531,9 +1593,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 549,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md",
       "hash": "f309a04ef5f592eb",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1562,9 +1625,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 4073,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/31-points-rate-limiting.md",
       "hash": "fd00df96cdea4562",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1590,9 +1654,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2273,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/31-points-rate-limiting.md",
       "hash": "fd00df96cdea4562",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1621,9 +1686,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2140,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/31-points-rate-limiting.md",
       "hash": "fd00df96cdea4562",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1647,9 +1713,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 701,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/31-points-rate-limiting.md",
       "hash": "fd00df96cdea4562",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1680,9 +1747,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3091,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/31-points-rate-limiting.md",
       "hash": "fd00df96cdea4562",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1716,9 +1784,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2896,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/31-points-rate-limiting.md",
       "hash": "fd00df96cdea4562",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1747,9 +1816,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2710,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/28-adf-and-storage-format.md",
       "hash": "0399deaad6f52a5e",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1774,9 +1844,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2480,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/28-adf-and-storage-format.md",
       "hash": "0399deaad6f52a5e",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1802,9 +1873,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2667,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/28-adf-and-storage-format.md",
       "hash": "0399deaad6f52a5e",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1830,9 +1902,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1705,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/28-adf-and-storage-format.md",
       "hash": "0399deaad6f52a5e",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1858,9 +1931,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1981,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/12-permissions-scopes.md",
       "hash": "5a59c6f071d52f01",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1888,9 +1962,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2613,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/12-permissions-scopes.md",
       "hash": "5a59c6f071d52f01",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1918,9 +1993,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2336,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/12-permissions-scopes.md",
       "hash": "5a59c6f071d52f01",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1946,9 +2022,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2123,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/14-macros-and-section-sealing.md",
       "hash": "8680837dff80bfdf",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1969,9 +2046,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3258,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/14-macros-and-section-sealing.md",
       "hash": "8680837dff80bfdf",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -1999,9 +2077,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1220,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/14-macros-and-section-sealing.md",
       "hash": "8680837dff80bfdf",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2033,9 +2112,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3529,
     "provenance": {
       "source": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/14-macros-and-section-sealing.md",
       "hash": "8680837dff80bfdf",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2062,9 +2142,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2926,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/docs/gotchas.md",
       "hash": "b8f9e42bf9397ac5",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2090,9 +2171,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2202,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/docs/gotchas.md",
       "hash": "b8f9e42bf9397ac5",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2116,9 +2198,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 408,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/docs/gotchas.md",
       "hash": "b8f9e42bf9397ac5",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2143,9 +2226,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2108,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/docs/gotchas.md",
       "hash": "b8f9e42bf9397ac5",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2171,9 +2255,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3181,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/SKILL.md",
       "hash": "13a7e1c26b8f541b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2202,9 +2287,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1413,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/SKILL.md",
       "hash": "13a7e1c26b8f541b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2225,9 +2311,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2716,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/SKILL.md",
       "hash": "13a7e1c26b8f541b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2253,9 +2340,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2267,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/docs/03-beyond-scanners.md",
       "hash": "6c772d84056bfab6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2279,9 +2367,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2147,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/docs/03-beyond-scanners.md",
       "hash": "6c772d84056bfab6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2306,9 +2395,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2003,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/docs/03-beyond-scanners.md",
       "hash": "6c772d84056bfab6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2334,9 +2424,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2110,
     "provenance": {
       "source": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/forge-security-review/docs/03-beyond-scanners.md",
       "hash": "6c772d84056bfab6",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2362,9 +2453,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 259,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
       "hash": "ce94ae0b465790a8",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2392,9 +2484,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2700,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
       "hash": "ce94ae0b465790a8",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2420,9 +2513,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2236,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
       "hash": "ce94ae0b465790a8",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2451,9 +2545,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2332,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
       "hash": "ce94ae0b465790a8",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2480,9 +2575,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2703,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/26-async-events-and-queues.md",
       "hash": "f12be3e551a5ccd7",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2510,9 +2606,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2608,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/26-async-events-and-queues.md",
       "hash": "f12be3e551a5ccd7",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2535,9 +2632,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2311,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/26-async-events-and-queues.md",
       "hash": "f12be3e551a5ccd7",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2561,9 +2659,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2114,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/26-async-events-and-queues.md",
       "hash": "f12be3e551a5ccd7",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2586,9 +2685,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 328,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/26-async-events-and-queues.md",
       "hash": "f12be3e551a5ccd7",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2625,9 +2725,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2695,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/01-core-concepts.md",
       "hash": "7657c92219bee4a8",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2649,9 +2750,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2095,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/01-core-concepts.md",
       "hash": "7657c92219bee4a8",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2675,9 +2777,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1898,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/01-core-concepts.md",
       "hash": "7657c92219bee4a8",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2704,9 +2807,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2791,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md",
       "hash": "46dc7a1b95127308",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2730,9 +2834,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2128,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md",
       "hash": "46dc7a1b95127308",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2758,9 +2863,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2203,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md",
       "hash": "46dc7a1b95127308",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2782,9 +2888,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2303,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md",
       "hash": "46dc7a1b95127308",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2814,9 +2921,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2744,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md",
       "hash": "46dc7a1b95127308",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2843,9 +2951,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2322,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md",
       "hash": "46dc7a1b95127308",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2869,9 +2978,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2044,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md",
       "hash": "46dc7a1b95127308",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2894,9 +3004,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2188,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md",
       "hash": "46dc7a1b95127308",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2921,9 +3032,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2555,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/25-workflow-modules-deep-dive.md",
       "hash": "dc9975f9a961f12a",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2953,9 +3065,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1955,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/25-workflow-modules-deep-dive.md",
       "hash": "dc9975f9a961f12a",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -2983,9 +3096,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3084,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/25-workflow-modules-deep-dive.md",
       "hash": "dc9975f9a961f12a",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3017,9 +3131,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3059,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/25-workflow-modules-deep-dive.md",
       "hash": "dc9975f9a961f12a",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3047,9 +3162,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2581,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/25-workflow-modules-deep-dive.md",
       "hash": "dc9975f9a961f12a",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3076,9 +3192,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2232,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3112,9 +3229,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2600,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3143,9 +3261,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2773,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3175,9 +3294,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2917,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3208,9 +3328,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3737,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3241,9 +3362,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2737,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3281,9 +3403,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2779,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3310,9 +3433,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3354,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3344,9 +3468,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1200,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3375,9 +3500,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3126,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3405,9 +3531,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1937,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3436,9 +3563,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2361,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3466,9 +3594,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2656,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3496,9 +3625,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3955,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3524,9 +3654,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1852,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3556,9 +3687,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2017,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3581,9 +3713,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2357,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3607,9 +3740,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2724,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md",
       "hash": "06c00bc784756552",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3635,9 +3769,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2843,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md",
       "hash": "45710125f9b8f6d9",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3661,9 +3796,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2649,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md",
       "hash": "45710125f9b8f6d9",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3691,9 +3827,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2307,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md",
       "hash": "45710125f9b8f6d9",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3722,9 +3859,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2790,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md",
       "hash": "45710125f9b8f6d9",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3750,9 +3888,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2102,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md",
       "hash": "45710125f9b8f6d9",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3779,9 +3918,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2239,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md",
       "hash": "45710125f9b8f6d9",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3808,9 +3948,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2413,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md",
       "hash": "45710125f9b8f6d9",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3842,9 +3983,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2524,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md",
       "hash": "0ca6d38ed57a95ff",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3876,9 +4018,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3930,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md",
       "hash": "0ca6d38ed57a95ff",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3911,9 +4054,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2877,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md",
       "hash": "0ca6d38ed57a95ff",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3947,9 +4091,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3039,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md",
       "hash": "0ca6d38ed57a95ff",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -3981,9 +4126,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1386,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md",
       "hash": "0ca6d38ed57a95ff",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4017,9 +4163,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2142,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md",
       "hash": "0ca6d38ed57a95ff",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4056,9 +4203,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3013,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md",
       "hash": "0ca6d38ed57a95ff",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4087,9 +4235,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2102,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md",
       "hash": "0ca6d38ed57a95ff",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4121,9 +4270,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1165,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
       "hash": "45ade5457663916b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4148,9 +4298,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2549,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
       "hash": "45ade5457663916b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4177,9 +4328,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2342,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
       "hash": "45ade5457663916b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4210,9 +4362,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3703,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
       "hash": "45ade5457663916b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4244,9 +4397,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2243,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
       "hash": "45ade5457663916b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4277,9 +4431,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2576,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
       "hash": "45ade5457663916b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4307,9 +4462,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2280,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
       "hash": "45ade5457663916b",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4339,6 +4495,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3226,
     "provenance": {
       "source": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "path": "knowledge/authored/forge-platform-facts.md",
       "hash": "9365f20107b9760b",
       "licence": "ours (re-authored)"
@@ -4369,6 +4526,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1803,
     "provenance": {
       "source": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "path": "knowledge/authored/forge-platform-facts.md",
       "hash": "9365f20107b9760b",
       "licence": "ours (re-authored)"
@@ -4399,6 +4557,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1906,
     "provenance": {
       "source": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "path": "knowledge/authored/forge-platform-facts.md",
       "hash": "9365f20107b9760b",
       "licence": "ours (re-authored)"
@@ -4430,6 +4589,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3592,
     "provenance": {
       "source": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "path": "knowledge/authored/forge-platform-facts.md",
       "hash": "9365f20107b9760b",
       "licence": "ours (re-authored)"
@@ -4459,6 +4619,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3196,
     "provenance": {
       "source": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "path": "knowledge/authored/forge-platform-facts.md",
       "hash": "9365f20107b9760b",
       "licence": "ours (re-authored)"
@@ -4496,6 +4657,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2597,
     "provenance": {
       "source": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "path": "knowledge/authored/forge-platform-facts.md",
       "hash": "9365f20107b9760b",
       "licence": "ours (re-authored)"
@@ -4530,6 +4692,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3694,
     "provenance": {
       "source": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "path": "knowledge/authored/forge-platform-facts.md",
       "hash": "9365f20107b9760b",
       "licence": "ours (re-authored)"
@@ -4562,6 +4725,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2064,
     "provenance": {
       "source": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "path": "knowledge/authored/forge-platform-facts.md",
       "hash": "9365f20107b9760b",
       "licence": "ours (re-authored)"
@@ -4600,9 +4764,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2294,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/gotchas.md",
       "hash": "32fcbc215217ea63",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4633,9 +4798,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2215,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/gotchas.md",
       "hash": "32fcbc215217ea63",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4666,9 +4832,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1934,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/gotchas.md",
       "hash": "32fcbc215217ea63",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4699,9 +4866,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2187,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md",
       "hash": "668c2a14e965fab3",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4732,9 +4900,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3267,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md",
       "hash": "668c2a14e965fab3",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4765,9 +4934,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2583,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md",
       "hash": "668c2a14e965fab3",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4800,9 +4970,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2066,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md",
       "hash": "668c2a14e965fab3",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4828,9 +4999,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 182,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md",
       "hash": "668c2a14e965fab3",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4864,9 +5036,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2837,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md",
       "hash": "668c2a14e965fab3",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4894,9 +5067,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2374,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md",
       "hash": "668c2a14e965fab3",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4931,9 +5105,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2378,
     "provenance": {
       "source": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md",
       "hash": "668c2a14e965fab3",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -4967,9 +5142,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1762,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5004,9 +5180,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2433,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5041,9 +5218,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2897,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5073,9 +5251,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3370,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5109,9 +5288,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2977,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5146,9 +5326,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3479,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5182,9 +5363,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1908,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5214,9 +5396,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2351,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5250,9 +5433,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3212,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5286,9 +5470,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1240,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5318,9 +5503,10 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 808,
     "provenance": {
       "source": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md",
       "hash": "97401216f2606f72",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
+      "licence": "Apache-2.0 (NOTICE retained)"
     }
   },
   {
@@ -5341,6 +5527,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1951,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -5363,6 +5550,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3699,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -5387,6 +5575,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2544,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -5410,6 +5599,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2086,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -5434,6 +5624,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2539,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -5457,6 +5648,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1300,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -5479,6 +5671,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 1774,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -5502,6 +5695,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 2066,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -5526,6 +5720,7 @@ export const KNOWLEDGE_INDEX = [
     "bytes": 3964,
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"

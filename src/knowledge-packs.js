@@ -376,6 +376,14 @@ export const resolveFieldGuideBlockByIds = async (ids, { audience = "coder" } = 
  *
  * Provenance is summarised from the sections' own provenance rather than restated here,
  * so it cannot drift from what was actually baked.
+ *
+ * F-956 - it is sent as FIELDS, not as a pre-joined line. The old shape was
+ * "jira-forge, Apache-2.0 (leanzero-forge-skills, NOTICE retained)": two slugs and a
+ * parenthetical, in a sentence an admin was supposed to read. The name is now the baked
+ * `sourceName` ("LeanZero Forge Skills"), the ids ride along for whoever needs to grep the
+ * corpus, and the UI decides which of the two it shows and which it hides in a title
+ * attribute. Rows are folded on name+licence, so five documents from one named source read
+ * as one line rather than five identical ones.
  */
 export const describeKnowledgePacks = (settings) => {
   const disabled = normalizeSettings(settings).disabled;
@@ -384,8 +392,17 @@ export const describeKnowledgePacks = (settings) => {
     for (const s of ALL_SECTIONS) {
       if (s.pack !== pack.id) continue;
       const p = s.provenance || {};
-      const line = [p.source, p.licence].filter(Boolean).join(", ");
-      if (line && !sources.includes(line)) sources.push(line);
+      /* A pre-F-956 pack module carries no `sourceName`; falling back to the id keeps the
+         tab honest on a stale bundle rather than printing an empty "From , Apache-2.0". */
+      const name = p.sourceName || p.source;
+      if (!name) continue;
+      const licence = p.licence || "";
+      const row = sources.find((r) => r.name === name && r.licence === licence);
+      if (row) {
+        if (p.source && !row.ids.includes(p.source)) row.ids.push(p.source);
+      } else {
+        sources.push({ name, licence, ids: p.source ? [p.source] : [] });
+      }
     }
     return {
       id: pack.id,
@@ -397,6 +414,9 @@ export const describeKnowledgePacks = (settings) => {
       sections: pack.sections,
       bytes: pack.bytes,
       pinned: Array.isArray(pack.pinned) ? pack.pinned.slice() : [],
+      /* F-956 - WHO the pinned sections are sent to. The tab has to name the surfaces that
+         lose their core while a pinned pack is off, and the answer is data in the bake. */
+      pinnedFor: Array.isArray(pack.pinnedFor) ? pack.pinnedFor.slice() : [],
       provenance: sources,
       enabled: !disabled.includes(pack.id),
     };

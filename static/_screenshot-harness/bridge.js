@@ -1054,12 +1054,20 @@ const knowledgeDisabled = () => {
    RESULT from the same generated index it reads, including the "source, licence" provenance
    join and the clamp that drops an unknown pack id. */
 const describePacks = () => KNOWLEDGE_PACKS.map((pack) => {
+  /* F-956 - the same fold the backend does: rows of { name, licence, ids }, keyed on
+     name+licence, so one named source feeding five documents is ONE line. Mirrored from
+     describeKnowledgePacks rather than re-imagined; a mock with its own join would let the
+     tab pass here and print five duplicate lines in Jira. */
   const sources = [];
   for (const sec of KNOWLEDGE_INDEX) {
     if (sec.pack !== pack.id) continue;
     const pv = sec.provenance || {};
-    const line = [pv.source, pv.licence].filter(Boolean).join(", ");
-    if (line && !sources.includes(line)) sources.push(line);
+    const name = pv.sourceName || pv.source;
+    if (!name) continue;
+    const licence = pv.licence || "";
+    const row = sources.find((r) => r.name === name && r.licence === licence);
+    if (row) { if (pv.source && !row.ids.includes(pv.source)) row.ids.push(pv.source); }
+    else sources.push({ name, licence, ids: pv.source ? [pv.source] : [] });
   }
   return {
     id: pack.id,
@@ -1070,6 +1078,8 @@ const describePacks = () => KNOWLEDGE_PACKS.map((pack) => {
     sections: pack.sections,
     bytes: pack.bytes,
     pinned: Array.isArray(pack.pinned) ? pack.pinned.slice() : [],
+    // F-956 - the pinned audiences, passed through as the backend passes them.
+    pinnedFor: Array.isArray(pack.pinnedFor) ? pack.pinnedFor.slice() : [],
     provenance: sources,
     enabled: !knowledgeDisabled().includes(pack.id),
   };

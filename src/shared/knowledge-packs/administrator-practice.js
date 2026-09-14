@@ -39,6 +39,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -66,6 +67,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -92,6 +94,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -118,6 +121,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -146,6 +150,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -173,6 +178,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -197,6 +203,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -221,6 +228,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"
@@ -245,6 +253,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "path": "knowledge/authored/administrator-practice.md",
       "hash": "b2d76c3368ef6355",
       "licence": "ours (re-authored)"

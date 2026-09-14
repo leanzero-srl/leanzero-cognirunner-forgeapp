@@ -104,8 +104,16 @@ reset();
     ok(Number.isFinite(p.sections) && p.sections > 0, `${p.id}: section count`);
     ok(Number.isFinite(p.bytes) && p.bytes > 0, `${p.id}: bytes (for the size line)`);
     ok(Array.isArray(p.provenance) && p.provenance.length > 0, `${p.id}: at least one provenance line`);
-    ok(p.provenance.every((s) => typeof s === "string"), `${p.id}: provenance lines are strings`);
+    /* F-956 - provenance is FIELDS now, not a pre-joined slug line. The tab shows the name
+       and the licence and keeps the ids in a title attribute, so all three must arrive. */
+    ok(p.provenance.every((row) => row && typeof row.name === "string" && row.name.length > 0),
+      `${p.id}: every provenance row names its source in words`);
+    ok(p.provenance.every((row) => typeof row.licence === "string"), `${p.id}: …and carries a licence`);
+    ok(p.provenance.every((row) => Array.isArray(row.ids) && row.ids.length > 0), `${p.id}: …and keeps the source ids`);
     ok(Array.isArray(p.pinned), `${p.id}: pinned array`);
+    // F-956 - and WHO the pins are for, which is what the tab names when a pack goes off.
+    ok(Array.isArray(p.pinnedFor), `${p.id}: pinnedFor array`);
+    ok(p.pinned.length === 0 || p.pinnedFor.length > 0, `${p.id}: a pinned pack says which surfaces its pins serve`);
     ok(p.enabled === true, `${p.id}: enabled by default`);
   }
 

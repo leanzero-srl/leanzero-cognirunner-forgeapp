@@ -1570,9 +1570,18 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const faultCode = faultSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   ok((faultCode.match(/process\.env\.HARNESS_SECRET/g) || []).length === 1,
     "F-522.SOURCE: the env var is still read in exactly ONE place — harnessEnabled()");
-  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 9,
-    `F-522.SOURCE: …and asked by all NINE storage-touching exports — F-688 added plantHarnessFaults and clearPlantedFaults (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
-  for (const fn of ["harnessFaultArmed", "armHarnessFault", "disarmHarnessFault", "readHarnessFault", "armKeyReadFault", "armJiraFault", "sweepHarnessFaults"]) {
+  /* F-694 — WHICH exports must ask is the MODULE'S list, not a number and a hand-written
+   * array here. Both were hard-coded, in this file and in harness-fault-ttl.test.mjs, and
+   * this copy was already STALE: F-688 added two gated exports and bumped the count, but the
+   * name list below still ran over seven, so neither new lever's first statement was ever
+   * checked here. The count now comes from `HARNESS_GATED_EXPORTS.length` and the names come
+   * from the list itself, so adding an export is one edit in one place. */
+  const gated = (await import("../../src/harness-fault.js")).HARNESS_GATED_EXPORTS;
+  ok(Array.isArray(gated) && gated.length > 0,
+    "F-694: the gated-export list is exported by the module that owns the gate");
+  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === gated.length,
+    `F-522.SOURCE: …and asked by every export on HARNESS_GATED_EXPORTS (${gated.length}) and by nothing else (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
+  for (const fn of gated) {
     const body = faultSrc.split(`${fn} = async`)[1] || "";
     ok(/^\s*\([^)]*\)\s*=>\s*\{\s*if \(!harnessEnabled\(\)\)/.test(body),
       `F-522.SOURCE: the gate is the FIRST statement of ${fn} — before any storage call`);

@@ -48,13 +48,71 @@ const STORAGE_CODES = new Set([
  * product was unreachable. They point at different repairs, so they must not share a name.
  *
  * True for: any `ForgeKvsError`/`ForgeKvsAPIError` (note the subclass does NOT override
- * `name`, so both read "ForgeKvsError"), any known KVS code, and any TypeError — a
- * TypeError raised by a storage call is a broken handle, never a socket.
+ * `name`, so both read "ForgeKvsError"), any known KVS code, and any TypeError that is not
+ * the fetch stack's own — a TypeError raised by a storage call is a broken handle, never a
+ * socket, but see `isNetworkFault` for the one TypeError that IS a socket.
  */
 export const isStorageFault = (e) => {
   if (!e) return false;
   const name = String(e.name || "");
   if (name.startsWith("ForgeKvs")) return true;
   if (e.code && STORAGE_CODES.has(String(e.code))) return true;
-  return name === "TypeError";
+  if (name !== "TypeError") return false;
+  // F-856: node 22 / undici raises a bare `TypeError: fetch failed` for EVERY DNS, TLS and
+  // connection error, so the un-narrowed `name === "TypeError"` that used to end this
+  // function labelled a Jira network blip a fault in OUR OWN bookkeeping, and sent the
+  // reader to the wrong repair. Only a TypeError that is not the fetch stack's is storage.
+  return !isNetworkFault(e);
+};
+
+/**
+ * The node/undici error codes that mean "the remote was not reachable" rather than "our
+ * store broke". `UND_ERR_*` is undici's own family (connect timeout, socket, headers
+ * timeout); the rest are node's classic socket codes. They are read off the `cause` chain
+ * because undici's public throw is a bare `TypeError("fetch failed")` with the real reason
+ * hung underneath it.
+ */
+const NETWORK_CODES = new Set([
+  "ENOTFOUND",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ECONNABORTED",
+  "EPIPE",
+  "EPROTO",
+]);
+
+const isNetworkCode = (code) => {
+  if (!code) return false;
+  const c = String(code);
+  return NETWORK_CODES.has(c) || c.startsWith("UND_ERR");
+};
+
+/**
+ * IS THIS A NETWORK FAULT? (F-856)
+ *
+ * Asks BOTH questions, because the fetch stack answers neither on its own: the message
+ * ("fetch failed" is undici's one public wording) and the `cause` chain's `code`, which is
+ * where the real reason lives. `AggregateError`-style `errors[]` is walked too, because a
+ * multi-address DNS result fails as a list of ECONNREFUSEDs.
+ *
+ * A TypeError out of a broken storage handle ("store.set is not a function") answers false
+ * here and stays a storage fault — that is the F-833 distinction, and keeping it is the
+ * whole point of narrowing rather than deleting the TypeError rule.
+ *
+ * The chain is walked with a depth cap: `cause` can be self-referential.
+ */
+export const isNetworkFault = (e) => {
+  if (!e) return false;
+  if (String((e && e.message) || "").toLowerCase().includes("fetch failed")) return true;
+  let cur = e;
+  for (let depth = 0; cur && depth < 5; depth++) {
+    if (isNetworkCode(cur.code)) return true;
+    if (Array.isArray(cur.errors) && cur.errors.some((x) => x && isNetworkCode(x.code))) return true;
+    cur = cur.cause;
+  }
+  return false;
 };

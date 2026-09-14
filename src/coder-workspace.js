@@ -127,15 +127,31 @@ export const WORKSPACE_LOCK_TTL = { ttl: { value: 1, unit: "MINUTES" } };
  */
 export const WORKSPACE_GROUPS = ["plan", "log", "artifact", "step"];
 
+const WORKSPACE_GROUP_SET = new Set(WORKSPACE_GROUPS);
+
 /**
  * The ONE stable entry shape a turn reports per write group: `{group, ok, errorClass?,
  * detail?}` and nothing else. The writer's success payloads carry ids (commentId,
  * attachmentId, bytes) that are useful to the writer and noise on a task row, so they are
  * projected away here rather than at each call site.
+ *
+ * THE VOCABULARY IS ENFORCED HERE (F-858). `WORKSPACE_GROUPS` was exported by F-841 and
+ * then read by nobody: all four call sites passed a bare string literal, so a typo
+ * ("artefact", "logs") would have produced a well-formed entry under a name the summary
+ * line prints and no counter, panel or test recognises. A list that names the vocabulary
+ * without enforcing it is documentation, not a rule, so the constructor asserts. It throws
+ * rather than coercing because an unknown group is a programming error in this repo, never
+ * a runtime condition: there is no input path from a user or a model to this argument.
  */
 export const workspaceEntry = (group, r) => {
+  const name = String(group);
+  if (!WORKSPACE_GROUP_SET.has(name)) {
+    const err = new Error(`Unknown workspace write group "${name}". Known groups: ${WORKSPACE_GROUPS.join(", ")}.`);
+    err.name = "UnknownWorkspaceGroupError";
+    throw err;
+  }
   const ok = !(r && r.ok === false);
-  const entry = { group: String(group), ok };
+  const entry = { group: name, ok };
   if (!ok) {
     if (r.errorClass) entry.errorClass = String(r.errorClass).slice(0, 40);
     if (r.error) entry.detail = clampChars(String(r.error), 300);

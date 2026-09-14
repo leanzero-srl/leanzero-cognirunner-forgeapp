@@ -72,6 +72,27 @@ import { clampChars } from "./shared/text-clamp.js";
 
 const idx = () => import("./index.js");
 
+/**
+ * WHAT A TURN REPORTS ABOUT ITS WRITES, in ONE shape (F-841 + F-857).
+ *
+ * Both producers of a coder result - a turn and an answered consent ticket - hand their
+ * entries through here, so `workspace`, `workspaceFailures` and `workspaceSummary` always
+ * agree and a reader (`getAsyncTaskResult` → the issue panel) never has to know which path
+ * produced them. The SENTENCE is included because the count alone does not tell an operator
+ * WHICH write group died, and the log line that used to carry that answer is written into
+ * the buffer only the `log` writer flushes - so when the `log` group is the failing one, its
+ * own obituary dies with it. Absent on a healthy turn: presence is the signal.
+ */
+const workspaceReceipt = (entries) => {
+  const list = Array.isArray(entries) ? entries : [];
+  const summary = renderWorkspaceSummaryLine(list);
+  return {
+    workspace: list,
+    workspaceFailures: list.filter((e) => e && e.ok === false).length,
+    ...(summary ? { workspaceSummary: summary } : {}),
+  };
+};
+
 /* ───────────────────────────── constants (ONE home) ───────────────────────────── */
 
 /** The long consumer's budget (manifest `long-ai-handler.timeoutSeconds`). */
@@ -1220,6 +1241,24 @@ const runCoderTurnClaimed = async ({
   try { await onRound(); } catch (e) { log(`log flush failed: ${(e && e.message) || e}`); }
 
   const workspaceEntries = [...workspaceResults.values()];
+  /*
+   * THE SUMMARY REACHES A SURFACE A HUMAN READS (F-857).
+   *
+   * The line above is `log(...)`-ed into the very buffer that ONLY the failing writer
+   * flushes, so when the failing group IS `log` the obituary dies with the turn: the one
+   * reader who needed it is the one who cannot be told. The comment above admitted it and
+   * pointed at the count on the record, but `workspaceFailures` had no reader either - it
+   * went onto the record, through `getAsyncTaskResult` verbatim, and nothing opened it.
+   *
+   * So the line is rendered ONCE MORE HERE, after the final flush, because that flush is
+   * itself a `log` write and its outcome belongs in the sentence, and it goes to two
+   * places that survive a dead log comment: the turn record (`workspaceSummary`, which the
+   * issue panel prints in solid red beside the reply) and `console.warn`, which is where an
+   * operator with no panel open looks. It is rendered by the SAME function as the log line,
+   * never re-worded here - the vocabulary has one home (src/coder-workspace.js).
+   */
+  const workspaceSummary = renderWorkspaceSummaryLine(workspaceEntries);
+  if (workspaceSummary) console.warn(`[coder] ${key}/${thread}: ${workspaceSummary}`);
   const out = {
     success: loop.outcome !== "failed",
     threadId: thread,
@@ -1236,8 +1275,7 @@ const runCoderTurnClaimed = async ({
     // The COUNT rides beside it (F-841) so `getAsyncTaskResult` and the panel can say
     // "some of this turn's writes did not land" without walking the array, and so a turn
     // with `success:true` and three dead write groups can no longer read as clean.
-    workspace: workspaceEntries,
-    workspaceFailures: workspaceEntries.filter((e) => e.ok === false).length,
+    ...workspaceReceipt(workspaceEntries),
   };
   if (loop.error) out.error = loop.error;
   // …and the same receipt on the RESULT, so `getAsyncTaskResult` and the panel can read
@@ -1552,10 +1590,10 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
     ...(verdict === "confirm" && !executedOk ? { error: String((result && result.error) || "The confirmed step failed.").slice(0, 300) } : {}),
     resume: true,
     resumeMessage: decisionText,
-    // The same one shape a turn reports (F-841), so a caller reads `workspace` and
-    // `workspaceFailures` the same way whichever entry point produced them.
-    ...(stepComment
-      ? { workspace: [workspaceEntry("step", stepComment)], workspaceFailures: stepComment.ok === false ? 1 : 0 }
-      : {}),
+    // The same one shape a turn reports (F-841), so a caller reads `workspace`,
+    // `workspaceFailures` and `workspaceSummary` (F-857) the same way whichever entry
+    // point produced them. The sentence comes from the same renderer as the turn's, so
+    // the panel prints one wording for both paths.
+    ...(stepComment ? workspaceReceipt([workspaceEntry("step", stepComment)]) : {}),
   };
 };

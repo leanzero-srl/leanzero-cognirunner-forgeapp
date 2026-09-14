@@ -507,6 +507,78 @@ await check("every failure names its class, and nothing throws", async () => {
   assert.equal(calls().length, 0);
 });
 
+/* ───────── 7b. undici's TypeError is a SOCKET, not our store (F-856) ───────── */
+
+// `isStorageFault` used to end `return name === "TypeError"`. Node 22 / undici raises a
+// bare `TypeError: fetch failed` for every DNS, TLS and connection error, so every Jira
+// network blip that reached `classifyThrow` — the `jira()` helper and the whole lock body,
+// not just the storage calls — was reported as a fault in the app's own bookkeeping. The
+// narrowing must NOT cost the F-833 distinction, so both directions are asserted here.
+await check("a fetch TypeError classifies network, a broken-handle TypeError stays storage", async () => {
+  const { isStorageFault, isNetworkFault } = await import("../../src/shared/error-class.js");
+
+  const fetchFailed = new TypeError("fetch failed");
+  assert.equal(isStorageFault(fetchFailed), false, "undici's public throw is NOT a storage fault");
+  assert.equal(isNetworkFault(fetchFailed), true);
+
+  const withCause = new TypeError("fetch failed");
+  withCause.cause = Object.assign(new Error("getaddrinfo ENOTFOUND x.atlassian.net"), { code: "ENOTFOUND" });
+  assert.equal(isStorageFault(withCause), false);
+  for (const code of ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"]) {
+    const e = new TypeError("something opaque");
+    e.cause = Object.assign(new Error(code), { code });
+    assert.equal(isStorageFault(e), false, `${code} is a network fault`);
+    assert.equal(isNetworkFault(e), true, `${code} is a network fault`);
+  }
+
+  // F-833 must survive: a TypeError out of a broken storage handle is STILL storage.
+  const brokenHandle = new TypeError("store.set is not a function");
+  assert.equal(isStorageFault(brokenHandle), true, "a broken storage handle is still a storage fault");
+  assert.equal(isNetworkFault(brokenHandle), false);
+  assert.equal(isStorageFault(Object.assign(new Error("x"), { name: "ForgeKvsError" })), true);
+  assert.equal(isStorageFault(Object.assign(new Error("x"), { code: "STORAGE_LIMIT_EXCEEDED" })), true);
+
+  // And end to end: a lock body that throws undici's TypeError reports "network".
+  reset();
+  const thrown = await ws.withWorkspaceLock(ISSUE, "A test", async () => { throw new TypeError("fetch failed"); });
+  assert.equal(thrown.ok, false);
+  assert.equal(thrown.errorClass, "network", "a Jira network blip is not reported as a storage fault");
+
+  // while a genuinely broken store handle still reports "storage".
+  const broken = await ws.withWorkspaceLock(ISSUE, "A test", async () => { throw new TypeError("store.set is not a function"); });
+  assert.equal(broken.errorClass, "storage");
+});
+
+/* ───────── 7c. the write-group vocabulary is ENFORCED (F-858) ───────── */
+
+// `WORKSPACE_GROUPS` was exported and read by nobody: the four engine call sites passed
+// bare literals, so a typo would have produced a well-formed entry under a name nothing
+// counts, prints or tests. The list is now a rule, and this asserts both halves of it.
+await check("workspaceEntry refuses an unknown group and accepts each of the four", async () => {
+  assert.deepEqual(ws.WORKSPACE_GROUPS, ["plan", "log", "artifact", "step"]);
+
+  for (const group of ws.WORKSPACE_GROUPS) {
+    assert.equal(ws.workspaceEntry(group, { ok: true }).group, group);
+    const bad = ws.workspaceEntry(group, { ok: false, errorClass: "network", error: "x" });
+    assert.equal(bad.ok, false);
+    assert.equal(bad.errorClass, "network");
+  }
+
+  // The four literals the engine passes ARE members - the point of the vocabulary.
+  const engineSrc = readFileSync(path.join(srcDir, "coder-engine.js"), "utf8");
+  for (const m of engineSrc.matchAll(/(?:noteWorkspace|workspaceEntry)\(\s*"([^"]+)"/g)) {
+    assert.ok(ws.WORKSPACE_GROUPS.includes(m[1]), `coder-engine.js passes "${m[1]}", which is not a known group`);
+  }
+
+  for (const unknown of ["artefact", "logs", "", "comment"]) {
+    assert.throws(
+      () => ws.workspaceEntry(unknown, { ok: true }),
+      (e) => e.name === "UnknownWorkspaceGroupError" && e.message.includes(String(unknown)),
+      `"${unknown}" must be refused by name`,
+    );
+  }
+});
+
 /* ───────── 8. the pure section rule ───────── */
 
 await check("replacePlanSection leaves an unmarked description untouched apart from the append", async () => {

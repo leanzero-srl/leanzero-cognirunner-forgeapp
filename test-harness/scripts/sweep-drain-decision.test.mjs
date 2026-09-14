@@ -25,6 +25,7 @@ import {
   decideSweepStep, newDrainState, answerSignature, answerComplete, madeProgress, drainSweep,
   DELETES_FAILING_BACKOFF_MS, IDENTICAL_ANSWER_LIMIT,
   plantPopulation, resumeOf, PLANT_CLEARING_LIMIT, PLANT_CLEARING_PAUSE_MS,
+  plantLedgerRow,
 } from "../lib/sweep-drain.mjs";
 
 /** Walk a scripted list of answers through the decision, returning every step taken. */
@@ -493,5 +494,68 @@ const fakeClock = () => { const slept = []; return { slept, sleep: async (ms) =>
   assert.equal(resumeOf({ reason: "writes-failed", complete: false, resume: null }), null,
     "…including when it is explicitly null");
 }
+
+/* ── F-761 — THE LEDGER ROW CARRIES THE FIELDS THE LOOP BRANCHED ON ────────────────
+ * `plant-sweep-live.mjs` recorded a hand-copied row that had neither `resume` nor
+ * `clearedSoFar`, so a plant that resumed through a STALE-TAIL clear left an evidence file
+ * identical to one that resumed on a start index — and F-744's cumulative count, the whole
+ * reason `clearToken` exists, was unfalsifiable in every live run. The row builder is the
+ * library's now, and this is the test that the fields land in the shape a reader gets.
+ *
+ * It is driven through `plantPopulation` rather than by calling the builder on a literal,
+ * because the claim is about the EVIDENCE a real trail produces: a builder that is correct
+ * on a hand-written object and never reached by the loop would pass a unit test and record
+ * nothing. */
+{
+  const clearing = (cleared, clearedSoFar, remainingStale, staleFailed, clearToken) => ({
+    ok: true, planted: 0, failed: 0, staleFailed, n: 5, startIndex: 0, nextIndex: 0,
+    cleared, clearedSoFar, remainingStale, clearToken, expired: true, keys: [],
+    truncated: true, reason: "clear-failed", complete: false, resume: "repost",
+    ttlSeconds: 300, budgetMs: 15000,
+  });
+  const done = { ok: true, planted: 5, failed: 0, n: 5, startIndex: 0, nextIndex: 5, cleared: 0, expired: true, keys: ["a", "b", "c", "d", "e"], truncated: false, reason: null, complete: true, resume: null, ttlSeconds: 300, budgetMs: 15000 };
+  const answers = [clearing(40, 40, 12, 3, "tok-1"), clearing(12, 52, 0, 1, "tok-2"), done];
+  let i = 0;
+  const r = await plantPopulation(async () => ({ status: 200, json: answers[i++] }), 5, { sleep: async () => {} });
+  assert.equal(r.planted, true, r.stopReason || "");
+  assert.equal(r.calls.length, 3);
+
+  const [c1, c2, c3] = r.calls;
+  /* THE TWO FIELDS THE OLD ROW OMITTED, on the calls that have them. */
+  assert.deepEqual(r.calls.map((c) => c.resume), ["repost", "repost", null],
+    "`resume` is in the ledger, so a stale-tail resume is distinguishable from a start-index one (F-761)");
+  assert.deepEqual([c1.clearedSoFar, c2.clearedSoFar], [40, 52],
+    "`clearedSoFar` is recorded per call and RISES across identical re-POSTs — the F-744 carry, now visible in the evidence");
+  assert.deepEqual([c1.remainingStale, c2.remainingStale], [12, 0],
+    "`remainingStale` is recorded, which is the progress a non-advancing nextIndex cannot show");
+  assert.deepEqual([c1.staleFailed, c2.staleFailed], [3, 1],
+    "`staleFailed` is recorded under its own name (F-747), never folded into `failed`");
+
+  /* THE TOKEN IS A BOOLEAN AND NEVER ITS VALUE: it is base64 that may encode a KVS cursor,
+     and the keys in this keyspace carry faulted paths. Presence is the whole assertion. */
+  assert.deepEqual(r.calls.map((c) => c.clearTokenPresent), [true, true, false],
+    "`clearTokenPresent` is a BOOLEAN — an answer that asks for a re-POST must hand a token back, and the token itself never enters the evidence");
+  const serialised = JSON.stringify(r.calls);
+  assert.ok(!serialised.includes("tok-1") && !serialised.includes("tok-2"),
+    "…and the token VALUE appears nowhere in the serialised ledger");
+
+  /* A pre-F-724 answer carries no `resume` at all. The row must record the mode the loop
+     OBEYED, not `undefined` — otherwise the one shape where the fallback is load-bearing is
+     the one shape the evidence cannot describe. */
+  const legacy = plantLedgerRow({ ok: true, planted: 0, n: 5, startIndex: 0, nextIndex: 0, reason: "clearing", complete: false }, 9);
+  assert.equal(legacy.resume, "repost", "a legacy answer with no `resume` is recorded as the mode resumeOf READ from its reason");
+  assert.equal(legacy.clearedSoFar, null, "…and a field the answer does not carry is null, not undefined — an absent key would vanish from the JSON");
+  assert.equal(legacy.clearTokenPresent, false, "…and no token is no token");
+
+  /* THE NULL-SAFETY THAT KEEPS THE ROW A ROW. A malformed answer must not throw inside the
+     ledger: the loop's own stop reasons are the diagnosis, and a builder that throws would
+     replace a named stop with a stack trace. */
+  const empty = plantLedgerRow({}, 1);
+  assert.equal(empty.call, 1);
+  assert.equal(empty.resume, null);
+  assert.equal(empty.clearTokenPresent, false);
+}
+
+console.log("F-761: the plant ledger row records `resume`, `clearedSoFar`, `remainingStale` and `staleFailed`, and the clearToken as a boolean only — so a stale-tail resume is legible in the evidence and the F-744 carry is falsifiable live");
 
 console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived, and drainSweep is the one loop both live drivers obey (F-702); plantPopulation re-POSTs a `clearing` answer UNCHANGED and bounded, so a stale-tail clear no longer fails a run the tenant would have completed (F-724); and it now obeys the answer's own `resume` — repost/start-index/stop — forwarding the clearToken, so `clear-failed` is a re-POST and an unknown mode is a stop (F-744/F-745/F-747/F-748)");

@@ -299,12 +299,40 @@ export const PLANT_CLEARING_LIMIT = 4;
 export const PLANT_CLEARING_PAUSE_MS = 500;
 
 /** The default per-call ledger row. A driver that needs different fields passes `opts.row`. */
-const defaultPlantRow = (j, nth) => ({
+/*
+ * F-761 — THE LEDGER ROW RECORDS THE FIELDS THE LOOP BRANCHES ON.
+ *
+ * `plantPopulation` decides the WHOLE shape of a plant on `resume`: "repost" re-POSTs the
+ * identical body, "start-index" advances, "stop" aborts. The ledger recorded none of it —
+ * not `resume`, and not the `clearedSoFar` that is the only evidence a re-POST trail is
+ * PROGRESSING rather than spinning. So a plant that resumed through a stale-tail clear left
+ * an evidence file indistinguishable from one that resumed on a start index, and F-744's
+ * cumulative count — the whole reason `clearToken` exists — was unfalsifiable live.
+ *
+ * `clearToken` is recorded as a BOOLEAN and never as its value: it is `encodeSweepCursor`'s
+ * base64, an opaque token that may encode a KVS cursor, and the keys in this keyspace carry
+ * faulted paths. Its PRESENCE is the whole assertion (F-744: an answer that asks for a
+ * re-POST must hand one back, or the running total restarts at zero on the next call).
+ *
+ * Exported because the offline fixtures drive it directly: a live driver's row builder that
+ * only runs on a tenant is a row builder whose shape is asserted nowhere.
+ */
+export const plantLedgerRow = (j, nth) => ({
   call: nth, n: j.n ?? null, startIndex: j.startIndex ?? null, planted: j.planted ?? null,
   failed: j.failed ?? null, nextIndex: j.nextIndex ?? null, truncated: j.truncated ?? null,
   reason: j.reason ?? null, complete: j.complete ?? null, expired: j.expired ?? null,
   cleared: j.cleared ?? null, ttlSeconds: j.ttlSeconds ?? null, budgetMs: j.budgetMs ?? null,
+  /* F-761 — the branch, and the progress a non-advancing `nextIndex` cannot show. `resumeOf`
+     rather than `j.resume`, so a pre-F-724 answer is recorded as the mode the loop actually
+     obeyed and not as `undefined`. */
+  resume: resumeOf(j) ?? null,
+  clearedSoFar: j.clearedSoFar ?? null,
+  remainingStale: j.remainingStale ?? null,
+  staleFailed: j.staleFailed ?? null,
+  clearTokenPresent: typeof j.clearToken === "string" && j.clearToken.length > 0,
 });
+
+const defaultPlantRow = plantLedgerRow;
 
 /**
  * PLANT `n` ROWS AS A POPULATION, resuming until the rows are THERE.

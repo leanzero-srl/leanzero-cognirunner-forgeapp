@@ -383,6 +383,27 @@ let agentId = null;
       `F-508: …clamped to the ceiling ${VA_CEILINGS.shadowUntilTick.max} (got ${back && back.va.status.shadowUntilTick})`);
     ok(asRefusals(tooLong).some((r) => String(r.field) === "status.shadowUntilTick"),
       `F-508: …and the clamp is REPORTED in refused[], which is what "no silent permission change" means (got ${JSON.stringify(asRefusals(tooLong))})`);
+
+    /* ── F-845 — THE SENTENCE IS CLEAN IN THE ANSWER, NOT ONLY ON THE SCREEN ──
+     *
+     * `VaSaveNotes.jsx` used to run every save note through a `noDashes` rewriter before
+     * printing it, so the owner's no-em-dash rule held in exactly ONE pane and nowhere
+     * else the same text goes: this resolver answer (which the REST doors return raw),
+     * the `vaRefused` rows stored on the job, the ledger receipt. The rewriter is gone
+     * and the authors are clean, so the property is asserted where it actually matters,
+     * on the ANSWER. `ui-copy-dashes.test.mjs` guards the source bytes; this guards the
+     * assembled sentence, including anything interpolated into it at runtime. */
+    const dashed = (rows) => rows.filter((r) => /[—–]/.test(String((r && r.reason) || r)));
+    /* The over-ceiling clamp, and the long-watch note re-armed on the SAME agent - the
+       one sentence `noDashes` was laundering, assembled with its live numbers in it. */
+    await setWatched(3);
+    const longWatch = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 500 } }) } });
+    for (const [label, answer] of [["a clamped save", tooLong], ["an armed long watch", longWatch]]) {
+      ok(dashed(asRefusals(answer)).length === 0,
+        `F-845: ${label} answers with save notes carrying no em dash or en dash (got ${JSON.stringify(dashed(asRefusals(answer)))})`);
+    }
+    ok(asRefusals(longWatch).some((r) => /shadow/i.test(String(r.reason))),
+      `F-845: …and the long-watch sentence really is IN that answer, so the check above is not passing on an empty list (got ${JSON.stringify(asRefusals(longWatch))})`);
   }
 
   /* ── F-519 — THE SAVE DOOR DOES NOT CUT A WATCH THE ENGINE ARMED ────────────

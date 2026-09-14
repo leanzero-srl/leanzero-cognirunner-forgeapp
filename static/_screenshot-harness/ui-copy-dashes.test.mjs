@@ -17,9 +17,26 @@
  *
  * THE RULE THIS FILE ENFORCES
  *   No U+2014 and no U+2013 anywhere in the CODE BYTES (comments excluded) of
- *   `static/{config-ui,admin-panel,config-view,issue-glance}/src/**\/*.{js,jsx}` or
- *   `src/shared/*.js`, unless the line is covered by an ALLOW entry below that says, in
- *   words, why the character is not copy.
+ *   `static/{config-ui,admin-panel,config-view,issue-glance}/src/**\/*.{js,jsx}`,
+ *   `src/shared/*.js`, or the named BACKEND COPY AUTHORS in `BACKEND_COPY` below, unless
+ *   the line is covered by an ALLOW entry that says, in words, why the character is not
+ *   copy.
+ *
+ * F-845 - WHY BACKEND FILES ARE IN SCOPE AT ALL. The gate first covered only files a
+ * webpack build reads, and the rule promptly grew a loophole: `VaSaveNotes.jsx` ran every
+ * save-note sentence through a `noDashes` rewriter on its way to the pane. The rendered
+ * pane was clean, the gate was green, and the SAME sentence stayed dashed in the resolver
+ * answer a REST caller reads, in the `vaRefused` rows stored on the job and in the ledger
+ * receipt. A converter at one render site does not enforce a rule about text; it hides
+ * the violations from the only thing that could. So the rewriter is gone and the AUTHORS
+ * are scanned: a file in `BACKEND_COPY` is a backend module whose string literals are
+ * read by a human, either in the app (a refusal sentence, a save note, a status line) or
+ * in Jira itself (a comment or description this app writes into someone's issue).
+ *
+ * MODEL-FACING PROMPT TEXT IS NOT COPY and may be allow-listed per file with the reason
+ * quoted, the same way a seeded knowledge pack is: a system prompt is an instruction to a
+ * model, no human reads it, and rewording one changes model behaviour rather than a
+ * sentence. Nothing in `BACKEND_COPY` needs that exemption today; the mechanism is ALLOW.
  *
  * WHY THE SCOPE IS "CODE BYTES", NOT "STRING LITERALS". Half of this app's user-visible
  * text is JSX TEXT, not a quoted string - `<span>Dry run, no transition is blocked</span>`
@@ -48,10 +65,13 @@
  * and neither can hide a sentence: a dash with words on both sides never matches either.
  *
  * WHAT THIS GATE DOES NOT SEE, stated rather than papered over:
- *   - `src/index.js`, `src/memories.js`, `src/skills.js` and the rest of the backend. UI
- *     copy that lives there reaches a human through a resolver answer, and it is NOT in
- *     scope here. The four memory refusals F-827 reworded are in `src/shared/` and ARE
- *     covered; a sentence typed directly into `src/index.js` is not.
+ *   - Every backend file NOT named in `BACKEND_COPY`: `src/index.js`, `src/memories.js`,
+ *     `src/skills.js`, the listener/job/agent runtime and the git modules. UI copy that
+ *     lives there reaches a human through a resolver answer and is not in scope yet. The
+ *     list is meant to GROW file by file, each addition paired with the sweep that makes
+ *     that file clean, because adding a file with hundreds of unconverted lines turns the
+ *     gate red for everyone and gets it switched off. It is a named list rather than a
+ *     glob for exactly that reason.
  *   - `public/index.html` and every `.css` file.
  *   - Comments. A `--` typed as a dash. A dash inside a base64 blob or a URL.
  *
@@ -61,7 +81,7 @@
  * Run: node ui-copy-dashes.test.mjs
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -88,14 +108,6 @@ const ALLOW = [
     why: "The detector itself. `DASH_RE = /[—–]|(?:^|\\s)--(?:\\s|$)/` is the Virtual "
       + "Administrator's outward-text gate for the SAME owner rule, applied to model output. It "
       + "has to contain the characters it refuses, exactly as a spam filter contains the spam.",
-  },
-  {
-    file: "static/admin-panel/src/components/VaSaveNotes.jsx",
-    match: "noDashes",
-    why: "The converter itself: `String(s).replace(/\\s*[—–]\\s*/g, \", \")` is how a "
-      + "save-note sentence coming back from the backend is de-dashed BEFORE it is rendered. "
-      + "Rewriting the character class empties the function of its job (it was silently emptied "
-      + "once, by F-827's own sweep, which is why this entry names it).",
   },
   {
     file: "src/shared/builtin-docs.js",
@@ -143,6 +155,16 @@ const ALLOW = [
  * THE SCAN
  * ------------------------------------------------------------------------- */
 const APPS = ["config-ui", "admin-panel", "config-view", "issue-glance"];
+
+/* THE BACKEND COPY AUTHORS (F-845 / F-847). Backend modules whose string literals are read
+   by a human: refusal sentences and save notes that ride a resolver answer into the admin
+   panel and out of the REST doors, and the comments and descriptions this app WRITES INTO
+   JIRA, which are the owner's copy on someone else's issue. Repo-relative paths; each one
+   was swept clean in the same cut that added it. */
+const BACKEND_COPY = [
+  "src/va-admin.js",
+];
+
 const sources = [];
 const walk = (dir) => {
   for (const name of readdirSync(dir)) {
@@ -155,7 +177,14 @@ for (const app of APPS) walk(join(REPO, "static", app, "src"));
 for (const name of readdirSync(join(REPO, "src", "shared"))) {
   if (name.endsWith(".js")) sources.push(join(REPO, "src", "shared", name));
 }
-ok(sources.length > 100, `scanned ${sources.length} source files across ${APPS.length} apps and src/shared`);
+/* A named file that has been RENAMED must fail loudly, not silently leave the gate. */
+for (const rel of BACKEND_COPY) {
+  const full = join(REPO, ...rel.split("/"));
+  ok(existsSync(full), `backend copy author ${rel} exists and is scanned (a rename must fail here, not silently drop the file)`);
+  sources.push(full);
+}
+ok(sources.length > 100,
+  `scanned ${sources.length} source files across ${APPS.length} apps, src/shared and ${BACKEND_COPY.length} backend copy author(s)`);
 
 /** Pass 2: blank `/* ... *\/` spans that survived the JS comment mask (CSS in a template). */
 const maskCssComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));

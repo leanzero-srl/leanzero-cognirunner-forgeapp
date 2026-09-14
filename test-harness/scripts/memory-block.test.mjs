@@ -140,6 +140,30 @@ b = await buildMemoryBlock({ capBytes: 80 });
 ok(u8(b.text) <= 80, `multibyte block respects the BYTE cap (${u8(b.text)} <= 80) — measured in UTF-8, not UTF-16 length`);
 ok(b.count === 1, "only the first CJK line (69B) fits an 80-byte cap; the second (→139B) is dropped whole");
 
+// F-872 — ONE LONG MEMORY RANKED FIRST MUST NOT SUPPRESS EVERY SHORTER ONE AFTER IT.
+// The loop walks the PRIORITY order (scoped, then confidence/reinforcements/recency), not
+// a size order, so the `break` this replaces meant the most-trusted memory in the store
+// silently deleted the rest of the block whenever its author wrote a long one — the exact
+// defect fetchSkillsBlock had and fixed with skip-and-report. The cap is a per-block
+// budget, so an over-budget line is SKIPPED and the ones after it are still considered.
+seed([
+  mk({ id: "big", content: "X".repeat(300), confidence: 0.99 }),
+  mk({ id: "s1", content: "SHORTONE", confidence: 0.5 }),
+  mk({ id: "s2", content: "SHORTTWO", confidence: 0.4 }),
+]);
+b = await buildMemoryBlock({ capBytes: 100 });
+ok(b.count === 2, `the two short memories below the oversized one still reach the prompt (count ${b.count})`);
+ok(b.text.includes("SHORTONE") && b.text.includes("SHORTTWO"), "…both of them, in priority order");
+ok(!b.text.includes("X".repeat(300)), "…and the memory that does not fit is the only one left out");
+ok(u8(b.text) <= 100, "…with the byte budget still respected");
+// and the caller is TOLD which memory was too big, rather than its author wondering.
+ok(Array.isArray(b.skipped) && b.skipped.length === 1 && b.skipped[0].id === "big",
+  `the skipped memory is reported by id (${JSON.stringify(b.skipped)})`);
+// a block where everything fits reports nothing skipped.
+seed([mk({ id: "f1", content: "FITS", confidence: 0.5 })]);
+b = await buildMemoryBlock({});
+ok(b.count === 1 && b.skipped.length === 0, "nothing over budget → skipped is empty, not absent");
+
 // ===================== getMemorySettings =====================
 
 // unset → documented defaults

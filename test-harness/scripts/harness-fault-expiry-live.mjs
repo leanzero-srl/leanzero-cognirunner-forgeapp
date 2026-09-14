@@ -52,6 +52,29 @@
  * is reachable through no hook action (`testSemanticPostFunction` is not on the
  * `invokeResolver` allow-list). It is reported N/V with that reason.
  *
+ * ⚠️ BLAST RADIUS — THIS DRIVER ARMS REAL FAULTS ON A SHARED TENANT (F-679).
+ * The READ-ONLY guarantee below is about the REPOSITORY. It says nothing about the tenant,
+ * and this driver is not passive there: it deliberately makes the live app misbehave. Two
+ * levers, both user-visible to anyone else on the site while they are armed:
+ *
+ *   · `armKeyReadFault("openai", "refuse")` — for ~5 s per arming, every read of the openai
+ *     key slot refuses. An admin sitting on Settings → Providers sees "Couldn't read key
+ *     status", and a "test key" click answers a planted refusal. The realistic harm is not
+ *     the 5 s: it is that they read it as a bad credential and ROTATE A WORKING KEY.
+ *   · `armJiraFault("/rest/api/3/user/search", 429)` — for ~5 s per arming, user search
+ *     answers 429. The Permissions tab's people picker shows a throttling notice and finds
+ *     nobody; a rule author mid-edit sees an empty search.
+ *
+ * Each window is the row's own 5 s TTL, and the CLEANUP `finally` disarms both on every
+ * path including the throw. It does NOT cover the process being KILLED — the 300 s family
+ * ceiling is the only bound then, which is the scenario F-664/F-667 exist because of. So:
+ *
+ *   ENVIRONMENT DEFAULT IS `staging`. Pointing this at the shared dev tenant is a
+ *   deliberate act and requires `--i-know-dev-is-shared` alongside `--env=dev`, because
+ *   nothing in the evidence file or the terminal would ever tell the admin who just
+ *   rotated a good key that a harness lever was live at that moment. Schedule the run,
+ *   or tell whoever is on the tenant — do not discover it afterwards.
+ *
  * READ-ONLY on src/ and static/. It never deploys, takes no screenshot and grants no role.
  * Every sentence and every payload — console and disk alike — goes through `redactSecrets`
  * /`redactString`, so no token, secret or dev web-trigger URL can reach the terminal or the
@@ -60,15 +83,45 @@
  * CLEANUP IS PART OF THE PROOF: both levers are disarmed in a `finally` and the last two
  * reads must answer `value:null`.
  *
- *   node scripts/harness-fault-expiry-live.mjs [--env=dev|staging] [--query=mihai]
+ *   node scripts/harness-fault-expiry-live.mjs [--env=staging|dev] [--query=mihai]
+ *   node scripts/harness-fault-expiry-live.mjs --env=dev --i-know-dev-is-shared
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 
-const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const ENV_NAME = arg("env", "dev");
+const flag = (n) => process.argv.slice(2).includes(`--${n}`);
+/* The provider slot this driver faults. Declared up here because the F-679 refusal below
+ * names it, and that refusal runs before anything else. */
+const PROVIDER = "openai";
+/* F-679 — STAGING BY DEFAULT. This driver arms user-visible faults (see the blast-radius
+ * note above), so the shared tenant is not the one you get by forgetting an argument. */
+const ENV_NAME = arg("env", "staging");
+if (ENV_NAME === "dev" && !flag("i-know-dev-is-shared")) {
+  console.error([
+    "",
+    "REFUSING to point this driver at the SHARED dev tenant without an explicit acknowledgement.",
+    "",
+    "While it runs it arms two REAL faults on that site, each for ~5s per arming:",
+    `  · the ${PROVIDER} key slot REFUSES to be read — an admin on Settings sees`,
+    `    "Couldn't read key status" and may take it for a bad credential and rotate a working key;`,
+    "  · /rest/api/3/user/search answers 429 — the Permissions people picker finds nobody.",
+    "",
+    "Both are disarmed in a finally, but not if this process is KILLED; the only bound then is",
+    "the 300s family ceiling. Schedule the run, or tell whoever is on the tenant.",
+    "",
+    "  node scripts/harness-fault-expiry-live.mjs                 # staging, the default",
+    "  node scripts/harness-fault-expiry-live.mjs --env=dev --i-know-dev-is-shared",
+    "",
+  ].join("\n"));
+  process.exit(2);
+}
+
+/* The environment is settled BEFORE anything is loaded or read: the refusal above must not
+ * be reachable only on a machine that already has a .env, or the guard would be a courtesy
+ * for the configured and a surprise for everyone else. */
+const env = loadEnv();
 const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
@@ -77,7 +130,7 @@ const PATH = "/rest/api/3/user/search";
 const FAULT_STATUS = 429;
 const TTL = 5;          // the row's own window
 const WAIT_MS = 8000;   // comfortably past it, and well under the 300 s cap
-const PROVIDER = "openai";
+/* PROVIDER is declared above, with the F-679 refusal that names it. */
 
 if (!HOOK_URL) { console.error(`no web-trigger URL for environment "${ENV_NAME}"`); process.exit(2); }
 

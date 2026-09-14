@@ -93,7 +93,38 @@ npm run test:resolvers-live   # LIVE: the admin resolvers (getListeners/saveList
 node scripts/perm-discriminator-live.mjs   # LIVE (Playwright, admin profile): the Permissions picker discriminator — email when Jira returns one, account-id chip always, on BOTH the search row and the roster card; grants {editor,own} through the real UI and restores app_admins with a byte compare. `--editor=<accountId>` picks the target.
 npm run test:jsm-assets       # LIVE: JSM request-type events, a real portal request, INTERNAL notes (script + AI agent), Assets workspace/schema/objects/field
 npm run test:jsm-import       # LIVE: the rule importer end-to-end on a JSM company-managed workflow (commit → attach → fire → portable-JSON round-trip)
+node scripts/harness-fault-expiry-live.mjs  # LIVE: fault-row TTL, the sweep, the user-search route seam. ARMS REAL FAULTS — read the blast radius below. Defaults to staging.
 ```
+
+### ⚠️ Blast radius: drivers that arm faults on a shared tenant
+
+`harness-fault-expiry-live.mjs` is not a passive reader. To prove that a fault window
+really ends, it has to open one — on whichever tenant it is pointed at, where anybody
+else using the site sees the result:
+
+- **Provider key reads refuse** for about 5 seconds per arming (`armKeyReadFault`, the
+  `openai` slot). An admin on **Settings → Providers** sees *"Couldn't read key status"*,
+  and a "test key" click answers a planted refusal. The real risk is not the 5 seconds —
+  it is that they read it as a bad credential and **rotate a working key**.
+- **User search answers 429** for about 5 seconds per arming (`armJiraFault` on
+  `/rest/api/3/user/search`). The Permissions tab's people picker shows a throttling
+  notice and finds nobody, so a rule author mid-edit sees an empty search.
+
+Both levers are disarmed in a `finally` on every path including the throw, and each row
+carries its own 5 s TTL. Neither survives the driver — **unless the process is killed**,
+in which case the only remaining bound is the 300 s family ceiling.
+
+Because of that, the driver **defaults to `--env=staging`**. Running it against the shared
+dev tenant is a deliberate act and requires the acknowledgement flag:
+
+```bash
+node scripts/harness-fault-expiry-live.mjs                            # staging, the default
+node scripts/harness-fault-expiry-live.mjs --env=dev --i-know-dev-is-shared
+```
+
+Nothing in the evidence file or the terminal would ever tell the admin who just rotated a
+good key that a harness lever was live at that moment. Schedule the run, or tell whoever is
+on the tenant — do not let them discover it afterwards.
 
 ### JSM & Assets prerequisites
 

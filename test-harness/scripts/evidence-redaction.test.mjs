@@ -2770,8 +2770,12 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
       `4m (F-803): the FILE boundary redacts a ${name} credential`);
     // …and the DOOR, which is the half that was missing. `(root)` = the string itself.
     const hits = findSecretFields(line, { maxDepth: 12 });
-    ok(hits.length === 1 && hits[0].why === "value-looks-like-a-credential",
-      `4m (F-803): the ?what=kvs read ceiling SEES a ${name} credential in free text`);
+    /* F-814 split the VALUE why in two — a bare credential is `value-looks-like-a-credential`
+       and one inside a sentence is `value-redacted-in-text`. Both mean SEEN; what changed is
+       the projection, not the detection. The name-based why is NOT accepted here: this line
+       has no field name, so accepting it would make the check green for the wrong reason. */
+    ok(hits.length === 1 && ["value-looks-like-a-credential", "value-redacted-in-text"].includes(hits[0].why),
+      `4m (F-803): the ?what=kvs read ceiling SEES a ${name} credential in free text (why=${hits[0] && hits[0].why})`);
   }
 
   // ── 3. THE STATED NON-CATCH ─────────────────────────────────────────────────────
@@ -2797,6 +2801,184 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
         || new RegExp("^" + sh).test(prefix + "0".repeat(64))),
       `4m (F-803): the prefix \`${prefix}\` is the head of a declared shape, not a fourteenth list`);
   }
+}
+
+
+/* ── 4n. F-814 — THE CREDENTIAL SHAPE MAY NOT EAT ENGLISH, AND FREE TEXT IS
+ * ── REDACTED IN PLACE ─────────────────────────────────────────────────────────────
+ *
+ * `sk-[A-Za-z0-9_\-]{8,}` had no left anchor, so `risk-assessment`, `risk-register` and
+ * `risk-mitigation` — the single most common word in a governance validator — matched. That
+ * was harmless while the ceiling covered header values; F-802 hung the same rule on the log
+ * and registry arms, and from then on a validator's `fieldValue`/`reason` and a rule's
+ * `prompt` came back as `{masked:true, why:"value-looks-like-a-credential"}`: an OBJECT where
+ * four drivers read a string, and a false CAUSE asserted about a sentence containing no
+ * credential.
+ *
+ * TWO HALVES, and both are needed. The SHAPE gained `(?<![A-Za-z0-9])` — a zero-width
+ * lookbehind, never `\b`, because `redact.mjs` must keep matching `…=sk-abcdefgh` and must
+ * keep replacing the whole greedy tail. The PROJECTION gained a second answer: a credential
+ * INSIDE prose replaces only the token with `<masked:fingerprint>` and records the path with
+ * `maskedWhy[path] === "value-redacted-in-text"`; a whole-node mask is now reserved for a
+ * FIELD-NAME hit and for a value that IS a bare credential.
+ *
+ * WHY THE ANCHOR ALONE WOULD NOT HAVE BEEN ENOUGH: a tenant who really does paste a `ghp_…`
+ * into a prompt still trips the ceiling, and before this cut that STILL swallowed the prompt.
+ * The anchor fixes the false positive; the in-place projection fixes what a true positive
+ * costs the reader.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+{
+  const shapes = await import(pathToFileURL(path.resolve(here, "../../src/shared/secret-shapes.js")).href);
+  const hookUrl = pathToFileURL(path.resolve(here, "../../src/test-hook.js")).href;
+  const { findSecretFields, findPlantedSecret, readCeiling } = await import(hookUrl);
+
+  // ── 1. THE PROSE THAT USED TO MATCH ─────────────────────────────────────────────
+  for (const word of ["risk-assessment", "risk-register", "risk-mitigation", "disk-usage", "task-force", "brisk-delivery"]) {
+    const line = `Please complete the ${word} section before transitioning`;
+    ok(shapes.hasCredentialShape(line) === false,
+      `4n (F-814): \`${word}\` is English, not a credential — the shape must not match it`);
+    ok(findSecretFields(line, { maxDepth: 12 }).length === 0,
+      `4n (F-814): …and the DOOR does not claim it saw a credential in \`${word}\``);
+    ok(redactString(line) === line,
+      `4n (F-814): …and the file boundary leaves \`${word}\` readable`);
+  }
+
+  // ── 2. THE ANCHOR IS LEFT-ONLY: every glued form still matches ──────────────────
+  const TOKEN = "sk-abc123def456";
+  for (const [what, line] of [["bare", TOKEN], ["spaced", `the key is ${TOKEN} ok`], ["quoted", `"${TOKEN}"`],
+    ["bearer", `Bearer ${TOKEN}`], ["query", `https://x/y?k=${TOKEN}`], ["underscored", `X_${TOKEN}`],
+    ["json", `{"k":"${TOKEN}"}`]]) {
+    ok(shapes.hasCredentialShape(line) === true,
+      `4n (F-814): a left anchor is not a \`\\b\` — the ${what} form of an sk- token still matches`);
+    ok(!redactString(line).includes(TOKEN),
+      `4n (F-814): …and the redactor still removes the WHOLE token from the ${what} form`);
+  }
+  ok(shapes.anchoredShapeSources().filter((sh) => !sh.startsWith("(?<![A-Za-z0-9])")).length === 1,
+    "4n (F-814): exactly ONE shape is exempt from the left anchor — the `.atlassian-dev.net/` host, whose left neighbour is an alphanumeric hostname tail");
+  ok(shapes.anchoredShapeSources().some((sh) => sh.includes("atlassian-dev") && !sh.startsWith("(?<!")),
+    "4n (F-814): …and that exempt shape is the web-trigger host, named rather than inferred");
+  ok(redactString("https://abc123.atlassian-dev.net/x1y2").includes(REDACTED),
+    "4n (F-814) CONTROL: the unanchored host shape still redacts a dev web-trigger URL");
+
+  // ── 3. THE BREAKER'S EXACT SCENARIO, through the door it came in by ─────────────
+  const entry = { ruleId: "r1", fieldValue: "Please complete the risk-assessment section",
+    reason: "Blocked: the risk-mitigation plan is missing", result: false };
+  const answer = await readCeiling("log_entry:", [entry]);
+  ok(typeof answer.value[0].fieldValue === "string" && typeof answer.value[0].reason === "string",
+    "4n (F-814): `?what=execlogs` answers a validator's fieldValue and reason as STRINGS — four drivers read them as strings");
+  ok(!("maskedFields" in answer),
+    "4n (F-814): …and a row with no credential in it says NOTHING about masking (no false cause)");
+  const registry = await readCeiling("config_registry", { rules: [{ id: "r1", prompt: "Reject unless the risk-register entry is linked" }] });
+  ok(registry.value.rules[0].prompt.includes("risk-register") && !("maskedFields" in registry),
+    "4n (F-814): `?what=registry` answers the rule's own prompt plain");
+
+  // ── 4. A REAL TOKEN IN PROSE: the sentence survives, the token does not ─────────
+  const GHP = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+  const inText = await readCeiling("log_entry:", [{ reason: `Blocked: the token ${GHP} was pasted into the summary` }]);
+  const projected = inText.value[0].reason;
+  ok(typeof projected === "string" && !projected.includes(GHP),
+    "4n (F-814): the credential is gone from the sentence");
+  ok(projected.startsWith("Blocked: the token ") && projected.endsWith(" was pasted into the summary"),
+    `4n (F-814): …and the sentence AROUND it is still readable — got ${JSON.stringify(projected)}`);
+  ok(/<masked:[0-9a-f]{16}>/.test(projected),
+    "4n (F-814): …the token is replaced by the ONE credentialFingerprint (F-780), not a second digest");
+  ok(inText.maskedFields[0] === "[0].reason" && inText.maskedWhy["[0].reason"] === "value-redacted-in-text",
+    "4n (F-814): …and the PATH is still recorded, with the why that tells a caller it is a string, not a node");
+
+  // ── 5. A BARE CREDENTIAL IS STILL SWALLOWED WHOLE ──────────────────────────────
+  const bare = await readCeiling("COGNIRUNNER_AI_PROVIDER", "sk-abcdefghijklmnop");
+  ok(bare.value.masked === true && bare.value.why === "value-looks-like-a-credential" && bare.maskedFields[0] === "(root)",
+    "4n (F-814): a value that IS a credential and nothing else is replaced WHOLE — there is nothing else in it to read");
+  const padded = await readCeiling("COGNIRUNNER_AI_PROVIDER", "  sk-abcdefghijklmnop\n");
+  ok(padded.value.masked === true,
+    "4n (F-814): …and surrounding whitespace does not turn a bare credential into free text");
+  // The WRITE refusal is unchanged in effect: a plant body carrying a credential still refuses.
+  ok(findPlantedSecret({ body: `see ${GHP} here` }) !== null,
+    "4n (F-814): the write refusal still refuses a plant body carrying a credential in prose");
+  ok(findPlantedSecret({ body: "see the risk-assessment here" }) === null,
+    "4n (F-814): …and no longer refuses one that merely mentions a risk-assessment");
+}
+
+
+/* ── 4o. F-815 — EVERY CREDENTIAL SHAPE IS LINEAR, AND THE JWT IS A SCANNER ────────
+ *
+ * `ey[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}` is an unbounded greedy run followed by a
+ * REQUIRED literal, which is the textbook quadratic: the engine runs the class to the end
+ * of the input and backtracks looking for a `.` that is not there, once per starting
+ * position. MEASURED on the shipped shape: 245,760 chars of `"eyAb"` = 15,217 ms for ONE
+ * `.test()`. The read ceiling feeds this regex tenant-AUTHORED strings up to the 240 KiB
+ * KVS value cap — a step body, a prompt, a skill, a memory — so one authored row burned the
+ * whole 55 s web-trigger budget and reported as a dead door rather than a bad row; and
+ * `redact.mjs` ran the same shape with `g` + `.replace()`, where it hangs the harness.
+ *
+ * The JWT is now `findJwtLike`, a hand scanner that walks MAXIMAL TOKEN RUNS: every `ey`
+ * inside one run shares that run's end, so "is the next character a `.`" is asked once per
+ * run instead of once per `ey`. Two properties are pinned here — the TIME (with a generous
+ * ceiling, so a future quadratic shape goes red instead of timing a door out) and the
+ * STRUCTURAL rule that produced it: an open-ended quantifier may only sit at the END of a
+ * shape. The second is what survives someone rewriting the first.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+{
+  const shapes = await import(pathToFileURL(path.resolve(here, "../../src/shared/secret-shapes.js")).href);
+  const { findSecretFields } = await import(pathToFileURL(path.resolve(here, "../../src/test-hook.js")).href);
+
+  // ── 1. THE STRUCTURAL RULE, over the census itself ─────────────────────────────
+  /* An open-ended quantifier is only safe as the LAST thing in a shape: anything required
+     after it is a literal the engine backtracks to. Two of them is the same defect twice, so
+     the rule is "at most one, and at the end" rather than "the last one is at the end". */
+  const quadratic = (sh) => {
+    const n = (sh.match(/\{\d+,\}/g) || []).length;
+    return n > 1 || (n === 1 && !/\{\d+,\}$/.test(sh));
+  };
+  const openEnded = shapes.SECRET_VALUE_SHAPES.filter(quadratic);
+  ok(openEnded.length === 0,
+    `4o (F-815): an open-ended quantifier may only be the LAST thing in a shape — an unbounded run followed by a required literal is quadratic (offenders: ${openEnded.join(" ")})`);
+  ok(quadratic("ey[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}(?:\\.[A-Za-z0-9_\\-]+)?"),
+    "4o (F-815) POSITIVE CONTROL: the RETIRED jwt shape IS caught by that rule — a filter that matched nothing would be green");
+  ok(quadratic("ey[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}"),
+    "4o (F-815) POSITIVE CONTROL: …including the two-part form, whose LAST quantifier is at the end and whose FIRST one is not");
+  ok(!quadratic("sk-[A-Za-z0-9_\\-]{8,}") && !quadratic("\\.atlassian-dev\\.net/"),
+    "4o (F-815) NEGATIVE CONTROL: a trailing greedy tail and a bare literal are both linear and must stay allowed");
+  ok(!shapes.SECRET_VALUE_SHAPES.some((sh) => sh.startsWith("ey")),
+    "4o (F-815): the JWT is not a shape any more — it is `findJwtLike`, and putting it back in the alternation restores the blow-up");
+
+  // ── 2. THE TIME, on the input that measured 15.2 s ─────────────────────────────
+  const CAP = 245760;                                   // the 240 KiB KVS value cap, in chars
+  const timed = (s) => { const t0 = performance.now(); shapes.findCredentialSpans(s); return performance.now() - t0; };
+  const dense = timed("eyAb".repeat(CAP / 4));          // `ey`-dense, dot-free: the reported case
+  const anchored = timed("-eyA".repeat(CAP / 4));       // every `ey` left-anchored AND in one token run
+  const random = timed(Buffer.from(Array.from({ length: 180 * 1024 }, (_, i) => (i * 2654435761) % 256)).toString("base64").slice(0, CAP));
+  const prose = timed("the risk-assessment plan is due and the key is elsewhere ".repeat(4300).slice(0, CAP));
+  for (const [what, ms] of [["ey-dense dot-free", dense], ["left-anchored ey run", anchored], ["random base64", random], ["prose", prose]])
+    ok(ms < 500,
+      `4o (F-815): scanning 240 KiB of ${what} must stay well inside a door's budget — took ${ms.toFixed(1)}ms (the shipped regex took 15,217ms on the first of these)`);
+
+  // ── 3. IT STILL FINDS A JWT — the scanner is not a deletion ────────────────────
+  const JWT3 = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+  const JWT2 = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0";
+  for (const [what, jwt] of [["three-part", JWT3], ["header.payload", JWT2]]) {
+    const line = `Authorization: Bearer ${jwt} (captured)`;
+    const spans = shapes.findJwtLike(line);
+    ok(spans.length === 1 && line.slice(spans[0].start, spans[0].end) === jwt,
+      `4o (F-815): the scanner spans the WHOLE ${what} JWT, because redact.mjs REPLACES it`);
+    ok(!redactString(line).includes(jwt.slice(0, 24)),
+      `4o (F-815): …and the file boundary still removes a ${what} JWT`);
+    ok(findSecretFields(line, { maxDepth: 12 }).length === 1,
+      `4o (F-815): …and the DOOR still sees it`);
+  }
+  ok(shapes.findJwtLike("monkeyAbcdefgh.abcdefghij").length === 0,
+    "4o (F-815): the F-814 left anchor holds in the scanner too — `monkeyAbcdefgh.…` is a word, not a token");
+  ok(shapes.findJwtLike("ey_abcdefgh.short").length === 0,
+    "4o (F-815): a second part under 8 characters is not a JWT — the scanner describes the same language the shape did");
+  ok(shapes.findJwtLike("eyAbcdefghijklmnop").length === 0,
+    "4o (F-815): …and neither is a dot-free run, which is the input that used to cost 15 seconds to reject");
+  // A JWT next to a prefix token: one span list, leftmost-first, nothing replaced twice.
+  const mixed = `key sk-abc123def456 and bearer ${JWT3} end`;
+  ok(shapes.findCredentialSpans(mixed).length === 2,
+    "4o (F-815): the regex shapes and the scanner are merged into ONE span list, so no caller has to know there are two producers");
+  const scrubbed = redactString(mixed);
+  ok(!scrubbed.includes("sk-abc123def456") && !scrubbed.includes(JWT3) && scrubbed.startsWith("key ") && scrubbed.endsWith(" end"),
+    `4o (F-815): …and both are replaced while the text between them survives — got ${JSON.stringify(scrubbed)}`);
 }
 
 

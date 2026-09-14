@@ -71,7 +71,7 @@
  * decided by the VALUE's shape, never by the parameter's name.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import { createHash } from "node:crypto";
-import { credentialValueRegex, credentialPrefixRegex } from "../../src/shared/secret-shapes.js";
+import { replaceCredentialSpans, credentialPrefixRegex } from "../../src/shared/secret-shapes.js";
 
 export const REDACTED = "[REDACTED]";
 
@@ -98,10 +98,16 @@ const SECRET_KEY_PART = /(token|secret|apikey|api_key|password|authorization)/i;
  * The `cgr_` reasoning survives the move and is written down there: `{48,}` not `{16,}`,
  * because a mint answer also carries a `row.prefix` of `cgr_` + 6 hex, the non-secret
  * HANDLE the UI lists tokens by, and masking that would blind the evidence to which token
- * a check was about. Built here with `g` — the factory exists so no two callers share one
- * regex object's `lastIndex`.
+ * a check was about.
+ *
+ * F-815 — AND IT IS NO LONGER A REGEX AT ALL HERE. The JWT shape was quadratic on dot-free
+ * input (245,760 chars of `"eyAb"` = 15.2 s for one `.test()`), and this file ran it with
+ * `g` + `.replace()` on whatever a driver hands `redactSecrets` — where the blow-up hangs
+ * the harness rather than a door. `replaceCredentialSpans` is the one home's own scanner:
+ * the alternation for the prefix shapes, a linear hand scanner for the JWT, merged into one
+ * leftmost-first span list. The replacement is identical; the worst case is not.
  */
-const SECRET_VALUE = credentialValueRegex("g");
+const redactCredentialShapes = (s) => replaceCredentialSpans(s, () => REDACTED);
 
 /**
  * F-650 — a credential carried as a QUERY PARAMETER. The obvious next FAIL arm is
@@ -249,10 +255,11 @@ const isDevUrlKey = (key, value) =>
  */
 export function redactString(s) {
   if (typeof s !== "string") return s;
-  return s
+  // F-815 — the credential-SHAPE pass is a SCANNER, not a `.replace(regex)`, and it sits in
+  // exactly the position the regex did. Same input, same output, linear worst case.
+  return redactCredentialShapes(s
     .replace(EMBEDDED_PAIR, `$1"${REDACTED}"`)
-    .replace(DEV_URL, REDACTED)
-    .replace(SECRET_VALUE, REDACTED)
+    .replace(DEV_URL, REDACTED))
     .replace(SECRET_QUERY, `$1${REDACTED}`)
     .replace(KEY_QUERY, (m, pre, val) => (looksLikeCredentialValue(val) ? `${pre}${REDACTED}` : m))
     .replace(EMAIL, maskEmail);

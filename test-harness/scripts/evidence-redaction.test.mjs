@@ -856,10 +856,41 @@ for (const f of permDrivers) {
    THE SCAN READS CODE, NOT PROSE. These drivers now document their own history — "this
    used to be `makeShot(NV)`" is a sentence three of them carry — and a rule reading the
    comments goes red on a file that is CORRECT. Block and line comments are stripped
-   first; `://` is spared so a URL on a code line survives. */
+   first; `://` is spared so a URL on a code line survives.
+
+   F-887 — A STRIPPED COMMENT LEAVES ITS NEWLINES BEHIND, OR EVERY LINE NUMBER IN THIS FILE
+   IS FICTION. The block-comment replacement collapsed the whole comment to ONE SPACE, so the
+   stripped text of a driver is shorter, by lines, than the driver: MEASURED across the 57
+   `*-live.mjs` drivers, ALL of them shrink, `delete-fault-drain-live.mjs` from 872 lines to
+   593. Every rule that reports `file:line` off stripped source — 4h below is the one that
+   does today — therefore sends a reader 279 lines away from the literal it is refusing, and
+   the further down the file the offender sits the worse the miss. The rule would be RIGHT
+   and the address WRONG, which is the failure mode that costs the most time: the operator
+   goes to the named line, finds nothing, and disbelieves the rule.
+
+   So a comment is replaced by the same number of NEWLINES it contained (plus a space, so
+   two tokens either side of a one-line comment cannot fuse into one identifier). A line
+   comment already keeps its newline —
+   `[^\n]*` stops at it — and needs nothing. Nothing in the stripped text moves line-wise,
+   so a reported line is the line in the file. */
 const stripComments = (src) => src
-  .replace(/\/\*[\s\S]*?\*\//g, " ")
+  .replace(/\/\*[\s\S]*?\*\//g, (m) => " " + "\n".repeat((m.match(/\n/g) || []).length))
   .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+/* CONTROL — the property every line-numbered rule rests on, asserted on a source shaped like
+   the drivers: a 20-line docblock, then a known offender at a KNOWN file line. */
+{
+  const doc = "/*\n" + " * filler\n".repeat(18) + " */\n";          // 20 lines, 1..20
+  const synth = doc + 'const a = 1;\n' + 'PASS("hook reachable on staging");\n';
+  const offenderLine = synth.split("\n").findIndex((l) => l.includes("hook reachable")) + 1;
+  ok(offenderLine === 22, "CONTROL (F-887): the planted offender is on line 22 of the synthetic source");
+  const stripped = stripComments(synth);
+  ok(stripped.split("\n").length === synth.split("\n").length,
+    "CONTROL (F-887): stripping comments does not change the LINE COUNT of a source");
+  ok(stripped.split("\n").findIndex((l) => l.includes("hook reachable")) + 1 === offenderLine,
+    "CONTROL (F-887): …and the offender is still on line 22 AFTER stripping — a reported line is a file line");
+  ok(!/filler/.test(stripped), "CONTROL (F-887): …while the comment's PROSE is still gone, which is what stripping is for");
+  ok(stripComments("a/*x*/b") === "a b", "CONTROL (F-887): a one-line comment still separates its neighbours rather than joining them");
+}
 
 /*
  * THE ARGUMENT AND OBJECT WALKERS LIVE IN `lib/js-source-scan.mjs` (F-716, F-730).
@@ -2032,12 +2063,65 @@ ok(guardedDrivers.length === liveFiles.length,
      `'` literal still ends at a newline because in JS it must: an unescaped line break is a
      syntax error there, so letting one through would allow a single stray quote to swallow
      the rest of the file. Only a backtick may cross a line. */
+  /* F-888 — …AND A BACKTICK INSIDE A REGEX LITERAL IS NOT A TEMPLATE. The scan reads quotes
+     and knows nothing about regexes, so a perfectly ordinary character class testing for a
+     backtick — the offline suite's css-namespace rules already write one — OPENS a template
+     that runs to the next backtick anywhere in the file. Everything between is swallowed into
+     one "literal": MEASURED on a backtick class, then `PASS("ran on staging");`, then a
+     second backtick regex, the shipped scan returned ONE literal reported at line 1, so the
+     claim's address is the regex rather than the PASS. Worse, the four ENV_SENSE shapes are
+     anchored — the subject form needs the literal to OPEN on `staging` — so a claim that is a
+     subject inside the swallowed span stops matching at all and the rule goes quiet on a
+     real one.
+
+     No driver carries a BACKTICK in a regex today (searched: none), so the swallow itself is
+     latent — but the blindness is not. MEASURED over the 57 drivers, the scan reads 2 regex
+     fragments as driver sentences: `knowledge-doors-editor-live.mjs` writes
+     `/"success":\s*true/` twice and the scan returned `success` as a literal both times,
+     then resumed INSIDE the regex, where the next quote it met was the real PASS's opening
+     one — correct by luck, on a file where the luck is one edit deep.
+
+     The scan now SKIPS regex literals: a `/`
+     opens one only where a regex may legally start — after `(`, `,`, `=`, `:`, `[`, `!`, `&`,
+     `|`, `?`, `{`, `}`, `;`, an arithmetic or comparison operator, at a line start, or after
+     `return`/`typeof`. After an IDENTIFIER, a number, `)`, `]` or a literal, a `/` is
+     DIVISION and is left alone. A regex may not cross a newline, so a misread costs at most
+     the rest of one line rather than the rest of the file. */
+  const REGEX_OPENER = /^[(,=:[!&|?{};+\-*%^~<>]$/;
+  function regexEnd(code, i) {            // i is the `/`; returns the closing `/`, or -1
+    let j = i + 1, inClass = false;
+    while (j < code.length) {
+      const c = code[j];
+      if (c === "\\") { j += 2; continue; }              // an escape consumes what follows
+      if (c === "\n") return -1;                         // a regex may not cross a line
+      if (inClass) { if (c === "]") inClass = false; }
+      else if (c === "[") inClass = true;                // `/` inside a class does not close
+      else if (c === "/") return j;
+      j++;
+    }
+    return -1;                                           // unterminated: not a regex
+  }
   function scanLiterals(code) {
     const out = [];
     let cursor = 0, line = 1;                              // i is non-decreasing: count as we go
+    let prevTok = "", atLineStart = true;                  // what a `/` would follow
     for (let i = 0; i < code.length; i++) {
       const q = code[i];
-      if (q !== '"' && q !== "'" && q !== "`") continue;
+      if (q === "\n") { atLineStart = true; continue; }
+      if (q === " " || q === "\t" || q === "\r") continue;
+      if (/[A-Za-z_$0-9]/.test(q)) {                       // read the whole identifier/number
+        let k = i;
+        while (k < code.length && /[A-Za-z_$0-9]/.test(code[k])) k++;
+        prevTok = code.slice(i, k); atLineStart = false; i = k - 1; continue;
+      }
+      if (q === "/" && (atLineStart || prevTok === "" || REGEX_OPENER.test(prevTok)
+        || prevTok === "return" || prevTok === "typeof")) {
+        const end = regexEnd(code, i);
+        if (end !== -1) { i = end; prevTok = "/"; atLineStart = false; continue; }
+      }
+      atLineStart = false;
+      if (q !== '"' && q !== "'" && q !== "`") { prevTok = q; continue; }
+      prevTok = '"';                                       // a literal: a following `/` divides
       let j = i + 1, closed = false;
       while (j < code.length) {
         const c = code[j];
@@ -2120,6 +2204,25 @@ ok(guardedDrivers.length === liveFiles.length,
     "POSITIVE CONTROL (F-741): …and an ASSERTION SENTENCE naming the tenant, which coder-skills-live.mjs had three of");
   ok(tenantLiterals('  info("asserted from `forge logs -e staging` after this run");').length === 1,
     "POSITIVE CONTROL (F-741): …and the sentence telling an operator WHICH logs to read — the one that sends them to the other tenant");
+  /* F-888 — A BACKTICK INSIDE A REGEX MUST NOT OPEN A TEMPLATE OVER THE NEXT REAL LITERAL.
+     BLOCK control: the claim two lines below a backtick character class is still refused, AND
+     at its OWN line — before the fix this returned line 1, the regex's line, and with the
+     claim in the SUBJECT form it returned nothing at all. */
+  const bt = "`";
+  ok(JSON.stringify(tenantLiterals("const cls = /[" + bt + "]/;\nconst esc = /a" + bt + "b/;\nPASS(\"ran on staging\");\n")) === "[3]",
+    "POSITIVE CONTROL (F-888): a claim after two backtick-bearing REGEXES still BLOCKs, reported at its own line — the regexes are not templates");
+  ok(tenantLiterals("const cls = /[" + bt + "]/;\nconsole.log(\"staging starts on the Coder edition\");\nconst b2 = /x" + bt + "y/;\n").length === 1,
+    "POSITIVE CONTROL (F-888): …and the SUBJECT form, which the swallow silenced entirely, is refused again");
+  ok(scanLiterals("const cls = /[" + bt + "]/;\nPASS(\"x\");\n").length === 1,
+    "POSITIVE CONTROL (F-888): the scan reads exactly ONE literal there — the regex is skipped, not read as one");
+  ok(scanLiterals('if (!/"success":\\s*true/.test(u.text)) PASS("an unknown id is REFUSED");').map((l) => l.inner).join("|") === "an unknown id is REFUSED",
+    "POSITIVE CONTROL (F-888): the shape knowledge-doors-editor-live.mjs actually writes — a QUOTE inside a regex is not a sentence, and the PASS beside it still is");
+  /* ALLOW control: a `/` after an identifier is DIVISION, so the innocent literal beyond it
+     is read normally and nothing before it is swallowed. */
+  ok(scanLiterals("const r = a / b;\nPASS(\"all good\");\n").map((l) => l.inner).join("|") === "all good",
+    "ALLOW CONTROL (F-888): `a / b` is division — the literal after it is read, and read alone");
+  ok(tenantLiterals("const ratio = total / staged;\ninfo(\"the draft was staged\");\n").length === 0,
+    "ALLOW CONTROL (F-888): …and a division beside the domain's own vocabulary raises nothing");
   /* NEGATIVE CONTROLS — the mapping being read, and the fixed form. */
   ok(tenantLiterals('const r = requireEnvAck(argv, { faults: [], mutates: [], defaultEnv: "staging" });').length === 0,
     "NEGATIVE CONTROL (F-741): `defaultEnv` is the guard's own option — where a free choice LANDS is not a claim about where this run went");

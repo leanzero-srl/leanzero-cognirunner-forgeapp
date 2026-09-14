@@ -29,7 +29,7 @@
  * Both are owed to a live run.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
-import { judgeTickReceipt, receiptArm, receiptIdentity, PURGE_GATE, TICK_EXPECTATIONS } from "../lib/va-tick-receipt.mjs";
+import { judgeTickReceipt, receiptArm, receiptIdentity, receiptsOf, newestReceipt, receiptsUnavailableOf, PURGE_GATE, TICK_EXPECTATIONS } from "../lib/va-tick-receipt.mjs";
 
 let pass = 0, fail = 0;
 const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok   ${what}`); } else { fail++; console.log(`  FAIL ${what}`); } };
@@ -136,6 +136,66 @@ console.log("\n6 · THE CONTROL AND THE CALLER-BUG ARMS");
 
   const noArgs = judgeTickReceipt();
   ok(noArgs.verdict === "N/V", "called with nothing at all it is N/V, not a default PASS");
+}
+
+console.log("\n7 · F-832 — AN UNREADABLE RECEIPT LIST IS N/V, NAMED, ON EITHER SIDE");
+{
+  /* The exact `status` shape on a faulted scan (src/va-admin.js:~882-904): the door still
+     answers, `receipts` is [] and the reason sits BESIDE it. Reading `.receipts` alone is
+     what made this indistinguishable from "the agent wrote nothing". */
+  const faulted = (reason) => ({ id: "a1", receipts: [], receiptsUnavailable: reason, lastTick: null, staged: null });
+  const healthy = (rows) => ({ id: "a1", receipts: rows, lastTick: (rows[0] || {}).at || null });
+  const prep = receipt("29528520", "2026-09-14T10:03:44.000Z", [], { swept: 2, worked: 1 });
+
+  ok(receiptsUnavailableOf(faulted("scan_unavailable")) === "scan_unavailable"
+    && receiptsUnavailableOf(faulted("scan_failed")) === "scan_failed",
+    "receiptsUnavailableOf names BOTH fault flavours the status door emits (scan_unavailable | scan_failed)");
+  ok(receiptsUnavailableOf(healthy([])) === null,
+    "a READ list that is genuinely empty is NOT unavailable — 0 receipts and an unread ledger must never collapse");
+  ok(receiptsUnavailableOf(null) === "no_status" && receiptsUnavailableOf({ id: "a1" }) === "no_receipts_field",
+    "an errored/absent body and a body with no receipts[] at all are named faults too, never a silent 'none'");
+
+  ok(receiptsOf(faulted("scan_failed")).receipts.length === 0 && receiptsOf(faulted("scan_failed")).unavailable === "scan_failed",
+    "receiptsOf answers {receipts, unavailable} — the array is always an array, the reason is what gives it meaning");
+  const nr = newestReceipt(healthy([prep, receipt("29528500", "2026-09-14T09:50:00.000Z")]), "prepare");
+  ok(nr.receipt && nr.receipt.tickId === "29528520" && nr.unavailable === null,
+    "newestPrepare takes the FIRST prepare row (getVaStatus sorts by `finished` desc) and reports no fault");
+  ok(newestReceipt(faulted("scan_unavailable")).receipt === null && newestReceipt(faulted("scan_unavailable")).unavailable === "scan_unavailable",
+    "…and on a fault the receipt is null WITH the reason, so a caller cannot read the null as an absence");
+
+  /* THE THREE FAULT PLACEMENTS, on the two expectations that used to grade them wrongly. */
+  const before = { receipt: prep, unavailable: null };
+  const faultSide = (reason) => ({ receipt: null, unavailable: reason });
+
+  const onAfter = judgeTickReceipt({ before, after: faultSide("scan_unavailable"), taskDone: true, expect: "settling-refused" });
+  ok(onAfter.verdict === "N/V" && /scan_unavailable/.test(onAfter.reason) && /AFTER the tick/.test(onAfter.reason),
+    "STEP 3's false PASS is closed: a fault on the read AFTER the tick is N/V naming scan_unavailable, not 'refused receipt-free'");
+
+  const onBefore = judgeTickReceipt({ before: faultSide("scan_unavailable"), after: prep, taskDone: true, expect: "not-settling" });
+  ok(onBefore.verdict === "N/V" && /BEFORE the tick/.test(onBefore.reason) && /scan_unavailable/.test(onBefore.reason),
+    "a fault on the read BEFORE the tick is N/V too — with no baseline identity, 'the receipt moved' is not a reading");
+
+  const onBoth = judgeTickReceipt({ before: faultSide("scan_failed"), after: faultSide("scan_unavailable"), taskDone: true, expect: "not-settling" });
+  ok(onBoth.verdict === "N/V" && /BOTH reads/.test(onBoth.reason) && /scan_failed/.test(onBoth.reason) && /scan_unavailable/.test(onBoth.reason),
+    "STEP 4's false FAIL is closed: a fault on BOTH reads is N/V naming BOTH reasons, never 'it is still doing nothing'");
+  ok(onBoth.unavailable.before === "scan_failed" && onBoth.unavailable.after === "scan_unavailable",
+    "…and the verdict carries the reasons structurally, so the evidence file records which read failed");
+
+  /* ORDER. The refusal is decided BEFORE identity and BEFORE the body — there is neither. */
+  const sameRow = judgeTickReceipt({ before: faultSide("scan_failed"), after: faultSide("scan_failed"), taskDone: true, expect: "settling-refused" });
+  ok(sameRow.verdict === "N/V" && !/UNCHANGED in identity/.test(sameRow.reason) && sameRow.arm === null,
+    "two unreadable reads are NOT graded as 'unchanged identity' — the fault is answered before any identity or body comparison");
+  const noLive = judgeTickReceipt({ before: faultSide("scan_failed"), after: faultSide("scan_failed"), taskDone: false, expect: "not-settling" });
+  ok(noLive.verdict === "N/V" && /no liveness/.test(noLive.reason),
+    "liveness still leads (F-797): with no proof the tick ran at all, that is the reason reported, fault or no fault");
+
+  /* BACK-COMPAT: a bare receipt, as F-823 passed them, still means exactly what it meant. */
+  const bare = judgeTickReceipt({ before: prep, after: receipt("29528530", "2026-09-14T10:30:00.000Z", [], { swept: 5 }), taskDone: true, expect: "not-settling" });
+  ok(bare.verdict === "PASS" && bare.unavailable.before === null && bare.unavailable.after === null,
+    "a bare receipt (or null) on either side is still read as a receipt — an unconverted driver keeps its old meaning");
+  const explicit = judgeTickReceipt({ before: prep, after: null, afterUnavailable: "scan_failed", taskDone: true, expect: "not-settling" });
+  ok(explicit.verdict === "N/V" && /scan_failed/.test(explicit.reason),
+    "…and the explicit `afterUnavailable` flag is honoured for a caller that carries the reason separately");
 }
 
 console.log(`\nva-tick-receipt: ${pass} passed, ${fail} failed`);

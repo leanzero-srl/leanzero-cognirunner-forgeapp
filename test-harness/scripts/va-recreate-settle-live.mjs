@@ -83,7 +83,7 @@ import { resolveFlipModel, judgeAgentCapability, applyVerdict, decideInstanceFli
 import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 /* F-823 - "did this tick write a receipt, and which arm wrote it" is an IDENTITY question
    on an overwritten key, not a count. Pure, and proved offline in va-tick-receipt.test.mjs. */
-import { judgeTickReceipt, receiptIdentity, receiptArm } from "../lib/va-tick-receipt.mjs";
+import { judgeTickReceipt, receiptIdentity, receiptArm, newestReceipt } from "../lib/va-tick-receipt.mjs";
 
 /* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
    catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
@@ -179,7 +179,6 @@ async function commentTotal() {
   return { issues: keys.length, comments: total };
 }
 
-const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);
 /*
  * F-823 — THE NEWEST PREPARE RECEIPT, NOT HOW MANY THERE ARE.
  *
@@ -192,8 +191,11 @@ const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);
  */
 const newestPrepare = async (jobId) => {
   const body = (await invoke("getVaStatus", { jobId })).body;
-  const preps = receiptsOf(body).filter((r) => r && r.phase === "prepare");
-  return { status: body, receipt: preps[0] || null };
+  // F-832 — `{receipt, unavailable}`, never a bare row. `status` answers `receipts: []`
+  // PLUS `receiptsUnavailable` when its bounded prefix scan faults, and reading `.receipts`
+  // alone turned that fault into "no receipts" — a false PASS in STEP 3 and a false FAIL in
+  // STEP 4. The reason travels with the row so the judge can refuse to grade.
+  return { status: body, ...newestReceipt(body, "prepare") };
 };
 const vaRecord = () => ({
   persona: { name: "Settle", voice: { register: "terse", greeting: false, maxSentences: 3, language: "auto" }, signature: false },
@@ -260,7 +262,9 @@ const vaRecord = () => ({
  * which arm wrote it. This helper no longer grades anything; it only measures.
  */
 async function tick(jobId, label, waitS = TICK_WAIT_S) {
-  const before = (await newestPrepare(jobId)).receipt;
+  const first = await newestPrepare(jobId);
+  const before = first.receipt;
+  const beforeUnavailable = first.unavailable;
   const logsBefore = await execLogCount(jobId);
   const ran = await invoke("runScheduledJobNow", { id: jobId });
   if (!(ran.body && ran.body.success)) { FAIL(`${label}: runScheduledJobNow refused`, { body: JSON.stringify(ran.body).slice(0, 300) }); return null; }
@@ -279,12 +283,15 @@ async function tick(jobId, label, waitS = TICK_WAIT_S) {
     let cur = await newestPrepare(jobId);
     logsAfter = await execLogCount(jobId);
     const grew = logsBefore != null && logsAfter != null && logsAfter > logsBefore;
-    const moved = !!cur.receipt && JSON.stringify(receiptIdentity(cur.receipt)) !== JSON.stringify(idBefore);
+    // An UNREADABLE list is never "the receipt moved" — F-832. Liveness must come from the
+    // async_job row or the execution log when the ledger cannot be read at all.
+    const moved = !cur.unavailable && !beforeUnavailable && !!cur.receipt
+      && JSON.stringify(receiptIdentity(cur.receipt)) !== JSON.stringify(idBefore);
     const done = (live) => {
       // THE SECOND READ. A tick that finished between the liveness read and the receipt
       // read of THIS iteration is exactly the 600 ms case above, and this is the read
       // that catches it. Everything the judge sees comes from here.
-      return { status: cur.status, before, after: cur.receipt, taskDone: true, logsBefore, logsAfter, taskId, asyncJob, ranAtAll: true, liveness: live };
+      return { status: cur.status, before, beforeUnavailable, after: cur.receipt, afterUnavailable: cur.unavailable, taskDone: true, logsBefore, logsAfter, taskId, asyncJob, ranAtAll: true, liveness: live };
     };
     if (finished) { cur = await newestPrepare(jobId); return done(`async_job:${asyncJob.status}`); }
     // A receipt whose IDENTITY moved is itself proof the tick ran — the ledger cannot be
@@ -294,7 +301,7 @@ async function tick(jobId, label, waitS = TICK_WAIT_S) {
     await sleep(8000);
   }
   const last = await newestPrepare(jobId);
-  return { status: last.status, before, after: last.receipt, taskDone: false, ranAtAll: false, logsBefore, logsAfter, taskId, asyncJob, liveness: null };
+  return { status: last.status, before, beforeUnavailable, after: last.receipt, afterUnavailable: last.unavailable, taskDone: false, ranAtAll: false, logsBefore, logsAfter, taskId, asyncJob, liveness: null };
 }
 
 /*
@@ -469,6 +476,9 @@ async function main() {
     liveness: tIn && tIn.liveness, taskDone: tIn && tIn.taskDone,
     identity: { before: receiptIdentity(tIn && tIn.before), after: receiptIdentity(tIn && tIn.after) },
     arm: receiptArm(tIn && tIn.after),
+    // F-832 — the named scan fault rides into the evidence file, so a reader of a N/V run
+    // can tell an unread ledger from an unwritten one.
+    unavailable: { before: (tIn && tIn.beforeUnavailable) || null, after: (tIn && tIn.afterUnavailable) || null },
     logs: tIn && { before: tIn.logsBefore, after: tIn.logsAfter }, ageAtTickMs: ageAtTick, settleMs: SETTLE_MS,
   };
   info(`tick inside: ${JSON.stringify(ev.insideWindow)}`);
@@ -514,6 +524,7 @@ async function main() {
     liveness: tAfter && tAfter.liveness, taskDone: tAfter && tAfter.taskDone,
     identity: { before: receiptIdentity(tAfter && tAfter.before), after: receiptIdentity(rAfter) },
     arm: receiptArm(rAfter), receipt: rAfter,
+    unavailable: { before: (tAfter && tAfter.beforeUnavailable) || null, after: (tAfter && tAfter.afterUnavailable) || null },
   };
   info(`tick after: ${JSON.stringify(ev.afterWindow).slice(0, 600)}`);
   /*

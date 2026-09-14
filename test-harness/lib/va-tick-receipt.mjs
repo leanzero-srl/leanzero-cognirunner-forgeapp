@@ -54,6 +54,31 @@
  * unprovable offline, which is how it stayed wrong through two passes.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-832 — AN UNREADABLE RECEIPT LIST IS NOT AN EMPTY ONE.
+ *
+ * `status` (src/va-admin.js:~882) runs a BOUNDED PREFIX SCAN for `va_tick:{agent}:*`. When
+ * that scan faults it does NOT refuse the whole door — the panel still needs the health,
+ * the caps and the settle window — so it answers `receipts: []` AND a named
+ * `receiptsUnavailable: "scan_unavailable" | "scan_failed"` beside it (`scan_unavailable`
+ * = the store on this runtime has no `query()` builder at all; `scan_failed` = the scan
+ * threw). The Agents tab reads the named reason and says "Stored history could not be
+ * read" (va-admin.js:~175). THE DRIVERS READ `.receipts` AND NOTHING ELSE.
+ *
+ * So on a scan fault every driver sees "no receipts", which is the SAME EVIDENCE as a
+ * tick that wrote nothing — and each of the two settle steps then grades it the wrong way:
+ *   · STEP 3 (`expect:"settling-refused"`) reads the absence as the purge-settling
+ *     observable and PASSES. A false PASS that survives the gate being deleted — the same
+ *     shape of vacuous pass F-823 closed on the count, arriving through a different door.
+ *   · STEP 4 (`expect:"not-settling"`) reads the absence as "the agent is still doing
+ *     nothing" and FAILS. A false accusation against a product that ticked correctly.
+ *
+ * Neither is a measurement: the run did not READ the ledger. The honest answer is N/V
+ * NAMING THE REASON, decided BEFORE any identity or body comparison — because with the
+ * list unread there is no identity to compare and `arm` is `null` for a reason that has
+ * nothing to do with which arm ran.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
 /** The gate string `runVaTick` stamps on the settle refusal. One home for the literal. */
 export const PURGE_GATE = "purge-settling";
 
@@ -68,6 +93,55 @@ export const receiptIdentity = (r) =>
   (isObj(r) ? { tickId: r.tickId == null ? null : String(r.tickId), at: r.at == null ? null : String(r.at) } : null);
 
 const sameIdentity = (a, b) => !!a && !!b && a.tickId === b.tickId && a.at === b.at;
+
+/**
+ * THE ONE-LINE GUARD, in one home. `body` is the `getVaStatus` response; the answer is the
+ * NAMED reason the receipt list could not be read, or `null` when it was read (including
+ * when it was read and is genuinely empty). A body that is not an object at all — an
+ * errored invoke, a refusal — is `"no_status"`: also not a reading of the ledger.
+ */
+export const receiptsUnavailableOf = (body) => {
+  if (!isObj(body)) return "no_status";
+  const named = body.receiptsUnavailable;
+  if (named) return String(named);
+  // `receipts` absent (not `[]`) on an otherwise-shaped body is a surface that changed
+  // under us, and guessing "none" there is the very defect this closes.
+  return Array.isArray(body.receipts) ? null : "no_receipts_field";
+};
+
+/**
+ * `receiptsOf(body)` → `{receipts, unavailable}`. The array is ALWAYS an array so callers
+ * cannot crash on it, and `unavailable` is what says whether the empty one means anything.
+ */
+export const receiptsOf = (body) => ({
+  receipts: isObj(body) && Array.isArray(body.receipts) ? body.receipts.filter(isObj) : [],
+  unavailable: receiptsUnavailableOf(body),
+});
+
+/**
+ * `newestReceipt(body, phase)` → `{receipt, unavailable}`. `status` returns the rows
+ * already sorted by `finished` descending (src/va-admin.js `status`), so the FIRST row of
+ * the wanted phase is the newest. On an unavailable scan the receipt is `null` AND the
+ * reason rides beside it — the pair the judge needs to refuse to grade.
+ */
+export const newestReceipt = (body, phase = "prepare") => {
+  const { receipts, unavailable } = receiptsOf(body);
+  if (unavailable) return { receipt: null, unavailable };
+  return { receipt: receipts.filter((r) => !phase || r.phase === phase)[0] || null, unavailable: null };
+};
+
+/**
+ * A judge side is EITHER a bare receipt (or `null`), as F-823 passed them, OR the
+ * `{receipt, unavailable}` pair the readers now return. Both are accepted so a driver that
+ * has not been converted yet keeps its old meaning instead of silently reading the wrapper
+ * object as a receipt whose `tickId` is `undefined`.
+ */
+const sideOf = (v, explicitUnavailable = null) => {
+  if (isObj(v) && ("receipt" in v || "unavailable" in v)) {
+    return { receipt: isObj(v.receipt) ? v.receipt : null, unavailable: v.unavailable ? String(v.unavailable) : (explicitUnavailable || null) };
+  }
+  return { receipt: isObj(v) ? v : null, unavailable: explicitUnavailable ? String(explicitUnavailable) : null };
+};
 
 /**
  * WHICH ARM WROTE THIS RECEIPT, read from the body and from nothing else.
@@ -103,12 +177,14 @@ export const TICK_EXPECTATIONS = ["settling-refused", "not-settling", "receipt",
  * `verdict` is `"PASS"` | `"FAIL"` | `"N/V"`, and N/V is used wherever the run did not
  * MEASURE the thing — never as a soft failure.
  */
-export const judgeTickReceipt = ({ before = null, after = null, taskDone = false, expect = "receipt" } = {}) => {
-  const idBefore = receiptIdentity(before);
-  const idAfter = receiptIdentity(after);
-  const arm = receiptArm(after);
+export const judgeTickReceipt = ({ before = null, after = null, taskDone = false, expect = "receipt", beforeUnavailable = null, afterUnavailable = null } = {}) => {
+  const sBefore = sideOf(before, beforeUnavailable);
+  const sAfter = sideOf(after, afterUnavailable);
+  const idBefore = receiptIdentity(sBefore.receipt);
+  const idAfter = receiptIdentity(sAfter.receipt);
+  const arm = receiptArm(sAfter.receipt);
   const sameBucket = !!(idBefore && idAfter && idBefore.tickId === idAfter.tickId);
-  const base = { identity: { before: idBefore, after: idAfter }, sameBucket, arm, expect };
+  const base = { identity: { before: idBefore, after: idAfter }, sameBucket, arm, expect, unavailable: { before: sBefore.unavailable, after: sAfter.unavailable } };
 
   if (!TICK_EXPECTATIONS.includes(expect)) {
     return { ...base, verdict: "N/V", wrote: null, reason: `unknown expectation "${expect}" — the step did not say what it was measuring` };
@@ -117,6 +193,15 @@ export const judgeTickReceipt = ({ before = null, after = null, taskDone = false
      are the same evidence, which is the vacuous-PASS half of F-797. */
   if (!taskDone) {
     return { ...base, verdict: "N/V", wrote: null, reason: "no liveness: the consumer's async_job never reached done/error and nothing else proved the tick ran, so neither a receipt nor its absence proves anything" };
+  }
+  /* F-832 — THE LEDGER WAS NOT READ. Decided BEFORE identity and BEFORE the body, because
+     with the scan faulted there is no identity to compare and no arm to name: `receipts: []`
+     is the door's shape on a fault, not a statement that the agent wrote nothing. */
+  if (sBefore.unavailable || sAfter.unavailable) {
+    const which = sBefore.unavailable && sAfter.unavailable
+      ? `on BOTH reads (before=${sBefore.unavailable}, after=${sAfter.unavailable})`
+      : (sAfter.unavailable ? `on the read AFTER the tick (${sAfter.unavailable})` : `on the read BEFORE the tick (${sBefore.unavailable})`);
+    return { ...base, verdict: "N/V", wrote: null, reason: `the receipt list could not be READ ${which} — getVaStatus answered receiptsUnavailable, so its empty receipts[] is a scan fault and not an absence of receipts; nothing about the tick is measured here` };
   }
   /* THE OVERWRITE, SEEN. Same bucket AND the same `finished` instant: either the tick
      wrote a byte-identical row or it wrote nothing, and this cannot tell which. */

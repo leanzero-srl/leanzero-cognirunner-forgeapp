@@ -520,7 +520,8 @@ export const jiraFaultStatus = async (path) => {
  * IT DELETES ONLY EXPIRED ROWS. A live lever is listed and left alone — this is a sweep, not
  * a disarm-everything, and a harness action that could cancel a running driver's fault mid-run
  * would make every suite's result depend on who else pressed it. `disarmHarnessFault` is still
- * the way to end a lever you armed. `dryRun` lists without deleting.
+ * the way to end a lever you armed. `dryRun: true` — the literal `true`, nothing else (F-673)
+ * — lists without deleting.
  *
  * GATED FIRST, like the other six: a production deployment performs no KVS access here either,
  * and the enumeration in particular must never run on a real tenant.
@@ -530,22 +531,86 @@ export const jiraFaultStatus = async (path) => {
  */
 export const HARNESS_FAULT_KEY_PREFIX = "harness_fault:";
 
-/** Bounded on purpose: a sweep is a diagnostic call inside one 25 s resolver budget. */
+/*
+ * F-673 — THE STATED BOUND IS NOW THE ENFORCED ONE.
+ *
+ * This block used to say "bounded on purpose: one 25 s resolver budget" while enforcing no
+ * time bound at all. What it actually enforced was 1000 ROWS and up to 1000 SEQUENTIAL
+ * awaited KVS deletes, inside a web trigger the platform kills at 25 s — and because the
+ * answer was assembled only after every page, a sweep killed mid-loop reported NOTHING: not
+ * the rows it had listed, not the count it had already deleted. The caller could not tell
+ * whether the keyspace was clean, half clean or untouched. A cap expressed in PAGES is not a
+ * cap on TIME; only a clock is one.
+ *
+ * So there are three bounds now, and all three are CHECKED rather than narrated:
+ *  · TIME — `maxMs` (default 15 s, never above 20 s, so the answer still fits inside the
+ *    25 s trigger) is checked BEFORE every page and BEFORE every delete batch. On exceeding
+ *    it the sweep STOPS and returns the PARTIAL answer it already holds: real `scanned` /
+ *    `deleted` / `failed`, `truncated: true`, `reason: "budget"`, and the `cursor` to resume
+ *    from (which the call also ACCEPTS, so continuing is the same call again). That cursor is
+ *    the one that RE-FETCHES the page being worked — KVS cursors are opaque tokens and a key
+ *    is not a cursor — so a resumed sweep may re-list rows it already cleaned. Deliberate:
+ *    every delete here is idempotent and only ever lands on an expired row, so the price of
+ *    resuming is a repeated listing, never a lost row or a live lever destroyed twice.
+ *  · WORK PER ROUND TRIP — a page's expired keys go out in `Promise.allSettled` batches of
+ *    `HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY`, each outcome counted into `deleted`/`failed`,
+ *    still best-effort per key like every other cleanup in this module. Bounded concurrency
+ *    and not "all of them at once": a diagnostic sweep must not be the thing that throttles
+ *    the tenant it is cleaning.
+ *  · ANSWER SIZE — the row LIST stops at `HARNESS_FAULT_SWEEP_MAX_ROWS` and sets
+ *    `rowsTruncated`, while the COUNTERS keep counting. The counters are what an operator
+ *    acts on; the list is a courtesy, and a courtesy must not be the thing that makes the
+ *    response too large to return.
+ *
+ * `dryRun` ACCEPTS ONLY THE LITERAL `true`. It was `Boolean(dryRun)`, under which the string
+ * `"false"` — the shape a query string or a hand-written curl produces — means "do not
+ * delete". A lever whose safe mode can be entered by accident is a lever whose dangerous mode
+ * is one typo away from being entered by accident too, so the safe mode now demands the exact
+ * value and every other value sweeps for real.
+ */
+
+/** One page of the enumeration, and the page cap that still bounds a runaway cursor. */
 export const HARNESS_FAULT_SWEEP_PAGE_SIZE = 100;
 export const HARNESS_FAULT_SWEEP_MAX_PAGES = 10;
+/** THE TIME BOUND (F-673), in ms: the default, and the ceiling no caller may raise. */
+export const HARNESS_FAULT_SWEEP_DEFAULT_MS = 15_000;
+export const HARNESS_FAULT_SWEEP_MAX_MS = 20_000;
+/** Deletes per `Promise.allSettled` batch, and the cap on the returned row LIST. */
+export const HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY = 10;
+export const HARNESS_FAULT_SWEEP_MAX_ROWS = 200;
 
-export const sweepHarnessFaults = async ({ dryRun = false } = {}) => {
+/**
+ * THE one place a caller's `maxMs` becomes a budget. Anything that is not a finite number is
+ * the default; anything above the ceiling is the ceiling (the trigger's 25 s is the real
+ * constraint and no option gets to argue with it); anything below 1 ms is 1 ms, so a caller
+ * asking for zero gets "check, stop, report" rather than a loop that never checks at all.
+ */
+export const sweepBudgetMs = (maxMs) => {
+  if (typeof maxMs !== "number" || !Number.isFinite(maxMs)) return HARNESS_FAULT_SWEEP_DEFAULT_MS;
+  return Math.min(Math.max(Math.floor(maxMs), 1), HARNESS_FAULT_SWEEP_MAX_MS);
+};
+
+export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startCursor = null } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
-  const now = Date.now();
+  const dry = dryRun === true;
+  const budgetMs = sweepBudgetMs(maxMs);
+  const t0 = Date.now();
+  const overBudget = () => Date.now() - t0 >= budgetMs;
+  const now = t0;
   const rows = [];
-  let scanned = 0, deleted = 0, failed = 0, truncated = false;
-  let cursor = null;
+  let scanned = 0, deleted = 0, failed = 0, rowsTruncated = false;
+  let truncated = false, reason = null;
+  let cursor = typeof startCursor === "string" && startCursor ? startCursor : null;
   for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
+    // The cursor that re-fetches THIS page — the resume point for anything that stops inside it.
+    const resume = cursor;
+    if (overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
     let query = storage.query()
       .where("key", { condition: "BEGINS_WITH", values: [HARNESS_FAULT_KEY_PREFIX] })
       .limit(HARNESS_FAULT_SWEEP_PAGE_SIZE);
     if (cursor) query = query.cursor(cursor);
     const result = await query.getMany();
+    const doomed = [];
     for (const entry of (result && result.results) || []) {
       const key = String(entry && entry.key);
       const row = (entry && entry.value) || null;
@@ -554,19 +619,36 @@ export const sweepHarnessFaults = async ({ dryRun = false } = {}) => {
       scanned++;
       // `until` is what the ROW says; `deadline` is what BOUNDS it — they differ exactly for
       // the legacy no-`until` row this sweep exists to reach, and a reader is owed both.
-      rows.push({
-        key,
-        until: (row && typeof row.until === "string" && row.until) || null,
-        deadline: deadline === null ? null : new Date(deadline).toISOString(),
-        expired,
-      });
-      if (expired && !dryRun) {
-        try { await storage.delete(key); deleted++; } catch { failed++; }
+      if (rows.length < HARNESS_FAULT_SWEEP_MAX_ROWS) {
+        rows.push({
+          key,
+          until: (row && typeof row.until === "string" && row.until) || null,
+          deadline: deadline === null ? null : new Date(deadline).toISOString(),
+          expired,
+        });
+      } else {
+        rowsTruncated = true;
       }
+      if (expired) doomed.push(key);
+    }
+    if (!dry) {
+      for (let i = 0; i < doomed.length; i += HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY) {
+        if (overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+        const batch = doomed.slice(i, i + HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY);
+        const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
+        for (const outcome of settled) { if (outcome.status === "fulfilled") deleted++; else failed++; }
+      }
+      if (truncated) break;
     }
     cursor = (result && result.nextCursor) || null;
     if (!cursor) break;
-    if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) truncated = true;
+    if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) { truncated = true; reason = "pages"; }
   }
-  return { ok: true, dryRun: Boolean(dryRun), scanned, deleted, failed, truncated, rows };
+  return {
+    ok: true, dryRun: dry, scanned, deleted, failed,
+    truncated, reason, budgetMs, rows, rowsTruncated,
+    // Carried ONLY when there is more to do, so a `truncated: false` answer with a null
+    // cursor is the one unambiguous way a caller reads "finished" rather than "stopped".
+    cursor: truncated ? cursor : null,
+  };
 };

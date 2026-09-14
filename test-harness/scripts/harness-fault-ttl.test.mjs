@@ -332,6 +332,88 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   await storage.delete(bystander);
 }
 
+/* ═════ 7b. F-673 — THE SWEEP'S STATED BOUND IS THE ENFORCED ONE ═════
+ *
+ * The sweep's docblock claimed "a diagnostic call inside one 25 s resolver budget" while
+ * enforcing 1000 rows and up to 1000 SEQUENTIAL awaited deletes and no clock at all — and it
+ * assembled its answer only after the LAST page, so a sweep killed mid-loop reported nothing
+ * whatsoever, having already deleted an unknown number of rows.
+ *
+ * The offline mock is exactly why this survived: its `delete` returns instantly, so no number
+ * of planted rows can ever reach a time bound. So the fixture INJECTS delete latency — and
+ * injects it only on the rows AFTER the first page, which makes the trip point deterministic
+ * (page 0 completes, page 1 runs out of budget) rather than a race with the machine.
+ *
+ * What is asserted: the loop STOPS on the budget, the PARTIAL answer is returned with real
+ * counters and a resume cursor, and a second call with that cursor FINISHES the job.
+ */
+{
+  const TOTAL = 400;
+  const stale = new Date(Date.now() - 3_600_000).toISOString();
+  const keys = [];
+  for (let i = 0; i < TOTAL; i++) {
+    // Zero-padded so the mock's key-sorted pagination matches the order latency is assigned in.
+    const key = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_673", `d-${String(i).padStart(4, "0")}`);
+    keys.push(key);
+    await storage.set(key, { count: 1, armedAt: stale, until: stale });
+  }
+
+  // THE ANSWER STAYS SMALL: 400 rows scanned, at most 200 LISTED, and the counters keep
+  // counting past the cap — a courtesy list must never be what makes a response unreturnable.
+  const big = await fault.sweepHarnessFaults({ dryRun: true });
+  ok(big.scanned >= TOTAL && big.rows.length === fault.HARNESS_FAULT_SWEEP_MAX_ROWS && big.rowsTruncated === true,
+    `the row LIST caps at ${fault.HARNESS_FAULT_SWEEP_MAX_ROWS} while the scanned COUNTER counts all ${TOTAL} (got ${JSON.stringify({ scanned: big.scanned, rows: big.rows.length, rowsTruncated: big.rowsTruncated })})`);
+  ok(big.deleted === 0 && (await storage.get(keys[0])) !== undefined, "…and a dry run over 400 rows still deletes none of them");
+
+  // INJECTED DELETE LATENCY — the thing the mock has never had. Only the rows past the first
+  // page are slow, so page 0 completes and the budget is spent inside page 1, every run.
+  const realDelete = kvs.delete;
+  const slow = new Set(keys.slice(fault.HARNESS_FAULT_SWEEP_PAGE_SIZE));
+  let latencyMs = 30;
+  kvs.delete = async function latentDelete(key) {
+    if (slow.has(key) && latencyMs > 0) await new Promise((r) => setTimeout(r, latencyMs));
+    return realDelete.call(this, key);
+  };
+
+  const first = await fault.sweepHarnessFaults({ maxMs: 60 });
+  ok(first.ok === true && first.truncated === true && first.reason === "budget",
+    `a sweep that runs out of time RETURNS, truncated with reason "budget" (got ${JSON.stringify({ ok: first.ok, truncated: first.truncated, reason: first.reason })})`);
+  ok(first.deleted >= fault.HARNESS_FAULT_SWEEP_PAGE_SIZE && first.deleted < TOTAL,
+    `…and reports the PARTIAL work it really did — not zero, not all of it (deleted ${first.deleted} of ${TOTAL})`);
+  ok(first.scanned >= first.deleted && Array.isArray(first.rows) && first.rows.length > 0,
+    "…with the rows it had already listed, which the old all-or-nothing answer threw away");
+  ok(typeof first.cursor === "string" && first.cursor.length > 0,
+    `…and the CURSOR to carry on from (got ${JSON.stringify(first.cursor)})`);
+  ok((await storage.get(keys[TOTAL - 1])) !== undefined, "…the rows it never reached are still there, which is what makes resuming meaningful");
+
+  // THE SECOND CALL FINISHES IT. Same action, the returned cursor, no special resume path.
+  latencyMs = 0;
+  const second = await fault.sweepHarnessFaults({ cursor: first.cursor });
+  ok(second.ok === true && second.truncated === false && second.cursor === null,
+    `the continuation finishes and says so — truncated false, cursor null (got ${JSON.stringify({ truncated: second.truncated, cursor: second.cursor, reason: second.reason })})`);
+  let left = 0;
+  for (const key of keys) if ((await storage.get(key)) !== undefined) left++;
+  ok(left === 0, `…and the whole ${TOTAL}-row keyspace is clean across the two calls (still there: ${left})`);
+  kvs.delete = realDelete;
+
+  // THE BUDGET ITSELF: a default, a ceiling no caller may raise past the 25 s trigger, and a
+  // floor, so "maxMs: 0" is one check-and-stop rather than a loop that never checks.
+  ok(fault.sweepBudgetMs(undefined) === fault.HARNESS_FAULT_SWEEP_DEFAULT_MS && fault.sweepBudgetMs("15000") === fault.HARNESS_FAULT_SWEEP_DEFAULT_MS,
+    "a missing or non-numeric maxMs is the default budget");
+  ok(fault.sweepBudgetMs(60_000) === fault.HARNESS_FAULT_SWEEP_MAX_MS && fault.HARNESS_FAULT_SWEEP_MAX_MS <= 20_000,
+    `…a caller cannot raise it above the ${fault.HARNESS_FAULT_SWEEP_MAX_MS} ms ceiling`);
+  ok(fault.sweepBudgetMs(0) === 1 && fault.sweepBudgetMs(-5) === 1, "…and it never drops below 1 ms");
+
+  // `dryRun` ACCEPTS ONLY `true`. The string "false" is what a query string or a curl produces;
+  // under the old `Boolean(dryRun)` it meant "do not delete", which is a safe mode entered by
+  // accident — and a lever whose safe mode is accidental has a dangerous mode that is too.
+  const sneaky = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_673b", "d-1");
+  await storage.set(sneaky, { count: 1, armedAt: stale, until: stale });
+  const coerced = await fault.sweepHarnessFaults({ dryRun: "false" });
+  ok(coerced.dryRun === false && (await storage.get(sneaky)) === undefined,
+    `dryRun only accepts the literal true — the string "false" sweeps for real (got dryRun=${JSON.stringify(coerced.dryRun)})`);
+}
+
 /* ═════ 6. END TO END — the expired row does not fault the product ═════ */
 {
   const { default: forgeApi } = await import("@forge/api");

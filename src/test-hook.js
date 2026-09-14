@@ -412,15 +412,26 @@ export async function testStateTrigger(req) {
      * row in the fault keyspace with its stored `until`, the deadline that BOUNDS it and whether
      * that has passed. A live lever is listed and left alone — an action that could cancel a
      * running driver's fault would make every suite's result depend on who else pressed it;
-     * `disarmJiraFault` and friends are still how you end a lever you armed. `dryRun: true`
-     * lists without deleting.
+     * `disarmJiraFault` and friends are still how you end a lever you armed. `dryRun: true` —
+     * the literal `true` and nothing else (F-673) — lists without deleting.
      *
-     * The enumeration, the page caps and the env gate all live in src/harness-fault.js; this
-     * is wiring behind the same HARNESS_SECRET Bearer as every other action here, and the
-     * sweep is additionally inert wherever that env var is absent (production). */
+     * F-673: THE SWEEP IS TIME-BOUNDED AND RESUMABLE, because this door is a web trigger the
+     * platform kills at 25 s and the old loop could be killed holding an answer it never sent.
+     * A caller may pass `maxMs` (clamped in harness-fault.js to 20 s) and a `cursor`; a sweep
+     * that runs out of budget answers 200 with `truncated: true, reason: "budget"` and the
+     * cursor to POST back, so "keep going" is this same action again rather than a guess.
+     *
+     * The enumeration, the budget, the page caps and the env gate all live in
+     * src/harness-fault.js; this is wiring behind the same HARNESS_SECRET Bearer as every
+     * other action here, and the sweep is additionally inert wherever that env var is absent
+     * (production). */
     if (body.action === "sweepHarnessFaults") {
       const { sweepHarnessFaults } = await import("./harness-fault.js");
-      const r = await sweepHarnessFaults({ dryRun: body.dryRun === true });
+      const r = await sweepHarnessFaults({
+        dryRun: body.dryRun === true,
+        maxMs: typeof body.maxMs === "number" ? body.maxMs : undefined,
+        cursor: typeof body.cursor === "string" ? body.cursor : null,
+      });
       // A refusal from the lever overrides the optimistic ok, exactly like the arm actions.
       return json(r.ok === false ? 400 : 200, { ok: true, ...r });
     }

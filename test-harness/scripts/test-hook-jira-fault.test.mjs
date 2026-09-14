@@ -35,7 +35,7 @@
  */
 
 import "../lib/register-mocks-index.mjs";
-import storage from "../lib/mock-kvs.mjs";
+import storage, { kvs } from "../lib/mock-kvs.mjs";
 const { default: forgeApi } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -401,6 +401,44 @@ process.env.HARNESS_SECRET = SECRET;
   ok((await handler({ call: { functionKey: "searchUsers", payload: { query: "mihai" } } }, { principal: { accountId: ADMIN } })).status === 503,
     "…so it still bites after the sweep");
   await disarm();
+
+  /* F-673 — THE DOOR CARRIES THE BUDGET AND THE CURSOR. This action is a WEB TRIGGER the
+   * platform kills at 25 s; before F-673 a sweep that ran long was killed holding an answer it
+   * never sent, so the caller learned neither what it had deleted nor where to carry on. The
+   * budget must therefore be reachable FROM THE DOOR (`maxMs`) and the resume cursor must come
+   * back THROUGH the door — a bound enforced in the module but unreachable from the only caller
+   * is the same defect one layer up.
+   *
+   * The offline mock answers instantly, which is exactly why no existing assertion could ever
+   * reach a time bound — so the ENUMERATION is given latency here, and `maxMs: 1` then makes
+   * the stop land deterministically after the first page is fetched and before anything is
+   * deleted, rather than racing the machine's clock granularity. */
+  const budgetKey = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_673", "d-door");
+  await storage.set(budgetKey, { count: 1, armedAt: new Date(Date.now() - 3_600_000).toISOString() });
+  const realQuery = kvs.query;
+  kvs.query = function slowQuery(...args) {
+    const q = realQuery.apply(this, args);
+    const realGetMany = q.getMany;
+    q.getMany = async function getManySlowly(...inner) {
+      await new Promise((r) => setTimeout(r, 8));
+      return realGetMany.apply(q, inner);
+    };
+    return q;
+  };
+  const starved = await post({ action: "sweepHarnessFaults", maxMs: 1 });
+  kvs.query = realQuery;
+  ok(starved.status === 200 && starved.body.truncated === true && starved.body.reason === "budget",
+    `an out-of-budget sweep still ANSWERS 200, truncated with reason "budget" (got ${JSON.stringify(starved.body && { status: starved.status, truncated: starved.body.truncated, reason: starved.body.reason })})`);
+  ok(starved.body.budgetMs === 1 && "cursor" in starved.body,
+    `…echoing the budget it honoured and carrying the resume cursor (got ${JSON.stringify({ budgetMs: starved.body.budgetMs, cursor: starved.body.cursor })})`);
+  ok((await storage.get(budgetKey)) !== undefined, "…and having stopped before the first page, it deleted nothing");
+  const resumed = await post({ action: "sweepHarnessFaults", cursor: starved.body.cursor });
+  ok(resumed.status === 200 && resumed.body.truncated === false && (await storage.get(budgetKey)) === undefined,
+    "…and POSTing that cursor back to the SAME action finishes the job");
+  // A caller cannot buy more time than the trigger has: the clamp is the module's, not the door's.
+  const greedy = await post({ action: "sweepHarnessFaults", maxMs: 600_000, dryRun: true });
+  ok(greedy.body.budgetMs === fault.HARNESS_FAULT_SWEEP_MAX_MS,
+    `…and the door cannot raise the budget past the ${fault.HARNESS_FAULT_SWEEP_MAX_MS} ms ceiling (got ${greedy.body && greedy.body.budgetMs})`);
 
   process.env.HARNESS_SECRET = "";
   ok((await post({ action: "sweepHarnessFaults" })).status === 404, "with no HARNESS_SECRET configured the sweep door is 404, like the rest of the hook");

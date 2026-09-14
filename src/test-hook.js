@@ -14,6 +14,7 @@
 import { kvs as storage } from "@forge/kvs";
 import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 import { readBearerToken } from "./shared/http-headers.js";
+import { errorClassOf } from "./shared/error-class.js";
 // F-803: "what does a credential VALUE look like" has ONE home, shared with the harness
 // evidence redactor — the two used to disagree about this app's own Rules-API bearer.
 import { SECRET_FIELD_NAME_HINTS, findCredentialSpans } from "./shared/secret-shapes.js";
@@ -56,8 +57,9 @@ const q = (req, n) => {
 export const JSM_PROBE_COMMENT_TEXT = "CogniRunner harness audience probe — safe to ignore, deleted automatically.";
 export const JSM_INTERNAL_PROPERTY_KEY = "sd.public.comment";
 
-/** The error CLASS only — a message can carry a URL, an issue key or a token. */
-const errorClassOf = (e) => (e && (e.code || e.name) ? String(e.code || e.name) : "Error").slice(0, 60);
+/* The error CLASS only — a message can carry a URL, an issue key or a token. ONE home:
+ * src/shared/error-class.js (F-833; this file and src/async-handler.js each used to carry
+ * their own copy). */
 /* F-789 — WHICH error classes mean "this installation would not give the row a TTL", used
  * by the stash refusal to name its cause. TTL must be a DELIMITED token: the platform's
  * codes are SCREAMING_SNAKE (`INVALID_TTL`, `TTL_NOT_SUPPORTED`), and a bare substring test

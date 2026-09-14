@@ -94,6 +94,7 @@ import {
   PROVIDER_OPENROUTER_BASE_URL,
 } from "./index";
 import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS, MAX_BUDGET_DEFER_DELAY_S, TOKEN_SPENDING_TASK_TYPES } from "./shared/ai-budget.js";
+import { errorClassOf } from "./shared/error-class.js";
 // Learned memories — injected into static-PF reviews and persisted by the
 // memory_distill task (runtime auto-capture, opt-in). defangFence neutralizes
 // fence tokens in untrusted content interpolated into prompts here.
@@ -2075,8 +2076,8 @@ const objectKeys = (data) => (data && typeof data === "object" && !Array.isArray
 const readJsonSafe = async (res) => {
   try { return JSON.parse(String(await res.text()).slice(0, 200000)); } catch { return null; }
 };
-/** The error CLASS only — never a message, which could carry a URL, an id or a token. */
-const errorClassOf = (e) => (e && (e.code || e.name)) ? String(e.code || e.name).slice(0, 60) : "Error";
+/* The error CLASS only — never a message, which could carry a URL, an id or a token.
+ * ONE home: src/shared/error-class.js (F-833). */
 
 export const executeHarnessProbe = async (params, taskId) => {
   // THE PRODUCTION REFUSAL, first statement, before any storage or HTTP access —

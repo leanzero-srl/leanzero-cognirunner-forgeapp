@@ -21,6 +21,24 @@
 import { register } from "node:module";
 import assert from "node:assert/strict";
 
+/*
+ * F-833 — THE WORKSPACE NEEDS A REAL STORE AND A REAL JIRA MOCK, OR IT MEASURES NOTHING.
+ *
+ * src/coder-workspace.js imports `storage` from "@forge/kvs" and `api` from "@forge/api"
+ * at module level and defaults to them (`{ store = storage }`). This suite used to leave
+ * both UNMAPPED, so outside the Forge runtime the kvs default export has no `set`: every
+ * per-issue lock take threw `TypeError: storage.set is not a function`, the workspace
+ * classified that as a NETWORK fault and swallowed it, and three write groups per coder
+ * turn (plan, Coder log, session artifact) never ran while the suite reported green. The
+ * two stderr lines were the only evidence and nothing asserted on them.
+ *
+ * So the shared offline mocks are registered here: `@forge/kvs` → lib/mock-kvs.mjs (the
+ * SAME instance this file imports as `store`, because node caches by resolved URL) and
+ * `@forge/api` → lib/mock-forge-api.mjs, whose scripted responder setupWorld drives. The
+ * workspace's writes are now real writes into the mock and can be asserted on.
+ */
+register(new URL("../lib/forge-kvs-loader.mjs", import.meta.url));
+
 // The engine and the runner both reach src/index.js lazily; stub it before either loads.
 register("data:text/javascript," + encodeURIComponent(`
 export async function resolve(spec, ctx, next) {
@@ -49,6 +67,7 @@ export async function load(url, ctx, next) {
 }`));
 
 const store = (await import("../lib/mock-kvs.mjs")).default;
+const forgeApi = (await import("../lib/mock-forge-api.mjs")).default;
 const {
   runCoderTurn, confirmCoderTicket, compactThread, buildCoderSystemPrompt, buildArgsPreview,
   coderThreadKey, coderPinKey, coderTicketKey, coderExecClaimKey, coderTicketExecClaimKey, coderThreadWriteClaimKey,
@@ -69,9 +88,32 @@ const reply = (tool_calls, content = null) => ({
   data: { choices: [{ message: { role: "assistant", content, tool_calls } }], usage: { total_tokens: 7 } },
 });
 
+/*
+ * F-833 — THE JIRA SIDE OF THE WORKSPACE, SCRIPTED.
+ *
+ * With @forge/api mocked, src/coder-workspace.js's writes are real recorded calls instead
+ * of a TypeError. The default responder answers the four routes the workspace uses so a
+ * turn's writes SUCCEED and land in `world.jiraCalls`; a test that wants a failure scripts
+ * its own with `forgeApi.__respond(...)`. Without this the workspace would simply fail
+ * 404 everywhere — green for the wrong reason again, and 140 lines of stderr noise.
+ */
+const workspaceResponder = (world) => (path, opts) => {
+  const p = String(path);
+  world.jiraCalls.push({ path: p, method: (opts && opts.method) || "GET" });
+  if (/\/comment(\/\d+)?$/.test(p)) return forgeApi.__response(200, { id: "cmt-1" });
+  if (/\/attachments$/.test(p)) return forgeApi.__response(200, [{ id: "att-1", filename: "coder-session-1.md" }]);
+  if (/\/remotelink$/.test(p)) return forgeApi.__response(200, { id: 9 });
+  if (/\/issue\/[^/]+(\?|$)/.test(p)) {
+    return (opts && opts.method) === "PUT"
+      ? forgeApi.__response(204, "")
+      : forgeApi.__response(200, { key: "LZPT-7", fields: { description: { type: "doc", version: 1, content: [] } } });
+  }
+  return forgeApi.__response(200, {});
+};
+
 const setupWorld = ({ rounds = [], provider = "anthropic" } = {}) => {
   const world = {
-    provider, requests: [], writes: [], gitCalls: [], round: 0,
+    provider, requests: [], writes: [], gitCalls: [], jiraCalls: [], round: 0,
     session({ issueKey, config }) {
       const api = (key) => new Proxy({}, {
         get(_t, method) {
@@ -104,6 +146,8 @@ const setupWorld = ({ rounds = [], provider = "anthropic" } = {}) => {
     },
   };
   globalThis.__coder = world;
+  forgeApi.__reset();
+  forgeApi.__respond(workspaceResponder(world));
   return world;
 };
 
@@ -1569,6 +1613,273 @@ await check("F-615: the turn records WHY the prefix moved, and a healthy turn re
   const row3 = await store.get(coderThreadKey("LZPT-7", "t1"));
   assert.equal(row3.cacheReset.defect, true, "an unexplained miss on a stable pin is still the defect");
   assert.equal(row3.cacheReset.reason, "unexplained", "…and it never carries the last turn's reason");
+});
+
+/* ═════════ F-617: the OTHER two deliberate prefix moves ═════════
+ * F-615 taught the cross-turn detector one reason — the F-578 re-pin — because that reason
+ * is known BEFORE the loop runs. The pin block knows two more, and it used to learn them
+ * AFTER the detector had already judged the turn: a pin that EXPIRED under a living thread,
+ * and knowledge TOO LARGE to pin. Both move the prefix on purpose, and both were logged as
+ * the DEFECT WARN. These four cases are the contract: a deliberate move is an INFO with its
+ * reason, an unexplained one is still the WARN, a healthy turn says nothing.
+ */
+const cachedReply = (tool_calls, cachedTokens = 9000) => ({
+  ok: true, status: 200,
+  data: {
+    choices: [{ message: { role: "assistant", content: null, tool_calls } }],
+    usage: { total_tokens: 7, prompt_tokens_details: { cached_tokens: cachedTokens } },
+  },
+});
+/** The previous turn's prefix, made big enough that the detector is willing to speak. */
+const primePriorPrefix = async (bytes = 40000) => {
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  row.promptPrefixBytes = bytes;
+  await store.set(coderThreadKey("LZPT-7", "t1"), row);
+};
+const catchWarn = async (fn) => {
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(" "));
+  try { return { out: await fn(), warned }; } finally { console.warn = warn; }
+};
+
+await check("F-617: an EXPIRED pin is an INFO naming the reason, never the DEFECT WARN", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  // What a 90-day TTL does to the pin under a thread row that is refreshed every turn.
+  await store.delete(coderPinKey("LZPT-7", "t1"));
+  await primePriorPrefix();
+
+  const { out: r, warned } = await catchWarn(() =>
+    startTurn(world, { userMessage: "second", knowledge: stable }));
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset.defect, false,
+    "THE FINDING: this turn re-pinned because the pin had expired — that is a decision, not a defect");
+  assert.match(row.cacheReset.reason, /pin-expired/, "…and the row carries the reason, not 'unexplained'");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 0, "…nothing is written at WARN");
+  assert.ok((r.logs || []).some((l) => /pin-expired/.test(l) && /not a defect/.test(l)),
+    `…and the turn's own log says why at INFO (${JSON.stringify((r.logs || []).filter((l) => /cached tokens/.test(l)))})`);
+  // The pre-existing F-581 line is untouched: the reason moved, the announcement did not.
+  assert.ok((r.logs || []).some((l) => /pin expired/.test(l) && /prefix moves once/.test(l)),
+    "…while the pin block still announces the re-pin in its own words");
+  assert.ok(await store.get(coderPinKey("LZPT-7", "t1")), "…and the thread does get a working pin again");
+});
+
+await check("F-617: knowledge too large to pin is an INFO naming the reason, never the DEFECT WARN", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const huge = { skillsBlock: "x".repeat(33 * 1024) };
+  await startTurn(world, { knowledge: huge });
+  assert.equal(await store.get(coderPinKey("LZPT-7", "t1")), undefined, "turn 1 pinned nothing — it does not fit");
+  await primePriorPrefix();
+
+  const { out: r, warned } = await catchWarn(() =>
+    startTurn(world, { userMessage: "second", knowledge: huge }));
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset.defect, false,
+    "THE FINDING: an unpinnable thread rebuilds its knowledge by design — the engine may not call that a bug");
+  assert.match(row.cacheReset.reason, /knowledge-oversized/, "…the reason names the ceiling it is over");
+  assert.match(row.cacheReset.reason, /33792 bytes/, "…and the size that put it there");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 0, "…nothing is written at WARN");
+  assert.ok((r.logs || []).some((l) => /knowledge-oversized/.test(l) && /not a defect/.test(l)),
+    "…and the INFO line carries the reason");
+  assert.ok((r.logs || []).some((l) => /too large to pin/.test(l)), "…beside the pin block's own line");
+});
+
+await check("F-617: a zero cache read with NO reason is still the WARN, on a live turn", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  // The pin is INTACT and the knowledge unchanged: nothing this turn decided moved anything.
+  await primePriorPrefix();
+
+  const { warned } = await catchWarn(() =>
+    startTurn(world, { userMessage: "second", knowledge: stable }));
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset.defect, true, "a stable pin that read nothing is the miss F-550 exists to catch");
+  assert.equal(row.cacheReset.reason, "unexplained", "…and it borrows no excuse from the pin block");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 1, "…still exactly one WARN");
+});
+
+await check("F-617: a stable turn whose cache HELD logs nothing at all", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), cachedReply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  await primePriorPrefix();
+
+  const { out: r, warned } = await catchWarn(() =>
+    startTurn(world, { userMessage: "second", knowledge: stable }));
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset, undefined, "a turn that cached normally records nothing to explain");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 0, "…and warns about nothing");
+  assert.equal((r.logs || []).filter((l) => /cached tokens/.test(l)).length, 0,
+    "…and does not narrate a cache that worked");
+});
+
+/* ═════════ F-833. a storage fault is not a network fault ═════════
+ *
+ * The defect this closes had TWO halves and both are held here.
+ *
+ * The CLASSIFICATION half: src/coder-workspace.js ended its throw classifier with
+ * `return "network"`, so a KVS fault — including the TypeError a wrong storage handle
+ * raises — was reported to the Coder log and the task row as "Jira was unreachable". The
+ * reader is then sent to check egress while the actual fault is in the store.
+ *
+ * The MEASUREMENT half: because this suite left @forge/kvs unmapped, EVERY lock take in
+ * it threw that TypeError, so three write groups per turn never ran and the suite passed
+ * anyway. The last check below is the standing guard: a full turn must not emit a
+ * swallowed "is not a function" line, and its writes must actually reach Jira.
+ */
+const { withWorkspaceLock } = await import("../../src/coder-workspace.js");
+
+/** A store with a `set` that is not a function — exactly how F-833 presented. */
+const brokenStore = { get: async () => undefined, delete: async () => {} };
+
+await check("F-833: a storage throw on the lock take is STORAGE, never network", async () => {
+  const { out: r, warned } = await catchWarn(() =>
+    withWorkspaceLock("LZPT-7", "Writing the plan", async () => ({ ok: true }), { store: brokenStore }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.errorClass, "storage", "a broken storage handle is a STORAGE fault");
+  assert.notEqual(r.errorClass, "network", "…and must never be filed under 'Jira was unreachable'");
+  assert.match(r.error, /\[TypeError\]/, "…and the one log line names WHICH storage fault it was");
+  assert.equal(warned.length, 1, "…logged exactly once, as every workspace failure is");
+  assert.match(warned[0], /failed \(storage\)/);
+});
+
+await check("F-833: a ForgeKvsAPIError on the lock take is STORAGE with its platform code", async () => {
+  const kvsFault = new Error("Field 'key' must match pattern");
+  kvsFault.name = "ForgeKvsError";
+  kvsFault.code = "INVALID_KEY";
+  const faultingStore = { set: async () => { throw kvsFault; }, get: async () => undefined, delete: async () => {} };
+
+  const { out: r } = await catchWarn(() =>
+    withWorkspaceLock("LZPT-7", "Updating the Coder log", async () => ({ ok: true }), { store: faultingStore }));
+
+  assert.equal(r.errorClass, "storage");
+  assert.match(r.error, /\[INVALID_KEY\]/, "the class is the platform's code, not the message");
+});
+
+await check("F-833: a real fetch failure inside the write group is STILL network", async () => {
+  resetStore();
+  const okStore = store;
+  const { out: r } = await catchWarn(() => withWorkspaceLock("LZPT-7", "Writing the plan", async () => {
+    throw new Error("fetch failed");           // what an unreachable product throws
+  }, { store: okStore }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.errorClass, "network", "the remote product being unreachable keeps its own name");
+  assert.equal(await okStore.get("coder_ws:LZPT-7"), undefined, "…and the lock is released either way");
+});
+
+await check("F-833: a full turn swallows no storage fault and its writes reach Jira", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const { warned } = await catchWarn(() => startTurn(world, { userMessage: "write the log" }));
+
+  assert.equal(warned.filter((l) => /is not a function/.test(l)).length, 0,
+    "the two swallowed TypeErrors F-833 was reported for must be gone");
+  assert.equal(warned.filter((l) => /\[coder-workspace\].*failed \(network\)/.test(l)).length, 0,
+    "…and nothing in the turn is mislabelled a network fault");
+  assert.ok(world.jiraCalls.some((c) => /\/comment$/.test(c.path) && c.method === "POST"),
+    "the Coder log comment is a REAL measured write now, not a swallowed failure");
+});
+
+/* ═════════ F-841. a failed workspace write is COUNTED and NAMED ═════════
+ *
+ * The turn collected every write failure into an array nothing read: `success:true` with
+ * three dead write groups was indistinguishable from a clean turn, on the task row and in
+ * the Coder log alike. F-833 made the writes real in this suite; these checks are what
+ * finally READ them.
+ *
+ * Degrading rather than killing the turn stays (module header). What is asserted is that
+ * the degradation is VISIBLE: one entry per group in the one shape, a count beside it, and
+ * a log line that names the groups that failed and what kind of fault each was.
+ */
+const { updateCoderLog, attachSessionArtifact, createCoderWorkspace, renderWorkspaceSummaryLine }
+  = await import("../../src/coder-workspace.js");
+
+/** The real writer, with ONE group re-pointed at a faulting store (the rest stay real). */
+const workspaceWithFaultyLog = (faultStore) => ({
+  ...createCoderWorkspace({}),
+  updateCoderLog: (args) => updateCoderLog({ ...args, deps: { store: faultStore } }),
+});
+
+await check("F-841: a healthy turn reports every write group ok and workspaceFailures 0", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const r = await startTurn(world, { userMessage: "do the thing" });
+
+  assert.equal(r.success, true);
+  assert.ok(Array.isArray(r.workspace), "the turn record carries the workspace receipt");
+  assert.deepEqual([...r.workspace].map((e) => e.group).sort(), ["artifact", "log", "plan"],
+    "all three groups of a finished first turn are reported, once each");
+  assert.ok(r.workspace.every((e) => e.ok === true), `every group landed: ${JSON.stringify(r.workspace)}`);
+  assert.equal(r.workspaceFailures, 0, "…and the count the panel reads says so");
+  assert.equal((r.logs || []).filter((l) => /^Workspace:/.test(l)).length, 0,
+    "a clean turn adds no summary line at all");
+});
+
+await check("F-841: a faulted lock take names the group with errorClass storage, turn still succeeds", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const kvsFault = new Error("Field 'key' must match pattern");
+  kvsFault.name = "ForgeKvsError";
+  kvsFault.code = "INVALID_KEY";
+  const faultStore = { set: async () => { throw kvsFault; }, get: async () => undefined, delete: async () => {} };
+
+  const { out: r } = await catchWarn(() => startTurn(world, {
+    userMessage: "log it", deps: { store, gitExecutor: recordingGit(world), workspace: workspaceWithFaultyLog(faultStore) },
+  }));
+
+  assert.equal(r.success, true, "DEGRADING, NOT KILLING: a failed comment never fails the turn");
+  const logEntry = r.workspace.find((e) => e.group === "log");
+  assert.ok(logEntry, "the failed group is named");
+  assert.equal(logEntry.ok, false);
+  assert.equal(logEntry.errorClass, "storage", "a KVS fault is storage, never network (F-833)");
+  assert.match(logEntry.detail, /INVALID_KEY/, "…and the detail carries which storage fault it was");
+  assert.equal(r.workspaceFailures, 1, "ONE failure, not one per round: the entry is keyed by group");
+  assert.ok(r.workspace.find((e) => e.group === "plan").ok, "the groups that landed are still reported ok");
+  const line = (r.logs || []).find((l) => /^Workspace:/.test(l));
+  assert.ok(line, "the Coder log's turn summary says so");
+  assert.match(line, /1 of 3 writes failed/);
+  assert.match(line, /log: storage/, "…naming the group and its fault class");
+  assert.equal(/—/.test(line), false, "no em dash, by owner rule");
+});
+
+await check("F-841: an unreachable product names the group with errorClass network", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const base = workspaceResponder(world);
+  forgeApi.__respond((path, opts) => {
+    if (/\/attachments$/.test(String(path))) throw new Error("fetch failed");
+    return base(path, opts);
+  });
+
+  const { out: r } = await catchWarn(() => startTurn(world, { userMessage: "attach it" }));
+
+  assert.equal(r.success, true);
+  const artifact = r.workspace.find((e) => e.group === "artifact");
+  assert.equal(artifact.ok, false);
+  assert.equal(artifact.errorClass, "network", "the remote product being unreachable keeps its own name");
+  assert.equal(r.workspaceFailures, 1);
+  assert.match((r.logs || []).find((l) => /^Workspace:/.test(l)) || "", /artifact: network/);
+});
+
+await check("F-841: the summary line is empty when nothing failed and counts only failures", async () => {
+  assert.equal(renderWorkspaceSummaryLine([{ group: "log", ok: true }]), "");
+  assert.equal(renderWorkspaceSummaryLine([]), "");
+  assert.equal(
+    renderWorkspaceSummaryLine([{ group: "plan", ok: true }, { group: "log", ok: false, errorClass: "storage" }, { group: "artifact", ok: false }]),
+    "Workspace: 2 of 3 writes failed (log: storage, artifact: unknown)");
 });
 
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);

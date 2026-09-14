@@ -66,7 +66,7 @@ import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue, buildKnowledgeMessages, logKnowledgeInjection, reportCrossTurnCacheDefect } from "./agent-runner.js";
 import { createGitActionExecutor } from "./git-actions.js";
-import { createCoderWorkspace } from "./coder-workspace.js";
+import { createCoderWorkspace, workspaceEntry, renderWorkspaceSummaryLine } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
 import { clampChars } from "./shared/text-clamp.js";
 
@@ -767,7 +767,19 @@ const runCoderTurnClaimed = async ({
   // its calls can fail the turn: they all answer {ok:false,...} instead of throwing, and
   // the turn records the answer rather than acting on it.
   const workspace = deps.workspace || createCoderWorkspace({ simulation: simulated });
-  const workspaceResults = [];
+  // ONE ENTRY PER WRITE GROUP (F-841), in the shape `coder-workspace.js` owns. Keyed by
+  // group because the log is flushed once per ROUND: without the key a turn of eight
+  // rounds reported eight "log" entries and "2 of 9 writes failed" was arithmetic about
+  // nothing. A FAILURE IS STICKY - a later round that succeeds does not erase an earlier
+  // failure, because the line the operator needs is "the log write failed at some point
+  // in this turn", not "the last attempt happened to land".
+  const workspaceResults = new Map();
+  const noteWorkspace = (group, r) => {
+    const entry = workspaceEntry(group, r);
+    const prior = workspaceResults.get(entry.group);
+    if (prior && prior.ok === false) return;
+    workspaceResults.set(entry.group, entry);
+  };
   // The running log is flushed ONCE PER ROUND, with only the lines added since the last
   // flush: the writer appends to what it already stored, so re-sending the whole buffer
   // would duplicate every line.
@@ -777,7 +789,7 @@ const runCoderTurnClaimed = async ({
     flushedLogs = logs.length;
     if (!fresh.length) return;
     const r = await workspace.updateCoderLog({ issueKey: key, threadId: thread, lines: fresh });
-    if (r && r.ok === false) workspaceResults.push({ what: "log", ...r });
+    noteWorkspace("log", r);
   };
 
   // ── the consent ticket ────────────────────────────────────────────────────
@@ -911,6 +923,52 @@ const runCoderTurnClaimed = async ({
   // breaks, storing the knowledge block into the thread as if the model had said it.
   const seededCount = messages.length;
 
+  // ── WHY THIS TURN'S PREFIX MOVES, DECIDED BEFORE THE TURN RUNS (F-617) ────
+  // The pin is WRITTEN far below, after the thread row, because a pin is an optimisation
+  // and the record is the conversation. But it was also DECIDED down there — and two of
+  // its decisions MOVE THE PREFIX ON PURPOSE: a pin that expired under a living thread
+  // (`!already && turns > 1`), and knowledge too large to pin at all. F-550's detector runs
+  // between the loop and that block, so both deliberate moves reached it with no reason and
+  // were logged as the DEFECT WARN — an engine accusing itself of a bug it had chosen.
+  //
+  // F-615 had already given the detector the THIRD cause (`repin`). The missing half was
+  // not the wording, it was the ORDER: the pin READ and the "will this knowledge fit the
+  // pin" decision belong ahead of the loop, so the reason exists before anything judges the
+  // cache. They produce ONE `prefixMoveReason`, and this is its only home — the detector is
+  // handed it, and the pin-write block below re-uses THESE values rather than deciding a
+  // second time and drifting from them.
+  //
+  // Fail-open, twice over: a pin read that throws leaves `prefixMoveReason` EMPTY, so a
+  // faulted read is still the unexplained miss F-550 exists to catch rather than an excuse
+  // the engine wrote for itself, and the turn otherwise behaves exactly as it did before.
+  const hasKnowledge = !!(knowledge && typeof knowledge === "object");
+  const pinnedSkills = hasKnowledge && typeof knowledge.skillsBlock === "string" ? knowledge.skillsBlock : "";
+  const pinnedMemory = hasKnowledge && typeof knowledge.memoryBlock === "string" ? knowledge.memoryBlock : "";
+  const pinnedBytes = Buffer.byteLength(pinnedSkills + pinnedMemory, "utf8");
+  const repin = hasKnowledge && knowledge.repin === true;
+  let pinBefore = null;
+  let pinReadFailed = false;
+  if (hasKnowledge) {
+    // The KEY is derived at each use from `coderPinKey`, which is its one home; deriving it
+    // once far from the write site only moves the name, and a reader (and the src/ secret
+    // census, which reads a write site's key from the lines above it) then cannot see which
+    // row is being written.
+    try { pinBefore = (await store.get(coderPinKey(key, thread))) || null; }
+    catch (e) { pinReadFailed = true; log(`reading this thread's knowledge pin failed, this turn re-pins: ${(e && e.message) || e}`); }
+  }
+  // "This is not the thread's first turn", read from the row BEFORE the write below
+  // increments it — the same question the pin-write block used to ask as `turns > 1` after.
+  const laterTurn = Number(record.turns) > 0;
+  const willWritePin = hasKnowledge && (!pinBefore || repin);
+  const pinOversized = willWritePin && pinnedBytes > CODER_PINNED_KNOWLEDGE_MAX_BYTES;
+  const pinExpired = hasKnowledge && !pinBefore && !pinReadFailed && !repin && laterTurn;
+  // Ordered by which fact EXPLAINS the other: an oversized thread has no pin to expire, so
+  // "too large to pin" is the cause and "no pin found" merely its symptom.
+  const prefixMoveReason = repin ? String(knowledge.pinInvalidated || "epoch moved")
+    : pinOversized ? `knowledge-oversized — this thread's skills and memories are ${pinnedBytes} bytes, over the ${CODER_PINNED_KNOWLEDGE_MAX_BYTES}-byte pin ceiling, so they are rebuilt live every turn`
+    : pinExpired ? "pin-expired — this thread had no pinned knowledge left, so this turn pinned today's skills and memories"
+    : "";
+
   const loop = await runAgentLoop({
     messages, tools, maxRounds: clampRounds(maxRounds), deadlineMs, execute, apiKey, model, provider, log,
     // F-636 — WHERE THIS TURN'S BYTES STOP BEING THE THREAD'S BYTES. `prefix` is the part
@@ -944,12 +1002,14 @@ const runCoderTurnClaimed = async ({
   // true cause instead of a WARN accusing the thread of a bug it does not have; a zero with
   // no verdict is untouched and still the defect. The cause travels, never the wording —
   // the sentence lives in `reportCrossTurnCacheDefect` and nowhere else.
+  //
+  // F-617 — AND IT IS HANDED EVERY DELIBERATE CAUSE, not just the re-pin. `prefixMoveReason`
+  // was decided before the loop ran (see above) and covers the expired pin and the knowledge
+  // too large to pin as well, both of which used to arrive here as SILENCE and be called a
+  // defect. Empty still means "nothing this turn decided", which is still the WARN.
   let cacheReset = null;
   try {
-    const prefixReset = knowledge && knowledge.repin === true
-      ? String(knowledge.pinInvalidated || "epoch moved")
-      : "";
-    const verdict = reportCrossTurnCacheDefect({ provider, usage: loop.usage, priorPrefixBytes, prefixReset, log });
+    const verdict = reportCrossTurnCacheDefect({ provider, usage: loop.usage, priorPrefixBytes, prefixReset: prefixMoveReason, log });
     // Recorded on the thread row below so the next reader can tell a deliberate re-pin from
     // an unexplained miss without the logs. A turn that cached normally records nothing.
     if (verdict) cacheReset = { reason: verdict.reason, defect: verdict.defect === true };
@@ -1041,11 +1101,14 @@ const runCoderTurnClaimed = async ({
   // in `repin`), and a pin that is still true has its TTL renewed on every turn beside the
   // thread row's, so it can never expire under a living thread and re-pin today's knowledge
   // as if it had always been there (F-581).
-  if (knowledge && typeof knowledge === "object") {
+  //
+  // F-617 — THE READ AND THE FIT DECISION NOW HAPPEN EARLIER, before the loop, so the cache
+  // detector above can be told WHY the prefix moved on the turn it moved. This block still
+  // does all the WRITING and the SAYING; what it no longer does is decide anything twice.
+  if (hasKnowledge) {
     try {
       const pinKey = coderPinKey(key, thread);
-      const already = await store.get(pinKey);
-      const repin = knowledge.repin === true;
+      const already = pinBefore;
       if (already && !repin) {
         // A LIVING PIN IS REFRESHED, NOT REWRITTEN (F-581): the SAME object back under a
         // fresh TTL, on the same turn and by the same writer as the thread row above. The
@@ -1065,15 +1128,13 @@ const runCoderTurnClaimed = async ({
         // Two ways to reach here that are NOT the ordinary first turn, and neither may be
         // silent — both move the prompt prefix once, and an unexplained prefix move is the
         // thing this pin exists to prevent.
-        if (!already && Number(record.turns) > 1) {
+        // Both flags were decided before the loop (F-617); this only says them out loud.
+        if (pinExpired) {
           log("pin expired — this thread had no pinned knowledge left, so this turn pins today's skills and memories; the prompt prefix moves once");
         } else if (repin) {
           log(`this thread's knowledge changed since it was pinned (${knowledge.pinInvalidated || "epoch moved"}) — re-pinned, the prompt prefix moves once`);
         }
-        const pinnedSkills = typeof knowledge.skillsBlock === "string" ? knowledge.skillsBlock : "";
-        const pinnedMemory = typeof knowledge.memoryBlock === "string" ? knowledge.memoryBlock : "";
-        const pinnedBytes = Buffer.byteLength(pinnedSkills + pinnedMemory, "utf8");
-        if (pinnedBytes <= CODER_PINNED_KNOWLEDGE_MAX_BYTES) {
+        if (!pinOversized) {
           await store.set(pinKey, {
             issueKey: key, threadId: thread,
             skillsBlock: pinnedSkills,
@@ -1127,22 +1188,32 @@ const runCoderTurnClaimed = async ({
   const planText = String((loop && loop.summary) || "").trim() || lastAssistantText(loop);
   if (record.turns === 1 && planText) {
     const r = await workspace.writeCoderPlan({ issueKey: key, plan: planText });
-    workspaceResults.push({ what: "plan", ...r });
+    noteWorkspace("plan", r);
   }
-  // Whatever the last round added to the log, including the loop's own ending line.
-  try { await onRound(); } catch (e) { log(`log flush failed: ${(e && e.message) || e}`); }
   // THE SESSION ARTIFACT, only when the model actually finished. A turn that halted for a
   // confirmation or ran out of rounds is not a session - attaching one per round would put
   // eight near-identical files on the issue.
+  // IT RUNS BEFORE THE FINAL LOG FLUSH (F-841): the flush is the last write of the turn,
+  // so the summary line it carries can name the artifact's outcome too. Nothing in this
+  // block writes log lines, so no line is lost by the reorder.
   if (loop.endedBy === "finish") {
     const r = await workspace.attachSessionArtifact({
       issueKey: key,
       name: `coder-session-${Math.min(999999, record.turns)}.md`,
       content: renderSessionMarkdown(record),
     });
-    workspaceResults.push({ what: "artifact", ...r });
+    noteWorkspace("artifact", r);
   }
+  // THE TURN SUMMARY LINE, then whatever the last round added to the log including the
+  // loop's own ending line. The line is added ONLY when something failed, and it goes in
+  // the log the operator already reads rather than on a surface they must go and find. A
+  // log write that fails cannot carry its own obituary, which is the other half of why
+  // the turn record carries the count.
+  const summaryLine = renderWorkspaceSummaryLine([...workspaceResults.values()]);
+  if (summaryLine) log(summaryLine);
+  try { await onRound(); } catch (e) { log(`log flush failed: ${(e && e.message) || e}`); }
 
+  const workspaceEntries = [...workspaceResults.values()];
   const out = {
     success: loop.outcome !== "failed",
     threadId: thread,
@@ -1154,9 +1225,13 @@ const runCoderTurnClaimed = async ({
     rounds: loop.rounds,
     compacted: compacted.compacted,
     logs,
-    // What the writer did, or refused to do. REPORTED, never acted on: a failed comment
-    // must not change what the turn says happened in the repository.
-    workspace: workspaceResults,
+    // What the writer did, or refused to do, ONE ENTRY PER GROUP. REPORTED, never acted
+    // on: a failed comment must not change what the turn says happened in the repository.
+    // The COUNT rides beside it (F-841) so `getAsyncTaskResult` and the panel can say
+    // "some of this turn's writes did not land" without walking the array, and so a turn
+    // with `success:true` and three dead write groups can no longer read as clean.
+    workspace: workspaceEntries,
+    workspaceFailures: workspaceEntries.filter((e) => e.ok === false).length,
   };
   if (loop.error) out.error = loop.error;
   // …and the same receipt on the RESULT, so `getAsyncTaskResult` and the panel can read
@@ -1471,6 +1546,10 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
     ...(verdict === "confirm" && !executedOk ? { error: String((result && result.error) || "The confirmed step failed.").slice(0, 300) } : {}),
     resume: true,
     resumeMessage: decisionText,
-    ...(stepComment ? { workspace: [{ what: "step", ...stepComment }] } : {}),
+    // The same one shape a turn reports (F-841), so a caller reads `workspace` and
+    // `workspaceFailures` the same way whichever entry point produced them.
+    ...(stepComment
+      ? { workspace: [workspaceEntry("step", stepComment)], workspaceFailures: stepComment.ok === false ? 1 : 0 }
+      : {}),
   };
 };

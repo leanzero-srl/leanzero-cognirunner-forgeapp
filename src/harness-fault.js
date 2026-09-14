@@ -1454,6 +1454,13 @@ const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
  * reason: "budget", nextIndex: k` POSTs the SAME `n` back with `startIndex: k` and keeps going
  * until `complete: true`.
  *
+ * F-710 — AND THE ANSWER'S `n` IS THE POPULATION IT WAS ASKED FOR, ECHOED AND NEVER REWRITTEN.
+ * A fresh call may only attempt `HARNESS_FAULT_PLANT_CALL_MAX` rows; when that is less than
+ * the population it stops with `truncated: true, reason: "call-max"` and the index to carry on
+ * from, exactly like a budget break. It used to rewrite `n` to the clamp and answer
+ * `complete: true`, so a caller looping "until complete" planted 150 rows believing it had
+ * planted the 500 it asked for.
+ *
  * Writes are paced at the app's own published KVS rate (`KVS_DELETE_BATCH` /
  * `KVS_DELETE_PAUSE_MS` — the same pair the sweep's deletes use, because it is the same
  * store and the same guidance), so planting a large population cannot be the thing that
@@ -1584,6 +1591,22 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
     }
     progressed = true;
   }
+  /* F-710 — A CLAMPED CALL IS A TRUNCATED CALL, AND SAYS SO.
+   *
+   * A fresh `{ n: 500 }` writes 150 rows — all it may attempt — and used to answer
+   * `n: 150, nextIndex: 150, complete: true`: the requested population was SILENTLY rewritten
+   * to the clamp and the answer called itself finished. A caller looping "until complete"
+   * therefore stopped at 150 rows believing it had planted 500, which is the opposite of the
+   * loop this lever documents and the reason a live driver's `planted === 200` assertion was
+   * red. The clamp stays — one call cannot outrun the trigger — but it is now VISIBLE: the
+   * answer echoes the population it was asked for, never rewrites it, and stops short with a
+   * reason of its own. The resume point is where this call stopped writing, which is the same
+   * handle a budget break hands back.
+   *
+   * `n` echoing the POPULATION is what makes `nextIndex < n` mean "carry on" without the
+   * caller having to remember what it asked for. */
+  const nextIndexReached = truncated ? i : count;
+  if (!truncated && count < population) { truncated = true; reason = "call-max"; }
   /* The ONE definition of a finished drain, borrowed whole (F-683/F-691/F-696): `complete` is
    * `!truncated && failed === 0` and it is decided in `sweepAnswerTail` and nowhere else. The
    * tail's cursor half is not used — this lever resumes by index — so only the three fields
@@ -1598,8 +1621,8 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
    * rewritten by the same resumed call. `complete` is still the tail's alone. */
   const failureFirst = failed > 0;
   return {
-    ok: true, planted, failed, n: count, startIndex: from,
-    nextIndex: failureFirst ? firstFailedIndex : (truncated ? i : count),
+    ok: true, planted, failed, n: population, startIndex: from,
+    nextIndex: failureFirst ? firstFailedIndex : nextIndexReached,
     expired: past, ttlSeconds, budgetMs, keys, cleared,
     truncated: tail.truncated,
     reason: failureFirst ? "writes-failed" : tail.reason,

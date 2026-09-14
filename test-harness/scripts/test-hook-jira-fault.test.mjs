@@ -624,12 +624,19 @@ process.env.HARNESS_SECRET = SECRET;
 
   /* ── THE CLAMP, echoed by the door but enforced in the lever, beside the constant. ── */
   const over = await plant({ n: 10_000, expired: true });
-  ok(over.status === 200 && over.body.n === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
-    `a FRESH request for 10000 rows plants exactly one call's worth (got n=${over.body && over.body.n} planted=${over.body && over.body.planted})`);
+  ok(over.status === 200 && over.body.n === fault.HARNESS_FAULT_PLANT_MAX && over.body.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+    `a FRESH request for 10000 rows plants exactly one call's worth and ECHOES the population (F-710) (got n=${over.body && over.body.n} planted=${over.body && over.body.planted})`);
   ok(over.body.maxN === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.prefix === "harness_fault:plant:",
     `…and the answer names the ceiling THIS call had and the sub-prefix it wrote under (got ${JSON.stringify({ maxN: over.body.maxN, prefix: over.body.prefix })})`);
-  ok(over.body.complete === true && over.body.nextIndex === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.startIndex === 0,
-    `…and it says where to carry on (nextIndex ${over.body && over.body.nextIndex}, complete ${over.body && over.body.complete})`);
+  ok(over.body.nextIndex === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.startIndex === 0,
+    `…and it says where to carry on (nextIndex ${over.body && over.body.nextIndex})`);
+  /* F-710 — the clamp is VISIBLE at the door too. It used to answer `complete: true` with `n`
+   * rewritten to 150, so a caller looping "until complete" planted one call's worth believing
+   * it had planted what it asked for — the opposite of the loop this door documents. */
+  ok(over.body.truncated === true && over.body.reason === "call-max" && over.body.complete === false,
+    `F-710: a clamped call is TRUNCATED with its own reason, never complete (got ${JSON.stringify({ truncated: over.body && over.body.truncated, reason: over.body && over.body.reason, complete: over.body && over.body.complete })})`);
+  ok(over.body.maxN === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.maxN < over.body.n,
+    "F-710: …with `maxN` (this call's ceiling) and `n` (the population) as two different numbers in the same answer");
   /* F-696 — THE FULL POPULATION IS REACHED BY RESUMING, exactly as the sweep is drained: the
    * 500-row ceiling was ~45 s of paced writing against a trigger killed at 25 s, and the old
    * answer was assembled only after the LAST write, so a timed-out plant reported nothing at

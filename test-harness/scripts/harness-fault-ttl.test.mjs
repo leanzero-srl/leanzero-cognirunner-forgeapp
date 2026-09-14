@@ -920,8 +920,15 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     "a missing or junk `n` is ONE — the smallest population, never the largest");
   ok(fault.plantCountClamped(7.9) === 7, "…and a fraction floors rather than rounding up");
   const overCap = await fault.plantHarnessFaults({ n: 10_000, expired: true });
-  ok(overCap.n === 150 && overCap.planted === 150 && overCap.nextIndex === 150 && overCap.complete === true,
+  ok(overCap.planted === 150 && overCap.nextIndex === 150,
     `…and the clamp is enforced END TO END, not just in the helper (asked 10000, planted ${overCap.planted}, nextIndex ${overCap.nextIndex})`);
+  /* F-710 — AND IT IS VISIBLE. The clamped call used to rewrite `n` to 150 and answer
+   * `complete: true`, so a caller looping "until complete" stopped at one call's worth
+   * believing it had planted the population it asked for. */
+  ok(overCap.n === fault.HARNESS_FAULT_PLANT_MAX,
+    `F-710: the answer ECHOES the population it was asked for (clamped to the keyspace ceiling), never the per-call clamp (got n=${overCap.n})`);
+  ok(overCap.truncated === true && overCap.reason === "call-max" && overCap.complete === false,
+    `F-710: …and a call that stopped at its own ceiling is TRUNCATED, with a reason of its own (got ${JSON.stringify({ truncated: overCap.truncated, reason: overCap.reason, complete: overCap.complete })})`);
   const overCapResumed = await fault.plantHarnessFaults({ n: 10_000, expired: true, startIndex: overCap.nextIndex });
   ok(overCapResumed.n === 500 && overCapResumed.planted === 350 && overCapResumed.nextIndex === 500 && overCapResumed.complete === true,
     `…and the resumed call finishes the population and no more (planted ${overCapResumed.planted}, nextIndex ${overCapResumed.nextIndex})`);
@@ -1584,6 +1591,52 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       "F-708.SOURCE: the start is compared against the POPULATION, in one guard");
     ok(/plantCountClamped = \(n, startIndex = 0\) =>\s*\n?\s*Math\.min\(plantMaxForCall\(startIndex\), plantPopulationClamped\(n\)\)/.test(faultCode),
       "F-708.SOURCE: …and the per-call end index is DERIVED from the population clamp, so the two numbers cannot drift apart");
+  }
+
+
+  /* ═════ 7l. F-710 — A SILENT CLAMP IS A LIE THE LOOP BELIEVES ═════
+   *
+   * MEASURED: `plantHarnessFaults({ n: 500 })` answered `{n:150, planted:150, nextIndex:150,
+   * complete:true}`. Nothing in that object says the request was cut down — `n` had been
+   * REWRITTEN to the clamp — so the only way to notice was to compare the answer to what you
+   * asked for, which neither shipped drain helper did. Reaching 500 required IGNORING
+   * `complete` and re-POSTing, the exact opposite of the loop `src/test-hook.js` documents,
+   * and it is why a live driver's `planted === 200` assertion was red.
+   *
+   * The clamp stays — one call cannot outrun a trigger killed at 25 s. What changes is that
+   * it is now a truncation like any other, with the population echoed beside it. ── */
+  {
+    await purge();
+    const asked = await fault.plantHarnessFaults({ n: 500, expired: true, maxMs: 20_000 });
+    ok(asked.n === 500 && asked.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+      `F-710: a first call for 500 plants one call's worth and still says 500 (planted ${asked.planted}, n ${asked.n})`);
+    ok(asked.truncated === true && asked.reason === "call-max" && asked.complete === false && asked.nextIndex === 150,
+      `F-710: …truncated, with its own reason and the index to carry on from (got ${JSON.stringify({ truncated: asked.truncated, reason: asked.reason, nextIndex: asked.nextIndex, complete: asked.complete })})`);
+    ok(asked.nextIndex < asked.n,
+      "F-710: …so `nextIndex < n` means CARRY ON without the caller having to remember what it asked for");
+
+    /* THE LOOP THE DOOR DOCUMENTS NOW REACHES 500 BY OBEYING `complete`, which is the whole
+     * point: under the old answer it stopped at 150 and called that a planted population. */
+    const full = await plantAll(500, true, { maxMs: 20_000 });
+    ok(full.complete === true && full.planted === 500 && (await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 500,
+      `F-710: "POST until complete" now plants the whole 500-row population (planted ${full.planted} in ${full.calls} calls)`);
+    ok(full.calls >= 2, `…across at least the two calls the per-call ceiling forces (${full.calls})`);
+
+    /* ── THE NEGATIVE CONTROL: a population that FITS in one call. If this also answered
+     * `call-max` the section above would be measuring the answer shape and not the clamp. ── */
+    await purge();
+    const fits = await fault.plantHarnessFaults({ n: fault.HARNESS_FAULT_PLANT_CALL_MAX, expired: true, maxMs: 20_000 });
+    ok(fits.n === fault.HARNESS_FAULT_PLANT_CALL_MAX && fits.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+      `(fixture) exactly one call's worth asked for and planted (${fits.planted})`);
+    ok(fits.truncated === false && fits.reason === null && fits.complete === true,
+      `F-710 (negative control): a population that FITS is complete in one call, with no reason at all (got ${JSON.stringify({ truncated: fits.truncated, reason: fits.reason, complete: fits.complete })})`);
+    await purge();
+
+    ok(/if \(!truncated && count < population\) \{ truncated = true; reason = "call-max"; \}/.test(faultCode),
+      "F-710.SOURCE: the clamp becomes a truncation in one place, after the loop and before the one tail");
+    ok(/ok: true, planted, failed, n: population, startIndex: from,/.test(faultCode)
+      && !/n: count, startIndex: from/.test(faultCode),
+      "F-710.SOURCE: …and the answer's `n` is the POPULATION, never this call's end index");
   }
 
   globalThis.setTimeout = realTimeout;

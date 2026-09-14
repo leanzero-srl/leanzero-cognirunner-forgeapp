@@ -585,6 +585,14 @@ export async function testStateTrigger(req) {
      * call may ask for — one call's worth for a fresh plant, the full population for a resumed
      * one — and it is computed by the lever's `plantMaxForCall`, never retyped here.
      *
+     * F-710 — HITTING THAT CEILING IS A TRUNCATION, NOT A FINISH. A fresh `{ n: 500 }` plants
+     * 150 and answers `truncated: true, reason: "call-max", nextIndex: 150` with `n` still 500:
+     * the population is ECHOED, never rewritten to the clamp. It used to answer `n: 150,
+     * complete: true`, so a caller looping "until complete" planted one call's worth believing
+     * it had planted what it asked for — the opposite of the loop this door documents, and the
+     * reason a live driver's `planted === 200` assertion was red. `maxN` is this call's
+     * ceiling and `n` is the population: two different numbers, both in the answer.
+     *
      * F-697/F-709 — the TTL covers the WALL TIME of the drain this door forces (one budget
      * plus a cold start per resumed call, plus a full minute after the last row), and the
      * whole population shares ONE deadline carried on `plant:000`, so the head of a large

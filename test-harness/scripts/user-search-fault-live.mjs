@@ -35,9 +35,12 @@
  * READ-ONLY on src/ and static/. It never deploys. Everything it writes — console line
  * and evidence file alike — goes through `redactSecrets`/`redactString` from
  * lib/redact.mjs, so emails land as `<initial>***@<domain>` and no token, secret or dev
- * web-trigger URL can reach the terminal or the disk. The one screenshot is of the
- * SEARCH BOX with the error notice; every email span on the page is overwritten in the
- * DOM before the shutter (`page.evaluate`), and no roster card is captured.
+ * web-trigger URL can reach the terminal or the disk. The one screenshot goes through
+ * `shotMasked` from lib/roster-ui.mjs — the SINGLE home of the pixel mask (F-660/F-665).
+ * It rewrites every `.perm-ident-email` to the same `<initial>***@<domain>` shape
+ * `redact.mjs` produces, ASSERTS in the DOM that no readable address survives, and
+ * REFUSES the capture if one does. This driver does not carry a second mask, and it does
+ * not choose a search row its own way: `selectByDiscriminator` is the one home of that.
  *
  * CLEANUP IS PART OF THE PROOF. The lever is disarmed in a `finally`, and the last
  * check is a `readJiraFault` that must answer `value:null`.
@@ -47,6 +50,8 @@
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
+import { shotMasked } from "../lib/roster-ui.mjs";
+import { selectByDiscriminator } from "../lib/roster-restore.mjs";
 
 const env = loadEnv();
 const HOOK_URL = env.TESTSTATE_URL;
@@ -143,19 +148,6 @@ async function typeSearch(frame, q, settleMs = 5000) {
   return readSearchArea(frame);
 }
 
-/** PII never reaches the shutter: overwrite every rendered email span in the DOM. */
-async function maskedShot(page, frame, name) {
-  await frame.evaluate(() => {
-    for (const el of document.querySelectorAll(".perm-ident-email, .perm-search-email")) {
-      el.textContent = "***@masked";
-      el.setAttribute("title", "***@masked");
-    }
-  }).catch(() => {});
-  const target = (await frame.locator(".perm-search-wrap").count()) > 0 ? frame.locator(".perm-search-wrap") : null;
-  if (target) await target.screenshot({ path: `${OUT}/${name}` }).catch(() => page.screenshot({ path: `${OUT}/${name}` }).catch(() => {}));
-  else await page.screenshot({ path: `${OUT}/${name}` }).catch(() => {});
-  return `${OUT}/${name}`;
-}
 
 /* ═════════════════════════════════════════════════════════════════════════════════ */
 async function main() {
@@ -239,7 +231,22 @@ async function main() {
       if (first.rows === 0) PASS("no user rows are offered under the failure", { rows: first.rows });
       else FAIL("user rows were rendered under a failed search", { rows: first.rows });
 
-      shotPath = await maskedShot(page, frame, "search-error-429.png");
+      /* F-665 — THE ONE MASK, AND IT REFUSES. This driver used to roll its own: a
+         `frame.evaluate` that overwrote every email span with a constant `***@masked`,
+         `.catch(() => {})`-ed its own failure, and then CAPTURED ANYWAY. That is the
+         exact artefact F-660 exists to prevent, re-committed in the driver that ships
+         beside F-660's fix — and it tripped F-660's own offline scan, so the range
+         shipped a RED suite. `shotMasked` is the single home: it writes the same
+         `<initial>***@<domain>` shape `lib/redact.mjs` produces (so the PNG and the JSON
+         beside it say the same thing), ASSERTS in the DOM that nothing readable is left,
+         and with `strict` it THROWS rather than capture a leak. The throw lands in this
+         step's `catch`, which records N/V — a refused capture is reported, never silent.
+         (The old mask also targeted `.perm-search-email`, a class the product does not
+         render: it was masking nothing on half its selector.) */
+      const shot = await shotMasked(page, frame, `${OUT}/search-error-429.png`, { strict: true });
+      shotPath = shot.captured ? shot.path : null;
+      if (shot.captured) PASS("the error-state screenshot was captured with every email span masked in the DOM first", { path: shot.path, spans: shot.total, masked: shot.masked, readable: shot.readable });
+      else NV("the error-state screenshot was refused", { reason: shot.reason });
 
       // Replaced, not stacked: three more keystroke-driven searches in a row.
       const seq = [];
@@ -250,7 +257,7 @@ async function main() {
       else if (worst === 1) FAIL("one notice each time, but not every one named the status", { seq: seq.map((s) => ({ q: s.q, notices: s.notices })) });
       else FAIL("notices STACKED across keystrokes", { counts: seq.map((s) => ({ q: s.q, notices: s.notices.length })), seq: seq.map((s) => s.notices) });
     });
-    if (shotPath) info(`screenshot (search box only, email spans overwritten in the DOM first): ${shotPath}`);
+    if (shotPath) info(`screenshot (email spans masked in the DOM first, via lib/roster-ui.mjs#shotMasked): ${shotPath}`);
   } catch (e) {
     NV("the Permissions tab could not be driven", { error: String(e && e.message || e) });
   }
@@ -270,6 +277,32 @@ async function main() {
     PASS(`the same search returns the same ${backIds.length} namesake(s) as the positive control`, { users: (back.users || []).map((u) => ({ accountId: u.accountId, displayName: u.displayName, ...(u.emailAddress ? { emailAddress: u.emailAddress } : {}) })) });
   } else {
     FAIL("after disarm the search does not match the baseline", { baseline: baselineIds, now: backIds, answer: back });
+  }
+
+  /* THE UI POSITIVE CONTROL FOR STEP 3's ZERO. Step 3 asserted `rows === 0` under the
+     fault. An empty list is not evidence until the same locator, in the same tab, has
+     been shown to see rows AT ALL — so the count is repeated here with the lever down,
+     and the ADMIN's own row is identified by its DISCRIMINATOR (F-647/F-654: never by
+     the display name, which three accounts on this tenant share). `selectByDiscriminator`
+     is the one home of that choice — this driver does not get its own idea of which row
+     is which, which is the defect F-657 recorded. The admin is already on the roster, so
+     its row renders DISABLED; `disabledHit` is a positive identification, not a miss. */
+  try {
+    await withAdminPanel(async (page, frame) => {
+      const area = await typeSearch(frame, QUERY);
+      if (area.rows > 0) PASS(`positive control in the TAB: the same locator that read 0 rows under the fault now reads ${area.rows}`, { rows: area.rows, notices: area.notices });
+      else FAIL("the tab shows no rows even with the lever down — step 3's zero proves nothing", { rows: area.rows, notices: area.notices, text: area.text.slice(0, 300) });
+
+      const rows = await frame.evaluate(() => [...document.querySelectorAll(".perm-search-item")].map((el, i) => {
+        const id = el.querySelector(".perm-ident-id");
+        return { i, disabled: el.className.includes("perm-search-disabled"), idShown: id ? (id.textContent || "").trim() : null, idTitle: id ? id.getAttribute("title") : null };
+      }));
+      const pick = selectByDiscriminator(rows, ADMIN);
+      if (pick.index >= 0 || pick.disabledHit) PASS("the ADMIN's own row is identified among the namesakes by its discriminator", { how: pick.how || "disabled-row", index: pick.index, alreadyOnRoster: !!pick.disabledHit, rows: rows.length });
+      else FAIL("the ADMIN's row could not be told apart from its namesakes after recovery", { reason: pick.reason, rows: rows.length });
+    });
+  } catch (e) {
+    NV("the recovery check could not drive the Permissions tab", { error: String(e && e.message || e) });
   }
 
   /* ── 5. THE TTL IS REAL ──────────────────────────────────────────────────────── */

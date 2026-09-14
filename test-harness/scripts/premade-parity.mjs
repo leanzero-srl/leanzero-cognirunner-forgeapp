@@ -123,6 +123,14 @@ for (const row of PREMADE_LISTENERS) {
       const ns = AGENT_ACTION_NAMESPACES[agentActionNamespace(a)] || {};
       const cap = a.requiresCapability || ns.requiresCapability || null;
       if (cap) gated.push(`${id} (${cap})`);
+      // F-865 — SURFACE PARITY. Every premade is a LISTENER, so a seed holding an action
+      // bound to another surface (the ledger namespace is bound to "va") is unsaveable on
+      // EVERY instance, not merely an incapable one. `normalizeListener` below would
+      // report it as a bare refusal message; naming it here says which flag did it.
+      const surf = a.requiresSurface || ns.requiresSurface || null;
+      if (surf && surf !== "listener") {
+        problems.push(`${where} holds "${id}", which requires the "${surf}" surface — a premade is a LISTENER, so this seed is refused at save on every instance`);
+      }
     }
     if (seed.agentlessTaskType && gated.length) {
       problems.push(`${where} is AGENTLESS (agentlessTaskType "${seed.agentlessTaskType}") but its seed holds capability-gated action(s) ${gated.join(", ")} — assertAllowedActions refuses the save on exactly the instance the agentless engine serves`);

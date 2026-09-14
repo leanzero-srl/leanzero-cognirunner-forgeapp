@@ -122,13 +122,68 @@ eq(agentActionNamespace(getAgentAction("finish")), "control", "finish.ALLOW_cont
 ok(getAgentAction("finish").always === true, "finish is still always available");
 // The ledger actions must not have leaked into the gate's write vocabulary.
 ok(!hasWriteActions(LEDGER_SNAPSHOT, { products: ["jira"] }), "ledger.BLOCK_not_counted_as_writes");
-// They survive the MOST RESTRICTIVE context: no capability, no product but Jira,
-// external trigger, not admin-saved. A VA's notebook must not need an edition.
-eq(normalizeAllowedActions(LEDGER_SNAPSHOT), LEDGER_SNAPSHOT, "ledger.ALLOW_under_the_restrictive_default");
+/* ═════ F-865 — THE LEDGER NAMESPACE IS BOUND TO THE VA SURFACE ═════
+ *
+ * The five ledger ids carried no capability, no product, no `confirm` and no `dangerous`,
+ * so every arm of the gate passed them and a LISTENER or a SCHEDULED JOB could SAVE
+ * `stage_reply`. `toolDefinitionsFor` then offered the tool to a model on a headless rule
+ * that has no ledger and can never speak; F-852's refusal-by-name (src/agent-executors.js)
+ * caught it only after a whole round had been spent finding out. `requiresSurface: "va"`
+ * on the namespace moves the no to the save, where it can be read by a human.
+ *
+ * ON THE VA SURFACE NOTHING CHANGES: no capability, no product beyond Jira, an external
+ * trigger and a non-admin saver all still keep them. A VA's own notebook must not need an
+ * edition, and the flag added here must not become a second capability by accident.
+ */
+ok(AGENT_ACTION_NAMESPACES.ledger.requiresSurface === "va", "ledger.requiresSurface is the flag, and it is on the NAMESPACE");
+ok(LEDGER_SNAPSHOT.every((id) => getAgentAction(id).requiresSurface === undefined),
+  "…and on the namespace ONLY — five per-action copies of one rule is how the sixth action forgets it");
+eq(normalizeAllowedActions(LEDGER_SNAPSHOT, { surface: "va" }).allowed, LEDGER_SNAPSHOT,
+  "ledger.ALLOW_on_the_va_surface_under_the_otherwise_restrictive_context");
 {
-  const r = normalizeAllowedActions(LEDGER_SNAPSHOT, { triggerSource: "external", savedByRole: null, products: ["jira"] });
+  const r = normalizeAllowedActions(LEDGER_SNAPSHOT, { surface: "va", triggerSource: "external", savedByRole: null, products: ["jira"] });
   eq(r.refused, [], "ledger.ALLOW_external_non_admin — none of them is confirm or dangerous");
 }
+// BLOCK — every surface that is not a VA, and the UNNAMED surface too: a caller that did
+// not say where the rule lives gets the restrictive answer, not a free pass.
+for (const surface of ["listener", "job", "coder", "", null, undefined]) {
+  const r = normalizeAllowedActions(LEDGER_SNAPSHOT, { surface, savedByRole: "admin", products: ["jira"] });
+  eq(r.allowed, [], `ledger.BLOCK_on_surface_${String(surface) || "(none)"}`);
+  eq(r.refused.map((x) => x.reason), LEDGER_SNAPSHOT.map(() => "wrong-surface:va"),
+    `ledger.BLOCK_reason_is_wrong-surface:va_on_${String(surface) || "(none)"}`);
+}
+eq(normalizeAllowedActions(LEDGER_SNAPSHOT), [], "ledger.BLOCK_under_the_arity-1_restrictive_default");
+// An ADMIN save does not buy it either: this is not the `confirm` axis.
+eq(normalizeAllowedActions(["stage_reply"], { surface: "listener", savedByRole: "admin", capability: true }).refused,
+  [{ id: "stage_reply", reason: "wrong-surface:va" }], "ledger.BLOCK_admin_does_not_unlock_a_surface");
+// The refusal SENTENCE names the cause, in the ONE vocabulary the gate already speaks.
+ok(/Virtual Administrator/.test(agentActionRefusalText("wrong-surface:va")),
+  "the wrong-surface refusal names the Virtual Administrator, not the code");
+ok(agentActionRefusalText("wrong-surface:va") !== "wrong-surface:va", "…and is not the raw code");
+// `finish` is untouched: control wins before any namespace flag is read, so the one tool
+// the loop needs to end cleanly is still offered on a listener and on a job.
+for (const surface of ["listener", "job"]) {
+  eq(toolDefinitionsFor(["get_issue"], { surface }).map((t) => t.function.name), ["get_issue", "finish"],
+    `finish.ALLOW_still_offered_on_a_${surface}_run`);
+}
+// RUN TIME: an ALREADY-SAVED row that somehow holds `ask_human` stops being offered it.
+eq(toolDefinitionsFor(["get_issue", "ask_human", "stage_reply"], { surface: "listener" }).map((t) => t.function.name),
+  ["get_issue", "finish"], "ledger.BLOCK_a_saved_listener_row_is_offered_no_ledger_tool");
+eq(toolDefinitionsFor(["get_issue", "ask_human"], { surface: "va" }).map((t) => t.function.name),
+  ["get_issue", "ask_human", "finish"], "ledger.ALLOW_the_va_surface_still_gets_the_tool");
+// `pregated: true` is the VA's own door (src/virtual-admin.js: THE POWERS ARE THE GATE)
+// and must keep bypassing this, exactly as it bypasses `confirm`.
+eq(toolDefinitionsFor(LEDGER_SNAPSHOT, { pregated: true }).map((t) => t.function.name), [...LEDGER_SNAPSHOT, "finish"],
+  "ledger.ALLOW_pregated — the VA's powers are the gate and this one does not re-decide them");
+// SAVE TIME throws LOUDLY, in the same shape the REST layer and the admin UI render.
+assert.throws(() => assertAllowedActions(["get_issue", "stage_reply"], { surface: "listener" }), (e) => {
+  ok(e.reason === "action-not-allowed", "ledger.BLOCK_save_throws_the_one_refusal_reason");
+  eq(e.refused, [{ id: "stage_reply", reason: "wrong-surface:va" }], "…naming the id that was refused");
+  ok(/stage_reply/.test(e.message) && /Virtual Administrator/.test(e.message), "…and the message names both the id and the cause");
+  return true;
+});
+eq(assertAllowedActions(["get_issue", "stage_reply"], { surface: "va" }), ["get_issue", "stage_reply"],
+  "ledger.ALLOW_save_on_the_va_surface");
 // The executor module the namespace table names actually exists and exports the ids.
 {
   const { VA_LEDGER_ACTION_IDS } = await import("../../src/va-ledger-actions.js");
@@ -275,6 +330,36 @@ for (const [what, normalize] of [["listener", normalizeListener], ["job", normal
   n += 2;
   const gated = normalize({ ...base, agent: { instructions: "do it", allowedActions: ["commit_files"] } }, { gate: { capability: true, savedByRole: "admin" } });
   eq(gated.agent.allowedActions, ["commit_files"], `a ${what} saved with the right context keeps the git action`);
+  /* F-865 — THE SURFACE IS STAMPED BY THE NORMALIZER, not by its callers. A listener or
+     an `agent`-mode job may not hold a ledger action, and the refusal arrives at the SAVE
+     rather than a round into the run. This is driven through the real normalizer on
+     purpose: a gate that refuses in isolation while the save door forgets to ask it is
+     exactly the F-480 shape, one flag later. */
+  assert.throws(() => normalize({ ...base, agent: { instructions: "do it", allowedActions: ["get_issue", "stage_reply"] } }),
+    (e) => e.reason === "action-not-allowed"
+      && e.refused.length === 1 && e.refused[0].id === "stage_reply" && e.refused[0].reason === "wrong-surface:va"
+      && /Virtual Administrator/.test(e.message),
+    `F-865: saving a ${what} holding stage_reply is REFUSED BY NAME`);
+  n++;
+  // Not even with the most permissive context the instance could produce.
+  assert.throws(() => normalize({ ...base, agent: { instructions: "do it", allowedActions: ["ask_human"] } }),
+    (e) => e.reason === "action-not-allowed" && e.refused[0].reason === "wrong-surface:va",
+    `F-865: an admin-saved, fully capable ${what} still may not hold ask_human`);
+  n++;
+}
+/* F-865 ALLOW — the VIRTUAL ADMINISTRATOR still holds them, through the SAME door.
+   `mode: "va"` is the only difference between this save and the refused one above, and
+   the surface is read from the row's own mode rather than from the caller, so nothing a
+   REST client sends can move a listener onto the VA surface. */
+{
+  const vaRow = normalizeJob({
+    name: "va", mode: "va", schedule: { cron: "*/5 * * * *" },
+    agent: { instructions: "be useful", allowedActions: ["get_issue", "stage_reply", "ask_human", "propose_change", "ledger_note", "memory_note"] },
+    va: { persona: { name: "Ada" }, scope: { read: { projects: ["ABC"] }, write: { projects: ["ABC"] } } },
+  });
+  eq(vaRow.mode, "va", "F-865 arrange: the row really is a VA");
+  eq(vaRow.agent.allowedActions, ["get_issue", "stage_reply", "ask_human", "propose_change", "ledger_note", "memory_note"],
+    "F-865: a VA save keeps every ledger action, with no capability, product or admin role supplied");
 }
 
 /* ---------- F-302: the gate CONTEXT has one home, and the refusal names the cause ---------- */

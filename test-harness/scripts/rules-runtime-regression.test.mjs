@@ -918,6 +918,67 @@ try {
     assert.equal(/answerStored\(/.test(preArms[0]), false,
       "POSITIVE CONTROL: the exact pre-fix arm — a raw `json(200, {registry: await storage.get(...)})` — is still SEEN as a bypass");
   });
+  await check("MECHANISM: every POST action that reads storage answers through the same ceiling (F-806)", async () => {
+    /* F-806 — THE SECOND CLASS OF DOOR. F-802 gated the GET `what` switch and left the POST
+     * action map outside it: `readHarnessProbe`, `readProbe`, the `pipelineRow` and
+     * `vaTombstone` reads and the `kvSet` echo all `storage.get` and all answered on their
+     * own. Nothing leaked — those rows are harness-PLANTED and `findPlantedSecret` refuses a
+     * credential in the plant body — but that is a property of the WRITE, not of the read.
+     * Same scanner as the GET gate, same judgement: an action that reads storage either
+     * projects its answer, or is named here as one that answers no stored content. */
+    const src = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+    const uncomment = (code) => code.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    const blocksOf = (code) => {
+      const start = code.indexOf('if (body.action === "probe")');
+      const end = code.indexOf("unknown POST action=");
+      assert.ok(start >= 0 && end > start, "the POST action map must still be findable");
+      return uncomment(code.slice(start, end))
+        .split(/\n(?=\s*if \(body\.action === )/)
+        .filter((b) => /if \(body\.action === /.test(b));
+    };
+    const namesOf = (b) => [...new Set([...b.matchAll(/body\.action === "([A-Za-z]+)"/g)].map((m) => m[1]))].join("|");
+    const readsStorage = (b) => /storage\.(get|query)\(/.test(b);
+    // The FOUR named projections, and nothing else, may put a stored row on the wire:
+    // `storedFields` (the POST spread), `answerStored` (the GET envelope), `readCeiling`
+    // (the rule itself) and `answerFingerprintOnly` (strictly tighter — the row is never
+    // answered at all; kvStash/kvRestore move a value by NAME).
+    const projects = (b) => /storedFields\(|answerStored\(|readCeiling\(|answerFingerprintOnly\(/.test(b);
+
+    const blocks = blocksOf(src);
+    assert.ok(blocks.length >= 40, `the scanner must SEE the action map (found ${blocks.length} blocks)`);
+    const reading = blocks.filter(readsStorage).map((b) => ({ name: namesOf(b), projects: projects(b) }));
+    /* THE CENSUS. A new action that reads storage lands in neither list and fails here —
+     * which is the judgement this gate exists to force, exactly as its GET sibling does. */
+    const ANSWERS_NO_STORED_CONTENT = [
+      // `invokeResolver` reads the Coder ticket/thread rows and the pipeline row only to
+      // ask BOOLEANS of them (`ticket.simulation === true`, `pipelineOutdated(row)`); the
+      // rows themselves are never answered, so there is nothing to project.
+      "invokeResolver",
+    ];
+    // ("kvStash" is the chunk that carries the kvRestore tail too — the split lands on the
+    //  NESTED `if (body.action === "kvStash")`, and both reads live below it.)
+    assert.deepEqual(reading.map((r) => r.name).sort(),
+      ["invokeResolver", "kvSet", "kvStash", "pipelineRow", "readHarnessProbe", "readProbe", "vaTombstone"].sort(),
+      "the set of POST actions that read storage changed — each one needs a judgement, not a silent pass");
+    const bypassing = reading.filter((r) => !r.projects && !ANSWERS_NO_STORED_CONTENT.includes(r.name));
+    assert.deepEqual(bypassing.map((r) => r.name), [],
+      "a POST action answers a stored row without the ONE read ceiling — route it through `storedFields`");
+
+    // POSITIVE CONTROL: the exact pre-fix `readHarnessProbe` answer IS still seen as a bypass.
+    const preFix = 'if (body.action === "probe") { return json(200, {}); }\n'
+      + '    if (body.action === "readHarnessProbe") {\n'
+      + '      return json(200, { id, kind, key, value: (await storage.get(key)) || null });\n'
+      + '    }\n'
+      + '    return json(400, { error: `unknown POST action=${body.action}` });';
+    const preBlocks = blocksOf(preFix).filter(readsStorage);
+    assert.equal(preBlocks.length, 1);
+    assert.equal(projects(preBlocks[0]), false,
+      "POSITIVE CONTROL: the pre-fix readHarnessProbe line — a raw `value: await storage.get(key)` — is still SEEN as a bypass");
+    // …and the shipped one is not.
+    const post = blocks.filter((b) => namesOf(b) === "readHarnessProbe");
+    assert.equal(post.length, 1);
+    assert.equal(projects(post[0]), true, "…while the shipped readHarnessProbe projects its answer");
+  });
   await check("kvStash/kvRestore move a credential by NAME, never by value (F-769)", async () => {
     // THE DRIVER THIS DOOR EXISTS FOR: va-compaction-live.mjs replaces the BYOK key with a
     // deliberately dead one to drive F-506's scenario, and must put the tenant's own key

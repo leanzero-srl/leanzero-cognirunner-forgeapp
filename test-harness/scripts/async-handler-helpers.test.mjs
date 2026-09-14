@@ -756,7 +756,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "a banned name in a COMMENT is not a use; the same name in CODE is");
   ok(!/claimListenerRun|claimJobRun/.test(asyncCode),
     "the consumer never takes the RUN's execution claim on the refusal path (F-139)");
-  ok(/import \{ claimRuleExecution \} from "\.\/shared\/execution-claim\.js";/.test(asyncSrc),
+  ok(/import \{ claimRuleExecution, taskDoneClaimKey, TASK_DONE_TTL \} from "\.\/shared\/execution-claim\.js";/.test(asyncSrc),
     "…it dedups through the ONE conditional-write helper");
   // F-147 — the refusal TTL must outlive a whole budget-deferral chain, so it is DERIVED
   // from ai-budget.js (its one home), never retyped. Assert the derivation, not a number.
@@ -1812,7 +1812,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // belongs — agent-knowledge.test.mjs for the rules, coder-engine.test.mjs for the payload.
   const build = (deps) => new Function(
     "runCoderTurn", "isHeadlessTrigger", "recordCoderPfOutcome", "claimRuleExecution",
-    "storage", "coderDoneClaimKey", "CODER_DONE_TTL", "buildCoderKnowledge", "console",
+    "storage", "taskDoneClaimKey", "TASK_DONE_TTL", "buildCoderKnowledge", "console",
     // F-829 — the execution-time gate is a collaborator here too: this block tests the
     // CLAIM's control flow, so the gate is stubbed to "allow" unless a case says otherwise.
     "resolveFreshCoderGate", "agentActionRefusalText",
@@ -1821,7 +1821,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "DEFAULT_SAVED_BY_ROLE",
     `return (${src});`,
   )(deps.runCoderTurn, () => false, deps.recordCoderPfOutcome, deps.claimRuleExecution,
-    deps.storage, (id) => `coder_done:${id}`, { ttl: { value: 24, unit: "HOURS" } },
+    deps.storage, (id) => `task_done:${id}`, { ttl: { value: 24, unit: "HOURS" } },
     deps.buildCoderKnowledge || (async () => ({})), quiet,
     deps.resolveFreshCoderGate || (async () => ({ facts: { provider: "openai", edition: "standard" }, queuedFacts: null, allowed: null, refusal: null })),
     (r) => String(r), ROLES.DEFAULT_SAVED_BY_ROLE);
@@ -1867,7 +1867,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     const { state, deps } = makeDeps({ runCoderTurn: async () => { throw new Error("provider down"); } });
     const run = build(deps);
     const out = await run(PF, "TASK-3");
-    ok(out.success === false && state.deleted.includes("coder_done:TASK-3"),
+    ok(out.success === false && state.deleted.includes("task_done:TASK-3"),
       "EXECUTED (F-393): a throw before any recorded outcome RELEASES the completion claim");
     const again = await run(PF, "TASK-3");
     ok(again.success === false && !again.skipped, "EXECUTED (F-393): …so the retry is not mistaken for a redelivery");
@@ -1912,15 +1912,15 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     const { state, deps } = makeDeps({ runCoderTurn: async () => { throw new Error("provider down"); } });
     const run = build(deps);
     const out = await run({ issueKey: "LZPT-8", threadId: "t1", message: "hi" }, "TASK-4c");
-    ok(out.success === false && state.deleted.includes("coder_done:TASK-4c"),
+    ok(out.success === false && state.deleted.includes("task_done:TASK-4c"),
       "EXECUTED (F-911): a panel turn that threw RELEASES the completion claim");
   }
   {
     // F-911 — ONE KEY, ONE BUILDER. A second key shape is a second answer to "has this
     // event already run", and the two would disagree the day one of them is changed.
-    ok(!/coder_pf_done/.test(asyncSrc) && !/coderPfDoneClaimKey/.test(asyncSrc),
-      "F-911: the consumer holds NO second completion-key name — the panel and PF paths claim the same `coder_done:<taskId>`");
-    ok((src.match(/coderDoneClaimKey\(/g) || []).length === 1,
+    ok(!/coder_pf_done/.test(asyncSrc) && !/coderPfDoneClaimKey/.test(asyncSrc) && !/coder_done/.test(asyncCode),
+      "F-911/F-919: the consumer holds NO second completion-key name — every polled task claims the same `task_done:<taskId>`");
+    ok((src.match(/taskDoneClaimKey\(/g) || []).length === 1,
       "F-911: …built in exactly one place inside the coder task body");
   }
   {
@@ -2089,12 +2089,12 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const quiet2 = { log() {}, warn() {}, error() {} };
   const buildRun = (gateOut, state) => new Function(
     "runCoderTurn", "isHeadlessTrigger", "recordCoderPfOutcome", "claimRuleExecution",
-    "storage", "coderDoneClaimKey", "CODER_DONE_TTL", "buildCoderKnowledge", "console",
+    "storage", "taskDoneClaimKey", "TASK_DONE_TTL", "buildCoderKnowledge", "console",
     "resolveFreshCoderGate", "agentActionRefusalText",
     `return (${xsrc});`,
   )(async (args) => { state.ran = args; return { success: true, endedBy: "finish" }; },
     () => true, async (p, o) => { state.recorded = o; }, async () => true,
-    { delete: async () => {} }, (id) => `coder_done:${id}`, {},
+    { delete: async () => {} }, (id) => `task_done:${id}`, {},
     async () => { state.knowledge = (state.knowledge || 0) + 1; return {}; }, quiet2,
     async () => gateOut, gateMod.agentActionRefusalText);
   const PF = { ...PAYLOAD, message: "go", pf: { mode: "build", strict: false } };
@@ -2169,6 +2169,92 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   }
   ok((await build(null)({})).gateFacts === null,
     "EXECUTED (F-842): no facts available ⇒ null, which the run sites read as the most restrictive gate");
+}
+
+/* ══════════ F-919 — a redelivered POLLED task runs nothing and writes nothing ══════════ */
+// `handler` stamped `async_task:<taskId> = {status:"processing"}` on EVERY delivery before
+// the body ran, so a redelivery of a FINISHED task clobbered its completed row back to
+// processing (the poller then waits on a row nothing will move again) and re-ran the body —
+// for review / codegen / fixcode / skilldistill, a second frontier call nobody asked for.
+// The shipped `handler` region is EXECUTED here against stubs: only the collaborators are
+// fake, the control flow is the shipped one.
+{
+  const at = asyncSrc.indexOf("export async function handler(event) {");
+  ok(at > 0, "handler exists and is exported");
+  const hsrc = asyncSrc.slice(at, asyncSrc.indexOf("\n}\n", at) + 2).replace("export async function handler", "async function handler");
+  const quiet = { log() {}, warn() {}, error() {} };
+
+  const makeEnv = () => {
+    const rows = new Map();        // the KVS
+    const claims = new Set();      // FAIL_IF_EXISTS keys already taken
+    const calls = { bodies: 0 };
+    const storage = {
+      get: async (k) => rows.get(k),
+      set: async (k, v) => { rows.set(k, v); },
+      delete: async (k) => { rows.delete(k); },
+    };
+    const claim = async (_s, key) => { if (claims.has(key)) return false; claims.add(key); return true; };
+    const handlers = { codegen: async () => { calls.bodies++; return { success: true, code: "api.log('x')" }; } };
+    const run = new Function(
+      "storage", "TASK_PREFIX", "TASK_TTL_HOURS", "STATS_TASK_TYPE", "processRuleStatsReceipt",
+      "LONG_QUEUE_ONLY_TASKS", "LONG_QUEUE_EVENTS", "TASK_HANDLERS", "UNPOLLED_TASKS",
+      "SELF_CLAIMING_TASKS", "UNPOLLED_LOG_TYPE", "claimRuleExecution", "taskDoneClaimKey",
+      "TASK_DONE_TTL", "isJobCancelled", "updateAsyncJob", "JOB_TTL_ACTIVE", "JOB_TTL_DONE",
+      "runGatedTask", "resetInvocationTokens", "getInvocationTokens", "bumpAiBudgetBucket",
+      "learnRuleCost", "sweepPostFunctionJobs", "STALE_JOB_MS", "BUDGET_WAIT_HORIZON_MS",
+      "console", `return (${hsrc});`,
+    )(storage, "async_task:", 1, "rulestats", async () => {},
+      new Set(["coder"]), new WeakSet(), handlers, new Set(["postfunction"]),
+      new Set(["coder"]), {}, claim, (id) => `task_done:${id}`,
+      { ttl: { value: 24, unit: "HOURS" } }, async () => false, async () => {}, {}, {},
+      async () => ({ run: true, budgetRuleId: null, budgetEstimate: 0, budgetProvider: null, budgetReserveMs: 0 }),
+      () => {}, () => 0, async () => {}, async () => {}, async () => {}, 900000, 900000, quiet);
+    return { rows, calls, run };
+  };
+
+  // BLOCK — the same codegen payload delivered twice.
+  {
+    const env = makeEnv();
+    const ev = () => ({ body: { taskType: "codegen", taskId: "G1", params: { stepName: "s" } } });
+    await env.run(ev());
+    ok(env.calls.bodies === 1 && env.rows.get("async_task:G1")?.status === "done",
+      "EXECUTED (F-919): the first codegen delivery runs the model and leaves the row done");
+    await env.run(ev());
+    ok(env.calls.bodies === 1, "EXECUTED (F-919): the REDELIVERY does not call the model a second time");
+    ok(env.rows.get("async_task:G1")?.status === "done",
+      "EXECUTED (F-919): …and the completed row is NOT clobbered back to processing");
+  }
+
+  // BLOCK — a redelivery AFTER the poller consumed (and deleted) the row writes nothing.
+  {
+    const env = makeEnv();
+    await env.run({ body: { taskType: "codegen", taskId: "G2", params: {} } });
+    env.rows.delete("async_task:G2");   // getAsyncTaskResult deletes on read
+    await env.run({ body: { taskType: "codegen", taskId: "G2", params: {} } });
+    ok(env.calls.bodies === 1 && !env.rows.has("async_task:G2"),
+      "EXECUTED (F-919): a duplicate arriving after the panel consumed the row writes NO new row");
+  }
+
+  // ALLOW — two different task ids both run.
+  {
+    const env = makeEnv();
+    await env.run({ body: { taskType: "codegen", taskId: "G3", params: {} } });
+    await env.run({ body: { taskType: "codegen", taskId: "G4", params: {} } });
+    ok(env.calls.bodies === 2 && env.rows.get("async_task:G3")?.status === "done" && env.rows.get("async_task:G4")?.status === "done",
+      "EXECUTED (F-919): two different taskIds are two runs — the claim is per EVENT, not per task type");
+  }
+
+  // The ORDER that makes the guarantee: claimed before the processing stamp.
+  ok(asyncCode.indexOf("taskDoneClaimKey(taskId)") < asyncCode.indexOf('{ status: "processing" }'),
+    "F-919: the completion claim is checked BEFORE the processing stamp");
+  // Only POLLED types are claimed here — an unpolled type that relies on the platform
+  // redelivering after a `requeue` throw must NOT hold a completion record.
+  ok(/if \(polled && !SELF_CLAIMING_TASKS\.has\(taskType\)\) \{/.test(asyncCode),
+    "F-919: only POLLED task types are claimed in the consumer");
+  // `coder` is the one named exemption: it takes the SAME task_done record in its own body,
+  // earlier (before its per-issue lock) and with its own release-on-throw and duplicate answer.
+  ok(/const SELF_CLAIMING_TASKS = new Set\(\["coder"\]\)/.test(asyncCode),
+    "F-919: the exemption is a NAMED set, not an implicit special case");
 }
 
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);

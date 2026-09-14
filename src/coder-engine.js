@@ -124,30 +124,24 @@ export const CODER_TICKET_TTL = { ttl: { value: 24, unit: "HOURS" } };
  */
 export const CODER_THREAD_TTL = { ttl: { value: 90, unit: "DAYS" } };
 /**
- * THE PER-EVENT COMPLETION CLAIM, FOR EVERY CODER TURN (F-393, generalised by F-911).
+ * THE PER-EVENT COMPLETION CLAIM IS NOT DEFINED HERE (F-393 -> F-911 -> F-919).
  *
- * `coder_exec:<issueKey>` is a LOCK - it is released in `finally`, so once a turn ends it
- * no longer stops anything. That is correct for "one turn per issue at a time" and wrong
- * for "this queue EVENT has already been executed": a platform redelivery of the same
- * taskId after the consumer returned re-enters the SAME thread and runs the turn a second
- * time - a second user message appended to the transcript, a second frontier turn of up to
- * eight rounds, and possibly a second consent ticket for the same action.
+ * `coder_exec:<issueKey>` (below) is a LOCK - it is released in `finally`, so once a turn
+ * ends it no longer stops anything. That is correct for "one turn per issue at a time" and
+ * says NOTHING about "this queue EVENT has already been executed": a platform redelivery
+ * of the same taskId after the consumer returned re-enters the SAME thread and runs the
+ * turn again - a second user message appended to the transcript, a second frontier turn of
+ * up to eight rounds, possibly a second consent ticket for the same action (F-911), and
+ * for a post-function a second branch and a second pull request (F-393).
  *
- * F-393 covered only the post-function path (`coder_pf_done:`), on the argument that "the
- * panel path has a human who would notice". A human watching a spinner notices nothing:
- * the panel's poll and the consumer's 900 s limit are the same order of magnitude, so the
- * turn most likely to be redelivered is exactly the one whose result the panel never saw.
- * So the claim is taken for EVERY coder task - panel and post-function - under ONE key
- * (`coder_done:<taskId>`) built by ONE builder, and the difference between the two paths
- * is only what a duplicate delivery is ANSWERED with (src/async-handler.js).
- *
- * The claim is taken BEFORE the per-issue lock and before a single token is spent, and on
- * a completed run it is NEVER released - it IS the "this event has been executed" record.
- * It is released only when the turn THREW before recording any outcome, so the platform's
- * own retry of a genuinely failed delivery still works. 24 h - the same window the git
- * delivery claim uses - comfortably outlives any redelivery horizon while staying bounded.
+ * The thing that makes a redelivery a no-op is the COMPLETION CLAIM, and F-919 moved it to
+ * the one home every queued task type shares: `taskDoneClaimKey` / `TASK_DONE_TTL` in
+ * src/shared/execution-claim.js, claimed in src/async-handler.js. A coder turn is not
+ * special enough to own a second answer to the same question, so it no longer does; what
+ * IS still coder-specific lives at the claim site in the consumer: the turn claims before
+ * its own per-issue lock and before a token is spent, and releases the claim only when it
+ * THREW before recording any outcome.
  */
-export const CODER_DONE_TTL = { ttl: { value: 24, unit: "HOURS" } };
 
 /**
  * THE ONE PREDICATE that decides whether a turn has a human in the loop (1.4 commit 12).
@@ -206,12 +200,6 @@ export const coderTicketKey = (ticketId) => `coder_ticket:${safeKeyPart(ticketId
 export const coderPinKey = (issueKey, threadId) => `coder_pin:${safeKeyPart(issueKey)}:${safeKeyPart(threadId)}`;
 export const coderExecClaimKey = (issueKey) => `coder_exec:${safeKeyPart(issueKey)}`;
 export const coderTicketExecClaimKey = (ticketId) => `coder_ticket_exec:${safeKeyPart(ticketId)}`;
-/**
- * THE ONE per-EVENT completion claim key for a coder turn, panel or post-function
- * (F-911) - see CODER_DONE_TTL. One builder, one prefix: a second key shape here is a
- * second answer to "has this event already run", and the two would disagree.
- */
-export const coderDoneClaimKey = (taskId) => `coder_done:${safeKeyPart(taskId)}`;
 /**
  * THE THREAD-WRITE LOCK (F-364). `coder_exec` serialises TURNS and `coder_ticket_exec`
  * serialises one ACTION — neither covers the two entry points that write the SAME thread

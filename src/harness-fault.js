@@ -578,8 +578,34 @@ export const HARNESS_FAULT_SWEEP_MAX_MS = 20_000;
 /** The cap on the returned row LIST (the counters keep counting past it). */
 export const HARNESS_FAULT_SWEEP_MAX_ROWS = 200;
 
-/** Deletes per `Promise.allSettled` batch. */
-export const HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY = 10;
+/*
+ * F-677 - THE DELETE RATE IS THE ONE THIS APP ALREADY PUBLISHES.
+ *
+ * The sweep fired TEN concurrent deletes per round with no pause between rounds, while
+ * `src/shared/knowledge-packs/forge-app-builder.js` (the FaaS-limits pack entry, ~line 395)
+ * - the guidance THIS APP SHIPS TO ITS OWN USERS - says: "Deletes: batches of ~3 with
+ * ~200 ms pauses between rounds - deletes are heavier and a tight loop trips
+ * `RATE_LIMIT_EXCEEDED` fast." Three times the documented concurrency and none of the
+ * documented pacing, in the one call whose whole job is to delete a few hundred rows back
+ * to back. A throttled delete is counted `failed` and the row SURVIVES, so the sweep
+ * answers `ok: true, deleted: 137, failed: 63` and leaves behind the mess it was called to
+ * clear - with no instruction to the operator about what to do next.
+ *
+ * So there is ONE pair of constants for both halves of the rate, the pack line is named
+ * right here so the two cannot drift apart silently, and the historical constant name is
+ * now an alias of the same value rather than a second opinion about it.
+ *
+ * THE PAUSE IS INSIDE THE BUDGET. `overBudget()` is checked immediately before the pause
+ * and again immediately after it, exactly as it is before every batch - so pacing makes a
+ * sweep do LESS work per call, and never makes it overrun the 25 s trigger. Fewer rows per
+ * call is what the resume cursor (F-674) is for.
+ */
+export const KVS_DELETE_BATCH = 3;
+export const KVS_DELETE_PAUSE_MS = 200;
+/** The historical name for the batch size. Same constant: the rate has exactly one home. */
+export const HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY = KVS_DELETE_BATCH;
+
+const sweepPause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /*
  * F-674 - THE RESUME TOKEN IS OURS, NOT THE RAW KVS CURSOR.
@@ -684,9 +710,15 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
       if (expired) doomed.push(key);
     }
     if (!dry) {
-      for (let i = 0; i < doomed.length; i += HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY) {
+      for (let i = 0; i < doomed.length; i += KVS_DELETE_BATCH) {
+        // PACED (F-677) at the app's own published rate, and the pause sits INSIDE the
+        // budget: checked before it, and again after it, like every other batch boundary.
+        if (i > 0) {
+          if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+          await sweepPause(KVS_DELETE_PAUSE_MS);
+        }
         if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
-        const batch = doomed.slice(i, i + HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY);
+        const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
         const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
         for (const outcome of settled) { if (outcome.status === "fulfilled") deleted++; else failed++; }
         progressed = true;

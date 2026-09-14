@@ -403,6 +403,34 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   ok(second.cursor !== null && typeof second.cursor === "string",
     "…and still hands back a resumable token with hundreds of rows left");
 
+  /* F-677 - THE DELETE RATE IS THE APP'S OWN PUBLISHED ONE, IN ONE PAIR OF CONSTANTS.
+   * The sweep fired ten concurrent deletes with no pause while
+   * src/shared/knowledge-packs/forge-app-builder.js ships the measured rate to this app's
+   * own users: "batches of ~3 with ~200 ms pauses between rounds". A throttled delete is
+   * counted `failed` and the ROW SURVIVES, so the un-paced sweep answered ok:true over a
+   * keyspace it had not cleared. Asserted here against the pack text itself, so the two
+   * cannot drift apart without a suite saying so. */
+  const packText = readFileSync(new URL("../../src/shared/knowledge-packs/forge-app-builder.js", import.meta.url), "utf8");
+  ok(packText.includes("batches of **~3 with ~200 ms pauses**"),
+    "(fixture) the pack really does publish batches of ~3 with ~200 ms pauses - the source this rate is derived from");
+  ok(fault.KVS_DELETE_BATCH === 3 && fault.KVS_DELETE_PAUSE_MS === 200,
+    `deletes are paced at exactly that rate (got ${fault.KVS_DELETE_BATCH}/${fault.KVS_DELETE_PAUSE_MS})`);
+  ok(fault.HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY === fault.KVS_DELETE_BATCH,
+    "…and the historical constant name is the SAME constant, so the rate has exactly one home");
+  ok(first.deleted <= fault.KVS_DELETE_BATCH,
+    `…and a 60 ms budget buys ONE paced batch, not ten unpaced deletes (deleted ${first.deleted})`);
+
+  /* THE PAUSE LIVES INSIDE THE BUDGET. Pacing must make a sweep do LESS per call, never
+   * overrun the trigger - so a caller's maxMs still bounds the wall clock even though every
+   * round now sleeps 200 ms. Measured, not asserted from the source. */
+  const paceT0 = Date.now();
+  const paced = await fault.sweepHarnessFaults({ maxMs: 400 });
+  const paceElapsed = Date.now() - paceT0;
+  ok(paced.budgetMs === 400 && paceElapsed < 400 + fault.KVS_DELETE_PAUSE_MS + 500,
+    `a paced sweep still honours its budget across the pauses (budget 400 ms, elapsed ${paceElapsed} ms)`);
+  ok(paced.deleted > 0 && paced.failed === 0,
+    `…and the paced rounds still land (deleted ${paced.deleted}, failed ${paced.failed})`);
+
   // THE TOKEN ROUND-TRIPS, including the one value a raw KVS cursor cannot express.
   ok(fault.decodeSweepCursor(first.cursor) === null,
     "the resume token for \"the beginning of the keyspace\" decodes to a null KVS cursor - the value that used to be indistinguishable from \"finished\"");

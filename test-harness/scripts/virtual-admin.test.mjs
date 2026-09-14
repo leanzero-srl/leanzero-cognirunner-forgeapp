@@ -842,6 +842,28 @@ const stageDraft = async (over = {}) => {
   bad.cadence.postWindow = { days: [1], from: "09:00", to: "17:00" };
   bad.cadence.timeZone = "Not/AZone";
   eq(V.inPostWindow(bad, T0).reason, "post_window_unreadable", "window.BLOCK_unreadable_timezone — a restriction must not evaporate on bad input");
+
+  /* — F-948: an unreadable BOUND is closed too, for the same reason — */
+  //
+  // "18.00" answered `ok: true, no_window_hours`, i.e. "post at any hour": a typo WIDENED
+  // the window to the whole day. `normalizeVa` keeps a stored malformed bound (blanking it
+  // comes back as the 00:00-23:59 default on the next pass), so this is the wall that
+  // makes keeping it safe.
+  const typo = vaJob().va;
+  typo.cadence.postWindow = { days: [], from: "18.00", to: "02:00" };
+  eq(V.inPostWindow(typo, Date.parse("2026-09-14T12:00:00Z")).reason, "window_unreadable", "window.BLOCK_unreadable_from — a typo may not mean all day");
+  eq(V.inPostWindow(typo, Date.parse("2026-09-14T23:00:00Z")).ok, false, "…at every hour, not only the ones outside the window they meant");
+  const typoTo = vaJob().va;
+  typoTo.cadence.postWindow = { days: [], from: "18:00", to: "2am" };
+  eq(V.inPostWindow(typoTo, Date.parse("2026-09-14T23:00:00Z")).reason, "window_unreadable", "window.BLOCK_unreadable_to");
+  const halfSet = vaJob().va;
+  halfSet.cadence.postWindow = { days: [1], from: "09:00" };
+  eq(V.inPostWindow(halfSet, Date.parse("2026-09-14T10:00:00Z")).reason, "window_unreadable", "window.BLOCK_half_a_window — one bound set and the other missing is not a window");
+  // …and a window with NO hours at all is still no restriction: it is an opt-in rule, and
+  // reading an absent value as "never" would be an agent that stages for ever in silence.
+  const daysOnly = vaJob().va;
+  daysOnly.cadence.postWindow = { days: [1] };
+  eq(V.inPostWindow(daysOnly, Date.parse("2026-09-14T03:00:00Z")).reason, "no_window_hours", "window.ALLOW_days_only");
 }
 
 /* — GATE 9: the voice lint, and it fails CLOSED — */

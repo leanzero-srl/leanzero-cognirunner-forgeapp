@@ -2110,9 +2110,26 @@ export const inPostWindow = (va, nowMs, { timeZone = null } = {}) => {
   const days = asArray(w.days).map(Number);
   if (days.length && !days.includes(day)) return { ok: false, reason: "outside_post_window_day" };
   const toMin = (hhmm) => { const m = /^(\d{2}):(\d{2})$/.exec(String(hhmm || "")); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
-  const from = toMin(w.from);
-  const to = toMin(w.to);
-  if (from == null || to == null) return { ok: true, reason: "no_window_hours" };
+  const rawFrom = w.from == null ? "" : String(w.from).trim();
+  const rawTo = w.to == null ? "" : String(w.to).trim();
+  const from = toMin(rawFrom);
+  const to = toMin(rawTo);
+  /*
+   * F-948 - A BOUND THAT WAS SET AND CANNOT BE READ CLOSES THE WINDOW.
+   *
+   * This answered `ok: true, "no_window_hours"` for an unreadable bound, which made a
+   * typed "18.00" mean "post at any hour" - a restriction evaporating on bad input, the
+   * same fault the unreadable time zone above already refuses. A bound that is simply
+   * ABSENT still means "no hour restriction": that is the record with days but no times,
+   * and it is an opt-in rule, not a silent "never". The two cases are told apart by
+   * whether anything was written there at all, so one bound set and the other missing is
+   * also read as unreadable - half a window is not a window, and it cannot be produced by
+   * `normalizeVa`, which always fills both.
+   */
+  if (from == null || to == null) {
+    if (rawFrom || rawTo) return { ok: false, reason: "window_unreadable" };
+    return { ok: true, reason: "no_window_hours" };
+  }
   const inside = from <= to ? (minutes >= from && minutes <= to) : (minutes >= from || minutes <= to);
   return inside ? { ok: true } : { ok: false, reason: "outside_post_window_hours" };
 };

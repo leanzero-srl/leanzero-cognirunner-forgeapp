@@ -755,10 +755,38 @@ export const normalizeVa = (raw, ctx = {}) => {
   }
   const w = isObj(c.postWindow) ? c.postWindow : {};
   const days = [...new Set(asArray(w.days).map((d) => Number(d)).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort((a, b) => a - b);
+  /*
+   * F-948 - A TYPO IN A BOUND USED TO WIDEN THE WINDOW TO THE WHOLE DAY.
+   *
+   * `from: "18.00"` (a dot, the shape half of Europe types) failed HHMM_RE and fell back
+   * to VA_DEFAULTS' 00:00-23:59, so an operator narrowing an agent to the evening got an
+   * agent that posts at 04:00 - the one direction a restriction must never fail in, and
+   * the opposite of what every other unreadable input here does (an unreadable time zone
+   * blocks two lines above, an unresolvable project is dropped from the write scope).
+   *
+   * SAVE REFUSES BY NAME. At the save doors (`strict: true`, the F-927 flag, whose only
+   * caller is `prepareVaSave` - the single door behind the classic form and REST) a
+   * malformed bound is a THROW that names the field and the shape that would have worked,
+   * so the typo is corrected by the person who made it rather than reinterpreted.
+   *
+   * A LENIENT READ KEEPS THE TYPO AND CLOSES THE WINDOW. A stored row must still LOAD -
+   * that is the whole reason the read path is lenient - so the malformed bound is KEPT,
+   * clamped to a displayable length, and reported. Keeping it, rather than blanking it,
+   * is what makes this stable under re-normalisation: `saveJob` normalises a second time,
+   * and a bound blanked to null would read as "absent" there and come back as the
+   * 00:00-23:59 default - the same widening, one pass later. `inPostWindow` reads a
+   * present-but-unreadable bound as CLOSED (`window_unreadable`), so the agent stages and
+   * never posts, and the receipt names the reason.
+   */
   const hhmm = (value, fallback, field) => {
     const s = String(value == null ? "" : value).trim();
     if (!s) return fallback;
-    if (!HHMM_RE.test(s)) { report(field, `"${s.slice(0, 10)}" is not a time of day (HH:MM), so ${fallback} was used.`); return fallback; }
+    if (!HHMM_RE.test(s)) {
+      const shown = clampChars(s.replace(/[\u0000-\u001f]/g, " "), 10);
+      if (ctx.strict === true) throw new Error(`va.${field} is refused: "${shown}" is not a time of day. Use HH:MM on the 24-hour clock, for example 18:00.`);
+      report(field, `"${shown}" is not a time of day (HH:MM), so this agent posts nothing until it is corrected.`);
+      return shown;
+    }
     return s;
   };
   const cadence = {

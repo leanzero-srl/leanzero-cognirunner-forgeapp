@@ -52,6 +52,8 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 /* F-783 — the capability PRECONDITION is judged by the lib, never by this file. See the
    conversion note at the read below. */
 import { judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+/* F-787 - the commit this run came from, recorded in the evidence file it writes. */
+import { runProvenance } from "../lib/driver-report.mjs";
 
 const { hookUrl: URL_, envName: ENV_NAME } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -276,6 +278,10 @@ const main = async () => {
     }
     const now = await kvGet(PROVIDER_SLOT);
     check(`${PROVIDER_SLOT} restored to its recorded value`, JSON.stringify(now) === JSON.stringify(providerBefore), { now: mask(now), before: mask(providerBefore) });
+    /* F-787 - WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings
+       row, and until now nothing in it said what code wrote it; `dirty` is reported because
+       evidence produced from uncommitted edits is not reproducible from the commit it names. */
+    evidence.provenance = runProvenance();
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(evidence, null, 2));
     /* F-786 — "ALL PASS" is claimed only when there is nothing unproven either. A run that
        stopped at the provider-slot precondition proved none of what this file exists to prove,

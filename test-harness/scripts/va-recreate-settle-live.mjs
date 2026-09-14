@@ -64,6 +64,8 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
    reasons this run may fix at all. The `needs-frontier-model` comparison below used to be spelled
    here, which is the same second-home defect F-776 closed for the flag and the verdict. */
 import { resolveFlipModel, judgeAgentCapability, applyVerdict, decideInstanceFlip } from "../lib/agent-capability-precondition.mjs";
+/* F-787 - the commit this run came from, recorded in the evidence file it writes. */
+import { runProvenance } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -358,6 +360,10 @@ finally {
       else FAIL(`${AGENT_MODEL_SLOT} restore did not confirm`, { status: r.status });
     }
   } catch (e) { console.error("CLEANUP FAILED", e.message); fails += 1; }
+  /* F-787 - WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings
+     row, and until now nothing in it said what code wrote it; `dirty` is reported because
+     evidence produced from uncommitted edits is not reproducible from the commit it names. */
+  ev.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
   console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
   process.exit(fails ? 1 : 0);

@@ -37,7 +37,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
 import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
 /* F-784 - the RESULT line, and what it must say when the run threw instead of finishing. */
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -284,6 +284,10 @@ async function main() {
       if (same) PASS(`${AGENT_MODEL_SLOT} restored to its recorded value`);
       else FAIL(`${AGENT_MODEL_SLOT} was NOT restored`, { now: back.value === null ? "EMPTY" : "(a model id)" });
     }
+    /* F-787 - WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings
+       row, and until now nothing in it said what code wrote it; `dirty` is reported because
+       evidence produced from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
     console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
   }

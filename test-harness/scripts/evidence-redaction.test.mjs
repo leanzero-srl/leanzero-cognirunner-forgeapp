@@ -2466,5 +2466,61 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     `${f}: the evidence.json write is redacted too (fields assigned outside PASS/FAIL/NV reach it)`);
 }
 
+/* ── 4i. F-787 — AN EVIDENCE FILE NAMES THE COMMIT THAT PRODUCED IT ─────────────
+ *
+ * `evidence.json` records what a run SAW. It never recorded what CODE produced it, so an
+ * evidence file and the driver that wrote it could drift apart with nothing in either to
+ * show it — and these files are read weeks later, beside a findings row, by someone deciding
+ * whether a red is still true. `lib/driver-report.mjs` answers it in three fields
+ * (`commit`, `dirty`, `at`), and `dirty` is there because evidence produced from uncommitted
+ * edits is still evidence but is NOT reproducible from the commit it names.
+ *
+ * THIS RULE WARNS, IT DOES NOT YET DEMAND. Measured on the pass that introduced the helper:
+ * 28 drivers write an evidence.json and 23 of them do not record provenance. Turning 23
+ * files red at once would have made this rule the thing people delete, so it is a DEBT
+ * LEDGER: the named 23 are permitted, the COUNT MAY NOT GROW, and any writer NOT on the list
+ * must record provenance. That makes the rule bite on exactly the case that matters — the
+ * next evidence writer somebody adds — while the existing cohort is converted by whoever
+ * next has reason to touch each file. An entry that has been converted must be REMOVED from
+ * the list, and the rule says so, because a warn-list nobody prunes becomes a permanent
+ * exemption. */
+{
+  const PROVENANCE_DEBT = [
+    "attachment-positive-live.mjs", "campaign-ui-live.mjs", "coder-pin-kept-live.mjs",
+    "coder-round-cache-live.mjs", "coder-skills-live.mjs", "coder-wire-replay-live.mjs",
+    "config-view-provenance-live.mjs", "delete-fault-drain-live.mjs",
+    "key-status-fault-live.mjs", "key-status-fault-ui-live.mjs",
+    "knowledge-doors-editor-live.mjs", "listeners-jobs-review-live.mjs",
+    "parity-doors-live.mjs", "perm-discriminator-live.mjs", "perm-namesake-ui-live.mjs",
+    "pipeline-outdated-live.mjs", "plant-sweep-live.mjs", "rules-api-roles-live.mjs",
+    "skills-knowledge-ui-live.mjs", "user-search-fault-live.mjs", "va-purge-carrier-live.mjs",
+    "va-purge-panel-ui-live.mjs", "workflow-simulation-live.mjs",
+  ];
+  /* An evidence WRITER is a file that writes an evidence.json, found the same crude textual
+     way rule 4b's redaction check finds it — deliberately the same predicate, so the two
+     rules can never disagree about which files are evidence writers. */
+  const writers = liveFiles.filter((f) => {
+    const s = readFileSync(path.join(here, f), "utf8");
+    return /writeFileSync\(/.test(s) && /evidence\.json/.test(s);
+  });
+  const missing = writers.filter((f) => !/runProvenance/.test(readFileSync(path.join(here, f), "utf8")));
+
+  ok(writers.length > 20,
+    `4i (F-787): the evidence-writer cohort is found, not assumed — ${writers.length} files write an evidence.json`);
+  ok(missing.length <= PROVENANCE_DEBT.length,
+    `4i (F-787): the provenance debt did not GROW — ${missing.length} writers record no provenance, ledger allows ${PROVENANCE_DEBT.length}`);
+  const strangers = missing.filter((f) => !PROVENANCE_DEBT.includes(f));
+  ok(strangers.length === 0,
+    `4i (F-787): a NEW evidence writer must record provenance — ${strangers.join(", ")} writes an evidence.json without calling runProvenance() from lib/driver-report.mjs`);
+  const stale = PROVENANCE_DEBT.filter((f) => !missing.includes(f));
+  ok(stale.length === 0,
+    `4i (F-787): the debt list is PRUNED — ${stale.join(", ")} now records provenance (or no longer writes evidence) and must come off PROVENANCE_DEBT, because a warn-list nobody shortens is a permanent exemption`);
+
+  /* And the helper really is in the lib, so this rule points at a home that exists. */
+  ok(/export function runProvenance/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8")),
+    "4i (F-787): lib/driver-report.mjs exports runProvenance — ONE home, so `commit`/`dirty`/`at` cannot come to mean different things in different evidence files");
+}
+
+
 console.log(`\nevidence-redaction: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

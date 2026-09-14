@@ -45,6 +45,8 @@ import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
 import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
+/* F-787 - the commit this run came from, recorded in the evidence file it writes. */
+import { runProvenance } from "../lib/driver-report.mjs";
 
 /* F-714 — the HOOK half and the BROWSER half must come from ONE guard row. This driver
    used to take `hookUrl` from `--env` while pinning `ADMIN_PAGE` to `forgeEnvId("staging")`,
@@ -355,6 +357,10 @@ finally {
       if (r.status === 200) PASS(`${AGENT_MODEL_SLOT} restored`); else FAIL(`${AGENT_MODEL_SLOT} restore did not confirm`, { status: r.status });
     }
   } catch (e) { console.error("CLEANUP FAILED", e.message); fails += 1; }
+  /* F-787 - WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings
+     row, and until now nothing in it said what code wrote it; `dirty` is reported because
+     evidence produced from uncommitted edits is not reproducible from the commit it names. */
+  ev.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
   console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/`);
   process.exit(fails ? 1 : 0);

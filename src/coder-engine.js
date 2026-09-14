@@ -810,13 +810,27 @@ const runCoderTurnClaimed = async ({
   // The running log is flushed ONCE PER ROUND, with only the lines added since the last
   // flush: the writer appends to what it already stored, so re-sending the whole buffer
   // would duplicate every line.
+  //
+  // THE MARK MOVES ONLY WHEN THE WRITE LANDED (F-870). It used to move BEFORE the await,
+  // so a flush that answered `{ok:false}` - or threw, which the final flush catches and
+  // records (F-866) - left its batch counted as written: no later flush in the turn ever
+  // re-sent those lines, and the round that failed was simply missing from the log the
+  // operator reads, while the receipt said only "a log write failed at some point". The
+  // retry is safe in the direction that matters: the writer APPENDS, and a call that
+  // answered `ok:false` or threw appended nothing, so re-sending cannot duplicate. A
+  // failure that is really a lie ("stored, then answered false") would duplicate lines,
+  // which is the strictly better failure - a duplicated line is readable, a dropped one
+  // is not there to be read. `mark` is taken before the await so lines appended while the
+  // write is in flight stay unflushed rather than being skipped by `logs.length` after it.
   let flushedLogs = 0;
   const onRound = async () => {
     const fresh = logs.slice(flushedLogs);
-    flushedLogs = logs.length;
     if (!fresh.length) return;
+    const mark = logs.length;
     const r = await workspace.updateCoderLog({ issueKey: key, threadId: thread, lines: fresh });
     noteWorkspace("log", r);
+    if (r && r.ok === false) return;
+    flushedLogs = mark;
   };
 
   // ── the consent ticket ────────────────────────────────────────────────────

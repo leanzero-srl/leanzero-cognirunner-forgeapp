@@ -83,7 +83,10 @@ export const GIT_PROVIDER_HOST_NAMES = GIT_PROVIDER_HOSTS.map((h) => h.host);
 // keeps its import path.
 export { GIT_PROVIDER_KINDS } from "./shared/git-ids.js";
 import { GIT_PROVIDER_KINDS } from "./shared/git-ids.js";
-import { clampUtf8Bytes } from "./shared/text-clamp.js";
+// F-874 — the byte MEASURE comes from the same home as the byte CLAMP it feeds.
+// This file used to declare its own `byteLength`; a budget measured by one function
+// and enforced by another is how the two silently stop agreeing.
+import { clampUtf8Bytes, utf8ByteLength } from "./shared/text-clamp.js";
 
 /** The closed error-code set. Anything outside it is a bug in this file. */
 export const GIT_ERROR_CODES = [
@@ -233,11 +236,6 @@ function base64(str) {
   return btoa(unescape(encodeURIComponent(str)));
 }
 
-function byteLength(str) {
-  if (typeof Buffer !== "undefined" && Buffer.byteLength) return Buffer.byteLength(str, "utf8");
-  /* istanbul ignore next */
-  return new TextEncoder().encode(str).length;
-}
 
 /**
  * Truncate to a byte budget on a character boundary, with a visible marker.
@@ -1313,7 +1311,7 @@ export function assertCommitWithinCaps(kind, files) {
   }
   let total = 0;
   for (const f of files) {
-    const size = byteLength(String((f && f.content) == null ? "" : f.content));
+    const size = utf8ByteLength(String((f && f.content) == null ? "" : f.content));
     if (size > COMMIT_MAX_FILE_BYTES) {
       throw new GitProviderError("bad_request", "commitFiles: \"" + String(f && f.path) + "\" is " + size + " bytes, over the " + COMMIT_MAX_FILE_BYTES + "-byte per-file cap", { provider: kind, operation: "commitFiles" });
     }
@@ -1333,7 +1331,7 @@ export function assertCommitWithinCaps(kind, files) {
 /** PR body → a capped string. Never null: "" is "no description", and says so once. */
 export function capBody(value) {
   const raw = String(value == null ? "" : value);
-  if (byteLength(raw) <= PR_BODY_MAX_BYTES) return raw;
+  if (utf8ByteLength(raw) <= PR_BODY_MAX_BYTES) return raw;
   return clampBytes(raw, PR_BODY_MAX_BYTES, "\n… [description truncated at 8 KB]").text;
 }
 
@@ -1350,7 +1348,7 @@ export function capDiff(files) {
     }
     const capped = clampBytes(f.patch || "", DIFF_MAX_FILE_BYTES, "\n… [file diff truncated at 16 KB]");
     if (capped.truncated) truncated = true;
-    const size = byteLength(capped.text);
+    const size = utf8ByteLength(capped.text);
     if (total + size > DIFF_MAX_TOTAL_BYTES) {
       out.push({ ...f, patch: "", omitted: true, truncated: true });
       truncated = true;

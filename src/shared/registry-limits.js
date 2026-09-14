@@ -392,12 +392,34 @@ export const memoryPlatformCapMessage = (bytesOver) => {
  * `memories` is smaller than `skills` in every row on purpose: a memory is one advisory
  * line, and 4 KB is already ~40 of them — past that the block stops being a reminder
  * and becomes a second instruction set.
+ *
+ * F-873 — TWO MORE AUDIENCES, because two callers were typing their memory budget as a
+ * literal at the call site instead of naming it here:
+ *
+ *   endpointAssistant — `suggestEndpoint` (src/index.js): the editor's one-shot "which
+ *               REST endpoint do I need" helper. It runs inline inside the 25 s resolver
+ *               cap, already carries the whole endpoint catalogue in its prompt, and the
+ *               memories are there to warn about THIS instance's quirks — 2 KB, the
+ *               tightest row, because the catalogue is the content.
+ *   configReview — the async `review` task (src/async-handler.js), and only for a static
+ *               post-function config. The memories often explain why a step that looks
+ *               fine keeps failing on this instance, so it gets twice the assistant's
+ *               room (4 KB) on the 120 s consumer, but not codegen's 8 KB: it is
+ *               reviewing steps, not writing them.
+ *
+ * NEITHER OF THOSE TWO INJECTS SKILLS. Their `skills` number is therefore not a figure
+ * anyone chose — it carries the SMALLEST row's value so that `knowledgeBudget()` always
+ * answers a whole budget, for the same reason an unknown audience falls to the smallest
+ * row rather than the largest. If one of them ever grows a skills block, that number is
+ * a decision to make, not a default to inherit.
  */
 export const KNOWLEDGE_BUDGET_BYTES = Object.freeze({
   codegen: Object.freeze({ skills: 24576, memories: 8192 }),
   agentRun: Object.freeze({ skills: 8192, memories: 4096 }),
   coderTurn: Object.freeze({ skills: 16384, memories: 8192 }),
   prReview: Object.freeze({ skills: 6144, memories: 2048 }),
+  endpointAssistant: Object.freeze({ skills: 6144, memories: 2048 }),
+  configReview: Object.freeze({ skills: 6144, memories: 4096 }),
 });
 
 /**

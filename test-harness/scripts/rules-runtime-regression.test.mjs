@@ -455,22 +455,26 @@ try {
       assert.equal(/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL|BASEURL)_[a-z$]/.test(code), false, `${f} types a provider slot literal — derive it from src/shared/provider-slots.js`);
     }
   });
-  await check("no backend module retypes a knowledge budget at a fetchSkillsBlock call", async () => {
+  await check("no backend module retypes a knowledge budget at a skills OR memory block call", async () => {
     // F-868 — src/index.js passed `{ capBytes: 24576 }` to fetchSkillsBlock, which is the
     // function's OWN default (KNOWLEDGE_BUDGET_BYTES.codegen.skills). A budget with two
     // homes drifts: change registry-limits.js and this caller silently keeps the old one.
     // A caller that genuinely needs a different audience passes the NAMED constant.
     //
-    // Scoped to fetchSkillsBlock + the 24576 literal rather than every `capBytes: <n>` in
-    // src/ because two MEMORY-block callers still type 2048/4096 (reported separately);
-    // widening this assertion is the follow-up to fixing those, not a reason to skip this.
+    // F-873 — WIDENED TO buildMemoryBlock, which is what this comment said was owed. The
+    // two memory callers that typed 2048 and 4096 are now named rows in the same table
+    // (`endpointAssistant`, `configReview`) and the function's own default is
+    // KNOWLEDGE_BUDGET_BYTES.codegen.memories, so no numeric capBytes may stand at either
+    // call any more. A caller with a genuinely different audience adds a ROW and names it.
     const files = backendModules();
     assert.ok(files.includes("index.js") && files.includes("async-handler.js"),
       `backend module derivation returned ${files.join(",") || "nothing"}`);
     for (const f of files) {
       const code = stripJsComments(readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8"));
-      assert.equal(/fetchSkillsBlock\([^;]*capBytes\s*:\s*\d/.test(code), false,
-        `${f} types a numeric capBytes at a fetchSkillsBlock call — use the default or KNOWLEDGE_BUDGET_BYTES`);
+      for (const fn of ["fetchSkillsBlock", "buildMemoryBlock"]) {
+        assert.equal(new RegExp(`${fn}\\([^;]*capBytes\\s*:\\s*\\d`).test(code), false,
+          `${f} types a numeric capBytes at a ${fn} call — use the default or KNOWLEDGE_BUDGET_BYTES`);
+      }
       if (f !== "index.js") continue;
       // index.js keeps 24576 for PF_FUNCTIONS_OFFLOAD_BYTES (a different, unrelated budget);
       // what must not exist is a SECOND copy of the skills budget.
@@ -479,6 +483,14 @@ try {
     }
     const { KNOWLEDGE_BUDGET_BYTES } = await import("../../src/shared/registry-limits.js");
     assert.equal(KNOWLEDGE_BUDGET_BYTES.codegen.skills, 24576, "the skills budget's ONE home still reads 24576");
+    // …and the memory budgets the two callers moved off their literals onto (F-873).
+    assert.equal(KNOWLEDGE_BUDGET_BYTES.codegen.memories, 8192, "buildMemoryBlock's default row");
+    assert.equal(KNOWLEDGE_BUDGET_BYTES.endpointAssistant.memories, 2048, "suggestEndpoint's row, ex-literal 2048");
+    assert.equal(KNOWLEDGE_BUDGET_BYTES.configReview.memories, 4096, "the async review task's row, ex-literal 4096");
+    // The function's default must come FROM the table, not repeat its number.
+    const mem = stripJsComments(readFileSync(new URL("../../src/memories.js", import.meta.url), "utf8"));
+    assert.match(mem, /capBytes = KNOWLEDGE_BUDGET_BYTES\.codegen\.memories/,
+      "buildMemoryBlock's default is the named constant, not a second copy of 8192");
   });
   await check("kvSet is still an allowlist, not a KVS write bridge", async () => {
     // F-163 deliberately ADDED pf_memories + COGNIRUNNER_MEMORY_SETTINGS to the allowlist

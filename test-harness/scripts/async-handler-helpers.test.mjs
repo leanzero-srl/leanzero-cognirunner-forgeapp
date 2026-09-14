@@ -22,8 +22,9 @@
 // Run: node --import ../lib/register-mocks.mjs scripts/async-handler-helpers.test.mjs
 // F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
 import "../lib/ensure-mocks.mjs";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { errorSignature, normalizeMemoryText } from "../../src/memories.js";
 /* F-704: the gated-export census is a shared rule, asked here and in harness-fault-ttl.test.mjs. */
@@ -1490,6 +1491,22 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 // and one gate. What is asserted here is the SENTENCE, not the two new lines: every KVS
 // operation on the fault keyspace is counted (get, set AND delete) while every export is
 // called with HARNESS_SECRET deleted, and the total must be zero.
+//
+// F-720 — AND "EVERY EXPORT" IS THE MODULE'S LIST, NOT A LIST WRITTEN HERE.
+// F-704 made the classification data and left THIS census — the only one that proves the
+// property by EXECUTION rather than by regex — a hand-written roll call of seven exports.
+// `HARNESS_GATED_EXPORTS` had grown to ten; `plantHarnessFaults`, `clearPlantedFaults` and
+// `armDeleteFault` were never invoked with the gate closed, so the ops array was empty
+// because three storage-touching exports were never CALLED, not because they refused. The
+// sentence said "all seven exports together performed ZERO KVS operations" — a cause the
+// test no longer contained. That is the F-694/F-704 defect class (a stale hand-written list
+// beside a data-driven one) recurring in the one assertion that runs the code.
+//
+// So the list DRIVES the loop: `HARNESS_GATED_EXPORTS` is iterated, each name looked up in
+// an argument table, and a name with no entry FAILS the suite — the same shape F-704 applied
+// to the classification. `query()` is counted for the whole census, not just for the sweep:
+// a query carries no key and would otherwise slip the `harness_fault:` spy entirely (F-667),
+// and the F-720 scenario is precisely a later edit that moves one ahead of the gate.
 // =====================================================================================
 {
   const fault = await import("../../src/harness-fault.js");
@@ -1512,45 +1529,96 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   await fault.armHarnessFault(KIND, parts, 3);
   ok((await fault.readHarnessFault(KIND, parts)).value.count === 3, "F-522: (fixture) a lever really is armed before the gate closes");
 
-  delete process.env.HARNESS_SECRET;
-  ops = [];
-  const consumed = await fault.harnessFaultArmed(KIND, ...parts);
-  const armedOff = await fault.armHarnessFault(KIND, parts, 2);
-  const readOff = await fault.readHarnessFault(KIND, parts);
-  const disarmedOff = await fault.disarmHarnessFault(KIND, parts);
-  // F-629 — the FIFTH storage-touching export, held to the same sentence. `keyReadFaultMode`
-  // is called too: it reaches storage only through `readHarnessFault`, and the count is what
-  // proves it inherits the gate rather than having quietly grown its own read.
-  const keyArmOff = await fault.armKeyReadFault("openai", "refuse", 60);
-  const keyModeOff = await fault.keyReadFaultMode("openai");
-  // F-655 — the SIXTH storage-touching export, held to the same sentence, and its
-  // consuming side (`jiraFaultStatus`) called too for the same reason as `keyReadFaultMode`:
-  // the count is what proves it reaches storage only through the gated `readHarnessFault`.
-  const jiraArmOff = await fault.armJiraFault(fault.JIRA_FAULT_USER_SEARCH_PATH, 429, 60);
-  const jiraStatusOff = await fault.jiraFaultStatus(fault.JIRA_FAULT_USER_SEARCH_PATH);
-  // F-667 — the SEVENTH storage-touching export, and the one with the widest reach: it
-  // ENUMERATES the keyspace and DELETES. In production it must do neither, so the query is
-  // counted alongside the keyed operations — a `query()` carries no key and would otherwise
-  // slip past the `harness_fault:` spy entirely.
+  /* F-720 — the arguments table. Keyed by the MODULE's list, so the loop below fails the
+   * suite for any gated export with no entry here; `refused` states, per export, what the
+   * closed gate must ANSWER, because "refused" and "touched nothing" are two properties and
+   * this block proves both. Arguments are representative and legal — the gate is the first
+   * statement, so what matters is only that the call reaches it. */
+  const harnessOff = (v) => Boolean(v) && v.ok === false && v.reason === "harness-off";
+  const OFF_CENSUS = {
+    harnessFaultArmed:   { args: [KIND, ...parts],                                      refused: (v) => v === false },
+    armHarnessFault:     { args: [KIND, parts, 2],                                      refused: harnessOff },
+    readHarnessFault:    { args: [KIND, parts],                                         refused: (v) => v === null },
+    disarmHarnessFault:  { args: [KIND, parts],                                         refused: harnessOff },
+    armKeyReadFault:     { args: ["openai", "refuse", 60],                              refused: harnessOff },
+    armJiraFault:        { args: [fault.JIRA_FAULT_USER_SEARCH_PATH, 429, 60],          refused: harnessOff },
+    sweepHarnessFaults:  { args: [{}],                                                  refused: harnessOff },
+    plantHarnessFaults:  { args: [{ n: 3 }],                                            refused: harnessOff },
+    clearPlantedFaults:  { args: [{}],                                                  refused: harnessOff },
+    armDeleteFault:      { args: [{ prefix: fault.HARNESS_FAULT_PLANT_PREFIX, mode: "refuse", count: 3, ttlSeconds: 60 }], refused: harnessOff },
+  };
+  /* The inherited-gate pair is driven by its own module list for the same reason: each
+   * reaches storage ONLY through a gated export, and the zero count is what proves it has
+   * not quietly grown a read of its own. */
+  const INHERITED_CENSUS = {
+    keyReadFaultMode: { args: ["openai"], refused: (v) => v === null },
+    jiraFaultStatus:  { args: [fault.JIRA_FAULT_USER_SEARCH_PATH], refused: (v) => v === null },
+  };
+
+  // F-667/F-720: a `query()` carries no key, so the keyed spy cannot see it. Counted for the
+  // WHOLE census, not just for the sweep — enumeration is the widest thing a production
+  // build could do, and any gated export could grow one.
   const realQuery = kvs.query;
   let queriesOff = 0;
   kvs.query = function countingQuery(...a) { queriesOff += 1; return realQuery.apply(this, a); };
-  const sweepOff = await fault.sweepHarnessFaults();
 
-  ok(consumed === false, "F-522: with HARNESS_SECRET absent, consuming answers false");
-  ok(armedOff && armedOff.ok === false && armedOff.reason === "harness-off", "F-522: …arming refuses harness-off");
-  ok(readOff === null, "F-522: …reading answers null");
-  ok(disarmedOff && disarmedOff.ok === false && disarmedOff.reason === "harness-off",
-    "F-522: …and DISARMING refuses harness-off — it is a WRITE (a delete), and it was the ungated one");
-  ok(keyArmOff && keyArmOff.ok === false && keyArmOff.reason === "harness-off", "F-629: …arming the key-read fault refuses harness-off");
-  ok(keyModeOff === null, "F-629: …and asking for a key-read fault mode answers null in production");
-  ok(jiraArmOff && jiraArmOff.ok === false && jiraArmOff.reason === "harness-off", "F-655: …arming the Jira transport fault refuses harness-off");
-  ok(jiraStatusOff === null, "F-655: …and asking for a Jira fault status answers null in production");
-  ok(sweepOff && sweepOff.ok === false && sweepOff.reason === "harness-off", "F-667: …sweeping the keyspace refuses harness-off");
-  ok(queriesOff === 0, `F-667: …and issues ZERO queries — a production build enumerates nothing (got ${queriesOff})`);
+  delete process.env.HARNESS_SECRET;
+  ops = [];
+  const invoked = [];
+  for (const name of [...fault.HARNESS_GATED_EXPORTS, ...fault.HARNESS_INHERITED_GATE_EXPORTS]) {
+    const entry = OFF_CENSUS[name] || INHERITED_CENSUS[name];
+    if (!entry) {
+      ok(false, `F-720: gated export \`${name}\` has no entry in the harness-off census table — a gated export nobody ever RUNS with the gate closed is exactly the F-720 defect`);
+      continue;
+    }
+    const answer = await fault[name](...entry.args);
+    invoked.push(name);
+    ok(entry.refused(answer),
+      `F-522/F-720: with HARNESS_SECRET absent, \`${name}\` refuses (got ${JSON.stringify(answer)})`);
+  }
   kvs.query = realQuery;
+
+  ok(invoked.length === fault.HARNESS_GATED_EXPORTS.length + fault.HARNESS_INHERITED_GATE_EXPORTS.length,
+    `F-720: EVERY export on HARNESS_GATED_EXPORTS (${fault.HARNESS_GATED_EXPORTS.length}) and HARNESS_INHERITED_GATE_EXPORTS (${fault.HARNESS_INHERITED_GATE_EXPORTS.length}) was actually invoked harness-off — the zero below is a refusal, not a call that never happened (invoked ${invoked.length}: ${invoked.join(", ")})`);
+  ok(queriesOff === 0,
+    `F-667/F-720: …and the whole census issued ZERO queries — a production build enumerates nothing (got ${queriesOff})`);
   ok(ops.length === 0,
-    `F-522.ZERO_KVS — all seven exports together performed ZERO KVS operations on the fault keyspace (got ${JSON.stringify(ops)})`);
+    `F-522.ZERO_KVS — all ${invoked.length} exports together performed ZERO KVS operations on the fault keyspace (got ${JSON.stringify(ops)})`);
+
+  /* F-720 NEGATIVE CONTROL — the zeros above must be capable of being non-zero.
+   * The scenario the finding names: a later edit reorders a body so a `storage.query()` runs
+   * BEFORE the gate. The source regexes still match (the gate is still there, still first in
+   * text terms for the exports they read), so only EXECUTION can see it. A doctored COPY of
+   * the module — one query moved ahead of `clearPlantedFaults`' gate, its one relative import
+   * rewritten to an absolute URL so the copy can live outside the repo — is driven through
+   * the SAME table, and the query counter must catch it. */
+  {
+    const kvsKeysUrl = pathToFileURL(path.join(here, "../../src/shared/kvs-keys.js")).href;
+    const pristine = readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8");
+    const doctored = pristine
+      .replace('from "./shared/kvs-keys.js"', `from ${JSON.stringify(kvsKeysUrl)}`)
+      .replace(
+        "export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } = {}) => {\n  if (!harnessEnabled())",
+        "export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } = {}) => {\n  storage.query();\n  if (!harnessEnabled())");
+    ok(doctored !== pristine && /storage\.query\(\);\n  if \(!harnessEnabled\(\)\)/.test(doctored),
+      "F-720 (fixture): the doctored copy really does query BEFORE the gate");
+    const tmp = path.join(tmpdir(), `harness-fault-f720-${process.pid}-${Date.now()}.mjs`);
+    let negQueries = 0;
+    try {
+      writeFileSync(tmp, doctored);
+      const broken = await import(pathToFileURL(tmp).href);
+      const realQ = kvs.query;
+      kvs.query = function countingQuery(...a) { negQueries += 1; return realQ.apply(this, a); };
+      try {
+        for (const name of broken.HARNESS_GATED_EXPORTS) {
+          const entry = OFF_CENSUS[name];
+          if (entry) await broken[name](...entry.args);
+        }
+      } finally { kvs.query = realQ; }
+    } finally { rmSync(tmp, { force: true }); }
+    ok(negQueries > 0,
+      `F-720 (negative control): a copy that queries before the gate is CAUGHT by the census — the zero above is a measurement, not a dead counter (got ${negQueries})`);
+  }
 
   // …AND THE ROW IS STILL THERE. The ungated delete really would have destroyed it: this
   // is the difference between "answered a refusal" and "did nothing".

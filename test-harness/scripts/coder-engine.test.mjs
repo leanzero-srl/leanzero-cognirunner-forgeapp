@@ -2006,5 +2006,50 @@ await check("F-866: a log writer that THROWS is counted, named and summarised", 
     `and the operator with no panel open is warned too: ${JSON.stringify(warned)}`);
 });
 
+/* ═════ F-870. a FAILED flush does not swallow the lines it failed to write ═════
+ *
+ * The running log is flushed once per round with only the lines added since the last
+ * flush, and the mark used to move BEFORE the write was awaited. So a mid-turn flush that
+ * answered `{ok:false}` (or threw) marked its batch written anyway: the final flush sent
+ * only what came after it, and that round's lines were never in the log at all. The turn
+ * still reported the failure - it just reported it about lines nobody could read.
+ */
+await check("F-870: lines from a FAILED mid-turn flush are re-sent by the next one", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([call("get_issue", { issueKey: "LZPT-1" })]), reply([call("get_issue", { issueKey: "LZPT-2" })]), reply([finish("Done")])] });
+  // Distinct args per round DELIBERATELY: two rounds that log the identical line make a
+  // dropped batch indistinguishable from a kept one by membership alone.
+  const sent = [];
+  let calls = 0;
+  const workspace = {
+    ...createCoderWorkspace({}),
+    updateCoderLog: async ({ lines }) => {
+      calls += 1;
+      // Round 2's flush fails the way the writer promises to fail: an ANSWER, not a throw,
+      // and nothing appended on the far side.
+      if (calls === 2) return { ok: false, errorClass: "storage", error: "updateCoderLog answered false" };
+      sent.push(...lines);
+      return { ok: true };
+    },
+  };
+
+  const { out: r } = await catchWarn(() => startTurn(world, {
+    userMessage: "log it", deps: { store, gitExecutor: recordingGit(world), workspace },
+  }));
+
+  assert.equal(r.success, true, "still degrading, never killing");
+  assert.ok(calls >= 3, `the turn flushed more than once (${calls})`);
+  // THE POINT: every line the turn produced reached the log, including the batch the
+  // failing round was carrying.
+  const missing = (r.logs || []).filter((l) => !sent.includes(l));
+  assert.deepEqual(missing, [], `every line reaches the log body; missing: ${JSON.stringify(missing)}`);
+  assert.equal(sent.length, (r.logs || []).length, "…exactly once each: a retry must not duplicate a landed line");
+  // ...and the failure is still STICKY on the receipt: a later success does not erase it.
+  assert.equal(r.workspaceFailures, 1, "the failed flush is still reported once, by group");
+  const logEntry = r.workspace.find((e) => e.group === "log");
+  assert.equal(logEntry.ok, false);
+  assert.match(r.workspaceSummary || "", /log: storage/);
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

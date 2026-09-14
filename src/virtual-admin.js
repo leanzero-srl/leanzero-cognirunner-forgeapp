@@ -2133,10 +2133,45 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
   // of the agent once per tick, so it is the one that can count them without a second scan;
   // the named lists stay on the rows, which is what the Agents tab renders.
   let heldWrites = 0;
+  /*
+   * F-921 — WHAT STOPPED THE PASS, if anything did: "paused" or "cancelled". Set by the
+   * per-item re-read below, carried into the receipt and into the return value so the
+   * caller and the Agents tab read the same answer.
+   */
+  let stoppedBy = null;
   const note = (key, reason) => { skipped.push({ key, reason }); };
   const finish = async (error = null) => {
-    await recordTick(deps.store, agentId, { tickId: tick, phase: "post", started, candidates: skipped.length + posted, staged: posted, skipped, error, heldWrites });
-    return { ok: !error, posted, errors, skipped, heldWrites };
+    await recordTick(deps.store, agentId, { tickId: tick, phase: "post", started, candidates: skipped.length + posted, staged: posted, skipped, error, heldWrites, stoppedBy, postedBefore: posted });
+    return { ok: !error, posted, errors, skipped, heldWrites, ...(stoppedBy ? { reason: stoppedBy, postedBefore: posted } : {}) };
+  };
+
+  /*
+   * F-921 — THE PAUSE AND THE KILL SWITCH, RE-ASKED BEFORE EVERY COMMENT.
+   *
+   * Gate 1 reads both ONCE, at the top, and the pass it guards can then post up to
+   * `maxItemsPerTick` comments across as much as 120 seconds. An admin who pauses the
+   * agent - or cancels everything the instance has queued - one second into that pass
+   * watched the remaining comments go out anyway: the flag they pressed took effect on the
+   * NEXT window, which is precisely the window they were trying to prevent.
+   *
+   * THE SAME PREDICATE F-912 PUT INSIDE THE ITEM TURN, asked the same way: the pause
+   * RE-READ FROM THE AGENT'S RECORD (`job` is the snapshot the consumer loaded, and the
+   * whole point is that the flag moved afterwards) and `isKillSwitchActive` against the
+   * tenant cancel EPOCH with this run's own `enqueuedAt`.
+   *
+   * FAIL-SOFT, BOTH ARMS (F-571's reason): a storage blip must not silence an agent whose
+   * operator has not touched anything. An unreadable record answers "not paused".
+   */
+  const cancelReason = async () => {
+    try {
+      const fresh = await deps.getJob(agentId);
+      const status = fresh && isObj(fresh.va) && isObj(fresh.va.status) ? fresh.va.status : null;
+      if (status && status.paused === true) return "paused";
+      if (fresh && fresh.enabled === false) return "paused";
+    } catch (e) { /* fail-soft: an unreadable record is not a pause */ }
+    try { if (await deps.isKillSwitchActive(job, enqueuedAt)) return "cancelled"; }
+    catch (e) { /* fail-soft */ }
+    return null;
   };
 
   /*
@@ -2226,6 +2261,28 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
       // already bound (F-413); an honest receipt is worth the reads.
       if (!row || row.state !== "staged" || !row.staged) continue;
       if (considered >= cap) { note(issueKey, "over_post_budget"); continue; }
+
+      /*
+       * F-921 — ASKED HERE, BEFORE ANYTHING IS SPENT ON THIS ROW.
+       *
+       * It sits above the caps bump and above the post claim deliberately. A stop read
+       * after the claim would leave the row staged with its claim already taken and its
+       * cap slot already spent, so the comment the operator DID want would be refused by
+       * its own claim in the next window - the pause would have cost the reply instead of
+       * merely delaying it. Every `addComment` below is reached through this check, which
+       * is what the fix has to guarantee.
+       *
+       * The pass STOPS rather than skipping the row: the remaining rows are left exactly
+       * as they are - staged, untouched, no attempt counted, no draft dropped - so the
+       * next window posts them if the operator lifts the flag, and nothing is lost if
+       * they do not.
+       */
+      const stop = await cancelReason();
+      if (stop) {
+        stoppedBy = stop;
+        note("(agent)", `stopped.${stop}`);
+        break;
+      }
       considered++;
 
       const refuse = async (reason, patch = {}) => {

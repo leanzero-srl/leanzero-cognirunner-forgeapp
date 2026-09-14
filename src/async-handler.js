@@ -141,7 +141,7 @@ import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 // 1.5 probe P3 — the ONE Confluence call site rule holds for the probe too: it goes
 // through the client, never straight to `requestConfluence`.
 import { createConfluenceClient } from "./confluence-client.js";
-import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL, getCoderThread, getCoderPinnedKnowledge } from "./coder-engine.js";
+import { runCoderTurn, isHeadlessTrigger, coderDoneClaimKey, CODER_DONE_TTL, getCoderThread, getCoderPinnedKnowledge } from "./coder-engine.js";
 // F-829 — the ONE gate predicate and the ONE refusal vocabulary, used here exactly as the
 // producer uses them. Nothing about capability is decided in this file; it only supplies
 // FRESH facts to the same three functions.
@@ -2232,27 +2232,39 @@ const resolveFreshCoderGate = async (p) => {
 
 const executeCoderTurn = async (params, taskId) => {
   const p = params || {};
-  // F-393 — THE PER-EVENT COMPLETION CLAIM, for the POST-FUNCTION path only.
+  // F-393 / F-911 — THE PER-EVENT COMPLETION CLAIM, for EVERY coder turn.
   //
   // The per-issue `coder_exec:` claim is a LOCK released in `finally`; it stops two turns
   // overlapping and stops nothing once a turn has ended. A platform redelivery of this
-  // same taskId therefore re-entered the SAME `pf_<ruleId>_<ts>` thread and ran the mode
-  // again: a second branch, a second pull request, two SUCCESS rows. The panel path has a
-  // human who would notice; a post-function has nobody.
+  // same taskId therefore re-entered the SAME thread and ran the turn again: for a
+  // post-function a second branch, a second pull request, two SUCCESS rows (F-393); for
+  // the PANEL a second copy of the user's message in the transcript, a second frontier
+  // turn of up to eight rounds, and a second consent ticket for the same action (F-911).
+  // F-393 exempted the panel because "a human would notice" — but the turn most likely to
+  // be redelivered is the one that hit the 900 s consumer limit, which is exactly the one
+  // whose result no human ever saw.
   //
-  // The claim is taken BEFORE anything runs and, on a completed run, is NEVER released —
-  // it IS the "this event has been executed" record. FAIL OPEN on a KVS fault
-  // (claimRuleExecution without failClosed): an unreachable store must not stop a rule's
-  // first and only delivery, and a duplicate is the rarer accident of the two. It is
-  // released only when the turn THREW before its outcome was recorded, so the platform's
-  // own retry of a genuinely failed delivery still works.
-  const doneKey = p.pf ? coderPfDoneClaimKey(taskId) : null;
-  if (doneKey) {
-    const firstDelivery = await claimRuleExecution(storage, doneKey, CODER_PF_DONE_TTL, "coder-pf-done");
-    if (!firstDelivery) {
-      console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: redelivery of a completed PF turn, skipped (${taskId})`);
-      return { success: false, skipped: true, error: "redelivery of a completed PF turn, skipped" };
-    }
+  // ONE key builder and ONE predicate, therefore: `coder_done:<taskId>`, claimed BEFORE
+  // the engine's per-issue lock and before a single token is spent, and never released on
+  // a run that reached a recorded outcome — it IS the "this event has been executed"
+  // record. FAIL OPEN on a KVS fault (claimRuleExecution without failClosed): an
+  // unreachable store must not stop a rule's first and only delivery.
+  //
+  // WHAT A DUPLICATE IS ANSWERED WITH is the only thing that differs between the paths,
+  // because their readers differ. A post-function has no reader, so it keeps the F-393
+  // shape: a skip carrying an `error`, which the consumer stamps on the task row. The
+  // PANEL polls `async_task:<taskId>`, and answering its poll with an error would put a
+  // red "the Coder turn failed" over a turn that in fact SUCCEEDED, so it is answered
+  // `duplicate: true` with NO `error` string — the consumer's failure discriminator needs
+  // both, so the row stays "done" and CoderPanel treats the flag as "already answered"
+  // and re-reads the thread, which is the record of what the first delivery did.
+  const doneKey = coderDoneClaimKey(taskId);
+  const firstDelivery = await claimRuleExecution(storage, doneKey, CODER_DONE_TTL, "coder-done");
+  if (!firstDelivery) {
+    console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: redelivery of a completed turn, skipped (${taskId})`);
+    return p.pf
+      ? { success: false, skipped: true, duplicate: true, error: "redelivery of a completed PF turn, skipped" }
+      : { success: false, skipped: true, duplicate: true, status: "duplicate" };
   }
   // F-829 — THE VERDICT, RE-DERIVED NOW, before any knowledge is read and before a single
   // token is spent. The queued facts are advisory from here on.
@@ -2306,7 +2318,7 @@ const executeCoderTurn = async (params, taskId) => {
     // claim so a platform retry of the SAME taskId may still run it. (Repository writes
     // that landed before the throw are covered by the engine's own per-action brakes, not
     // by this claim — it guards against re-running a COMPLETED turn.)
-    if (doneKey) { try { await storage.delete(doneKey); } catch (e2) { console.warn("[coder] releasing the PF completion claim failed:", e2 && e2.message); } }
+    try { await storage.delete(doneKey); } catch (e2) { console.warn("[coder] releasing the completion claim failed:", e2 && e2.message); }
     const failed = { success: false, error: `Coder turn failed: ${String((e && e.message) || e).slice(0, 200)}` };
     if (p.pf) await recordCoderPfOutcome(p, failed);
     return failed;

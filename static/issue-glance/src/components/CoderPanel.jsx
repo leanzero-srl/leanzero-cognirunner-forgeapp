@@ -360,7 +360,15 @@ export default function CoderPanel({ issueKey, accountId }) {
   const applyResult = useCallback((result) => {
     const r = result || {};
     setRounds(Number(r.rounds) || 0);
-    if (r.awaiting === "confirm" && r.ticket && r.ticket.id) {
+    if (r.duplicate === true) {
+      /* F-911 - THE QUEUE DELIVERED THIS TURN TWICE and the consumer answered the second
+         delivery without running anything. The FIRST delivery is the one that spoke, so
+         there is no outcome to show and nothing failed: clear the card, say nothing, and
+         let the thread re-read below put the real answer on screen. Treating this as an
+         error would put a red failure over a turn that succeeded. */
+      setTicket(null);
+      setOutcome(null);
+    } else if (r.awaiting === "confirm" && r.ticket && r.ticket.id) {
       setTicket({ id: r.ticket.id, action: r.ticket.action || null, argsPreview: r.ticket.argsPreview || null });
       setOutcome(null);
     } else if (r.reason === "simulation-locked") {

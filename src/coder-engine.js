@@ -124,20 +124,30 @@ export const CODER_TICKET_TTL = { ttl: { value: 24, unit: "HOURS" } };
  */
 export const CODER_THREAD_TTL = { ttl: { value: 90, unit: "DAYS" } };
 /**
- * THE POST-FUNCTION TURN'S PER-EVENT COMPLETION CLAIM (F-393).
+ * THE PER-EVENT COMPLETION CLAIM, FOR EVERY CODER TURN (F-393, generalised by F-911).
  *
- * `coder_exec:<issueKey>` is a LOCK — it is released in `finally`, so once a turn ends it
+ * `coder_exec:<issueKey>` is a LOCK - it is released in `finally`, so once a turn ends it
  * no longer stops anything. That is correct for "one turn per issue at a time" and wrong
  * for "this queue EVENT has already been executed": a platform redelivery of the same
- * taskId after the consumer returned would re-enter the same `pf_<ruleId>_<ts>` thread and
- * run the mode a second time — a second branch, a second pull request, two SUCCESS rows,
- * and no human anywhere near it (the panel path has one; a post-function does not).
+ * taskId after the consumer returned re-enters the SAME thread and runs the turn a second
+ * time - a second user message appended to the transcript, a second frontier turn of up to
+ * eight rounds, and possibly a second consent ticket for the same action.
  *
- * So a post-function turn also takes a claim on its EVENT, which is never released on a
- * completed run. 24 h — the same window the git delivery claim uses — comfortably outlives
- * any redelivery horizon while staying bounded.
+ * F-393 covered only the post-function path (`coder_pf_done:`), on the argument that "the
+ * panel path has a human who would notice". A human watching a spinner notices nothing:
+ * the panel's poll and the consumer's 900 s limit are the same order of magnitude, so the
+ * turn most likely to be redelivered is exactly the one whose result the panel never saw.
+ * So the claim is taken for EVERY coder task - panel and post-function - under ONE key
+ * (`coder_done:<taskId>`) built by ONE builder, and the difference between the two paths
+ * is only what a duplicate delivery is ANSWERED with (src/async-handler.js).
+ *
+ * The claim is taken BEFORE the per-issue lock and before a single token is spent, and on
+ * a completed run it is NEVER released - it IS the "this event has been executed" record.
+ * It is released only when the turn THREW before recording any outcome, so the platform's
+ * own retry of a genuinely failed delivery still works. 24 h - the same window the git
+ * delivery claim uses - comfortably outlives any redelivery horizon while staying bounded.
  */
-export const CODER_PF_DONE_TTL = { ttl: { value: 24, unit: "HOURS" } };
+export const CODER_DONE_TTL = { ttl: { value: 24, unit: "HOURS" } };
 
 /**
  * THE ONE PREDICATE that decides whether a turn has a human in the loop (1.4 commit 12).
@@ -196,8 +206,12 @@ export const coderTicketKey = (ticketId) => `coder_ticket:${safeKeyPart(ticketId
 export const coderPinKey = (issueKey, threadId) => `coder_pin:${safeKeyPart(issueKey)}:${safeKeyPart(threadId)}`;
 export const coderExecClaimKey = (issueKey) => `coder_exec:${safeKeyPart(issueKey)}`;
 export const coderTicketExecClaimKey = (ticketId) => `coder_ticket_exec:${safeKeyPart(ticketId)}`;
-/** Per-EVENT completion claim for a post-function turn (F-393) — see CODER_PF_DONE_TTL. */
-export const coderPfDoneClaimKey = (taskId) => `coder_pf_done:${safeKeyPart(taskId)}`;
+/**
+ * THE ONE per-EVENT completion claim key for a coder turn, panel or post-function
+ * (F-911) - see CODER_DONE_TTL. One builder, one prefix: a second key shape here is a
+ * second answer to "has this event already run", and the two would disagree.
+ */
+export const coderDoneClaimKey = (taskId) => `coder_done:${safeKeyPart(taskId)}`;
 /**
  * THE THREAD-WRITE LOCK (F-364). `coder_exec` serialises TURNS and `coder_ticket_exec`
  * serialises one ACTION — neither covers the two entry points that write the SAME thread

@@ -1987,7 +1987,36 @@ ok(guardedDrivers.length === liveFiles.length,
    PROSE IS EXEMPT, as everywhere else here: a docblock explaining that a flow only exists on
    one environment is documentation, not output. The scan reads code. */
 {
+  /* F-861 — `staging` HAS TWO SENSES AND ONLY ONE OF THEM IS A TENANT. The rule matched the
+     bare word anywhere inside any literal, so the VA drivers — whose product domain is the
+     STAGING OF DRAFTS — could not write an ordinary sentence about their own feature:
+     `"…so nothing about staging was read at all"` carries no tenant claim and failed anyway.
+     The F-854 surgeon reworded the sentence rather than reporting the rule, which is the
+     move the next author makes too, so the rule teaches a lie about English.
+
+     NARROWED TO THE ENVIRONMENT SENSE rather than exempting the domain sense. The exemption
+     route ("staging within 3 words of draft/item/reply/post") cannot pass the sentence that
+     started this — "nothing about staging was read" has no domain noun near it — so it would
+     have left the same author stuck. The environment sense, by contrast, is small and
+     syntactically marked: a PREPOSITION or `-e`/`--env` in front of it, a tenant NOUN behind
+     it, the SHOUTED form, or the literal opening on it as a subject ("staging starts on the
+     Coder edition…"). Every F-741/F-752 positive is one of those four; the domain sense is
+     none of them, except "staging of the …", which the subject rule excludes explicitly.
+     `DEV` stays exactly as it was: shouted only, since lowercase `dev` was never matched. */
   const TENANT_IN_STRING = /["'`][^"'`\n]*(?<![A-Za-z_])(STAGING|staging|DEV)(?![A-Za-z_])[^"'`\n]*["'`]/;
+  const STRING_LITERAL = /(["'`])([^"'`\n]*)\1/g;
+  const ENV_SENSE = [
+    /* the shouted tenant name — the banner form F-741 was cut for */
+    /(?<![A-Za-z_])(?:STAGING|DEV)(?![A-Za-z_])/,
+    /* pointed AT an environment: "on staging", "to staging", "-e staging", "--env staging" */
+    /(?:\bon|\bto|\binto|\bfrom|\bagainst|\bin|\bat|\bvia|\benvironment|\benv|-e|--env[= ])\s+staging(?![A-Za-z_])/i,
+    /* used AS an environment noun phrase: "staging tenant", "staging site", "staging run" */
+    /(?<![A-Za-z_])staging\s+(?:tenant|site|env|environment|instance|run|runs|trigger|logs|default|half|copy|only)(?![A-Za-z_])/i,
+    /* the literal's SUBJECT — "staging starts on the Coder edition…" — but never the
+       domain's own genitive, "staging of the draft", which is the feature, not a tenant. */
+    /^\s*staging(?![A-Za-z_])\s+(?!of(?![A-Za-z_]))\w/i,
+  ];
+  const tenantSense = (inner) => ENV_SENSE.some((re) => re.test(inner));
   /** The legitimate homes, removed before the scan: the guard's own options, the one-off
    *  env-id/url readers that take an environment BY NAME on purpose, the `.env` variable
    *  name, and `--env=` in a usage line. Each is the mapping being READ, not retyped. */
@@ -2009,8 +2038,9 @@ ok(guardedDrivers.length === liveFiles.length,
        stripped on exactly that reasoning. */
     .replace(/--[a-z-]*\b(?:staging|dev)\b[a-z-]*/g, "");
   function tenantLiterals(code) {
-    return code.split("\n").map((l, i) => ({ l, n: i + 1 }))
-      .filter(({ l }) => TENANT_IN_STRING.test(stripLegitimate(l)))
+    return code.split("\n").map((l, i) => ({ l: stripLegitimate(l), n: i + 1 }))
+      .filter(({ l }) => TENANT_IN_STRING.test(l))          // cheap prefilter: the word is here at all
+      .filter(({ l }) => [...l.matchAll(STRING_LITERAL)].some(([, , inner]) => tenantSense(inner)))
       .map(({ n }) => n);
   }
   /* POSITIVE CONTROLS — verbatim from the five files, before they were fixed. */
@@ -2046,6 +2076,20 @@ ok(guardedDrivers.length === liveFiles.length,
     "POSITIVE CONTROL (F-752): widening the FLAG exemption did not excuse a real tenant CLAIM — the sentence F-741 was cut for still fires");
   ok(tenantLiterals('  console.log("hook reachable on staging");').length === 1,
     "POSITIVE CONTROL (F-752): …in either case");
+  /* F-861 — the two senses, side by side. The BLOCK half is the whole reason the rule
+     exists; the ALLOW half is the sentence the F-854 surgeon had to reword. */
+  ok(tenantLiterals('  PASS("ran on staging");').length === 1,
+    "POSITIVE CONTROL (F-861): a claim about where the run went is still caught after the narrowing");
+  ok(tenantLiterals('  info("re-run with -e staging to see it");').length === 1,
+    "POSITIVE CONTROL (F-861): …and so is the flag form that sends an operator to a tenant");
+  ok(tenantLiterals('  info("read the staging tenant logs");').length === 1,
+    "POSITIVE CONTROL (F-861): …and the noun phrase, where the word is the environment itself");
+  ok(tenantLiterals('  FAIL("so nothing about staging was read at all");').length === 0,
+    "NEGATIVE CONTROL (F-861): the VA domain verb — a sentence ABOUT the staging of drafts claims no tenant, and this is the sentence F-854 reworded instead of reporting the rule");
+  ok(tenantLiterals('  PASS("staging of the draft left the item untouched");').length === 0,
+    "NEGATIVE CONTROL (F-861): …the genitive at the head of a literal is the feature, not a tenant");
+  ok(tenantLiterals('  PASS("the reply was staged, not sent");').length === 0,
+    "NEGATIVE CONTROL (F-861): `staged` was never the tenant name and is not one now");
 
   const offenders = [];
   let scanned = 0;

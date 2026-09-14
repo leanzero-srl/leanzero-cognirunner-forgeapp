@@ -505,6 +505,41 @@ try {
     assert.match(mem, /capBytes = KNOWLEDGE_BUDGET_BYTES\.codegen\.memories/,
       "buildMemoryBlock's default is the named constant, not a second copy of 8192");
   });
+  await check("the UTF-8 byte measure has one home, and the census of the rest is frozen", async () => {
+    // F-892 — src/shared/text-clamp.js's `utf8ByteLength` is THE measure (F-874/F-885).
+    // async-handler.js's memoryLinesNotIn had grown a second implementation with
+    // Buffer.byteLength, so the coder thread's "new memories since the pin" budget was
+    // measured by a different function from the budget it is bounded by.
+    //
+    // A blanket "no Buffer.byteLength anywhere" assertion would be a lie today: ten
+    // backend modules still call it (index.js alone at fifteen sites), and unpicking
+    // those is not this cut. So freeze the CENSUS instead — the set may only shrink.
+    // A new file joining the list, or async-handler.js rejoining it, fails here.
+    const KNOWN = [
+      "coder-engine.js", "coder-workspace.js", "confluence-actions.js", "git-actions.js",
+      "index.js", "listeners.js", "premade-rules.js", "rules-api.js", "scheduled-jobs.js",
+      "test-hook.js",
+    ];
+    const found = backendModules().filter((f) =>
+      stripJsComments(readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8")).includes("Buffer.byteLength("));
+    // Sanity: the scan must actually see something, or this passes vacuously.
+    assert.ok(found.includes("index.js"), `Buffer.byteLength scan found ${found.length} files`);
+    const strays = found.filter((f) => !KNOWN.includes(f));
+    assert.deepEqual(strays, [],
+      `these modules grew a second UTF-8 measure — import utf8ByteLength from src/shared/text-clamp.js: ${strays.join(", ")}`);
+    assert.equal(found.includes("async-handler.js"), false,
+      "F-892: async-handler.js must not measure bytes with Buffer.byteLength again");
+    // …and it binds the one home instead.
+    const ah = readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8");
+    assert.match(ah, /import \{ utf8ByteLength \} from "\.\/shared\/text-clamp\.js"/,
+      "F-892: async-handler.js imports the one UTF-8 measure");
+    assert.match(stripJsComments(ah), /utf8ByteLength\(candidate\) > capBytes/,
+      "F-892: memoryLinesNotIn's cap check uses it");
+    // Nobody may call it inside the home itself either — text-clamp.js IS the measure.
+    assert.equal(
+      readFileSync(new URL("../../src/shared/text-clamp.js", import.meta.url), "utf8").includes("Buffer.byteLength("),
+      false, "the home implements the measure with TextEncoder, not Buffer");
+  });
   await check("the Documentation Library key names have exactly one home", async () => {
     // F-862 — `doc_repo_index` / `doc_repo:` / `doc_repo_seed_meta` were module-private
     // consts in index.js, retyped a second time at index.js's own doc-fetch site and a

@@ -78,6 +78,38 @@ async function main() {
   await check("comparison non-orderable text fail-open", runV({ ruleType: "field-comparison", fieldId: "cf", op: "gt", compareValue: "abc" }, { mf: { cf: "xyz" } }), { result: true });
   await check("comparison empty value → pass (not its job)", runV({ ruleType: "field-comparison", fieldId: "cf", op: "eq", compareValue: "x" }, { mf: { cf: "" } }), { result: true });
 
+  // F-897 — the BLOCK SENTENCE of every comparison operator, asserted verbatim. This text is what
+  // the transition dialog and the execution log show a human, and it shipped as "Summary must be
+  // contain “PASS”." because the operator table held a bare verb the template prefixed with "be".
+  // Assert the whole string, not a substring: a regression is a wording bug, and only the exact
+  // sentence catches "be contain", a doubled space, or a stray dash.
+  {
+    const sentence = (op, compareValue, mfValue) =>
+      runV({ ruleType: "field-comparison", fieldId: "cf", fieldName: "Summary", op, compareValue }, { mf: { cf: mfValue } })
+        .then((out) => out?.errorMessage);
+    const expectSentence = async (name, promise, expected) => {
+      const got = await promise;
+      if (got === expected) passed++;
+      else failures.push(`${name}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(got)}`);
+      if (typeof got === "string") {
+        if (/\s{2,}/.test(got)) failures.push(`${name}: sentence contains a double space: ${JSON.stringify(got)}`);
+        if (/[—–]/.test(got)) failures.push(`${name}: sentence contains a dash: ${JSON.stringify(got)}`);
+        if (/\bbe (contain|match)\b/.test(got)) failures.push(`${name}: ungrammatical "be <verb>": ${JSON.stringify(got)}`);
+      }
+    };
+    await expectSentence("sentence eq", sentence("eq", "Done", "Open"), "Summary must be equal to “Done”.");
+    await expectSentence("sentence ne", sentence("ne", "Done", "Done"), "Summary must be not equal to “Done”.");
+    await expectSentence("sentence gt", sentence("gt", "5", "3"), "Summary must be greater than “5”.");
+    await expectSentence("sentence lt", sentence("lt", "5", "9"), "Summary must be less than “5”.");
+    await expectSentence("sentence gte", sentence("gte", "5", "3"), "Summary must be at least “5”.");
+    await expectSentence("sentence lte", sentence("lte", "5", "9"), "Summary must be at most “5”.");
+    await expectSentence("sentence contains", sentence("contains", "PASS", "nothing here"), "Summary must contain “PASS”.");
+    // date path (the second template that carries the same operator English)
+    await expectSentence("sentence gt (date path)", sentence("gt", "2099-01-01", "2020-01-01"), "Summary must be greater than “2099-01-01”.");
+    // unknown operator → the eq branch's fallback; still a grammatical sentence, never "must weird".
+    await expectSentence("sentence unknown op fallback", sentence("weird", "x", "y"), "Summary must be weird “x”.");
+  }
+
   // field-regex
   await check("regex match pass", runV({ ruleType: "field-regex", fieldId: "cf", regex: "^[A-Z]{2,4}-\\d+$" }, { mf: { cf: "ABC-123" } }), { result: true });
   await check("regex no-match block", runV({ ruleType: "field-regex", fieldId: "cf", regex: "^[A-Z]{2,4}-\\d+$" }, { mf: { cf: "nope" } }), { result: false });

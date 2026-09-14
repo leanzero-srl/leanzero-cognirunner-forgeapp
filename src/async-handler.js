@@ -33,6 +33,10 @@ import {
 // F-826 — the model-resolution chain, its policies and its default-model table live in
 // ONE home that both processes bind. This consumer cannot import src/index.js.
 import { resolveModelForProvider as resolveModelChain } from "./shared/model-resolution.js";
+// F-892 — ONE UTF-8 measure (the F-874/F-885 home), the same function skills.js,
+// registry-limits.js and the import cap already bind. This consumer used to measure
+// with Buffer.byteLength, a second implementation of the same rule.
+import { utf8ByteLength } from "./shared/text-clamp.js";
 // Heavy post-functions (MCP-backed: generate-doc, research, fact-checked semantics)
 // are queued by executePostFunction and run HERE under this consumer's 120s timeout —
 // the inline jira:workflowPostFunction invocation is hard-capped at 25s by the platform.
@@ -1921,8 +1925,9 @@ const buildCoderKnowledge = async (p) => {
  * block carries no ids, and comparing rendered LINES is exactly what decides whether the
  * prompt prefix would have moved.
  *
- * Bounded by the same byte budget as the block it came from, measured in UTF-8 (a CJK or
- * emoji memory costs 3-4 bytes per character), so a thread's additions can never exceed one
+ * Bounded by the same byte budget as the block it came from, measured in UTF-8 by the one
+ * shared measure (`utf8ByteLength`, src/shared/text-clamp.js; a CJK or emoji
+ * memory costs 3-4 bytes per character), so a thread's additions can never exceed one
  * memory budget on any single turn.
  */
 const memoryLinesNotIn = (liveText, pinnedText, capBytes) => {
@@ -1934,7 +1939,7 @@ const memoryLinesNotIn = (liveText, pinnedText, capBytes) => {
   for (const line of live) {
     if (seen.has(line.trim())) continue;
     const candidate = text ? `${text}\n${line}` : line;
-    if (Buffer.byteLength(candidate, "utf8") > capBytes) break;
+    if (utf8ByteLength(candidate) > capBytes) break;
     text = candidate;
     count++;
   }

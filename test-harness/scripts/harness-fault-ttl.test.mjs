@@ -588,6 +588,125 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     `dryRun only accepts the literal true — the string "false" sweeps for real (got dryRun=${JSON.stringify(coerced.dryRun)})`);
 }
 
+/* ═════ 7c. F-691 — COMPLETENESS BELONGS TO THE DRAIN, NOT TO THE CALL ═════
+ *
+ * `failedResume` was a LOCAL: written on the first page whose deletes refused, and read only
+ * under `!truncated`. So a budget break on a LATER page dropped it, and the resumed call —
+ * which walks to the end with `failed: 0` because the failures are behind it — answered
+ * `truncated: false, cursor: null, complete: true` over rows this very drain had condemned
+ * and not deleted. `complete` claimed to be "the ONLY definition of a finished sweep" while
+ * being a property of ONE CALL.
+ *
+ * The fixture is the exact sequence the finding names, and it is built so the ordering is
+ * DETERMINISTIC rather than raced: three pages of 100 keys, only a handful expired on each,
+ * two of page 0's refusing. Call 1 gets `maxMs: 1`, which cannot trip inside page 0 (the
+ * F-682 progress gate forbids a break before anything has landed, and page 0's doomed list
+ * is one batch) and MUST trip at the top of page 1.
+ */
+{
+  const okDelete = kvs.delete;
+  const okQuery = kvs.query;
+  const PREFIX = fault.HARNESS_FAULT_KEY_PREFIX;
+  /* A clean keyspace: earlier blocks in this file leave rows behind, and a page boundary is
+   * only predictable when we know exactly which keys are in it. */
+  const purge691 = async () => {
+    for (let round = 0; round < 5; round++) {
+      const page = await storage.query().where("key", { condition: "BEGINS_WITH", values: [PREFIX] }).limit(1000).getMany();
+      const found = (page && page.results) || [];
+      if (!found.length) return;
+      for (const entry of found) await storage.delete(entry.key);
+    }
+  };
+  await purge691();
+
+  const gone = new Date(Date.now() - 3_600_000).toISOString();
+  const live = new Date(Date.now() + 3_600_000).toISOString();
+  const key691 = (i) => fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "f691", String(i).padStart(4, "0"));
+  // 300 rows = three pages of HARNESS_FAULT_SWEEP_PAGE_SIZE. Expired ones are rationed so a
+  // page is ONE delete batch: the pacing pause is 200 ms and this is an offline suite.
+  const doomedOnPage0 = [key691(0), key691(1), key691(2)];
+  const doomedLater = [key691(100), key691(200)];
+  const condemned = new Set([...doomedOnPage0, ...doomedLater]);
+  for (let i = 0; i < 300; i++) {
+    const key = key691(i);
+    const when = condemned.has(key) ? gone : live;
+    await storage.set(key, { count: 1, armedAt: condemned.has(key) ? gone : new Date().toISOString(), until: when });
+  }
+  // The two that refuse, both on page 0, with one that lands beside them so the batch counts
+  // as progress (F-682) and the walk is allowed to go on to page 1 at all.
+  const stubborn691 = new Set([key691(0), key691(1)]);
+  kvs.delete = async function refuseTwo(key) {
+    if (stubborn691.has(key)) { const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e; }
+    return okDelete.call(this, key);
+  };
+  /* THE CLOCK, made observable. The mock KVS answers a page in under a millisecond, so a
+   * tiny `maxMs` is a RACE, not a fixture — the budget check at the top of page 1 may or may
+   * not have anything to measure. A page that takes 50 ms and a 40 ms budget makes the break
+   * a certainty, and puts it exactly where the finding needs it: AFTER the failing page. */
+  const PAGE_MS = 50;
+  kvs.query = function slowQuery(...args) {
+    const q = okQuery.apply(this, args);
+    const inner = q.getMany.bind(q);
+    q.getMany = async () => { await new Promise((r) => setTimeout(r, PAGE_MS)); return inner(); };
+    return q;
+  };
+
+  // ── CALL 1: page 0 fails two deletes and lands one; the budget breaks at page 1.
+  const call1 = await fault.sweepHarnessFaults({ maxMs: 40 });
+  ok(call1.failed === 2 && call1.deleted === 1 && call1.truncated === true && call1.reason === "budget",
+    `(fixture) call 1 fails two deletes on page 0 and then breaks on BUDGET at a later page (got ${JSON.stringify({ failed: call1.failed, deleted: call1.deleted, reason: call1.reason })})`);
+  ok(call1.complete === false && typeof call1.failedResume === "string" && call1.failedResume.length > 0,
+    "F-691: the answer carries `failedResume` even though the call ended for another reason — a budget break must not swallow the mess");
+  ok(fault.decodeSweepCursor(call1.failedResume) === null,
+    "F-691: …and it names PAGE 0 — whose KVS cursor is null, which is exactly why it is reported as a token and not as a bare cursor");
+  ok(fault.decodeSweepCursor(call1.cursor) !== null && fault.decodeSweepToken(call1.cursor).unresolved === true,
+    "F-691: the resume token points at the LATER page and carries the unresolved failure with it, so the next call inherits it");
+
+  // ── CALL 2: resume, walk to the end, delete everything it finds. `failed` is 0 for THIS
+  // call — the old code's entire basis for answering `complete: true`.
+  const call2 = await fault.sweepHarnessFaults({ maxMs: 5_000, cursor: call1.cursor });
+  ok(call2.failed === 0 && call2.deleted === doomedLater.length,
+    `(fixture) call 2 resumes and every delete IT makes lands (deleted ${call2.deleted}, failed ${call2.failed})`);
+  ok(call2.complete === false,
+    "F-691: the resumed call that finished the keyspace is NOT complete — two rows the drain condemned are still live");
+  ok(call2.truncated === true && call2.reason === "deletes-failed",
+    `F-691: …it is a STOP, and it says why in the drain's own vocabulary (got ${JSON.stringify({ truncated: call2.truncated, reason: call2.reason })})`);
+  ok(call2.failedResume === call1.failedResume && call2.cursor === call1.failedResume,
+    "F-691: …and it hands back the EARLIEST unresolved failure, unchanged across two calls, as the place to go next");
+  let survivors691 = 0;
+  for (const key of stubborn691) if ((await storage.get(key)) !== undefined) survivors691++;
+  ok(survivors691 === 2, `F-691: (proof) the two refused rows really are still on the tenant (${survivors691}/2)`);
+
+  // ── CALL 3: post the failure token back, with a store that no longer refuses.
+  kvs.delete = okDelete;
+  const call3 = await fault.sweepHarnessFaults({ maxMs: 5_000, cursor: call2.cursor });
+  ok(call3.deleted === 2 && call3.failed === 0,
+    `(fixture) call 3 resumes AT the failure and clears it (deleted ${call3.deleted}, failed ${call3.failed})`);
+  ok(call3.complete === true && call3.cursor === null && call3.failedResume === null,
+    `F-691: only now is the drain complete — retrying at the failure point clears the carry rather than carrying it forever (got ${JSON.stringify({ complete: call3.complete, cursor: call3.cursor, failedResume: call3.failedResume })})`);
+
+  /* THE TOKEN GRAMMAR ITSELF, executed: `f` is PRESENCE, not truthiness, because the page a
+   * delete first failed on may be the beginning of the keyspace, whose cursor is null. */
+  ok(fault.decodeSweepToken(fault.encodeSweepCursor("k-9")).unresolved === false,
+    "F-691: a token minted without a failure — and every token minted before F-691 — decodes as nothing unresolved");
+  const atStart = fault.decodeSweepToken(fault.encodeSweepCursor("k-9", null));
+  ok(atStart.unresolved === true && atStart.failedResume === null && atStart.cursor === "k-9",
+    "F-691: …while `f: null` is a real unresolved failure at the START of the keyspace, which no bare cursor could ever express");
+
+  /* ONE HOME. The tail that decides `truncated`/`reason`/`cursor`/`complete`/`failedResume`
+   * is `sweepAnswerTail`, and BOTH levers call it — the clear used to carry a byte-similar
+   * copy, which is how F-683 had to be applied twice. */
+  ok((faultCode.match(/complete:/g) || []).length === 1 && /complete: !stopped && !unresolved/.test(faultCode),
+    "F-691.SOURCE: `complete` is computed in exactly ONE place, and it is the drain-wide definition");
+  ok((faultCode.match(/\.\.\.sweepAnswerTail\(/g) || []).length === 2,
+    "F-691.SOURCE: …and both the sweep and the clear finish their answer through it");
+
+  // Leave the keyspace — and the write spy — as this block found them.
+  kvs.delete = okDelete; kvs.query = okQuery;
+  await purge691();
+  clear();
+}
+
 /* ═════ 6. END TO END — the expired row does not fault the product ═════ */
 {
   const { default: forgeApi } = await import("@forge/api");

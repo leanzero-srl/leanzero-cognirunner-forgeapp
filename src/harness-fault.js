@@ -532,8 +532,11 @@ export const jiraFaultStatus = async (path) => {
  * go is counted in `failed`, never thrown out of a sweep that cleaned up everything else.
  * But best-effort is about not THROWING, not about calling the result finished (F-683): any
  * `failed > 0` makes the answer `truncated: true, reason: "deletes-failed"` with a cursor to
- * retry from, and `complete: false`. `complete = !truncated && failed === 0` is the ONLY
- * definition of a finished sweep, and it is computed in `sweepHarnessFaults` and nowhere else.
+ * retry from, and `complete: false`. `complete = !truncated && !unresolved` - where
+ * `unresolved` is a failed delete from ANY call of this drain, carried across calls in the
+ * resume token (F-691) - is the ONLY definition of a finished drain, and it is computed in
+ * `sweepAnswerTail` and nowhere else. Re-deriving it from `truncated` alone reads a per-CALL
+ * fact as if it were a per-DRAIN one.
  */
 export const HARNESS_FAULT_KEY_PREFIX = "harness_fault:";
 
@@ -630,8 +633,33 @@ const sweepPause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * finished and nothing else. (F-685: raw KVS cursors from a pre-token caller were accepted
  * verbatim for one deploy and are NOT any more - the grammar below admits our token only.)
  */
-export const encodeSweepCursor = (kvsCursor) =>
-  Buffer.from(JSON.stringify({ c: kvsCursor === undefined ? null : kvsCursor }), "utf8").toString("base64");
+/*
+ * F-691 — THE TOKEN CARRIES THE UNRESOLVED FAILURE TOO, NOT JUST THE PLACE TO RESUME.
+ *
+ * `failedResume` — the page a delete first refused on — used to be a LOCAL of one call,
+ * written on the failing page and read only at the end and only when nothing else had
+ * already set `truncated`. So a budget or pages break AFTER a failed page dropped it on the
+ * floor: the caller resumed at the later page, walked to the end with `failed: 0`, and was
+ * answered `truncated: false, cursor: null, complete: true` over rows the sweep had itself
+ * condemned two calls earlier. `complete` is a property of a DRAIN, and a drain spans calls,
+ * so the only thing that survives a call boundary — the resume token — has to carry it.
+ *
+ * The token is therefore `{ "c": <kvs cursor|null>, "f": <kvs cursor|null> }`, where the `f`
+ * KEY IS PRESENT ONLY WHILE A FAILURE IS STILL UNRESOLVED. Presence, not value: the earliest
+ * failing page may legitimately be the BEGINNING of the keyspace, whose KVS cursor is `null`
+ * — exactly the ambiguity F-674 introduced this token to end.
+ *
+ * `f` is DROPPED when the answer's own cursor points AT the failure (the retry starts there,
+ * so there is nothing left to remind the caller of) and carried whenever the answer resumes
+ * somewhere AHEAD of it.
+ */
+export const encodeSweepCursor = (kvsCursor, failedResume = undefined) => {
+  const payload = { c: kvsCursor === undefined ? null : kvsCursor };
+  // `undefined` means "no unresolved failure"; an explicit `null` means "unresolved, at the
+  // beginning of the keyspace" — which is why this tests the ARGUMENT, not its truthiness.
+  if (failedResume !== undefined) payload.f = failedResume;
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+};
 
 /*
  * F-685 - THE CURSOR GRAMMAR HAS ONE HOME, AND IT IS THIS ONE.
@@ -681,8 +709,8 @@ const badSweepCursor = (detail) => {
  * `BAD_SWEEP_CURSOR_CODE` - it never silently becomes a fresh sweep, because a resume loop
  * that quietly restarts from the top is the failure this token was introduced to end.
  */
-export const decodeSweepCursor = (token) => {
-  if (token === null || token === undefined) return null;
+export const decodeSweepToken = (token) => {
+  if (token === null || token === undefined) return { cursor: null, unresolved: false, failedResume: null };
   if (!sweepCursorWellFormed(token)) throw badSweepCursor("outside the token grammar");
   let parsed;
   try {
@@ -691,7 +719,53 @@ export const decodeSweepCursor = (token) => {
     throw badSweepCursor("not a decodable token");
   }
   if (!parsed || typeof parsed !== "object" || !("c" in parsed)) throw badSweepCursor("not one of ours");
-  return typeof parsed.c === "string" && parsed.c ? parsed.c : null;
+  const kvsCursor = (v) => (typeof v === "string" && v ? v : null);
+  return {
+    cursor: kvsCursor(parsed.c),
+    /* PRESENCE, not truthiness (F-691): `"f": null` is a real unresolved failure at the
+     * beginning of the keyspace, and a token minted before F-691 simply has no `f` at all —
+     * which decodes as "nothing unresolved", the pre-F-691 behaviour, for a token that at
+     * worst is one sweep old. */
+    unresolved: "f" in parsed,
+    failedResume: kvsCursor(parsed.f),
+  };
+};
+
+/** The cursor half of the token, for callers that only ever wanted that. ONE grammar. */
+export const decodeSweepCursor = (token) => decodeSweepToken(token).cursor;
+
+/*
+ * F-691 — THE ONE PLACE A DRAIN'S ANSWER IS ASSEMBLED, for the sweep and the clear alike.
+ *
+ * `truncated` / `reason` / `cursor` / `complete` used to be finished off by two byte-similar
+ * tails, one at the end of `sweepHarnessFaults` and one at the end of `clearPlantedFaults`,
+ * so "what does a finished drain look like" had two homes and F-683's rule had to be applied
+ * twice. It has one now, and the rules it holds are:
+ *
+ *  · AN UNRESOLVED FAILURE IS A STOP. If the walk otherwise reached the end, say
+ *    `deletes-failed` and hand back the failing page, so a retry lands on the mess rather
+ *    than re-walking the keyspace. A break that already has a reason (budget, pages,
+ *    deletes-failing) keeps it — it is the more specific answer.
+ *  · `complete` IS `!truncated && !unresolved`, where `unresolved` SPANS CALLS. This is the
+ *    ONLY definition of a finished drain and it is computed here and nowhere else. A caller
+ *    that re-derives finishedness from `truncated` alone reads a per-CALL fact as if it were
+ *    a per-DRAIN one, which is the defect F-691 names.
+ *  · `failedResume` IS ALWAYS REPORTED while a failure is unresolved, however the call ended,
+ *    and always as a TOKEN (never a bare cursor, so `null` means "none" and nothing else).
+ *    POSTing it back as `cursor` is how a caller goes and finishes the job.
+ */
+export const sweepAnswerTail = ({ truncated, reason, cursor, unresolved, failedResume }) => {
+  let stopped = truncated === true, why = reason, at = cursor;
+  if (unresolved && !stopped) { stopped = true; why = "deletes-failed"; at = failedResume; }
+  // Resuming AT the failure IS the retry: the cursor already says everything `f` would.
+  const carry = unresolved && !(stopped && at === failedResume);
+  return {
+    truncated: stopped,
+    reason: why,
+    complete: !stopped && !unresolved,
+    failedResume: unresolved ? encodeSweepCursor(failedResume) : null,
+    cursor: stopped ? (carry ? encodeSweepCursor(at, failedResume) : encodeSweepCursor(at)) : null,
+  };
 };
 
 /**
@@ -744,10 +818,22 @@ export const sweepBudgetMs = (maxMs) => {
  * answered `truncated: false, cursor: null, ok: true, failed: 63` - the "finished" signal,
  * for a call that left 63 rows it had itself condemned. F-677 changed the RATE; it did not
  * change the ANSWER. There is now ONE definition of finished, computed here and nowhere
- * else: `complete = !truncated && failed === 0`, returned as a field so no caller has to
+ * else: `complete`, computed by `sweepAnswerTail` and returned as a field so no caller has to
  * re-derive it. When any delete failed, the answer is `truncated: true,
  * reason: "deletes-failed"` carrying the cursor of the FIRST page whose deletes failed, so
  * retrying resumes where the mess is rather than at the top.
+ *
+ * F-691 - COMPLETENESS BELONGS TO THE DRAIN, NOT TO THE CALL.
+ *
+ * `failed === 0` was read per CALL, and the failing page's resume point was thrown away the
+ * moment a budget or pages break had already set `truncated`. Page 0 fails two deletes; the
+ * budget trips at page 4; the caller resumes at page 4, walks to the end with `failed: 0`
+ * and is told `complete: true, cursor: null` - over two armed rows this very drain
+ * condemned. So the unresolved failure now RIDES THE RESUME TOKEN (`f`, see
+ * `encodeSweepCursor`), is inherited by the resumed call, and `complete` is
+ * `!truncated && !unresolved` where `unresolved` spans the whole drain. `failedResume` is
+ * additionally returned as its own token field on EVERY call that carries one, however that
+ * call ended, so a caller never has to reconstruct where the mess was.
  */
 export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startCursor = null } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
@@ -762,10 +848,14 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
   /* Our token, or nothing at all. VALIDATED FIRST, SYNCHRONOUSLY (F-684): this throws
    * `BAD_SWEEP_CURSOR_CODE` before a single KVS call is made, which is what lets the door
    * name `bad-cursor` from the error itself instead of from "a cursor was supplied". */
-  let cursor = decodeSweepCursor(startCursor === undefined ? null : startCursor);
+  const startToken = decodeSweepToken(startCursor === undefined ? null : startCursor);
+  let cursor = startToken.cursor;
   let progressed = false;
-  // The resume point of the FIRST page a delete failed on - where a retry should pick up.
-  let failedResume = null;
+  /* The resume point of the EARLIEST page a delete failed on, and whether that failure is
+   * still outstanding - INHERITED FROM THE TOKEN (F-691), because a drain spans calls and a
+   * failure two calls back is still a row this drain condemned and did not delete. */
+  let unresolved = startToken.unresolved;
+  let failedResume = startToken.failedResume;
   for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
     // The cursor that re-fetches THIS page - the resume point for anything that stops inside it.
     const resume = cursor;
@@ -809,7 +899,9 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
         const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
         let landed = 0;
         for (const outcome of settled) { if (outcome.status === "fulfilled") { deleted++; landed++; } else failed++; }
-        if (landed < settled.length && failedResume === null) failedResume = resume;
+        // F-691: the EARLIEST unresolved failure wins, and "none yet" is `!unresolved` - never
+        // `failedResume === null`, which is also a legitimate failing page (the keyspace start).
+        if (landed < settled.length && !unresolved) { unresolved = true; failedResume = resume; }
         // F-682: ONLY a delete that actually landed is progress. A batch of pure rejections
         // shrinks nothing, so it must not license a mid-page break with this page's cursor.
         if (landed > 0) progressed = true;
@@ -829,24 +921,15 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
     if (!cursor) break;
     if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) { truncated = true; reason = "pages"; }
   }
-  /* F-683: a delete that did not land is NOT a finished sweep. If the loop otherwise ran to
-   * the end, say `deletes-failed` and hand back the page where the failures started, so a
-   * retry resumes at the mess instead of re-walking the keyspace. A break that already has a
-   * reason (budget, pages, deletes-failing) keeps it - it is the more specific answer and it
-   * already carries a resumable cursor. */
-  if (failed > 0 && !truncated) { truncated = true; reason = "deletes-failed"; cursor = failedResume; }
+  /* F-683 + F-691: `truncated` / `reason` / `cursor` / `complete` / `failedResume` are
+   * assembled by `sweepAnswerTail` and NOWHERE ELSE - the same tail the clear uses - so the
+   * definition of a finished DRAIN has one home across both levers and across calls. The
+   * `cursor` it returns is ALWAYS a token while work remains (F-674) and null only when the
+   * drain is genuinely done. */
   return {
     ok: true, dryRun: dry, scanned, deleted, failed,
-    truncated, reason, budgetMs, rows, rowsTruncated,
-    /* THE ANSWER CONTRACT, in ONE place (F-683): the whole keyspace was walked and every
-     * delete landed. Anything else is a stop, not a finish - including a sweep that reached
-     * the end with `failed > 0`, which used to answer `truncated: false, cursor: null`. */
-    complete: !truncated && failed === 0,
-    // Carried ONLY when there is more to do, so a null cursor is the one unambiguous way a
-    // caller reads "finished" rather than "stopped" - and since F-683 forces `truncated` on
-    // any failed delete, null now agrees with `complete` rather than contradicting it.
-    // NEVER null while work remains (F-674): the token encodes a null KVS cursor too.
-    cursor: truncated ? encodeSweepCursor(cursor) : null,
+    budgetMs, rows, rowsTruncated,
+    ...sweepAnswerTail({ truncated, reason, cursor, unresolved, failedResume }),
   };
 };
 
@@ -958,9 +1041,9 @@ export const plantHarnessFaults = async ({ n, expired = false } = {}) => {
  *
  * Everything else is the sweep's own vocabulary, in its one home: `sweepBudgetMs` for the
  * budget, `KVS_DELETE_BATCH`/`KVS_DELETE_PAUSE_MS` for the rate, `encodeSweepCursor` /
- * `decodeSweepCursor` for the resume token, the F-682 progress gate, and
- * `complete = !truncated && failed === 0` for the finished signal — so a caller drains this
- * exactly as it drains the sweep.
+ * `decodeSweepToken` for the resume token, the F-682 progress gate, and `sweepAnswerTail`
+ * for the finished signal — including F-691's cross-call carry of an unresolved failed
+ * delete — so a caller drains this exactly as it drains the sweep.
  */
 export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
@@ -971,9 +1054,12 @@ export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } =
   let truncated = false, reason = null;
   // Validated synchronously, before any KVS call, so the door can name `bad-cursor` from the
   // error itself (F-684) rather than from "a cursor was supplied".
-  let cursor = decodeSweepCursor(startCursor === undefined ? null : startCursor);
+  const startToken = decodeSweepToken(startCursor === undefined ? null : startCursor);
+  let cursor = startToken.cursor;
   let progressed = false;
-  let failedResume = null;
+  // Inherited across calls (F-691), exactly as in the sweep: completeness is a DRAIN's.
+  let unresolved = startToken.unresolved;
+  let failedResume = startToken.failedResume;
   for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
     const resume = cursor;
     if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
@@ -994,7 +1080,9 @@ export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } =
       const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
       let landed = 0;
       for (const outcome of settled) { if (outcome.status === "fulfilled") { deleted++; landed++; } else failed++; }
-      if (landed < settled.length && failedResume === null) failedResume = resume;
+      // F-691: the EARLIEST unresolved failure wins, and "none yet" is `!unresolved` - never
+      // `failedResume === null`, which is also a legitimate failing page (the keyspace start).
+      if (landed < settled.length && !unresolved) { unresolved = true; failedResume = resume; }
       // F-682: only a delete that LANDED is progress; a batch of pure rejections shrinks
       // nothing and must not license a mid-page break with this page's own cursor.
       if (landed > 0) progressed = true;
@@ -1006,12 +1094,9 @@ export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } =
     if (!cursor) break;
     if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) { truncated = true; reason = "pages"; }
   }
-  // F-683: a delete that did not land is not a finished clear.
-  if (failed > 0 && !truncated) { truncated = true; reason = "deletes-failed"; cursor = failedResume; }
+  // F-683 + F-691: the same tail as the sweep, because it is the same answer contract.
   return {
-    ok: true, prefix: HARNESS_FAULT_PLANT_PREFIX, scanned, deleted, failed,
-    truncated, reason, budgetMs,
-    complete: !truncated && failed === 0,
-    cursor: truncated ? encodeSweepCursor(cursor) : null,
+    ok: true, prefix: HARNESS_FAULT_PLANT_PREFIX, scanned, deleted, failed, budgetMs,
+    ...sweepAnswerTail({ truncated, reason, cursor, unresolved, failedResume }),
   };
 };

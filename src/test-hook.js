@@ -585,9 +585,28 @@ export async function testStateTrigger(req) {
      * call may ask for — one call's worth for a fresh plant, the full population for a resumed
      * one — and it is computed by the lever's `plantMaxForCall`, never retyped here.
      *
-     * F-697 — the TTL is `max(60 s, expected plant time + 60 s)` and each batch is dated when
-     * it is WRITTEN, so the head of a large `expired: false` population is still live when the
-     * sweep the tester is about to run walks over it. */
+     * F-710 — HITTING THAT CEILING IS A TRUNCATION, NOT A FINISH. A fresh `{ n: 500 }` plants
+     * 150 and answers `truncated: true, reason: "call-max", nextIndex: 150` with `n` still 500:
+     * the population is ECHOED, never rewritten to the clamp. It used to answer `n: 150,
+     * complete: true`, so a caller looping "until complete" planted one call's worth believing
+     * it had planted what it asked for — the opposite of the loop this door documents, and the
+     * reason a live driver's `planted === 200` assertion was red. `maxN` is this call's
+     * ceiling and `n` is the population: two different numbers, both in the answer.
+     *
+     * F-697/F-709 — the TTL covers the WALL TIME of the drain this door forces (one budget
+     * plus a cold start per resumed call, plus a full minute after the last row), and the
+     * whole population shares ONE deadline carried on `plant:000`, so the head of a large
+     * `expired: false` population is still live when the sweep the tester is about to run
+     * walks over it. `armedAt` is still stamped per batch: two stamps, two jobs.
+     *
+     * F-708 — `startIndex` IS JUDGED AGAINST `n`, in the lever, and past it is a REFUSAL that
+     * comes back through this door's existing `ok === false` → 400 path. It used to be a 200
+     * whose `nextIndex` pointed behind its own `startIndex` and whose `complete: true` told a
+     * drain loop that a keyspace it never looked at was planted. Exactly AT `n` is the loop's
+     * own last POST and answers `noop: true, planted: 0, complete: true`. A FRESH plant also
+     * removes any older population past `n` first and reports it as `cleared`, because the
+     * keys are `i`-derived: a smaller re-plant would otherwise leave the previous tail alive
+     * under an answer that names a population the store does not hold. */
     if (body.action === "plantHarnessFaults") {
       const { plantHarnessFaults, plantMaxForCall, HARNESS_FAULT_PLANT_PREFIX } = await import("./harness-fault.js");
       const r = await plantHarnessFaults({

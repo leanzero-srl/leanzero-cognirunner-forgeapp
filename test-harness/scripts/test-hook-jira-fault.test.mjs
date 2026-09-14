@@ -583,7 +583,10 @@ process.env.HARNESS_SECRET = SECRET;
       if (last.status !== 200 || !last.body || last.body.ok === false) break;
       planted += last.body.planted; failed += last.body.failed; calls++;
       keys = keys.concat(last.body.keys || []);
-      if (last.body.nextIndex <= next && last.body.planted === 0) break;
+      // F-707: no FORWARD progress is the stop, whatever the call placed — a plant whose
+      // writes are refused answers with the first failed index and can place rows while
+      // handing back the index it was given.
+      if (last.body.nextIndex <= next) break;
       next = last.body.nextIndex;
     }
     return { status: last && last.status, body: last && last.body, planted, failed, calls, keys, nextIndex: next };
@@ -621,12 +624,19 @@ process.env.HARNESS_SECRET = SECRET;
 
   /* ── THE CLAMP, echoed by the door but enforced in the lever, beside the constant. ── */
   const over = await plant({ n: 10_000, expired: true });
-  ok(over.status === 200 && over.body.n === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
-    `a FRESH request for 10000 rows plants exactly one call's worth (got n=${over.body && over.body.n} planted=${over.body && over.body.planted})`);
+  ok(over.status === 200 && over.body.n === fault.HARNESS_FAULT_PLANT_MAX && over.body.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+    `a FRESH request for 10000 rows plants exactly one call's worth and ECHOES the population (F-710) (got n=${over.body && over.body.n} planted=${over.body && over.body.planted})`);
   ok(over.body.maxN === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.prefix === "harness_fault:plant:",
     `…and the answer names the ceiling THIS call had and the sub-prefix it wrote under (got ${JSON.stringify({ maxN: over.body.maxN, prefix: over.body.prefix })})`);
-  ok(over.body.complete === true && over.body.nextIndex === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.startIndex === 0,
-    `…and it says where to carry on (nextIndex ${over.body && over.body.nextIndex}, complete ${over.body && over.body.complete})`);
+  ok(over.body.nextIndex === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.startIndex === 0,
+    `…and it says where to carry on (nextIndex ${over.body && over.body.nextIndex})`);
+  /* F-710 — the clamp is VISIBLE at the door too. It used to answer `complete: true` with `n`
+   * rewritten to 150, so a caller looping "until complete" planted one call's worth believing
+   * it had planted what it asked for — the opposite of the loop this door documents. */
+  ok(over.body.truncated === true && over.body.reason === "call-max" && over.body.complete === false,
+    `F-710: a clamped call is TRUNCATED with its own reason, never complete (got ${JSON.stringify({ truncated: over.body && over.body.truncated, reason: over.body && over.body.reason, complete: over.body && over.body.complete })})`);
+  ok(over.body.maxN === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.maxN < over.body.n,
+    "F-710: …with `maxN` (this call's ceiling) and `n` (the population) as two different numbers in the same answer");
   /* F-696 — THE FULL POPULATION IS REACHED BY RESUMING, exactly as the sweep is drained: the
    * 500-row ceiling was ~45 s of paced writing against a trigger killed at 25 s, and the old
    * answer was assembled only after the LAST write, so a timed-out plant reported nothing at
@@ -651,6 +661,66 @@ process.env.HARNESS_SECRET = SECRET;
   await clearPlanted({ maxMs: 20_000 });
   ok((await countPlanted()) === 0, "(fixture) cleared again");
 
+  /* ── F-707 AT THE DOOR: a plant whose writes are REFUSED must send the caller back to the
+   * first hole. The answer used to carry `reason: "writes-failed"` with `nextIndex: n`, so
+   * the loop this very door documents POSTed past the holes, wrote nothing and was answered
+   * `complete: true` — a failed plant reported through the web trigger as a finished one. ── */
+  {
+    const setBefore = kvs.set;
+    const refusedWrites = new Set([fault.plantedFaultKey(4), fault.plantedFaultKey(5)]);
+    kvs.set = async function refusingSet707(key, value, options) {
+      if (refusedWrites.has(String(key))) {
+        const e = new Error("HARNESS_WRITE_FAULT"); e.code = "HARNESS_WRITE_FAULT"; throw e;
+      }
+      return setBefore.call(this, key, value, options);
+    };
+    const holed = await plant({ n: 9, expired: true, maxMs: 20_000 });
+    ok(holed.status === 200 && holed.body.planted === 7 && holed.body.failed === 2,
+      `(fixture) two refused writes through the door (planted ${holed.body && holed.body.planted}, failed ${holed.body && holed.body.failed})`);
+    ok(holed.body.reason === "writes-failed" && holed.body.complete === false && holed.body.nextIndex === 4,
+      `F-707: the door hands back the FIRST failed index and never calls it complete (got ${JSON.stringify({ reason: holed.body && holed.body.reason, nextIndex: holed.body && holed.body.nextIndex, complete: holed.body && holed.body.complete })})`);
+    const back = await plant({ n: 9, expired: true, startIndex: holed.body.nextIndex, maxMs: 20_000 });
+    ok(back.body.complete === false && back.body.nextIndex === 4,
+      `F-707: …and POSTing that handle back lands ON the holes rather than past them (got ${JSON.stringify({ nextIndex: back.body && back.body.nextIndex, complete: back.body && back.body.complete })})`);
+    const stuck = await plantAll(9, true);
+    ok(stuck.body.complete === false && stuck.calls <= 3,
+      `F-707: the fixture's drain loop terminates and reports the plant UNFINISHED (calls ${stuck.calls})`);
+    kvs.set = setBefore;
+    await clearPlanted({ maxMs: 20_000 });
+    const control = await plant({ n: 9, expired: true, maxMs: 20_000 });
+    ok(control.body.planted === 9 && control.body.failed === 0 && control.body.nextIndex === 9 && control.body.complete === true,
+      `F-707 (negative control): with the write fault removed the SAME body completes in one call (got ${JSON.stringify({ planted: control.body && control.body.planted, complete: control.body && control.body.complete })})`);
+    await clearPlanted({ maxMs: 20_000 });
+    ok((await countPlanted()) === 0, "(fixture) cleared after the F-707 arm");
+  }
+
+  /* ── F-708 AT THE DOOR: `startIndex` is judged against the POPULATION, and past it is the
+   * refusal path the door already has (`ok === false` → 400). It used to be a 200 whose
+   * `nextIndex` pointed BEHIND its own `startIndex` and whose `complete: true` told every
+   * documented drain loop that a keyspace it never looked at was fully planted. ── */
+  {
+    await clearPlanted({ maxMs: 20_000 });
+    const past = await plant({ n: 5, startIndex: 400, expired: true });
+    ok(past.status === 400 && past.body.ok === false && past.body.reason === "bad-start",
+      `F-708: the door REFUSES a start past the population (got ${past.status} ${JSON.stringify(past.body && past.body.reason)})`);
+    ok(past.body.complete !== true && (await countPlanted()) === 0,
+      "F-708: …never answering complete, and never planting a row on the way out");
+    const noop = await plant({ n: 5, startIndex: 5, expired: true });
+    ok(noop.status === 200 && noop.body.planted === 0 && noop.body.noop === true && noop.body.complete === true,
+      `F-708: …while \`startIndex === n\` — the loop's own last POST — is an explicit no-op (got ${JSON.stringify({ planted: noop.body && noop.body.planted, noop: noop.body && noop.body.noop, complete: noop.body && noop.body.complete })})`);
+    const twenty = await plant({ n: 20, expired: true, maxMs: 20_000 });
+    ok(twenty.body.planted === 20 && twenty.body.cleared === 0, "(fixture) a 20-row population through the door");
+    const five = await plant({ n: 5, expired: true, maxMs: 20_000 });
+    ok(five.body.cleared === 15 && (await countPlanted()) === 5,
+      `F-708: a SMALLER re-plant takes the old tail with it and reports it (cleared ${five.body && five.body.cleared}, rows ${await countPlanted()})`);
+    await clearPlanted({ maxMs: 20_000 });
+    const same = await plant({ n: 5, expired: true, maxMs: 20_000 });
+    const again = await plant({ n: 5, expired: true, maxMs: 20_000 });
+    ok(same.body.cleared === 0 && again.body.cleared === 0 && (await countPlanted()) === 5,
+      `F-708 (negative control): re-planting the SAME population removes nothing (cleared ${again.body && again.body.cleared})`);
+    await clearPlanted({ maxMs: 20_000 });
+  }
+
   const junk = await plant({ n: "banana", expired: true });
   ok(junk.body.n === 1 && junk.body.planted === 1, `a junk \`n\` clamps DOWN to one, never up (got ${junk.body && junk.body.n})`);
   const zero = await plant({ n: 0, expired: true });
@@ -667,6 +737,23 @@ process.env.HARNESS_SECRET = SECRET;
   ok(planted.body.ttlSeconds >= fault.HARNESS_FAULT_PLANT_TTL_SECONDS
     && planted.body.ttlSeconds === fault.plantTtlSeconds(250),
     `F-697: …each with a window that COVERS the plant that wrote it plus a minute after it (got ${planted.body && planted.body.ttlSeconds} s, never a flat 60 under a 22 s plant)`);
+  /* F-709 AT THE DOOR: the resume loop above spans several web-trigger calls, and every row
+   * it wrote must carry the SAME deadline. A per-call deadline made the tail outlive the head
+   * by the whole wall time of the plant — which is how the head of an `expired: false`
+   * population could be gone before the tail existed, and the sweep then "deleted rows it was
+   * told to leave alone". `armedAt` still says which row was written first. */
+  {
+    const head = await kvs.get(fault.plantedFaultKey(0));
+    const tail = await kvs.get(fault.plantedFaultKey(249));
+    ok(head && tail && head.until === tail.until,
+      `F-709: head and tail of a population planted across ${planted.calls} door call(s) share ONE deadline (head ${head && head.until}, tail ${tail && tail.until})`);
+    ok(head && tail && tail.armedAt > head.armedAt,
+      "F-709: …while `armedAt` still walks forward batch by batch");
+    ok(planted.body.ttlSeconds * 1000 >= Math.ceil(250 / fault.HARNESS_FAULT_PLANT_CALL_MAX)
+      * (fault.HARNESS_FAULT_SWEEP_DEFAULT_MS + fault.HARNESS_FAULT_PLANT_COLD_START_MS)
+      + fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+      `F-709: …and the window the door reports covers every call the resume loop forces, plus a minute (got ${planted.body && planted.body.ttlSeconds} s)`);
+  }
 
   ok((await readLever()).body.value === null, "readJiraFault answers null with 250 planted rows in the keyspace");
   ok((await post({ action: "readKeyReadFault", provider: "openai" })).body.value === null, "…readKeyReadFault too");

@@ -108,8 +108,14 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   ok(fault.HARNESS_FAULT_TTL === undefined, "…and it is no longer exported under the old name");
   ok((faultCode.match(/storage\.set\(/g) || []).length === 1,
     `SOURCE: there is exactly ONE storage.set in the module — the single write home (got ${(faultCode.match(/storage\.set\(/g) || []).length})`);
-  ok((faultCode.match(/storage\.get\(/g) || []).length === 1,
-    `SOURCE: …and exactly ONE storage.get — the single read home (got ${(faultCode.match(/storage\.get\(/g) || []).length})`);
+  /* F-709: TWO reads, and the second one is named and argued. `getFaultRow` is the read home
+   * that refuses an expired row and DELETES it on the way out — which is precisely what must
+   * not happen to the head of an `expired: true` population that a resumed call is still
+   * filling in, and which would lose the deadline the resume went there for. So
+   * `plantPopulationDeadline` reads one known key raw, and returns a number, never a row. */
+  ok((faultCode.match(/storage\.get\(/g) || []).length === 2
+    && /const plantPopulationDeadline = async \(\) => \{\s*\n\s*const head = await storage\.get\(plantedFaultKey\(0\)\)/.test(faultCode),
+    `SOURCE: …and exactly TWO storage.gets — the read home, and F-709's named raw read of the population's head (got ${(faultCode.match(/storage\.get\(/g) || []).length})`);
   /* F-694 — THE GATED-EXPORT RULE HAS ONE HOME, AND IT IS THE MODULE'S OWN LIST.
    * This count used to be the literal 9, here and again in async-handler-helpers.test.mjs,
    * so every new gated export turned two suites red and was answered by editing two numbers
@@ -852,7 +858,11 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       last = await fault.plantHarnessFaults({ n, expired, startIndex: next || undefined, ...opts });
       if (last.ok === false) return { ...last, planted, failed, calls };
       planted += last.planted; failed += last.failed; calls++;
-      if (last.nextIndex <= next && last.planted === 0) break;   // no progress: do not spin
+      /* F-707: NO FORWARD PROGRESS IS THE STOP, whatever the call placed. A plant whose
+       * writes are refused now answers with the FIRST failed index, so a resumed call can
+       * place rows and still hand back the index it was given — that is a stuck drain, not
+       * a working one, and `planted === 0` no longer describes it. */
+      if (last.nextIndex <= next) break;
       next = last.nextIndex;
     }
     return { ...last, planted, failed, calls, nextIndex: next };
@@ -910,8 +920,15 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     "a missing or junk `n` is ONE — the smallest population, never the largest");
   ok(fault.plantCountClamped(7.9) === 7, "…and a fraction floors rather than rounding up");
   const overCap = await fault.plantHarnessFaults({ n: 10_000, expired: true });
-  ok(overCap.n === 150 && overCap.planted === 150 && overCap.nextIndex === 150 && overCap.complete === true,
+  ok(overCap.planted === 150 && overCap.nextIndex === 150,
     `…and the clamp is enforced END TO END, not just in the helper (asked 10000, planted ${overCap.planted}, nextIndex ${overCap.nextIndex})`);
+  /* F-710 — AND IT IS VISIBLE. The clamped call used to rewrite `n` to 150 and answer
+   * `complete: true`, so a caller looping "until complete" stopped at one call's worth
+   * believing it had planted the population it asked for. */
+  ok(overCap.n === fault.HARNESS_FAULT_PLANT_MAX,
+    `F-710: the answer ECHOES the population it was asked for (clamped to the keyspace ceiling), never the per-call clamp (got n=${overCap.n})`);
+  ok(overCap.truncated === true && overCap.reason === "call-max" && overCap.complete === false,
+    `F-710: …and a call that stopped at its own ceiling is TRUNCATED, with a reason of its own (got ${JSON.stringify({ truncated: overCap.truncated, reason: overCap.reason, complete: overCap.complete })})`);
   const overCapResumed = await fault.plantHarnessFaults({ n: 10_000, expired: true, startIndex: overCap.nextIndex });
   ok(overCapResumed.n === 500 && overCapResumed.planted === 350 && overCapResumed.nextIndex === 500 && overCapResumed.complete === true,
     `…and the resumed call finishes the population and no more (planted ${overCapResumed.planted}, nextIndex ${overCapResumed.nextIndex})`);
@@ -923,37 +940,52 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   clear();
   const live = await fault.plantHarnessFaults({ n: 2, expired: false });
   const lw = lastWrite();
-  ok(JSON.stringify(lw.options) === JSON.stringify({ ttl: { value: 60, unit: "SECONDS" } }),
-    `a planted row passes exactly { ttl: { value: 60, unit: "SECONDS" } } — forgotten ballast leaves on its own (got ${JSON.stringify(lw.options)})`);
+  ok(JSON.stringify(lw.options) === JSON.stringify({ ttl: { value: fault.plantTtlSeconds(2), unit: "SECONDS" } }),
+    `a planted row passes exactly { ttl: { value: <the window>, unit: "SECONDS" } } — forgotten ballast leaves on its own (got ${JSON.stringify(lw.options)})`);
   ok(lw.value.count === 1 && lw.value.plantedBy === "harness" && typeof lw.value.armedAt === "string",
     `…with the documented row shape (got ${JSON.stringify(lw.value)})`);
-  ok(Date.parse(lw.value.until) - Date.parse(lw.value.armedAt) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
-    `…and a live row's \`until\` is exactly armedAt + 60 s (got until=${lw.value.until} armedAt=${lw.value.armedAt})`);
+  ok(Date.parse(lw.value.until) - Date.parse(lw.value.armedAt) === fault.plantTtlSeconds(2) * 1000,
+    `…and a live row's \`until\` is exactly armedAt + the window this plant reported (got until=${lw.value.until} armedAt=${lw.value.armedAt})`);
   ok(fault.faultRowExpired(lw.value) === false && live.expired === false, "…so the sweep must LIST it and leave it alone");
 
   clear();
   const dead = await fault.plantHarnessFaults({ n: 2, expired: true });
   const dw = lastWrite();
-  ok(JSON.stringify(dw.options) === JSON.stringify({ ttl: { value: 60, unit: "SECONDS" } }),
+  ok(JSON.stringify(dw.options) === JSON.stringify({ ttl: { value: fault.plantTtlSeconds(2), unit: "SECONDS" } }),
     "an expired row passes the SAME SECONDS shape — the platform TTL is not what makes it expired");
   ok(Date.parse(dw.value.until) < Date.now(), `…but its \`until\` is in the PAST (got ${dw.value.until})`);
   ok(fault.faultRowExpired(dw.value) === true && dead.expired === true,
     "…which is the only shape the sweep will actually delete");
 
-  /* F-697 — THE WINDOW SCALES WITH THE PLANT. A flat sixty seconds is SHORTER than the plant
-   * that writes it: at the measured ~90 ms a row the head of a 400-row population was written
-   * ~36 s before the tail, so `expired: false` rows the sweep "must list and leave alone" had
-   * already crossed their own `until` by the time the sweep ran — evidence of a broken expiry
-   * predicate manufactured by the plant's own clock. Every row now gets a full minute AFTER
-   * the last row lands, whatever `n` is. */
-  ok(fault.plantTtlSeconds(0) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS
-    && fault.plantTtlSeconds(2) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS,
-    "a small plant keeps the sixty-second floor — the window was never the problem there");
-  for (const rows of [150, 400, 500]) {
-    const expectedMs = rows * fault.HARNESS_FAULT_PLANT_MS_PER_ROW;
-    ok(fault.plantTtlSeconds(rows) * 1000 >= expectedMs + fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000 - 1000,
-      `…and a ${rows}-row plant's window (${fault.plantTtlSeconds(rows)} s) covers the ~${Math.round(expectedMs / 1000)} s it takes PLUS a full minute after it`);
+  /* F-697/F-709 — THE WINDOW COVERS THE WHOLE PLANT, AND THE WHOLE PLANT IS MORE THAN ITS
+   * WRITES. F-697: a flat sixty seconds is shorter than the plant that writes it, so rows the
+   * sweep "must list and leave alone" had already crossed their own `until`. F-709: modelling
+   * that as `rows × 90 ms` was still wrong, because a population above the per-call ceiling
+   * CANNOT be planted in one call — the resume loop is mandatory, and between two calls sit a
+   * caller round trip and a cold start the write rate knows nothing about. A 500-row window
+   * was 105 s against ≥4 calls of a 15 s budget: the head expired before the tail was written,
+   * which is the manufactured evidence F-697 existed to kill, reintroduced by the resume that
+   * shipped with it.
+   *
+   * THIS SUITE NO LONGER SHARES THE MODEL IT IS CHECKING. The old assertion re-derived
+   * `rows × 90 ms` from the same constant the lever used, so it could only ever agree with it;
+   * what is asserted now is the WALL TIME of the drain the lever forces. */
+  ok(fault.plantTtlSeconds(0) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS,
+    "a plant of nothing keeps the sixty-second floor");
+  ok(fault.HARNESS_FAULT_PLANT_COLD_START_MS === 5_000,
+    "F-709: a resumed call costs a round trip and a cold start besides its writes, and that cost is a named constant");
+  for (const rows of [1, 2, 150, 151, 400, 500]) {
+    const calls = Math.ceil(rows / fault.HARNESS_FAULT_PLANT_CALL_MAX);
+    const wallMs = calls * (fault.HARNESS_FAULT_SWEEP_DEFAULT_MS + fault.HARNESS_FAULT_PLANT_COLD_START_MS);
+    ok(fault.plantTtlSeconds(rows) * 1000 >= wallMs + fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+      `F-709: a ${rows}-row plant's window (${fault.plantTtlSeconds(rows)} s) covers the ${calls} call(s) the resume loop forces — ${Math.round(wallMs / 1000)} s of budget and cold starts — PLUS a full minute after the last row lands`);
+    ok(fault.plantTtlSeconds(rows) * 1000 >= rows * fault.HARNESS_FAULT_PLANT_MS_PER_ROW + fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+      `…and it still covers the old write-time model too (${rows} rows at ${fault.HARNESS_FAULT_PLANT_MS_PER_ROW} ms)`);
   }
+  ok(fault.plantTtlSeconds(500) > 105,
+    `F-709: the 500-row window is no longer the 105 s that was SHORTER than the four calls it takes (got ${fault.plantTtlSeconds(500)} s)`);
+  ok(fault.plantTtlSeconds(150) === fault.plantTtlSeconds(1) && fault.plantTtlSeconds(151) > fault.plantTtlSeconds(150),
+    `F-709: the window steps with the CALL COUNT, which is what the resume loop actually costs (150 → ${fault.plantTtlSeconds(150)} s, 151 → ${fault.plantTtlSeconds(151)} s)`);
   ok(fault.plantTtlSeconds(10_000) <= fault.HARNESS_FAULT_TTL_SECONDS,
     "…while the ten-minute family ceiling still binds — the number reported is the number written");
   ok(live.ttlSeconds === fault.plantTtlSeconds(2) && lw.options.ttl.value === live.ttlSeconds,
@@ -1022,8 +1054,15 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
    * LIVE rows in front of the expired ones and page 0 has nothing to delete: it ADVANCES, and
    * the next token carries the platform's own cursor string. ── */
   await plantAll(250, true);
-  await plantAll(120, false);   // overwrites plant:000..119
-  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 250, "(fixture) 120 live rows in front of 130 expired ones");
+  /* F-708 — THE FIXTURE CANNOT BE BUILT BY RE-PLANTING SMALLER ANY MORE, and that is the cut:
+   * a fresh plant of 120 over a 250-row population now REMOVES `plant:120..249` instead of
+   * leaving it alive under an answer that says `n: 120`. The live head is therefore written
+   * by one call of the SAME population (150 rows, one call's worth), which overwrites
+   * `plant:000..149` in place and leaves the expired tail exactly where it is. */
+  const liveHead = await fault.plantHarnessFaults({ n: 250, expired: false, maxMs: 20_000 });
+  ok(liveHead.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX && liveHead.cleared === 0,
+    `(fixture) one call's worth of LIVE rows written over the head of the expired population, clearing nothing (planted ${liveHead.planted}, cleared ${liveHead.cleared})`);
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 250, "(fixture) 150 live rows in front of 100 expired ones");
   const advanced = await fault.sweepHarnessFaults({ maxMs: 1 });
   ok(advanced.truncated === true && typeof advanced.cursor === "string",
     `a sweep whose first page is all-live still stops on budget with a token (got ${JSON.stringify({ truncated: advanced.truncated, reason: advanced.reason })})`);
@@ -1034,8 +1073,8 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   let t2 = advanced.cursor, c2 = 0, last2 = advanced;
   while (t2 && c2 < 400) { last2 = await fault.sweepHarnessFaults({ maxMs: 1, cursor: t2 }); t2 = last2.cursor; c2++; }
   ok(t2 === null && last2.complete === true, `…and that drain terminates too (${c2} resumed calls)`);
-  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 120,
-    "…having deleted the 130 expired rows and LEFT every live one — a sweep never cancels a lever somebody is using");
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+    "…having deleted the 100 expired rows and LEFT every live one — a sweep never cancels a lever somebody is using");
 
   /* ── 7g. THE CLEAR TAKES THE BALLAST AND NOTHING ELSE. It must delete LIVE planted rows
    * (which the sweep may not), so the only thing keeping it safe is that its prefix is bound
@@ -1051,7 +1090,7 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     ct = lastClear.cursor;
     cc++;
   } while (ct && cc < 400);
-  ok(ct === null && lastClear.complete === true && cleared === 120,
+  ok(ct === null && lastClear.complete === true && cleared === fault.HARNESS_FAULT_PLANT_CALL_MAX,
     `clearPlantedFaults drains the live ballast the sweep will not touch (${cleared} deleted in ${cc} calls, complete ${lastClear.complete})`);
   ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 0, "…the plant sub-prefix is empty");
   ok(lastClear.prefix === fault.HARNESS_FAULT_PLANT_PREFIX && lastClear.prefix === "harness_fault:plant:",
@@ -1164,49 +1203,69 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       `…having placed EXACTLY ${N} rows — index-derived keys, so a resumed plant is one population and not two (placed ${placed})`);
     ok(calls > 2, `…across genuinely several calls, which is the path the 25 s trigger forces (${calls})`);
 
-    /* F-697 — EVERY BATCH IS DATED WHEN IT IS WRITTEN. One `armedAt` computed before the loop
-     * dated all 500 rows from the START of a plant that takes tens of seconds, so the head's
-     * window closed while the tail was still being written. Read back the `until` of every
-     * write this plant made: they must MOVE FORWARD, not share one stamp. */
-    const plantUntils = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX))
-      .map((w) => Date.parse(w.value.until));
-    const plantArmed = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX))
-      .map((w) => Date.parse(w.value.armedAt));
+    /* F-697 + F-709 — `armedAt` IS PER BATCH, THE DEADLINE IS THE POPULATION'S.
+     *
+     * F-697: one `armedAt` computed before the loop dated every row from the START of a plant
+     * that takes tens of seconds, so a row's recorded birth had nothing to do with when it was
+     * written. Each batch is stamped when it is written, and that is still asserted below.
+     *
+     * F-709 turned the OTHER stamp the other way. `until` used to be re-derived from each
+     * call's own clock, which sounds like the same fix and is the opposite of one: the rows of
+     * call 4 then outlived the rows of call 1 by the whole wall time of the plant, and the
+     * head — whose window was computed before three round trips it knew nothing about — could
+     * be gone before the tail existed. A population is ONE thing that a sweep walks in one
+     * pass, so it gets ONE deadline, minted by the first batch of the first call and carried
+     * on `plant:000` for every call after it. What is checked here is both halves at once:
+     * `armedAt` walks forward, `until` does not move at all, and the LAST row still has a full
+     * minute after it. */
+    const plantWrites = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX));
+    const plantUntils = plantWrites.map((w) => Date.parse(w.value.until));
+    const plantArmed = plantWrites.map((w) => Date.parse(w.value.armedAt));
     ok(plantUntils.length === N && plantUntils.every((t) => Number.isFinite(t)),
       `(fixture) every one of the ${N} writes was recorded with a parseable deadline (got ${plantUntils.length})`);
-    ok(plantUntils[plantUntils.length - 1] > plantUntils[0] && plantArmed[plantArmed.length - 1] > plantArmed[0],
-      `the LAST row's window opens later than the FIRST row's — one \`armedAt\` for all of them is exactly F-697 (Δuntil ${plantUntils[plantUntils.length - 1] - plantUntils[0]} ms)`);
-    ok(plantUntils.every((t, i) => i === 0 || t >= plantUntils[i - 1]),
+    ok(plantArmed[plantArmed.length - 1] > plantArmed[0],
+      `F-697: the LAST row is dated later than the FIRST — one \`armedAt\` for the whole plant is exactly F-697 (Δ ${plantArmed[plantArmed.length - 1] - plantArmed[0]} ms)`);
+    ok(plantArmed.every((t, i) => i === 0 || t >= plantArmed[i - 1]),
       "…and it never goes BACKWARDS: each batch is stamped at write time, in order");
-    const batchStamps = [...new Set(plantUntils)];
-    // At most one stamp per BATCH — plus, at most, one extra per call, because a resume can
-    // start mid-batch. Never one per plant (F-697) and never one per row.
-    ok(batchStamps.length > 1 && batchStamps.length <= Math.ceil(N / fault.KVS_DELETE_BATCH) + calls,
-      `…with at most one stamp per BATCH of ${fault.KVS_DELETE_BATCH}, not one per plant and not one per row (${batchStamps.length} distinct stamps over ${N} rows in ${calls} calls)`);
-    ok(last.ttlSeconds === fault.plantTtlSeconds(N)
-      && plantUntils.every((t, i) => t - plantArmed[i] === fault.plantTtlSeconds(N) * 1000),
-      `…each row alive for the full scaled window from its OWN stamp, and a RESUMED call does not shorten it (${last.ttlSeconds} s vs ${fault.plantTtlSeconds(N)} s)`);
+    const armedStamps = [...new Set(plantArmed)];
+    ok(armedStamps.length > 1 && armedStamps.length <= Math.ceil(N / fault.KVS_DELETE_BATCH) + calls,
+      `…at most one \`armedAt\` per BATCH of ${fault.KVS_DELETE_BATCH}, never one per plant and never one per row (${armedStamps.length} distinct stamps over ${N} rows in ${calls} calls)`);
+    const deadlines = [...new Set(plantUntils)];
+    ok(deadlines.length === 1,
+      `F-709: …while the DEADLINE is the population's — ONE value across all ${calls} calls, not one per call (${deadlines.length} distinct)`);
+    ok(last.ttlSeconds === fault.plantTtlSeconds(N) && deadlines[0] === plantArmed[0] + fault.plantTtlSeconds(N) * 1000,
+      `F-709: …minted by the FIRST batch of the first call as its own stamp plus the reported window (${last.ttlSeconds} s)`);
+    ok(deadlines[0] - plantArmed[plantArmed.length - 1] >= fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+      `F-709: …and the LAST row written still has a full minute of life after it, which is the promise a per-call deadline could not keep (${Math.round((deadlines[0] - plantArmed[plantArmed.length - 1]) / 1000)} s)`);
 
-    /* WITHIN ONE CALL TOO — and this is the assertion that actually catches F-697. A stamp
-     * that only moves ACROSS calls is still one `armedAt` per call, which for the 150-row
-     * call the door now allows is ~13 s of rows sharing one window. Plant the whole
-     * population in ONE generous call and the stamps must still walk forward, batch by
-     * batch. */
+    /* THE RESUMED CALL IS WHERE THE DEADLINE USED TO DRIFT, so it is asserted directly: the
+     * head row's `until` is what a resumed call writes, whatever its own clock says. */
+    const headRow = await storage.get(fault.plantedFaultKey(0));
+    const tailRow = await storage.get(fault.plantedFaultKey(N - 1));
+    ok(headRow && tailRow && headRow.until === tailRow.until,
+      `F-709: the head and the tail of a multi-call population carry the IDENTICAL deadline (head ${headRow && headRow.until}, tail ${tailRow && tailRow.until})`);
+    ok(tailRow.armedAt > headRow.armedAt,
+      "F-709: …while their `armedAt` still says which was written first — two stamps, two jobs");
+
+    /* WITHIN ONE CALL TOO. `armedAt` must walk batch by batch even when no resume boundary
+     * forces it — a stamp that only moves ACROSS calls is still one stamp for the 150 rows a
+     * single call may write. */
     await purge();
     clear();
     const oneCall = await fault.plantHarnessFaults({ n: N, expired: false, maxMs: 20_000 });
     const oneCallWrites = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX));
-    const oneCallStamps = [...new Set(oneCallWrites.map((w) => w.value.until))];
+    const oneCallArmed = [...new Set(oneCallWrites.map((w) => w.value.armedAt))];
+    const oneCallUntils = [...new Set(oneCallWrites.map((w) => w.value.until))];
     ok(oneCall.complete === true && oneCall.planted === N && oneCallWrites.length === N,
       `(fixture) the whole ${N}-row population planted in ONE call (planted ${oneCall.planted})`);
-    ok(oneCallStamps.length > 1,
-      `F-697: even inside ONE call the rows do not share a single window — ${oneCallStamps.length} distinct stamps over ${N} rows, which one \`armedAt\` per plant would make exactly 1`);
-    ok(oneCallStamps.length >= Math.floor(N / fault.KVS_DELETE_BATCH / 2),
-      `…roughly one per batch of ${fault.KVS_DELETE_BATCH}, not a handful (${oneCallStamps.length})`);
-    ok(oneCallWrites.every((w, i) => i === 0 || Date.parse(w.value.until) >= Date.parse(oneCallWrites[i - 1].value.until)),
+    ok(oneCallArmed.length > 1,
+      `F-697: even inside ONE call the rows are not dated together — ${oneCallArmed.length} distinct \`armedAt\` over ${N} rows, which one stamp per plant would make exactly 1`);
+    ok(oneCallArmed.length >= Math.floor(N / fault.KVS_DELETE_BATCH / 2),
+      `…roughly one per batch of ${fault.KVS_DELETE_BATCH}, not a handful (${oneCallArmed.length})`);
+    ok(oneCallWrites.every((w, i) => i === 0 || Date.parse(w.value.armedAt) >= Date.parse(oneCallWrites[i - 1].value.armedAt)),
       "…in write order, never backwards");
-    ok(Date.parse(oneCallWrites[N - 1].value.until) - Date.parse(oneCallWrites[0].value.until) > 0,
-      "…so the TAIL of the population outlives the HEAD by exactly the time the plant took");
+    ok(oneCallUntils.length === 1,
+      `F-709: …and one call's population shares one deadline too — the rule is the population's, not the call's (${oneCallUntils.length} distinct)`);
 
     /* AND THE EXPIRED SHAPE IS STILL EXPIRED, per batch, for the sweep this ballast exists
      * for: back-dating is relative to each batch's own write time, not to one clock read. */
@@ -1216,8 +1275,9 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     const deadWrites = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX));
     ok(deadPaced.planted === 30 && deadWrites.every((w) => fault.faultRowExpired(w.value) === true),
       `every row of a paced \`expired: true\` plant is expired on ARRIVAL (planted ${deadPaced.planted})`);
-    ok(new Set(deadWrites.map((w) => w.value.until)).size > 1,
-      "…and they do not all share one stamp either — the back-date is per batch too");
+    ok(new Set(deadWrites.map((w) => w.value.until)).size === 1
+      && new Set(deadWrites.map((w) => w.value.armedAt)).size > 1,
+      "F-709: …sharing the population's ONE back-dated deadline while still being dated per batch — the head of an expired population is read RAW, so a resumed call can carry its deadline without the one read deleting it");
 
     writeLatencyMs = 0;
     kvs.set = spyingSet;
@@ -1390,16 +1450,193 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
 
     /* ── SOURCE: ONE CONSULT SITE. The sweep and the clear ran two byte-identical copies of
      * the delete batch; a lever consulted in two places is a lever with two behaviours. ── */
-    ok((faultCode.match(/await settleDeletes\(batch, deleteFault\)/g) || []).length === 2,
-      "F-706.SOURCE: both drains go through the ONE shared delete batch");
+    ok((faultCode.match(/await settleDeletes\(batch, deleteFault\)/g) || []).length === 3,
+      "F-706.SOURCE: all THREE drains go through the ONE shared delete batch (the sweep, the clear, and F-708's stale-tail removal)");
     ok(!/Promise\.allSettled\(batch\.map\(\(key\) => storage\.delete\(key\)\)\)/.test(faultCode),
       "F-706.SOURCE: …and neither keeps its own copy of it any more");
-    ok((faultCode.match(/await loadDeleteFault\(\)/g) || []).length === 2,
-      "F-706.SOURCE: the lever is read ONCE PER CALL, not once per batch");
+    ok((faultCode.match(/await loadDeleteFault\(\)/g) || []).length === 3,
+      "F-706.SOURCE: the lever is read ONCE PER CALL, not once per batch — three call sites, one per drain");
     ok((faultCode.match(/harnessFaultArmed\(HARNESS_FAULT_DELETE/g) || []).length === 1,
       "F-706.SOURCE: and spent through the ONE counted-consumption home, in one place");
     ok(/if \(prefix !== HARNESS_FAULT_PLANT_PREFIX\)/.test(faultCode),
       "F-706.SOURCE: the prefix is tested by EQUALITY against the plant's — never by `startsWith` at the arming side");
+  }
+
+
+  /* ═════ 7j. F-707 — THE RESUME HANDLE BELONGS TO THE FAILURE, NOT TO THE BUDGET ═════
+   *
+   * MEASURED on this mock (writes to `plant:004`/`plant:005` refused): the lever answered
+   * `truncated:true, reason:"writes-failed"` — and `nextIndex: 9`, because the index half of
+   * the answer was read off the LOCAL budget flag (`truncated ? i : count`) while the
+   * finishedness half came from `sweepAnswerTail`. The documented loop then POSTed
+   * `startIndex: 9`, wrote nothing, and was answered `complete: true`: a failed plant
+   * reported as a finished one, over a keyspace with two holes in it, and the sweep test
+   * that followed counted 7 rows and blamed the sweep.
+   *
+   * The keys are `i`-derived and re-planting is idempotent, so the only honest handle is the
+   * LOWEST index that did not land. Driven here with the breaker's exact inputs. */
+  {
+    await purge();
+    const PLANT707 = fault.HARNESS_FAULT_PLANT_PREFIX;
+    const setBefore707 = kvs.set;
+    const refused707 = new Set([fault.plantedFaultKey(4), fault.plantedFaultKey(5)]);
+    kvs.set = async function refusingSet707(key, value, options) {
+      if (refused707.has(String(key))) {
+        const e = new Error("HARNESS_WRITE_FAULT"); e.code = "HARNESS_WRITE_FAULT"; throw e;
+      }
+      return setBefore707.call(this, key, value, options);
+    };
+
+    const call1 = await fault.plantHarnessFaults({ n: 9, expired: true, maxMs: 20_000 });
+    ok(call1.ok === true && call1.planted === 7 && call1.failed === 2,
+      `(fixture) a 9-row plant with two refused writes places 7 (planted ${call1.planted}, failed ${call1.failed})`);
+    ok(call1.truncated === true && call1.reason === "writes-failed" && call1.complete === false,
+      `F-707: a plant that could not write what it named is NOT finished (got ${JSON.stringify({ truncated: call1.truncated, reason: call1.reason, complete: call1.complete })})`);
+    ok(call1.nextIndex === 4,
+      `F-707: …and \`nextIndex\` is the FIRST index that did not land — never \`n\`, which is where the old answer pointed (got ${call1.nextIndex})`);
+
+    /* THE LOOP THE DOOR DOCUMENTS, DRIVEN VERBATIM. Under the old answer this second call
+     * was the bug: `startIndex: 9` over a 9-row population wrote nothing and answered
+     * `complete: true`. It must now land back ON the holes. */
+    const resumed = await fault.plantHarnessFaults({ n: 9, expired: true, startIndex: call1.nextIndex, maxMs: 20_000 });
+    ok(resumed.startIndex === 4 && resumed.complete === false && resumed.reason === "writes-failed" && resumed.nextIndex === 4,
+      `F-707: the resumed call lands on the failures and still refuses to call itself complete (got ${JSON.stringify({ startIndex: resumed.startIndex, nextIndex: resumed.nextIndex, complete: resumed.complete })})`);
+    ok((await countPrefix(PLANT707)) === 7,
+      "F-707: …and the keyspace never pretends to hold nine rows while two of them do not exist");
+
+    const stuck = await plantAll(9, true);
+    ok(stuck.complete === false && stuck.calls <= 3,
+      `F-707: the fixture's own drain loop TERMINATES on the stuck plant and reports it unfinished (calls ${stuck.calls}, complete ${stuck.complete})`);
+
+    /* ── THE NEGATIVE CONTROL: the identical fixture with the refusing write PUT BACK the way
+     * it was. If this also answered `writes-failed` the section above would be measuring the
+     * loop and not the lever. ── */
+    kvs.set = setBefore707;
+    await purge();
+    const clean = await fault.plantHarnessFaults({ n: 9, expired: true, maxMs: 20_000 });
+    ok(clean.planted === 9 && clean.failed === 0 && clean.nextIndex === 9 && clean.reason === null && clean.complete === true,
+      `F-707 (negative control): with the write fault removed the SAME 9-row plant completes in one call (got ${JSON.stringify({ planted: clean.planted, nextIndex: clean.nextIndex, complete: clean.complete })})`);
+    ok((await countPrefix(PLANT707)) === 9, "…with all nine rows really in the store");
+    await purge();
+
+    ok(/failureFirst \? firstFailedIndex/.test(faultCode),
+      "F-707.SOURCE: the resume handle is taken from the first failed index, in one expression");
+    ok(!/nextIndex: truncated \? i : count,/.test(faultCode),
+      "F-707.SOURCE: …and the budget-only expression is no longer the whole of it");
+  }
+
+
+  /* ═════ 7k. F-708 — `startIndex` IS JUDGED AGAINST THE POPULATION ═════
+   *
+   * MEASURED: `plantHarnessFaults({ n: 5, startIndex: 400 })` answered
+   * `{planted:0, n:5, startIndex:400, nextIndex:5, complete:true}` — a no-op whose own
+   * `nextIndex` is BELOW the `startIndex` it was handed, over a keyspace it never looked at,
+   * and every documented drain loop reads `complete: true` as "the population is planted".
+   * The input is not hypothetical: F-707's old answer produced exactly this `startIndex`, and
+   * any caller carrying a `nextIndex` from a larger previous population produces it too.
+   *
+   * The mirror case is the same defect from the other side: the keys are `i`-derived, so a
+   * SMALLER re-plant used to overwrite the head and leave the old tail alive for the rest of
+   * its window, under an answer whose `n` and `keys` described a population the store did not
+   * hold. ── */
+  {
+    await purge();
+    const PLANT708 = fault.HARNESS_FAULT_PLANT_PREFIX;
+
+    const past = await fault.plantHarnessFaults({ n: 5, startIndex: 400, expired: true });
+    ok(past.ok === false && past.reason === "bad-start",
+      `F-708: a \`startIndex\` past the population is REFUSED, never a green no-op (got ${JSON.stringify(past)})`);
+    ok(past.n === 5 && past.startIndex === 400 && past.complete === undefined,
+      `F-708: …and the refusal names both numbers and carries no finished signal at all (got ${JSON.stringify(past)})`);
+    ok((await countPrefix(PLANT708)) === 0, "F-708: …and the refused call planted nothing");
+
+    const noop = await fault.plantHarnessFaults({ n: 5, startIndex: 5, expired: true });
+    ok(noop.ok === true && noop.planted === 0 && noop.nextIndex === 5 && noop.complete === true && noop.noop === true,
+      `F-708: \`startIndex === n\` is the ONE start past the last row that is not a mistake — the loop's own final answer — and it says so explicitly (got ${JSON.stringify({ planted: noop.planted, nextIndex: noop.nextIndex, complete: noop.complete, noop: noop.noop })})`);
+    ok(noop.startIndex === noop.nextIndex,
+      "F-708: …with an answer that no longer contradicts itself by pointing BEHIND its own start");
+    ok((await countPrefix(PLANT708)) === 0, "F-708: …and it wrote nothing either");
+
+    /* ── THE SMALLER RE-PLANT. Twenty rows, then five: the tail must GO, and be reported. ── */
+    await purge();
+    const twenty = await fault.plantHarnessFaults({ n: 20, expired: false, maxMs: 20_000 });
+    ok(twenty.planted === 20 && twenty.cleared === 0 && (await countPrefix(PLANT708)) === 20,
+      `(fixture) a 20-row population in the store, having cleared nothing (planted ${twenty.planted}, cleared ${twenty.cleared})`);
+    const five = await fault.plantHarnessFaults({ n: 5, expired: false, maxMs: 20_000 });
+    ok(five.planted === 5 && five.n === 5 && five.complete === true,
+      `(fixture) a smaller re-plant of five (planted ${five.planted})`);
+    ok(five.cleared === 15,
+      `F-708: …which REMOVED the fifteen rows of the old population it no longer names, and reported them (cleared ${five.cleared})`);
+    ok((await countPrefix(PLANT708)) === 5,
+      "F-708: …so the keyspace holds exactly the population the answer describes, not the union of two plants");
+
+    /* A RESUMED call is mid-population and must NOT pay for the scan or remove anything. */
+    await purge();
+    await fault.plantHarnessFaults({ n: 20, expired: false, maxMs: 20_000 });
+    const resumedClear = await fault.plantHarnessFaults({ n: 10, startIndex: 5, expired: false, maxMs: 20_000 });
+    ok(resumedClear.cleared === 0 && (await countPrefix(PLANT708)) === 20,
+      `F-708: a RESUMED call clears nothing — it is inside a population, not replacing one (cleared ${resumedClear.cleared})`);
+
+    /* ── THE NEGATIVE CONTROL: the identical pair of calls with the SAME population size,
+     * which is the case the clear must not touch. If the tail vanished here the section
+     * above would be measuring the re-plant and not the shrink. ── */
+    await purge();
+    await fault.plantHarnessFaults({ n: 20, expired: false, maxMs: 20_000 });
+    const same = await fault.plantHarnessFaults({ n: 20, expired: false, maxMs: 20_000 });
+    ok(same.cleared === 0 && same.planted === 20 && (await countPrefix(PLANT708)) === 20,
+      `F-708 (negative control): re-planting the SAME population removes nothing (cleared ${same.cleared}, rows ${await countPrefix(PLANT708)})`);
+    await purge();
+
+    ok(/if \(from > population\)/.test(faultCode) && /reason: "bad-start"/.test(faultCode),
+      "F-708.SOURCE: the start is compared against the POPULATION, in one guard");
+    ok(/plantCountClamped = \(n, startIndex = 0\) =>\s*\n?\s*Math\.min\(plantMaxForCall\(startIndex\), plantPopulationClamped\(n\)\)/.test(faultCode),
+      "F-708.SOURCE: …and the per-call end index is DERIVED from the population clamp, so the two numbers cannot drift apart");
+  }
+
+
+  /* ═════ 7l. F-710 — A SILENT CLAMP IS A LIE THE LOOP BELIEVES ═════
+   *
+   * MEASURED: `plantHarnessFaults({ n: 500 })` answered `{n:150, planted:150, nextIndex:150,
+   * complete:true}`. Nothing in that object says the request was cut down — `n` had been
+   * REWRITTEN to the clamp — so the only way to notice was to compare the answer to what you
+   * asked for, which neither shipped drain helper did. Reaching 500 required IGNORING
+   * `complete` and re-POSTing, the exact opposite of the loop `src/test-hook.js` documents,
+   * and it is why a live driver's `planted === 200` assertion was red.
+   *
+   * The clamp stays — one call cannot outrun a trigger killed at 25 s. What changes is that
+   * it is now a truncation like any other, with the population echoed beside it. ── */
+  {
+    await purge();
+    const asked = await fault.plantHarnessFaults({ n: 500, expired: true, maxMs: 20_000 });
+    ok(asked.n === 500 && asked.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+      `F-710: a first call for 500 plants one call's worth and still says 500 (planted ${asked.planted}, n ${asked.n})`);
+    ok(asked.truncated === true && asked.reason === "call-max" && asked.complete === false && asked.nextIndex === 150,
+      `F-710: …truncated, with its own reason and the index to carry on from (got ${JSON.stringify({ truncated: asked.truncated, reason: asked.reason, nextIndex: asked.nextIndex, complete: asked.complete })})`);
+    ok(asked.nextIndex < asked.n,
+      "F-710: …so `nextIndex < n` means CARRY ON without the caller having to remember what it asked for");
+
+    /* THE LOOP THE DOOR DOCUMENTS NOW REACHES 500 BY OBEYING `complete`, which is the whole
+     * point: under the old answer it stopped at 150 and called that a planted population. */
+    const full = await plantAll(500, true, { maxMs: 20_000 });
+    ok(full.complete === true && full.planted === 500 && (await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 500,
+      `F-710: "POST until complete" now plants the whole 500-row population (planted ${full.planted} in ${full.calls} calls)`);
+    ok(full.calls >= 2, `…across at least the two calls the per-call ceiling forces (${full.calls})`);
+
+    /* ── THE NEGATIVE CONTROL: a population that FITS in one call. If this also answered
+     * `call-max` the section above would be measuring the answer shape and not the clamp. ── */
+    await purge();
+    const fits = await fault.plantHarnessFaults({ n: fault.HARNESS_FAULT_PLANT_CALL_MAX, expired: true, maxMs: 20_000 });
+    ok(fits.n === fault.HARNESS_FAULT_PLANT_CALL_MAX && fits.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+      `(fixture) exactly one call's worth asked for and planted (${fits.planted})`);
+    ok(fits.truncated === false && fits.reason === null && fits.complete === true,
+      `F-710 (negative control): a population that FITS is complete in one call, with no reason at all (got ${JSON.stringify({ truncated: fits.truncated, reason: fits.reason, complete: fits.complete })})`);
+    await purge();
+
+    ok(/if \(!truncated && count < population\) \{ truncated = true; reason = "call-max"; \}/.test(faultCode),
+      "F-710.SOURCE: the clamp becomes a truncation in one place, after the loop and before the one tail");
+    ok(/ok: true, planted, failed, n: population, startIndex: from,/.test(faultCode)
+      && !/n: count, startIndex: from/.test(faultCode),
+      "F-710.SOURCE: …and the answer's `n` is the POPULATION, never this call's end index");
   }
 
   globalThis.setTimeout = realTimeout;

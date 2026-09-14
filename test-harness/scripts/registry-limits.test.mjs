@@ -37,6 +37,7 @@ import {
   registryPressure,
   registrySerializedBytes,
   slimRegistryRow,
+  normalizeFunctionsForStorage,
 } from "../../src/shared/registry-limits.js";
 
 let pass = 0, fail = 0;
@@ -105,6 +106,92 @@ ok(REGISTRY_FUNCTIONS_OFFLOAD_BYTES < 24576,
   const claimed = slimRegistryRow({ id: "d", type: "validator", discovered: true, createdBy: "admin-who-clicked" });
   ok(!claimed.createdBy && claimed.claimedBy === "admin-who-clicked",
     "a discovered row can never carry authorship — claim is moved to claimedBy at write time");
+}
+
+// ---- 1d. F-801: functions[].generationMeta is a CLOSED list on the registry side ---
+// The row-level twin of F-800 (which closed the same hole for job/listener steps).
+// Every other step field is clamped by the resolver that writes it; generationMeta
+// arrived wholesale from the config-ui / admin-panel save, so nested caller JSON —
+// a credential included — could land in the shared `config_registry` value, where
+// the only thing masking it was the read ceiling's value regex.
+{
+  // BLOCK — a nested object under generationMeta does not survive the registry save.
+  const row = slimRegistryRow({
+    id: "pf1", type: "postfunction-static",
+    functions: [{
+      id: "s1", name: "Step", code: "api.log('x')",
+      generationMeta: {
+        appliedDocs: [{ id: "doc-1", title: "ADF cookbook" }],
+        // the hole: arbitrary nested JSON riding a provenance stamp
+        creds: { token: "shhh-bearer-value" },
+        nested: { deep: { deeper: { token: "shhh" } } },
+      },
+    }],
+  });
+  const meta = row.functions[0].generationMeta;
+  ok(!!meta && !("creds" in meta) && !("nested" in meta),
+    "F-801 BLOCK — unknown nested JSON under generationMeta is dropped by the registry save");
+  ok(!/shhh/.test(JSON.stringify(row)),
+    "F-801 BLOCK — no part of the injected nested value survives anywhere in the stored row");
+  ok(meta.appliedDocs.length === 1 && meta.appliedDocs[0].id === "doc-1",
+    "F-801 BLOCK — the known provenance beside the junk still survives");
+
+  // BLOCK — a scalar smuggled under recipeParams is clamped, a nested object is not kept.
+  const row2 = slimRegistryRow({
+    id: "pf2", type: "postfunction-static",
+    functions: [{ id: "s", generationMeta: { source: "recipe", recipeParams: { creds: { token: "nope" } } } }],
+  });
+  ok(!/nope/.test(JSON.stringify(row2)),
+    "F-801 BLOCK — a nested object under a recipeParam name never lands");
+
+  // BLOCK — junk-only meta leaves NO generationMeta key at all, rather than an empty
+  // object that reads like real-but-empty provenance.
+  const row3 = slimRegistryRow({
+    id: "pf3", type: "postfunction-static",
+    functions: [{ id: "s", generationMeta: { token: "x", authorization: "Bearer y" } }],
+  });
+  ok(!("generationMeta" in row3.functions[0]),
+    "F-801 BLOCK — a meta with nothing known in it is removed, not stored empty");
+
+  // ALLOW — the UI's real compactMeta shape (static/config-ui FunctionBlock.jsx ~54)
+  // survives BYTE-IDENTICALLY, including the `(inline context)` pseudo-doc's id:null.
+  // If this ever fails, the clamp has started rewriting genuine provenance and every
+  // config-view chip changes with it.
+  const realMeta = {
+    appliedDocs: [
+      { id: "doc_1758", title: "ADF cookbook" },
+      { id: null, title: "(inline context)" },
+    ],
+    appliedSkills: [
+      { id: "skill_a", name: "Jira REST basics", auto: false },
+      { id: "skill_b", name: "ADF formatting", auto: true },
+    ],
+    appliedMemories: 3,
+    truncatedDocs: [{ title: "JQL reference" }],
+    fieldGuide: ["customfield_10011", "summary"],
+  };
+  const kept = slimRegistryRow({
+    id: "pf4", type: "postfunction-static",
+    functions: [{ id: "s", name: "Step", code: "api.log(1)", generationMeta: realMeta }],
+  }).functions[0].generationMeta;
+  ok(JSON.stringify(kept) === JSON.stringify(realMeta),
+    "F-801 ALLOW — the real compactMeta shape survives the registry save byte-identically");
+  ok(kept.appliedDocs[1].id === null && kept.appliedDocs[1].title === "(inline context)",
+    "F-801 ALLOW — the `(inline context)` pseudo-doc keeps its id:null, it is a real shape");
+
+  // ALLOW — a step with no generationMeta is returned untouched (same object), so the
+  // clamp can sit on the write path of every row without rewriting clean ones.
+  const plainStep = { id: "s", name: "Step", code: "api.log(1)" };
+  ok(slimRegistryRow({ id: "pf5", type: "postfunction-static", functions: [plainStep] }).functions[0] === plainStep,
+    "F-801 ALLOW — a step carrying no generationMeta is passed through by identity");
+
+  // Idempotent: clamping an already-clamped array must be a no-op, because the
+  // registry save and the pf_code offload BOTH apply it to the same array.
+  ok(JSON.stringify(normalizeFunctionsForStorage(normalizeFunctionsForStorage([{ generationMeta: realMeta }])))
+     === JSON.stringify(normalizeFunctionsForStorage([{ generationMeta: realMeta }])),
+    "F-801 — the clamp is idempotent (row save and pf_code offload both apply it)");
+  ok(normalizeFunctionsForStorage(undefined) === undefined && normalizeFunctionsForStorage(null) === null,
+    "F-801 — a non-array functions value is returned as-is, never coerced");
 }
 // The message has to name the escape route, because for a long time it named one
 // that did not exist ("remove unused rules from the admin panel" — there was no
@@ -224,6 +311,21 @@ ok(REGISTRY_FULL_MESSAGE.includes(String(REGISTRY_MAX_ROWS)),
   ok(guardIdx > -1, "commitImportCore checks the row cap");
   ok(guardIdx > -1 && injectIdx > -1 && guardIdx < injectIdx,
     "commitImportCore's cap check must run BEFORE the workflow inject, or a refused import still leaves a live rule");
+
+  // F-801 — the pf_code bundle is a SECOND KVS write that does not pass through
+  // saveRegistry, so the clamp has to be applied to `functions` before anything
+  // hashes, sizes or stores it. registerPostFunction must normalise at the top of
+  // the resolver (before pfCodeKeyFor and the bundle write), and the importer must
+  // go through the same helper rather than growing its own rule.
+  ok(/normalizeFunctionsForStorage/.test(src),
+    "index.js imports and uses the shared generationMeta clamp");
+  const normIdx = regPf.indexOf("normalizeFunctionsForStorage");
+  const keyIdx = regPf.indexOf("pfCodeKeyFor(effectiveId, functions)");
+  ok(normIdx > -1, "registerPostFunction clamps the incoming functions array");
+  ok(normIdx > -1 && keyIdx > -1 && normIdx < keyIdx,
+    "registerPostFunction's clamp must run BEFORE the pf_code key/bundle, or the OFFLOADED copy keeps the unbounded meta");
+  ok(/normalizeFunctionsForStorage/.test(importCore.slice(0, importCore.indexOf("injectWorkflowRuleCore({ workflowName"))),
+    "commitImportCore builds its functions array through the same clamp");
 }
 
 console.log(`\nregistry-limits: ${pass} passed, ${fail} failed`);

@@ -28,7 +28,7 @@
  */
 
 import { loadEnv, requireEnv } from "../lib/env.mjs";
-import { hookUrlFor, hookUrlVar } from "../lib/shared-env-guard.mjs";
+import { hookUrlFor, hookUrlVar, declareMutations } from "../lib/shared-env-guard.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => {
@@ -41,6 +41,13 @@ const SECRET = requireEnv("HARNESS_SECRET");
    a single run, so it cannot settle on one `envName` the way `requireEnvAck` does; it
    reads the same table a field at a time instead of retyping the variable names. */
 const URLS = { dev: hookUrlFor("dev"), staging: hookUrlFor("staging") };
+
+/* F-733 — AND THE SAME REASON IT CANNOT CALL `requireEnvAck` IS WHY IT DECLARES SEPARATELY.
+   This driver talks to BOTH environments in one run and so settles on no single row; the
+   DECLARATION half has no such difficulty, because what a driver writes does not depend on
+   where it writes it. P1 (`probeJsmComment`) puts a real comment on a real JSM issue, which
+   is `issues` and not a probe's read; everything else here only reads. */
+declareMutations(["issues"]);
 const die = (m) => { console.error("PROBE FAIL:", m); process.exit(1); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

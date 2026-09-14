@@ -67,7 +67,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
-import { drainSweep, answerComplete } from "../lib/sweep-drain.mjs";
+import { drainSweep, answerComplete, plantPopulation } from "../lib/sweep-drain.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -184,65 +184,28 @@ const cursorNote = (rcur) => {
 const ok200 = (res) => res.status === 200 && res.json?.ok === true;
 
 /*
- * THE PLANT, AS A POPULATION RATHER THAN A CALL (F-696 / F-710).
+ * THE PLANT, AS A POPULATION RATHER THAN A CALL (F-696 / F-710 / F-724) — AND THE LOOP IS
+ * THE LIBRARY'S, NOT THIS FILE'S.
  *
- * `plantHarnessFaults` cannot write its documented 500-row maximum inside the web trigger:
- * at `KVS_DELETE_BATCH`=3 / `KVS_DELETE_PAUSE_MS`=200 that is 33.2 s of pure sleep in a 25 s
- * invocation. F-696 gave the lever the sweep's contract — a budget, a `startIndex` and a
- * `nextIndex` — so REACHING a population is a loop, exactly as draining one is. This driver
- * asked for its 200 rows in a single call and asserted `planted === 200`, which is why it is
- * red on `main` today.
+ * It used to be hand-rolled here and byte-copied into `delete-fault-drain-live.mjs`, which is
+ * how BOTH copies came to read `reason:"clearing"` — the stale-tail clear's "re-POST me
+ * unchanged" answer — as "the population cannot be reached" and FAIL a run that one more
+ * identical POST would have completed (F-724). `lib/sweep-drain.mjs` owns the loop now, for
+ * the same reason F-702 gave it the drain: one contract, one home, one offline unit test.
  *
- * TWO TRAPS THIS LOOP IS WRITTEN AROUND:
- *   · `complete: true` DOES NOT MEAN "the population you asked for exists" (F-710). A fresh
- *     call asking for more than `HARNESS_FAULT_PLANT_CALL_MAX` (150) is clamped SILENTLY and
- *     answered `complete: true, n: 150, nextIndex: 150`. A loop that trusts `complete` stops
- *     at 150 believing it planted 200. So the loop runs until THE ROWS ARE THERE —
- *     `totalPlanted >= n` — and `complete` is permission to stop only once they are. The
- *     clamp is RECORDED against F-710 (which is filed against the answer's silence, not
- *     against this driver) and is explicitly NOT a failure here.
- *   · `reason: "writes-failed"` is a FAILURE, not a resume. The store refused writes, the
- *     population is short by an amount nothing will make up, and every assertion downstream
- *     would be measuring a keyspace nobody planted.
+ * Only the LEDGER ROW stays local, because this driver records two fields the other does not
+ * (`keysReturned`, and `truncated` verbatim beside `complete`).
  */
-const plantPopulation = async (n, expired) => {
-  const calls = [];
-  let startIndex = 0, totalPlanted = 0, totalFailed = 0;
-  let planted = false, stopReason = null, clamped = null;
-  while (calls.length < MAX_PLANT_CALLS) {
-    const res = await plant(n, expired, startIndex);
-    const nth = calls.length + 1;
-    if (!ok200(res)) { stopReason = `plant call ${nth} did not answer 200/ok (HTTP ${res.status})`; break; }
-    const j = res.json;
-    calls.push({
-      call: nth, n: j.n ?? null, startIndex: j.startIndex ?? null, planted: j.planted ?? null,
-      failed: j.failed ?? null, nextIndex: j.nextIndex ?? null, truncated: j.truncated ?? null,
-      reason: j.reason ?? null, complete: j.complete ?? null, expired: j.expired ?? null,
-      ttlSeconds: j.ttlSeconds ?? null, budgetMs: j.budgetMs ?? null,
-      keysReturned: (j.keys || []).length,
-    });
-    totalPlanted += Number(j.planted || 0);
-    totalFailed += Number(j.failed || 0);
-    /* F-710 — the ONLY way a caller can see the silent clamp is to compare its own request
-       against the `n` it was answered back. Neither shipped helper made that comparison. */
-    if (nth === 1 && Number(j.n) < n) {
-      clamped = { requested: n, answered: Number(j.n), nextIndex: j.nextIndex ?? null, complete: j.complete ?? null };
-    }
-    if (j.reason === "writes-failed") {
-      stopReason = `plant call ${nth} answered reason:"writes-failed" (planted ${j.planted}, failed ${j.failed}) — the store refused writes, so the population is short and nothing downstream may be asserted over it`;
-      break;
-    }
-    if (totalPlanted >= n) { planted = true; break; }
-    const next = Number(j.nextIndex);
-    if (!Number.isFinite(next) || next <= startIndex) {
-      stopReason = `plant call ${nth} answered complete=${j.complete} with only ${totalPlanted}/${n} row(s) planted and no advancing nextIndex (${JSON.stringify(j.nextIndex ?? null)}) — the population cannot be reached`;
-      break;
-    }
-    startIndex = next;
-  }
-  if (!planted && !stopReason) stopReason = `the plant was still ${totalPlanted}/${n} after the ${MAX_PLANT_CALLS}-call bound`;
-  return { planted, stopReason, calls, totalPlanted, totalFailed, clamped };
-};
+const plantTo = (n, expired) => plantPopulation((count, startIndex) => plant(count, expired, startIndex), n, {
+  maxCalls: MAX_PLANT_CALLS,
+  row: (j, nth) => ({
+    call: nth, n: j.n ?? null, startIndex: j.startIndex ?? null, planted: j.planted ?? null,
+    failed: j.failed ?? null, nextIndex: j.nextIndex ?? null, truncated: j.truncated ?? null,
+    reason: j.reason ?? null, complete: j.complete ?? null, expired: j.expired ?? null,
+    cleared: j.cleared ?? null, ttlSeconds: j.ttlSeconds ?? null, budgetMs: j.budgetMs ?? null,
+    keysReturned: (j.keys || []).length,
+  }),
+});
 
 async function main() {
   console.log(`\nPLANT + SWEEP — env=${ENV_NAME}  n=${N}`);
@@ -264,12 +227,16 @@ async function main() {
   /* ── 1 · THE PLANT, RESUMED TO A POPULATION AND WALL-CLOCKED (F-696 / F-710). */
   step(`1 · PLANT ${N} expired rows, resuming on startIndex until the rows are there`);
   const t0 = Date.now();
-  const p = await plantPopulation(N, true);
+  const p = await plantTo(N, true);
   const plantMs = Date.now() - t0;
   const lastPlant = p.calls[p.calls.length - 1] || null;
   ev.plant = {
     ms: plantMs, calls: p.calls.length, totalPlanted: p.totalPlanted, totalFailed: p.totalFailed,
     perCall: p.calls, ...(p.clamped ? { clampedFirstCall: p.clamped } : {}),
+    /* F-724 — how much of that wall time was a stale-tail clear being re-POSTed unchanged.
+       Zero on a clean tenant; non-zero is the shared tenant holding a crashed run's ballast,
+       and it is the difference between "this took a while" and "this driver is broken". */
+    ...(p.clearingCalls ? { clearingCalls: p.clearingCalls, clearedStaleRows: p.totalCleared, pausedMs: p.pausedMs } : {}),
     ...(p.stopReason ? { stopReason: p.stopReason } : {}),
   };
   if (!p.planted) {

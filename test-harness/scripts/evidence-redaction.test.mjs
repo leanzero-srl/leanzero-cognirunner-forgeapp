@@ -27,6 +27,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { maskNonCode, callArgs, objectValue } from "../lib/js-source-scan.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const libDir = path.resolve(here, "../lib");
@@ -782,44 +783,28 @@ const stripComments = (src) => src
   .replace(/\/\*[\s\S]*?\*\//g, " ")
   .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
-/**
- * THE ARGUMENT TEXT OF EVERY CALL TO `name`, BRACE-BALANCED (F-705).
+/*
+ * THE ARGUMENT AND OBJECT WALKERS LIVE IN `lib/js-source-scan.mjs` (F-716, F-730).
  *
- * The predicates below used to use a non-greedy window — `makeRosterUI\s*\(\{[\s\S]{0,400}?\}\)`
- * — which has two failure modes and both of them PASS a broken driver:
- *   · `code.match` returns the FIRST call only, so a second builder in the same file was
- *     never examined at all;
- *   · an options object longer than the window makes the match `null`, and `!m` was returned
- *     as `true`. The rule answered "this driver is fine" for the one input it could not read.
- * A parenthesis walk has neither: every call is found, and a call it cannot close is `null`,
- * which the callers treat as a FAILURE rather than a pass.
+ * F-716 replaced an unbounded regex window with a parenthesis walk, which fixed the window
+ * and left the walker STRING-BLIND: `stripComments` removes comments and nothing removes
+ * string or template bodies, so a parenthesis inside a FAIL MESSAGE was counted as code.
+ * MEASURED before the fix: `leakFailNamesArtefacts('FAIL("a capture was REFUSED :) the mask
+ * failed", { paths: shot.leaks.map(s => s.path) });')` returned FALSE — a correct leak FAIL
+ * that names its artefacts inside its own parens reported as naming nothing, and this suite
+ * red on a driver that is right. The other direction is worse: an unmatched `(` in a message
+ * either returns `null` (read as a failure) or, with a spare `)` downstream, swallows forward
+ * past the call and re-opens the very window F-716 was cut to close. The directory's FAIL
+ * messages routinely parenthesise — `(GET → 200)`, `(src/harness-fault.js)`, `(F-660)` — and
+ * today they all happen to balance, which is luck, not a rule.
+ *
+ * The library masks non-code to SPACES of the same length, balances on the mask and slices
+ * the ORIGINAL, so a FAIL's real message (where `REFUSED` lives) survives for the predicates
+ * below while only code parens are counted. It is a library and not a local copy because
+ * `scripts/live-driver-scope.test.mjs` needed the same answer and had grown its own — the
+ * second-home defect these rules exist to police.
  */
-const callArgs = (code, name) => {
-  const out = [];
-  for (const m of code.matchAll(new RegExp(`\\b${name}\\s*\\(`, "g"))) {
-    const open = m.index + m[0].length - 1;
-    let depth = 0, end = -1;
-    for (let j = open; j < code.length; j++) {
-      if (code[j] === "(") depth++;
-      else if (code[j] === ")") { depth--; if (depth === 0) { end = j; break; } }
-    }
-    out.push(end < 0 ? null : code.slice(open + 1, end));
-  }
-  return out;
-};
 
-/** The brace-balanced value of `key:` inside an argument list, or null if it is not an object. */
-const objectValue = (args, key) => {
-  const m = args && args.match(new RegExp(`\\b${key}\\s*:\\s*\\{`));
-  if (!m) return null;
-  const open = m.index + m[0].length - 1;
-  let depth = 0;
-  for (let j = open; j < args.length; j++) {
-    if (args[j] === "{") depth++;
-    else if (args[j] === "}") { depth--; if (depth === 0) return args.slice(open, j + 1); }
-  }
-  return null;
-};
 
 /** Every `makeShot(` call in the file is passed an object literal carrying a `pass:` key. */
 const hasPassWriter = (code) => {
@@ -875,6 +860,52 @@ const leakFailNamesArtefacts = (code) => {
   return refusalArgs.length > 0
     && refusalArgs.every((a) => a !== null && /\b(paths|leaks)\s*:/.test(a));
 };
+
+/* ── F-730 · THE WALKER IS NO LONGER STRING-BLIND ───────────────────────────────
+   The first two are the MEASURED pre-fix failures, verbatim. Both used to be wrong in the
+   direction that matters most — the first called a CORRECT driver broken, the second
+   re-opened the unbounded window F-716 closed — so a green suite below is evidence the
+   walker can still tell code from prose rather than evidence it got lucky. */
+{
+  const spareClose = 'FAIL("a capture was REFUSED :) the mask failed", { paths: shot.leaks.map(s => s.path) });';
+  ok(callArgs(spareClose, "FAIL").length === 1 && /\bpaths\s*:/.test(callArgs(spareClose, "FAIL")[0]),
+    "POSITIVE CONTROL (F-730): a `)` inside a FAIL MESSAGE no longer truncates that call's own argument list");
+  ok(leakFailNamesArtefacts(spareClose),
+    "POSITIVE CONTROL (F-730): …so the leak rule stops going RED on a driver that names its artefacts correctly — the measured pre-fix answer was false");
+
+  const spareOpen = 'FAIL("the mask REFUSED the capture ( and never closed", { paths: p });\nconst after = f(1);';
+  const openArgs = callArgs(spareOpen, "FAIL");
+  ok(openArgs.length === 1 && openArgs[0] !== null && /\bpaths\s*:/.test(openArgs[0]),
+    "POSITIVE CONTROL (F-730): …and an unmatched `(` in a message neither returns null nor swallows forward into the next call");
+  ok(!openArgs[0].includes("const after"),
+    "…the window really does stop at the call's own closing paren, which is the whole of F-716");
+
+  /* A FAIL written inside a STRING is not a call site. The mask is what makes that true. */
+  ok(callArgs('const help = "write FAIL(msg, { paths })";\nFAIL("REFUSED", { paths: p });', "FAIL").length === 1,
+    "POSITIVE CONTROL (F-730): a call NAME inside a string literal is not a call");
+
+  /* The mask's contract, asserted rather than assumed: the slice indices are only valid
+     because masking preserves LENGTH and newlines. */
+  for (const s of [
+    'const a = "x(y)"; f(1);',
+    "const t = `a ${ b(1) } c`; g(2);",
+    "const r = /a(b/.test(x); h(3);",
+    "/* ( */ k(4);\n// )\nm(5);",
+    "const n = `${ `${ deep }` }`;",
+  ]) {
+    ok(maskNonCode(s).length === s.length, `the mask preserves LENGTH so a slice of the original is aligned: ${JSON.stringify(s)}`);
+    ok(maskNonCode(s).split("\n").length === s.split("\n").length, "…and preserves newlines, so a reported line number is honest");
+  }
+  ok(maskNonCode('f("a(b");') === "f(     );",
+    "…and the mask of `f(\"a(b\");` keeps the call's own parens and blanks the one in the string");
+  ok(objectValue('{ record: { pass: P, note: "} not a brace" }, other: 1 }', "record") === '{ pass: P, note: "} not a brace" }',
+    "POSITIVE CONTROL (F-730): the object walker is string-blind no longer either — a `}` inside a message does not close the object");
+
+  /* NEGATIVE CONTROL: the rule must still be able to FAIL. A leak FAIL that names nothing
+     inside its own parens is caught even when a `paths:` follows it — F-716's finding. */
+  ok(!leakFailNamesArtefacts('FAIL("a capture was REFUSED");\nFAIL("restore leaked", { paths: q });'),
+    "NEGATIVE CONTROL: a leak FAIL that names NOTHING is still caught with an unrelated `paths:` right behind it");
+}
 
 /* POSITIVE CONTROLS — the PRE-FIX shapes, written out, so a green rule is evidence that
    the rule can still go red rather than evidence that it forgot how. */
@@ -1308,20 +1339,78 @@ const MUTATOR_CALLS = [
   /\bregisterRule\b/, /\bremoveRule\b/, /\btriggerGitDeploy\b/,
   /* the app's own permission writes */
   /\baddAppAdmin\b/, /\bgrantRole\b/, /\bremoveAccount\b/,
+  /* F-733 — doors the list did not know because no GUARDED driver used them, and the
+     dev-only cohort is full of them. Each was found by declaring the 26 honestly and
+     watching this rule call a TRUE declaration a cry of wolf. */
+  /\bseedSkill\b/,                                   // the hook's skill writer/restorer
+  /\bdeleteIssueFixture\b/,                          // lib/fixture-cleanup.mjs — a real DELETE
+  /\brulesApi\.[A-Za-z]+\.(?:create|update|remove|run)\b/,
+  /\bprobeJsmComment\b/,                            // the hook probe that COMMENTS on a real JSM issue
 ];
+
+/** `gh api -X POST|PUT|DELETE …` — a repository write driven through the GitHub CLI. It is a
+ *  mutation of a real repo, and `pipeline-scaffold-live.mjs` makes several. */
+function writesRepo(code) {
+  return /["']-X["']\s*,\s*["'](?:POST|PUT|PATCH|DELETE)["']/.test(code);
+}
+
+/* THE SHARED JIRA WRITERS, IMPORT-AWARE (F-733). `writesJira` below matches a literal
+ * `method: "POST"` beside a REST path, which is how a driver that builds its own fetch writes.
+ * A driver that imports `post`/`put`/`del`/`doTransition` from `lib/jira.mjs` writes Jira just
+ * as hard, and the literal lives in the LIBRARY — so eight honestly-declared drivers were
+ * reported as declaring a mutation they never made. The import clause is what makes a bare
+ * `post(` a Jira write rather than `testState.post(`, which is a harness hook call. */
+const JIRA_WRITE_HELPERS = ["post", "put", "del", "doTransition"];
+const WORKFLOW_WRITE_HELPERS = ["updateWorkflow", "attachSelfLoopRules"];
+function importedWriters(code, moduleRe, wanted) {
+  const out = new Set();
+  for (const m of code.matchAll(new RegExp(`\\bimport\\s*\\{([^}]*)\\}\\s*from\\s*["'][^"']*${moduleRe}["']`, "g"))) {
+    for (const spec of m[1].split(",")) {
+      const parts = spec.trim().split(/\s+as\s+/);
+      if (wanted.includes(parts[0].trim())) out.add(parts[parts.length - 1].trim());
+    }
+  }
+  return out;
+}
 /** A Jira write is a TWO-LINE shape (`jira(\`/rest/api/…\`, {` then `method: "POST",`), so
  *  it is matched on the whole file rather than per line — the only rule here that is. */
 function writesJira(code) {
   return /\/rest\/(api|servicedeskapi)\//.test(code) && /\bmethod:\s*"(POST|PUT|DELETE)"/.test(code);
 }
+/* A NAME QUOTED INSIDE ANOTHER STRING IS A SEARCH PATTERN, NOT A CALL (F-733).
+ * `campaign-test-run-ui-live.mjs` watches the network for a save it must NEVER see —
+ * `(r.postData() || "").includes('"saveListener"')` — and then ASSERTS the list is empty.
+ * A `\bsaveListener\b` scan reads that as a write and calls a read-only driver a liar, which
+ * is the "cry wolf" half of this rule firing on the one file that proves it does not write.
+ * The discriminator is the NESTED quote: a resolver or action name is a call when it is
+ * invoked (`name(`) or quoted DIRECTLY (`action: "kvSet"`, `call('saveListener', …)`), and a
+ * pattern when its quotes are themselves inside quotes. */
+const mutatorNameRe = (name) =>
+  new RegExp(`\\b${name}\\s*\\(|(?<!["'\`])(["'\`])${name}\\1(?!["'\`])`);
+
 function callsMutator(code) {
-  const hits = MUTATOR_CALLS.filter((re) => re.test(code)).map((re) => String(re).slice(3, -3));
+  const hits = MUTATOR_CALLS
+    .filter((re) => {
+      const name = String(re).match(/^\/\\b([A-Za-z]+)\\b\/$/);
+      return name ? mutatorNameRe(name[1]).test(code) : re.test(code);
+    })
+    .map((re) => String(re).slice(3, -3));
   if (writesJira(code)) hits.push("jira:POST/PUT/DELETE");
+  if (writesRepo(code)) hits.push("gh:-X POST/PUT/DELETE");
+  for (const n of importedWriters(code, "lib/jira\\.mjs", JIRA_WRITE_HELPERS)) {
+    if (new RegExp(`\\b${n}\\s*\\(`).test(code)) hits.push(`jira:${n}()`);
+  }
+  for (const n of importedWriters(code, "lib/workflow\\.mjs", WORKFLOW_WRITE_HELPERS)) {
+    if (new RegExp(`\\b${n}\\s*\\(`).test(code)) hits.push(`workflow:${n}()`);
+  }
   return hits;
 }
-/** The declared array, read out of the `mutates:` literal. `null` = no declaration found. */
+/** The declared array, read out of the `mutates:` literal OR — for a dev-only driver with no
+ *  `--env` to resolve — out of `declareMutations([…])`, which is the same declaration with the
+ *  environment half removed (F-733). `null` = no declaration found, which the guard THROWS on
+ *  either way, so it can never ship. */
 function declaredMutations(code) {
-  const m = code.match(/\bmutates:\s*\[([^\]]*)\]/);
+  const m = code.match(/\bmutates:\s*\[([^\]]*)\]/) || code.match(/\bdeclareMutations\s*\(\s*\[([^\]]*)\]/);
   if (!m) return null;
   return [...m[1].matchAll(/"([A-Za-z]+)"/g)].map((x) => x[1]);
 }
@@ -1345,6 +1434,32 @@ ok(callsMutator('const r = await fetch(HOOK, { method: "POST", body });').length
   "NEGATIVE CONTROL: POSTing to the harness web trigger is how EVERY driver talks to the app — it is not a Jira write");
 ok(callsMutator('await invoke("disarmKeyReadFault", { provider: P });').length === 0,
   "NEGATIVE CONTROL: disarming a lever is a fault concern, declared under faults:, not a mutation");
+/* ── F-733 · THE DOORS THE LIST DID NOT KNOW, each with the shape that found it ──── */
+ok(callsMutator('import { get, post, del } from "../lib/jira.mjs";\nconst k = (await post("/rest/api/3/issue", f)).key;').length === 1,
+  "POSITIVE CONTROL (F-733): a Jira write through the SHARED helper is a write — the `method: \"POST\"` literal lives in lib/jira.mjs, and eight honestly-declared drivers were reported as crying wolf because of it");
+ok(callsMutator('import { get, getIssue } from "../lib/jira.mjs";\nconst r = await get("/rest/api/3/issue/X");').length === 0,
+  "NEGATIVE CONTROL: importing the READ helpers from the same module is not a write — the import clause is the discriminator, not the module");
+ok(callsMutator('import { post as jpost } from "../lib/jira.mjs";\nawait jpost("/rest/api/3/issue", f);').length === 1,
+  "…and an `as` RENAME does not hide it");
+ok(callsMutator('const r = await testState.post({ action: "readHarnessProbe" });').length === 0,
+  "NEGATIVE CONTROL: `testState.post` is a harness hook call, not a Jira write — which is why the import clause has to decide");
+ok(callsMutator('import { readWorkflow, updateWorkflow } from "../lib/workflow.mjs";\nawait updateWorkflow(top, wf);').length === 1,
+  "POSITIVE CONTROL (F-733): rewriting a WORKFLOW is a `rules` mutation and was invisible for the same reason");
+ok(callsMutator('const L = await rulesApi.listeners.create({ name: "x" });').length === 1,
+  "POSITIVE CONTROL (F-733): the Rules REST client's writers count too");
+ok(callsMutator('const r = await rulesApi.listeners.get(id);').length === 0,
+  "NEGATIVE CONTROL: …and its readers do not");
+ok(callsMutator('gh(["api", "-X", "POST", `/repos/${REPO}/git/refs`, "--input", "-"], body);').length === 1,
+  "POSITIVE CONTROL (F-733): a `gh api -X POST` writes a real repository — pipeline-scaffold-live.mjs makes several and declared `git` honestly");
+ok(callsMutator('gh(["api", `/repos/${REPO}/actions/variables`]);').length === 0,
+  "NEGATIVE CONTROL: …and a `gh api` READ does not");
+/* THE NESTED-QUOTE RULE, both ways. */
+ok(callsMutator(`page.on('request', r => { if ((r.postData() || '').includes('"saveListener"')) seen.push(r); });`).length === 0,
+  "POSITIVE CONTROL (F-733): a resolver name quoted INSIDE another string is a SEARCH PATTERN — campaign-test-run-ui-live.mjs watches for a save it asserts never happens, and a \\b scan called that read-only driver a liar");
+ok(callsMutator(`const r = await call('saveListener', { listener });`).length === 1,
+  "NEGATIVE CONTROL: …while the name quoted DIRECTLY as a call argument is still a write");
+ok(callsMutator('const r = await hook({ action: "kvSet", key: K, value: v });').length === 1,
+  "…as is an action name quoted directly in a hook body, which is how most of this list is used");
 /* And the declaration reader, which the rule stands on. */
 ok(declaredMutations('requireEnvAck(a, { faults: [], mutates: ["agents", "jobs"], defaultEnv: "dev" })').join(",") === "agents,jobs",
   "the declaration reader returns the words a driver named");
@@ -1352,10 +1467,44 @@ ok(declaredMutations('requireEnvAck(a, { faults: [], mutates: [], defaultEnv: "d
   "…and an EMPTY declaration is an empty array, not a missing one");
 ok(declaredMutations('requireEnvAck(a, { faults: [] })') === null,
   "…and a call with no `mutates` at all is null — which the guard itself THROWS on, so it can never ship");
+/* F-733 — the dev-only form reads IDENTICALLY. That is the whole point: rule 4g is one rule,
+   not two, and a driver that cannot resolve an environment still declares a blast radius. */
+ok(declaredMutations('declareMutations(["roster"]);').join(",") === "roster",
+  "F-733: the same reader sees the dev-only declaration");
+ok(declaredMutations("declareMutations([]);").length === 0,
+  "…and its EMPTY form is an empty array, not a missing one");
 
-const guardedDrivers = liveFiles.filter((f) => /requireEnvAck\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
+/* F-733 — THE COHORT IS NOW EVERY DRIVER, WHICH IS THE GAP THIS RULE USED TO STATE.
+   The comment above said it plainly: only a driver that CALLS `requireEnvAck` could declare
+   anything, twenty-five `*-live.mjs` never do, and several of those WRITE — roles granted,
+   skills written into the shared store, a deploy pushed. Routing them through the guard was
+   the wrong fix (F-699: it would make a Playwright script demand a `.env` and a
+   `TESTSTATE_URL` it has no use for), so they got the DECLARATION half on its own. */
+const guardedDrivers = liveFiles.filter((f) => {
+  const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+  return /requireEnvAck\s*\(/.test(code) || /declareMutations\s*\(/.test(code);
+});
 ok(guardedDrivers.length >= 30,
   `F-718: the rule found the drivers that go through the guard and can therefore declare (${guardedDrivers.length})`);
+ok(guardedDrivers.length === liveFiles.length,
+  `F-733: EVERY *-live.mjs declares its blast radius — the dev-only cohort is no longer outside the rule (${liveFiles.filter((f) => !guardedDrivers.includes(f)).join(", ") || "none undeclared"})`);
+{
+  /* …and both halves of that union have real subjects, so a green result above is not green
+     because one of the two doors was quietly emptied. */
+  const viaGuard = guardedDrivers.filter((f) => /requireEnvAck\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
+  const viaDeclare = guardedDrivers.filter((f) => !viaGuard.includes(f));
+  ok(viaGuard.length >= 25, `F-733: the environment-resolving door still holds its drivers (${viaGuard.length})`);
+  ok(viaDeclare.length >= 20, `F-733: …and the dev-only door holds its own (${viaDeclare.length})`);
+  /* A dev-only driver must NOT resolve an environment: `declareMutations` exists precisely so
+     that it does not, and a file carrying both is a conversion done twice. */
+  for (const f of viaDeclare) {
+    const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+    ok(!/requireEnvAck\s*\(/.test(code),
+      `${f}: declares through the dev-only door and must not ALSO call requireEnvAck — one home for the decision, per driver`);
+    ok(/from\s+"\.\.\/lib\/shared-env-guard\.mjs"/.test(code),
+      `${f}: imports declareMutations from the guard rather than describing its own blast radius (the F-686 defect, one cohort over)`);
+  }
+}
 {
   let declaredSome = 0, declaredNone = 0;
   for (const f of guardedDrivers) {
@@ -1393,195 +1542,25 @@ ok(guardedDrivers.length >= 30,
     `F-718: every declared word is in the guard's CLOSED vocabulary (unknown: ${unknown.join(", ")})`);
 }
 
-/* ── 4f-2. F-713 — A DRIVER'S MODULE SCOPE MUST CLOSE, OR THE RULES ABOVE READ A CORPSE ──
-   Every directory rule in this file reads `*-live.mjs` as TEXT and never loads one. On the
-   day this was written that gate was GREEN — `evidence-redaction: 267 passed, 0 failed`,
-   `roster-ui: 121 passed, 0 failed` — over a directory in which EIGHT drivers could not be
-   evaluated at all: six threw `ReferenceError: requireEnvAck is not defined` (F-711, the
-   F-699 conversion swapped the `STAGING_TESTSTATE_URL` read for a CALL and never added the
-   import) and two threw `ReferenceError: ENV_ID_DEFAULT is not defined` (F-712, the env-id
-   ternary became a binding that was never destructured out of `requireEnvAck`). A rule
-   whose whole purpose is "the conversion cannot be got wrong" passed the conversion that
-   was got wrong in eight files, and the F-701 fold-in claimed the directory rule SUPERSEDED
-   a per-file suite while having strictly less power than running the file.
+/* ── 4f-2. F-713 — THE SCOPE RULE HAS MOVED OUT OF THIS FILE (F-728) ────────────
+   It lived HERE and in `scripts/live-driver-scope.test.mjs` at once — F-713 shipped the
+   F-711 rule in two homes in one commit — and the two homes did not read the guard the same
+   way. The sibling PARSES the guard's export list out of the library "so it cannot drift";
+   this copy RETYPED the seven names three hundred lines after its own docblock promised the
+   vocabulary was "DERIVED FROM THE DIRECTORY, never hand-listed". Add `forgeEnvArg` to the
+   guard and call it from a driver without importing it: the sibling goes red, correctly, and
+   this copy stays green because the name is not in its literal array — two rules disagreeing
+   about one file, with whichever is read first deciding.
 
-   Why not just run them: `await import()` executes the driver, which opens web triggers and
-   drives browsers against a live tenant — an offline gate may not do that. And `node --check`
-   is not the answer either: it was MEASURED to exit 0 on all eight, because an undeclared
-   identifier is a runtime ReferenceError, not a parse error (the same hole as F-012, where
-   `--check` passed a shared module that could not be imported). Acorn is not a dependency.
+   So there is ONE home, and it is `scripts/live-driver-scope.test.mjs`, which was already the
+   stronger of the two: its cohort is every `*-live.mjs` PLUS every `_probe-*` (F-715 put those
+   on the same environment rule, so they are on the same scope rule), and its RULE 2 polices
+   EVERY unbound SCREAMING_SNAKE name rather than only the guard-derived ones — a strict
+   superset of what family (b) here could see. Its RULE 2b now covers the lowercase result-field
+   aliases neither rule could see (F-729). Do not re-add a copy here: a rule about second homes
+   is the last rule that should have one, which is exactly what 4f-1 says on its way IN. */
 
-   So the gate is a SCOPE pass done the way this file already does its work: collect what a
-   driver BINDS, collect what it USES at module scope, and refuse a use with no binding. Two
-   families, matching the two real breakage shapes exactly:
-
-     (a) an identifier `lib/shared-env-guard.mjs` EXPORTS, used in the driver, absent from
-         its `import { … } from "../lib/shared-env-guard.mjs"` list — the F-711 shape;
-     (b) a name that is GUARD-DERIVED — one of the aliases this directory binds out of a
-         `requireEnvAck(` result (`envName: ENV_NAME`, `hookUrl: HOOK_URL`,
-         `envId: ENV_ID_DEFAULT`, …) — used in a driver that never destructured it, nor
-         bound it any other way: the F-712 shape.
-
-   The vocabulary for (b) is DERIVED FROM THE DIRECTORY, never hand-listed: every alias any
-   driver binds out of a guard call is collected, and a file that USES one of those names
-   without binding it is the file that forgot the destructuring. That is what makes this
-   self-maintaining — the alias a future driver invents is in the vocabulary the moment one
-   correct driver binds it — and it is why the rule stays narrow: a generic "every
-   UPPER_SNAKE constant must be bound" pass was tried first and reported 28 drivers, because
-   `ORDER BY … DESC` inside a JQL template and prose like `DID NOT FINISH` are not
-   identifier reads, and no string-stripper worth trusting tells them apart from one. A rule
-   that cries wolf on twenty correct drivers is a rule that gets deleted.
-
-   Comments are stripped (these drivers document their own history — "this used to read
-   ENV_ID_DEFAULT" is a sentence some of them carry), string and template bodies are
-   stripped but `${…}` contents are KEPT — a name interpolated into a URL is a real use —
-   property accesses (`process.env.TESTSTATE_URL`) are not reads of a local, and `NAME:` is
-   an object key. Each exclusion is a false NEGATIVE at worst: this rule under-reports
-   rather than going red on a correct file, which is the only direction a directory rule may
-   be wrong in. */
-const GUARD_EXPORTS = ["requireEnvAck", "forgeEnvId", "hookUrlFor", "hookUrlVar", "FAULT_HARMS", "ENVS", "ENV_NAMES"];
-/* The calls whose RESULT a driver destructures. A name bound out of one of these is
-   guard-derived, and is the vocabulary rule (b) polices. */
-const GUARD_CALLS = ["requireEnvAck", "forgeEnvId", "hookUrlFor", "hookUrlVar"];
-
-/** String and template bodies removed, but `${…}` contents preserved — an interpolated
- *  identifier is a READ, and blanking it would hide exactly the use we are hunting. */
-const stripStringBodies = (src) => src
-  .replace(/`(?:\\[\s\S]|\$\{[^{}]*\}|[^`\\])*`/g, (lit) =>
-    " " + [...lit.matchAll(/\$\{([^{}]*)\}/g)].map((m) => m[1]).join(" ") + " ")
-  .replace(/'(?:\\.|[^'\n\\])*'/g, "''")
-  .replace(/"(?:\\.|[^"\n\\])*"/g, '""');
-
-/** Every name the file BINDS: import specifiers (any module), declarations, and the targets
- *  of a `const {…} =` / `const […] =` destructuring, renames included. */
-function boundNames(code) {
-  const b = new Set();
-  for (const m of code.matchAll(/\bimport\s+([\s\S]*?)\s+from\s/g)) {
-    for (const s of m[1].matchAll(/([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?/g)) {
-      if (s[1] === "as") continue;
-      b.add(s[2] || s[1]);
-    }
-  }
-  for (const m of code.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) b.add(m[1]);
-  for (const m of code.matchAll(/\b(?:const|let|var)\s*([{[][\s\S]*?[}\]])\s*=/g)) {
-    for (const s of m[1].matchAll(/(?:([A-Za-z_$][\w$]*)\s*:\s*)?([A-Za-z_$][\w$]*)/g)) b.add(s[2]);
-  }
-  return b;
-}
-
-/** The local aliases a file binds out of a guard call: `const { envId: ENV_ID_DEFAULT } =
- *  requireEnvAck(…)` contributes `ENV_ID_DEFAULT`. Collected across the whole directory to
- *  build the vocabulary, so no name in this rule is hand-maintained. */
-function guardBoundAliases(code) {
-  const names = new Set();
-  for (const call of GUARD_CALLS) {
-    for (const m of code.matchAll(new RegExp(`\\{([^{}]*)\\}\\s*=\\s*(?:await\\s+)?${call}\\s*\\(`, "g"))) {
-      for (const s of m[1].matchAll(/(?:([A-Za-z_$][\w$]*)\s*:\s*)?([A-Za-z_$][\w$]*)/g)) names.add(s[2]);
-    }
-  }
-  return names;
-}
-
-/** Is `name` READ in `code` — not as a property, not as an object key? Returns the 1-based
- *  line of the first read, or 0. */
-function readLine(code, name) {
-  const lines = code.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    for (const m of lines[i].matchAll(new RegExp(`(\\.?)\\s*\\b${name}\\b\\s*(:?)`, "g"))) {
-      if (m[1] === "." || m[2] === ":") continue;
-      return i + 1;
-    }
-  }
-  return 0;
-}
-
-/** The unbound module-scope names of one driver: `[]` means its scope closes.
- *  `vocab` is the directory's guard-derived alias set (rule b); rule (a) needs no vocabulary
- *  because the guard's exports are the guard's own. */
-function scanUnboundScope(src, vocab = new Set()) {
-  const code = stripStringBodies(stripComments(src));
-  const bound = boundNames(code);
-  const out = [];
-  for (const g of GUARD_EXPORTS) {
-    if (readLine(code, g) && !bound.has(g)) out.push(`${g} (guard export used, never imported)`);
-  }
-  for (const n of vocab) {
-    if (GUARD_EXPORTS.includes(n) || bound.has(n)) continue;
-    const ln = readLine(code, n);
-    if (ln) out.push(`${n} (line ${ln}, guard-derived name never destructured)`);
-  }
-  return out;
-}
-
-/* POSITIVE CONTROLS — THE TWO REAL BREAKAGE SHAPES, VERBATIM. Each is a file whose module
-   scope does not close and which `node --check` accepts, so a green rule below is evidence
-   the rule can still go red rather than evidence it forgot how. */
-ok(scanUnboundScope(`import { loadEnv } from "../lib/env.mjs";
-const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), { faults: [] });`)
-  .some((p) => p.startsWith("requireEnvAck")),
-  "POSITIVE CONTROL (F-713/F-711): the scope rule FIRES on a driver that CALLS requireEnvAck and never imports it — the exact shape that killed all six coder drivers at module evaluation");
-/* THE VOCABULARY, derived from the directory: every alias any driver binds out of a guard
-   call. `ENV_ID_DEFAULT` is in it because seventeen drivers destructure it correctly — which
-   is exactly why the two that do not are findable. */
-const guardVocab = new Set();
-for (const f of liveFiles) {
-  for (const n of guardBoundAliases(stripStringBodies(stripComments(readFileSync(path.join(here, f), "utf8"))))) guardVocab.add(n);
-}
-ok(guardVocab.has("ENV_ID_DEFAULT") && guardVocab.has("ENV_NAME") && guardVocab.has("HOOK_URL"),
-  `F-713: the guard vocabulary is derived from the drivers that got it RIGHT, not hand-listed (${[...guardVocab].sort().join(", ")})`);
-
-ok(scanUnboundScope(`import { requireEnvAck } from "../lib/shared-env-guard.mjs";
-const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), { faults: [] });
-const ENV_ID = arg("envid", ENV_ID_DEFAULT);`, guardVocab)
-  .some((p) => p.startsWith("ENV_ID_DEFAULT")),
-  "POSITIVE CONTROL (F-713/F-712): …and on the binding that was never destructured out of the guard result, which is how both fault-arming UI drivers died");
-ok(scanUnboundScope(`import { requireEnvAck } from "../lib/shared-env-guard.mjs";
-const DEV = forgeEnvId("dev");`, guardVocab).some((p) => p.startsWith("forgeEnvId")),
-  "POSITIVE CONTROL (F-713): …and on a driver that imports ONE guard export and calls a SECOND — the shape F-711's grep could not see, because that grep asked only whether the file imported from the guard AT ALL");
-/* NEGATIVE CONTROLS — the CORRECT shapes, and every exclusion stated above, so the rule is
-   shown not to go red on a file that is right. */
-ok(scanUnboundScope(`import { requireEnvAck } from "../lib/shared-env-guard.mjs";
-const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
-const ENV_ID = arg("envid", ENV_ID_DEFAULT);`, guardVocab).length === 0,
-  "NEGATIVE CONTROL: the fully converted call site — guard imported, envId destructured — is CLEAN, which is the shape the two broken drivers are one word away from");
-ok(scanUnboundScope(`import { forgeEnvId } from "../lib/shared-env-guard.mjs";
-const ENV_ID = forgeEnvId("dev");`, guardVocab).length === 0,
-  "NEGATIVE CONTROL: …as is the id-only helper, imported and called");
-ok(scanUnboundScope(`const HOOK = process.env.STAGING_TESTSTATE_URL;`, guardVocab).length === 0,
-  "NEGATIVE CONTROL: a PROPERTY read is not a read of a local — `process.env.X` binds nothing and needs nothing");
-ok(scanUnboundScope(`const body = { ENV_NAME: "dev", MODE: "dry" };`, guardVocab).length === 0,
-  "NEGATIVE CONTROL: an upper-case OBJECT KEY is not an identifier read, even when it spells a vocabulary name");
-ok(scanUnboundScope(`/* this driver used to read ENV_ID_DEFAULT before the conversion */\nconst a = 1;`, guardVocab).length === 0,
-  "NEGATIVE CONTROL: a comment recording the file's own history is prose — these drivers document their past, and a rule that reads it goes red on a correct file");
-ok(scanUnboundScope(`const msg = "ENV_ID_DEFAULT is not defined";`, guardVocab).length === 0,
-  "NEGATIVE CONTROL: …and a name inside a STRING is not a read either");
-ok(scanUnboundScope("const { envId: ENV_ID_DEFAULT } = requireEnvAck(a);\nconst u = `https://h/${ENV_ID_DEFAULT}/go`;", guardVocab)
-  .every((p) => !p.startsWith("ENV_ID_DEFAULT")),
-  "NEGATIVE CONTROL: …but a name interpolated into a template IS a read, and resolves against its binding — `${…}` bodies survive the strip");
-ok(scanUnboundScope("const u = `https://h/${ENV_ID_DEFAULT}/go`;", guardVocab).some((p) => p.startsWith("ENV_ID_DEFAULT")),
-  "POSITIVE CONTROL: …so an UNBOUND name interpolated into a template is still caught — the strip preserves the use, it does not hide it");
-/* The rule must not be satisfiable by deleting the guard: a driver that reads NEITHER
-   family is simply not this rule's subject, and that is not the same as passing it. */
-ok(scanUnboundScope(`const BASE = "https://x";\nconst r = await fetch(BASE);`, guardVocab).length === 0,
-  "NEGATIVE CONTROL: a driver that touches no guard name at all is outside the rule, not smuggled through it");
-
-/* THE DIRECTORY. This is the measurement, and on today's main it is EXPECTED RED: the
-   drivers below cannot be loaded at all, and this file's whole finding is that the gate
-   said `267 passed, 0 failed` over them. It goes green when the missing imports and the
-   missing destructurings land — which is a parallel cut, deliberately not made here. */
-const scopeOffenders = [];
-for (const f of liveFiles) {
-  const unbound = scanUnboundScope(readFileSync(path.join(here, f), "utf8"), guardVocab);
-  if (unbound.length) scopeOffenders.push(`${f}: ${unbound.join(", ")}`);
-}
-ok(scopeOffenders.length === 0,
-  `F-713: every *-live.mjs closes its module scope — a name used at module scope and bound nowhere is a ReferenceError at load, which \`node --check\` exits 0 on and which every TEXT rule in this file reads straight past (${scopeOffenders.length} driver(s) cannot be loaded:\n    ${scopeOffenders.join("\n    ")})`);
-/* …and the scan really can see these files, so a green result above is never green because
-   the glob went empty — the negative has to be proven on the same objects. */
-ok(liveFiles.every((f) => readFileSync(path.join(here, f), "utf8").length > 0),
-  "F-713: the scope scan read every live driver — an empty offender list is a proven negative, not an unread directory");
-
-/* ── 4g. F-686 — AN ARMING DRIVER'S BLAST RADIUS MAY NOT BE EMPTY ───────────────
+/* ── 4g-2. F-686 — AN ARMING DRIVER'S BLAST RADIUS MAY NOT BE EMPTY ─────────────
    `faults: []` is the legitimate mapping-only form for a driver that arms nothing, and it
    is also the one-token way to silence the shared-dev refusal on a driver that arms
    plenty. 4e proves the guard is CALLED; this proves it was told the truth. */

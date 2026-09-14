@@ -116,6 +116,45 @@ console.log("\n2 · F-691'S IDENTITY RULE, ON THE SHAPES THE MODULE ACTUALLY EMI
   const done = { ok: true, deleted: 5, failed: 0, truncated: false, reason: null, complete: true, cursor: null, failedResume: null };
   ok(carryVerdict(done).verdict === "n/v" && carryVerdict(done).kind === "finished",
     "NEGATIVE CONTROL: a finished answer carries nothing and is not graded as a pass or a failure");
+
+  /* ── F-727 — THE ANSWER'S OWN CURSOR WAS THE UNGUARDED HALF ─────────────────────────
+     `mess.readable` was checked; `here.readable` never was. A token that decodes to an
+     object with NO `c` key became `c: null` and was then COMPARED as if it had been read,
+     so a cursor that can resume NOTHING could be graded `ahead-of-failure` — a PASS that
+     also satisfies this driver's `some(kind === "ahead-of-failure")` positive control.
+     These fixtures are that token, in both directions, and the verdict is N/V: the grader
+     refusing to grade, never "correct". */
+  const cLess = Buffer.from(JSON.stringify({ f: "page-7" }), "utf8").toString("base64");
+  ok(tokenFacts(cLess).decodable === true && tokenFacts(cLess).hasCKey === false,
+    "the fixture really is the shape being judged: it DECODES (so `decodable` never catches it) and carries no `c`");
+  {
+    /* AHEAD-OF-FAILURE, the arm that used to manufacture a PASS. */
+    const v = carryVerdict({ ...call1, cursor: cLess, failedResume: mint("page-7") });
+    ok(v.verdict === "n/v" && v.kind === "opaque-cursor",
+      "POSITIVE CONTROL (F-727): a `c`-less cursor against a readable `failedResume` is NOT VERIFIED — it used to be graded `ahead-of-failure`, a PASS for an answer that names no resume page");
+    ok(v.verdict !== "ok",
+      "…and specifically never a PASS, which is the whole finding");
+  }
+  {
+    /* AT-FAILURE, the mirror: against a page-0 (`c: null`) failedResume the `c`-less token
+       used to compare EQUAL and grade `at-failure` — also a PASS. */
+    const v = carryVerdict({ ...call1, cursor: cLess, failedResume: mint(null) });
+    ok(v.verdict === "n/v" && v.kind === "opaque-cursor",
+      "POSITIVE CONTROL (F-727): …and the mirror case, where `null === null` used to make a `c`-less token look like the failing page itself");
+  }
+  {
+    /* THE ORDER IS DELIBERATE: an unreadable `failedResume` is a stated REQUIREMENT of
+       F-691 and keeps the harder `bad` verdict when both tokens are unreadable. */
+    const v = carryVerdict({ ...call1, cursor: cLess, failedResume: "not a token!!" });
+    ok(v.verdict === "bad" && v.kind === "opaque-failedresume",
+      "NEGATIVE CONTROL: with BOTH unreadable, the `failedResume` requirement still wins — the new guard did not soften an existing failure");
+  }
+  {
+    /* And the readable shapes are untouched: the guard adds a branch, it does not move one. */
+    const v = carryVerdict({ ...call1, cursor: mint("page4", null), failedResume: mint(null) });
+    ok(v.verdict === "ok" && v.kind === "ahead-of-failure",
+      "NEGATIVE CONTROL: a cursor that DOES name a page still grades exactly as before");
+  }
 }
 
 console.log("\n3 · F-722 — THE ARM COUNT IS DERIVED, AND THE DERIVATION IS THE FINDING");

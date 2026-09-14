@@ -46,12 +46,20 @@
  *      GH_TOKEN, and test-harness/.env (TESTSTATE_URL, HARNESS_SECRET,
  *      HARNESS_ADMIN_ACCOUNT_ID).
  */
-import { forgeEnvId } from "../lib/shared-env-guard.mjs";
+import { forgeEnvId, declareMutations } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
 import { testState } from "../lib/rules-api.mjs";
 import { gitHookUrl } from "../lib/git-hook-url.mjs";
+
+/* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
+   THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
+   closed vocabulary, and a non-empty set asks for `--i-know-dev-is-shared` before anything is
+   written. No environment is resolved and no `.env` is demanded: this is the DECLARATION half
+   of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
+   web trigger out of the mapping it has no use for (F-699's reasoning). */
+declareMutations(["git", "listeners"]);
 
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";

@@ -63,6 +63,11 @@
  *     and gets the mapping only: a read-only driver runs on dev with no ceremony, which is
  *     exactly what keeps the refusal worth reading when it does fire. Both arrays are
  *     REQUIRED, so an empty blast radius is a statement rather than an omission.
+ *   - `--envid` is NOT a second way to choose an environment (F-732). It survives only for
+ *     the identity it already has: an id that is not `forgeEnvId(envName)` is a refusal,
+ *     because the HOOK half and the BROWSER half of a driver must come from ONE row, and an
+ *     id typed on the command line is rule 4f's banned literal typed somewhere the file rule
+ *     cannot see it.
  *   - `scripts/evidence-redaction.test.mjs` rule 4g keeps the declaration HONEST: a driver
  *     that calls a mutator must declare a non-empty `mutates`, and one that declares
  *     `mutates: []` must call none. `requireAck: true` survives for a driver whose blast
@@ -375,6 +380,46 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
     ]);
   }
 
+  /* ── F-732 — `--envid` MAY NOT RE-DECIDE THE ROW ─────────────────────────────────
+   * F-714 fixed the hook-half/browser-half split in ONE driver and left the same split
+   * available BY FLAG in eight siblings: `--envid` took a RAW environment id that overrode
+   * the settled row, so `--env=staging --envid=<dev id>` armed a fault on STAGING for 240 s
+   * and then pointed Playwright at the DEV admin page, where nothing was armed. The driver
+   * FAILs "the notice never appeared" and `ev.env` records "staging" for a run whose UI half
+   * was dev — F-698's exact complaint, re-entered through a flag.
+   *
+   * Rule 4f forbids retyping an environment id IN A FILE, and an id typed on the COMMAND LINE
+   * is the same decision made outside the one home, so the rule belongs here rather than in a
+   * convention: the flag survives, and it may only ever say what the row already says. The
+   * shared-dev ack cannot cover this by construction — it keys off `--env`, and `--envid`
+   * never reaches it, so pointing the BROWSER at dev was unacknowledged.
+   *
+   * It is checked BEFORE `loadEnv()` for the same reason everything else here is: an operator
+   * on an unconfigured machine must read the refusal, not "Missing .env". */
+  const rawEnvId = arg(argv, "envid", null);
+  if (rawEnvId !== null && rawEnvId !== row.forgeEnvId) {
+    const named = ENV_NAMES.find((n) => ENVS[n].forgeEnvId === rawEnvId);
+    die([
+      `REFUSING to run: --envid does not name the environment this run settled on (${envName}).`,
+      "",
+      "A driver has a HOOK half and a BROWSER half, and both must come from ONE row of the",
+      "guard's table. `--envid` used to override the browser half alone, so",
+      "`--env=staging --envid=<dev id>` armed the fault on one tenant and drove the admin page",
+      "of the other — and the evidence file recorded the environment of the half that did not",
+      "fail (F-698, F-714, F-732).",
+      "",
+      ...(named
+        ? [`The id given is ${named}'s. If that is the environment you want, name it:`,
+          `  node scripts/${name} --env=${named}`]
+        : ["The id given is not one this harness knows at all. Environment ids are not typed;",
+          "they come out of the one table, which `--env` already reads for you:",
+          `  node scripts/${name} --env=${envName}`]),
+      "",
+      `\`--envid\` survives only for the identity it already has: --envid=${row.forgeEnvId} is`,
+      `what --env=${envName} means, and passing it changes nothing.`,
+    ]);
+  }
+
   /* Settled. Only NOW is the env file allowed to have an opinion. */
   const env = loadEnv();
   const hookUrl = env[row.urlVar];
@@ -390,6 +435,90 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
     ]);
   }
   return { envName, hookUrl, envId: row.forgeEnvId, urlVar: row.urlVar, shared: row.shared, acknowledged };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-733 — THE DEV-ONLY DRIVERS DECLARE TOO, WITHOUT BEING DRAGGED THROUGH THE MAPPING.
+ *
+ * Rule 4g's own comment stated the gap it could not close: only a driver that CALLS
+ * `requireEnvAck` can declare anything, and twenty-five `*-live.mjs` never do. They are
+ * dev-only by construction — no `--env`, no choice — and several of them WRITE:
+ * `perm-discriminator-live.mjs` grants and removes app roles, `skills-knowledge-ui-live.mjs`
+ * writes SKILLS into the shared store, `pipeline-scaffold-live.mjs` pushes a DEPLOY.
+ * All of it on the shared tenant, in silence, while `plant-sweep-live.mjs` — which writes
+ * inert ballast — has to be acknowledged. That is F-718's line drawn in the wrong place
+ * again, one cohort over.
+ *
+ * Routing them through `requireEnvAck` is the WRONG fix and F-699 already said why: it would
+ * make a Playwright script that never opens a web trigger demand a `.env` and a
+ * `TESTSTATE_URL` it has no use for — a real behaviour regression bought for a cosmetic
+ * uniformity. So this is the DECLARATION half on its own. No `--env`, no environment
+ * resolution, no `loadEnv`, nothing read from disk: the SAME closed vocabulary, the same
+ * sentences, the same exit code.
+ *
+ * AND THE FLAG IS THE WHOLE ACKNOWLEDGEMENT, because there is nothing else to acknowledge.
+ * `requireEnvAck` asks only when the settled row is shared; these drivers have one row and it
+ * IS the shared one, so a non-empty `mutates` always asks. A driver that declares `[]` runs
+ * with no ceremony — which is exactly what keeps the refusal worth reading when it fires.
+ *
+ * `scripts/evidence-redaction.test.mjs` rule 4g reads this call exactly as it reads
+ * `mutates:`, so the declaration is held to the same honesty test: a driver that calls a
+ * mutator may not declare `[]`, and one that declares a word must call something.
+ *
+ * ONE LIMIT, MEASURED AND STATED RATHER THAN IMPLIED. This function demands no `.env` — but
+ * ESM evaluates every IMPORT before the module body, and `lib/jira.mjs` and
+ * `lib/rules-api.mjs` both call `loadEnv()` at module scope. So in the drivers that import one
+ * of those, an UNCONFIGURED machine still reads "Missing .env" before it reads this refusal;
+ * only `perm-discriminator-live.mjs` and `skills-knowledge-ui-live.mjs` refuse first. What is
+ * true of ALL of them, and is the guarantee that matters, is that the refusal precedes every
+ * NETWORK call and every browser: `loadEnv` reads a file, it does not touch a tenant. Measured
+ * 2026-09-14 over all 26 with an env file present: 23 of 23 mutating drivers exit 2 with this
+ * sentence, and the 3 read-only ones run on to their own fixtures.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Declare what a DEV-ONLY driver changes on the shared tenant, and refuse without the ack.
+ *
+ * @param {string[]} mutates  words from the closed MUTATION_HARMS vocabulary. `[]` means
+ *                            "this driver is read-only" and is REQUIRED, not omittable —
+ *                            an empty blast radius is a statement, never a silence.
+ * @param {object}  [opts]
+ * @param {string[]} [opts.argv]   defaults to `process.argv.slice(2)`
+ * @param {string}  [opts.script]  script name for the usage line (defaults to argv[1])
+ * @returns {{ mutates: string[], acknowledged: boolean }}
+ */
+export function declareMutations(mutates, { argv = process.argv.slice(2), script } = {}) {
+  if (!Array.isArray(mutates)) {
+    throw new Error(
+      "declareMutations: name what this driver CHANGES on the shared dev tenant " +
+      "(`declareMutations([])` if it is read-only) — " +
+      `the closed vocabulary is ${MUTATION_NAMES.join(", ")} (F-733)`
+    );
+  }
+  /* Validate EVERY word first, so a typo is a THROW at module load on any machine and never
+     waits for the one run that reaches the refusal to be discovered. */
+  for (const m of mutates) mutationLine(m);
+
+  const acknowledged = flag(argv, "i-know-dev-is-shared");
+  if (!mutates.length || acknowledged) return { mutates, acknowledged };
+
+  const name = script || (process.argv[1] || "").split("/").pop() || "this-driver.mjs";
+  die([
+    "REFUSING to run: this driver CHANGES the SHARED dev tenant and nobody has said so out loud.",
+    "",
+    "It has no `--env`: dev is the only tenant it can talk to, so there is no safer environment",
+    "to offer you and the acknowledgement is the whole of the decision.",
+    "",
+    "What it changes, and a change OUTLIVES the run — the driver restores what it can, but a",
+    "killed process, a failed restore or a delete does not come back:",
+    ...mutates.map(mutationLine),
+    "",
+    "Nothing in the evidence file or the terminal would ever tell the person whose role, skill,",
+    "job or connection just moved that a harness run did it. Schedule it, or tell whoever is on",
+    "the tenant — do not discover it afterwards.",
+    "",
+    `  node scripts/${name} --i-know-dev-is-shared`,
+  ]);
 }
 
 export { FAULT_HARMS, MUTATION_HARMS, MUTATION_NAMES, ENVS, ENV_NAMES };

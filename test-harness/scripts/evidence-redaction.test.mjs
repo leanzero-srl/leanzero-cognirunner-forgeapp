@@ -1131,7 +1131,17 @@ ok(emailRuleOffenders.length === 0,
 
    The scan ignores docblock prose, or every file that merely EXPLAINS the lever would be
    dragged in — the discriminator is a call, not a mention. */
-const ARM_CALL = /\barm(?:KeyRead|Jira|Git ?Dispatch|Dispatch|HookPromote)Fault\b/;
+/* F-736 — THE COHORT IS EVERY GATED LEVER, NOT THE FOUR THAT EXISTED WHEN 4e WAS CUT.
+   `armDeleteFault` is the seventh lever and F-721 gave it its `FAULT_HARMS` sentence, but
+   only half of that note shipped: this alternation never learned the name, so a
+   delete-fault driver written next month could carry its own inline refusal (or none) and
+   `scanArmCalls` would return `[]` — the file simply would not be in `armingDrivers`, and
+   the three per-file assertions below would never run against it. 4e's docblock promise
+   ("a fifth fault driver written next month … fails `npm run test:offline`") was false for
+   it. It is green today only because `delete-fault-drain-live.mjs` happens to import the
+   guard for its own reasons, which is luck, not a rule. `\barm` keeps `disarmDeleteFault`
+   out: there is no word boundary between the `s` and the `a`. */
+const ARM_CALL = /\barm(?:KeyRead|Jira|Git ?Dispatch|Dispatch|HookPromote|Delete)Fault\b/;
 function scanArmCalls(src) {
   return src.split("\n")
     .map((l, i) => ({ l, n: i + 1 }))
@@ -1146,11 +1156,17 @@ ok(scanArmCalls('  const t = await hook({ action: "armJiraFault", path: PATH, st
   "POSITIVE CONTROL: …and on the armJiraFault line user-search-fault-live.mjs carried with no --env at all");
 ok(scanArmCalls('        const armed = await hook({ action: "armHookPromoteFault", connectionId: c, repoId: R, count: 1 });').length === 1,
   "POSITIVE CONTROL: …and on armHookPromoteFault, so the rule is not narrowed to the two key/jira levers");
+/* F-736 — verbatim from delete-fault-drain-live.mjs:447, the only caller that exists today.
+   It is the control that would have failed before the `Delete` branch was added. */
+ok(scanArmCalls('  const armLever = (mode, count) => hook({ action: "armDeleteFault", mode, count, ttlSeconds: TTL_SECONDS });').length === 1,
+  "POSITIVE CONTROL: …and on armDeleteFault, the seventh gated lever — F-721 gave it a FAULT_HARMS sentence and 4e never learned its name (F-736)");
 /* NEGATIVE CONTROLS — a file may DISCUSS or DISARM a lever without arming one. */
 ok(scanArmCalls(' * `armKeyReadFault("openai", "refuse")` is the door this driver opens.').length === 0,
   "NEGATIVE CONTROL: a docblock naming the lever is not an arming");
 ok(scanArmCalls('const disarm = () => hook({ action: "disarmKeyReadFault", provider: PROVIDER });').length === 0,
   "NEGATIVE CONTROL: disarming is not arming — cleanup must never trip the rule");
+ok(scanArmCalls('  const disarmLever = () => hook({ action: "disarmDeleteFault" });').length === 0,
+  "NEGATIVE CONTROL: …and the new Delete branch does not swallow its own disarm either (F-736)");
 ok(scanArmCalls('const readLever = () => hook({ action: "readKeyReadFault", provider: PROVIDER });').length === 0,
   "NEGATIVE CONTROL: reading the lever row is not arming");
 
@@ -1564,10 +1580,41 @@ ok(guardedDrivers.length === liveFiles.length,
    `faults: []` is the legitimate mapping-only form for a driver that arms nothing, and it
    is also the one-token way to silence the shared-dev refusal on a driver that arms
    plenty. 4e proves the guard is CALLED; this proves it was told the truth. */
+/* F-749 — THE EXTRACTOR MAY NOT ASSUME THE CALL SITS AT COLUMN 0. The first shape of this
+   rule ended its match at `\n})`, a closing brace with NO indentation, and `[\s\S]{0,400}?`
+   capped the call at 400 characters. Both are true of a driver that calls the guard at
+   module scope and false of one that calls it inside `async function run()` — which
+   `delete-fault-drain-live.mjs` does, indenting its `});` by two spaces. There the match
+   failed outright, `call` was null, and the assertion FAILED a driver that declares
+   `faults: ["deleteFault"]` perfectly honestly. A rule that cannot read a legal call is not
+   a stricter rule, it is a broken one; the only reason nobody had seen it is that the one
+   indented caller was not in `armingDrivers` until F-736 put it there. Balance the
+   parentheses instead of guessing where the call ends. */
+function guardCallSource(src, fn = "requireEnvAck") {
+  const open = src.search(new RegExp("\\b" + fn + "\\s*\\("));
+  if (open < 0) return null;
+  const from = src.indexOf("(", open);
+  let depth = 0;
+  for (let i = from; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")" && --depth === 0) return src.slice(from, i + 1);
+  }
+  return null;                                          // unbalanced — not a call we can read
+}
+/* POSITIVE CONTROLS — the two shapes that exist in the directory, including the one that broke. */
+ok(/faults: \["deleteFault"\]/.test(guardCallSource('  const r = requireEnvAck(argv, {\n    faults: ["deleteFault"],\n    mutates: ["kvs"],\n  });') || ""),
+  "POSITIVE CONTROL (F-749): the call extractor reads an INDENTED call inside a function — the shape delete-fault-drain-live.mjs has, which the old `\\n})` anchor could not match at all");
+ok(/faults: \[\]/.test(guardCallSource('const { envName } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [] });') || ""),
+  "POSITIVE CONTROL (F-749): …and the one-line module-scope call every other driver uses");
+ok(guardCallSource("const r = await other(1);") === null,
+  "NEGATIVE CONTROL (F-749): a file with no such call yields null rather than a stray slice");
+ok(!/mutates/.test(guardCallSource('requireEnvAck(a, { faults: ["x"] });\nsomethingElse({ mutates: ["roster"] });') || ""),
+  "NEGATIVE CONTROL (F-749): the extractor stops at the call's OWN closing paren and does not swallow the next statement");
+
 for (const f of armingDrivers) {
   const src = readFileSync(path.join(here, f), "utf8");
-  const call = src.match(/requireEnvAck\s*\([\s\S]{0,400}?\n\}\)/);
-  ok(!!call && /faults\s*:\s*\[\s*[^\]\s]/.test(call[0]),
+  const call = guardCallSource(src);
+  ok(!!call && /faults\s*:\s*\[\s*[^\]\s]/.test(call),
     `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);
 }
 

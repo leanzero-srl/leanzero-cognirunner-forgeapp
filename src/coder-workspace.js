@@ -346,8 +346,13 @@ export const classifyStatus = (status) => {
  * point at different repairs, so they do not share a name: `isStorageFault` (ONE home,
  * src/shared/error-class.js) decides, and the concrete class goes in the detail so the log
  * says WHICH storage fault it was.
+ *
+ * EXPORTED (F-866) because the engine's final log flush has a `catch` arm of its own: a
+ * writer that THROWS instead of answering `{ok:false}` has to be classified the same way
+ * the writer would have classified it, and a second copy of this ladder in the engine is
+ * exactly how "storage" and "network" come to mean different things in two files.
  */
-const classifyThrow = (e) => {
+export const classifyThrow = (e) => {
   if (isStorageFault(e)) return "storage";
   const msg = String((e && e.message) || e || "").toLowerCase();
   if (msg.includes("permission") || msg.includes("forbidden") || msg.includes("unauthor")) return "permission";

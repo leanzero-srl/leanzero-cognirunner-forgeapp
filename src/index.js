@@ -12206,6 +12206,17 @@ const rememberCoderTurnParams = async (issueKey, threadId, params) => {
         : (Array.isArray(params.skillIds) && params.skillIds.length
           ? params.skillIds
           : ((existing && Array.isArray(existing.skillIds)) ? existing.skillIds : [])),
+      // F-612 - THE MARKER THAT MAKES `[]` READABLE LATER. `skillIds: []` on the row is
+      // ambiguous on its own: it is either the F-630 explicit unbind ("run with none")
+      // or a selection that was never sent (a second browser, cleared site data). The
+      // turn that unbound writes the difference down HERE, once, so every later path
+      // that rebuilds a binding - and a consent-ticket resume above all, which carries
+      // no payload of its own - can tell the two apart instead of guessing. An explicit
+      // turn WITH ids clears the marker (it re-bound); a non-explicit turn inherits it
+      // along with the ids it just inherited, because it decided nothing.
+      skillsCleared: params.skillIdsExplicit === true
+        ? !(Array.isArray(params.skillIds) && params.skillIds.length)
+        : (params.skillsCleared === true || !!(existing && existing.skillsCleared === true)),
       updatedAt: new Date().toISOString(),
     }, CODER_TURN_PARAMS_TTL);
   } catch (e) {
@@ -12242,7 +12253,7 @@ const coderResumeParams = async (issueKey, threadId) => {
       if (thread && typeof thread === "object") src = thread;
     } catch (e) { /* the thread row is a convenience here, never a requirement */ }
   }
-  if (!src) return { simulation: undefined, connectionId: null, maxRounds: undefined, savedByRole: null, skillIds: [] };
+  if (!src) return { simulation: undefined, connectionId: null, maxRounds: undefined, savedByRole: null, skillIds: [], skillsCleared: false };
   return {
     simulation: typeof src.simulation === "boolean" ? src.simulation : undefined,
     connectionId: src.connectionId || null,
@@ -12251,6 +12262,34 @@ const coderResumeParams = async (issueKey, threadId) => {
     // F-463 - the skills the thread was started with. An empty list is the honest
     // answer for a thread that bound none; nothing here invents a binding.
     skillIds: Array.isArray(src.skillIds) ? src.skillIds : [],
+    // F-612 - and WHETHER that empty list was meant. Absent on a row written before this
+    // finding (and on the thread-row fallback, which never carried a binding at all), so
+    // it reads false and such a row keeps the old inheriting behaviour.
+    skillsCleared: src.skillsCleared === true,
+  };
+};
+
+/**
+ * THE ONE PLACE THAT TURNS A STORED ROW INTO A TURN'S SKILL BINDING (F-612).
+ *
+ * Both callers that rebuild a binding from the row rather than from a payload - the
+ * inherit branch of `startCoderTurn` and the consent-ticket resume in
+ * `confirmCoderTicket` - ask HERE, so "an `[]` that was meant stays meant" is stated
+ * once. `skillIdsExplicit` is the same signal `buildCoderKnowledge`
+ * (src/async-handler.js) reads: true says "this list, and I mean it", which is what
+ * stops the re-pin path falling back to the pin's held ids and resurrecting skills the
+ * owner cleared. Ids present always mean it; `[]` means it only with the marker.
+ */
+const coderSkillBindingFrom = (prior) => {
+  const skillIds = normalizeAgentKnowledge({ skillIds: prior && prior.skillIds }).skillIds;
+  return {
+    skillIds,
+    // ONLY the cleared case is explicit. Inherited IDS stay non-explicit on purpose: a
+    // turn that decided nothing must keep the pin's ids as the fallback behind them
+    // (F-594/F-610), and calling an inherited set "explicit" would set-compare it against
+    // the pin and move the prompt prefix for a turn that asked for no change (F-630).
+    skillIdsExplicit: !!(prior && prior.skillsCleared === true),
+    skillsCleared: !!(prior && prior.skillsCleared === true),
   };
 };
 
@@ -12296,8 +12335,9 @@ resolver.define("startCoderTurn", async ({ payload, context }) => {
     // explicit `[]` unbinds and is remembered as `[]`. Absent, the stored row for
     // {issueKey, threadId} is the thread's own record and is inherited; `skillIdsExplicit`
     // then stays false so `buildCoderKnowledge` keeps the pin's ids as a further fallback.
-    const skillIdsExplicit = Array.isArray(payload?.skillIds);
+    let skillIdsExplicit = Array.isArray(payload?.skillIds);
     let skillIds = normalizeAgentKnowledge({ skillIds: payload?.skillIds }).skillIds;
+    let skillsCleared = skillIdsExplicit && !skillIds.length;
     if (skillIdsExplicit) {
       // Only a binding this turn ASKED for is checked against the index. Inherited ids
       // are never re-asserted: a skill deleted since turn 1 must cost that skill, not the
@@ -12316,10 +12356,19 @@ resolver.define("startCoderTurn", async ({ payload, context }) => {
       // behind it — never throw and turn a readable thread into a refused turn.
       try {
         const prior = await coderResumeParams(issueKey, threadId);
-        const inherited = normalizeAgentKnowledge({ skillIds: prior.skillIds }).skillIds;
-        if (inherited.length) {
-          skillIds = inherited;
-          console.log(`[coder] turn carried no skill selection, inheriting this thread's ${inherited.length} stored skill(s) (${inherited.join(", ")})`);
+        // F-612 - one home for "what does this row's binding mean", shared with the
+        // ticket resume. An inherited `[]` that the owner CLEARED on purpose comes back
+        // explicit, so the re-pin path obeys it instead of restoring the pinned skills.
+        const inheritedBinding = coderSkillBindingFrom(prior);
+        if (inheritedBinding.skillIds.length) {
+          skillIds = inheritedBinding.skillIds;
+          skillsCleared = false;
+          console.log(`[coder] turn carried no skill selection, inheriting this thread's ${skillIds.length} stored skill(s) (${skillIds.join(", ")})`);
+        } else if (inheritedBinding.skillsCleared) {
+          skillIds = [];
+          skillIdsExplicit = true;
+          skillsCleared = true;
+          console.log(`[coder] turn carried no skill selection, and this thread's skills were cleared on purpose - it runs with none`);
         }
       } catch (e) {
         console.warn(`[coder] stored turn params unreadable for ${safeKeyPart(issueKey)}/${safeKeyPart(threadId)}, this turn runs with no inherited skills: ${e && e.message}`);
@@ -12334,6 +12383,8 @@ resolver.define("startCoderTurn", async ({ payload, context }) => {
       // F-610 — travels with the turn so the re-pin path reads the same intent the
       // stored row was written with.
       skillIdsExplicit,
+      // F-612 — and so `rememberCoderTurnParams` re-writes the marker for the next turn.
+      skillsCleared,
       simulation: payload?.simulation === true,
       connectionId: payload?.connectionId ? String(payload.connectionId).slice(0, 100) : null,
       maxRounds: payload?.maxRounds,
@@ -12421,6 +12472,7 @@ resolver.define("confirmCoderTicket", async ({ payload, context }) => {
       // person's role, and reading it now means a demoted owner cannot keep an old
       // elevation alive through a resume. The stored value is only the fallback.
       const savedByRole = (await savedByRoleFor(context.accountId)) || prior.savedByRole;
+      const resumeBinding = coderSkillBindingFrom(prior);
       const taskId = makeTaskId("coder");
       const { Queue } = await import("@forge/events");
       const queue = new Queue({ key: "long-queue" });
@@ -12439,7 +12491,13 @@ resolver.define("confirmCoderTicket", async ({ payload, context }) => {
             gateFacts: gate.facts,
             savedByRole,
             // F-463 - inherited, like simulation and maxRounds above.
-            skillIds: prior.skillIds,
+            // F-612 - through the one binding predicate, so a thread whose owner CLEARED
+            // its skills resumes with none. The resume has no payload of its own, so
+            // without the flag its `[]` read as "nothing sent" and the re-pin path in
+            // `buildCoderKnowledge` handed the pinned skills straight back.
+            skillIds: resumeBinding.skillIds,
+            skillIdsExplicit: resumeBinding.skillIdsExplicit,
+            skillsCleared: resumeBinding.skillsCleared,
           },
         },
         concurrency: { key: `coder:${out.issueKey}`, limit: 1 },
@@ -12447,7 +12505,10 @@ resolver.define("confirmCoderTicket", async ({ payload, context }) => {
       // Keep the row alive (and correct) for the next resume on this thread.
       await rememberCoderTurnParams(out.issueKey, out.threadId, {
         simulation: prior.simulation, connectionId: prior.connectionId,
-        maxRounds: prior.maxRounds, savedByRole, skillIds: prior.skillIds,
+        maxRounds: prior.maxRounds, savedByRole,
+        skillIds: resumeBinding.skillIds,
+        skillIdsExplicit: resumeBinding.skillIdsExplicit,
+        skillsCleared: resumeBinding.skillsCleared,
       });
       await writeAsyncJob({
         taskId, jobId: pushResult?.jobId || null, taskType: "coder", status: "queued",

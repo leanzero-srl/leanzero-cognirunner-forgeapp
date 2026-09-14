@@ -23,8 +23,47 @@ import {
   PREMADE_POSTFUNCTIONS, getPremadePostFunction, CODER_PF_MODES, CODER_PF_MODE_IDS, getCoderPfMode,
 } from "../../src/shared/premade-rules-catalog.js";
 import { isKnownEvent, requiresRepoFilter, isGitEvent } from "../../src/shared/jira-events.js";
-import { AGENT_ACTIONS, AGENT_ACTION_NAMESPACES, agentActionNamespace } from "../../src/shared/agent-actions.js";
+import {
+  AGENT_ACTIONS, AGENT_ACTION_NAMESPACES, agentActionNamespace,
+  buildAgentGateContext, normalizeAllowedActions, DEFAULT_AGENT_ACTIONS,
+} from "../../src/shared/agent-actions.js";
+import { EDITION_IDS, FORGE_LLM_DEFAULT } from "../../src/shared/edition.js";
 import { normalizeListener } from "../../src/listeners.js";
+
+/*
+ * F-879 — THE GATE CONTEXTS A REAL INSTANCE ACTUALLY BUILDS.
+ *
+ * This lint used to hand `normalizeListener` a hand-built `{ capability: true,
+ * savedByRole: "admin" }`, which NO save path can produce: every production caller goes
+ * through `buildAgentGateContext`, and that builder refuses a null provider by design
+ * ("no provider, no capability") and emits a capability MAP whose absent keys are
+ * refused (F-281). Proving a seed savable under a context the app cannot assemble is
+ * F-480's shape wearing a lint's hat — it is the same class of hole the agentless arm
+ * below was added for, only on the main arm.
+ *
+ * So the main arm now builds its context the way the app does, on two fact sets that
+ * bracket the real fleet:
+ *
+ *   BYOK      — any customer key. `agentCapability` answers `byok`, so EVERY capability
+ *               is on and an admin-saved seed must survive whole. This is the "can this
+ *               starter ever be saved at all" arm.
+ *   FORGE-LLM — Atlassian Forge LLM on the Standard edition with the default Haiku model,
+ *   STANDARD    which is what a fresh install runs. `git` is off here
+ *               ("needs-coder-edition"), so a seed holding a gated action must be
+ *               REFUSED BY NAME rather than saved with fewer actions than the catalogue
+ *               advertises — a silent strip is how an operator comes to believe in a gate
+ *               that is not there (F-277).
+ *
+ * `surface: "listener"` is passed because every premade IS a listener; `normalizeListener`
+ * stamps the same value on top, so this only makes the direct `normalizeAllowedActions`
+ * probe below agree with the save path (F-865).
+ */
+const GATE_FACTS = {
+  byok: { provider: "openai", edition: EDITION_IDS.STANDARD, agentModel: "gpt-5.4-mini", savedByRole: "admin", surface: "listener" },
+  forgeStandard: { provider: "atlassian", edition: EDITION_IDS.STANDARD, agentModel: FORGE_LLM_DEFAULT, savedByRole: "admin", surface: "listener" },
+};
+const BYOK_GATE = buildAgentGateContext(GATE_FACTS.byok);
+const FORGE_STANDARD_GATE = buildAgentGateContext(GATE_FACTS.forgeStandard);
 
 const here = dirname(fileURLToPath(import.meta.url));
 const executorSrc = readFileSync(resolve(here, "../../src/premade-rules.js"), "utf8");
@@ -151,22 +190,60 @@ for (const row of PREMADE_LISTENERS) {
     }
   }
   // The seed must survive the SAME validation the REST API and the admin UI use —
-  // minus the repos the picker supplies, which we stand in for here.
-  try {
+  // minus the repos the picker supplies, which we stand in for here — under a context
+  // built by the REAL builder (F-879), on both fact sets.
+  {
     const filled = { ...seed, events: row.events, filters: { ...(seed.filters || {}), ...(needsRepos ? { repos: ["owner/name"] } : {}) } };
-    const norm = normalizeListener(filled, { gate: { capability: true, savedByRole: "admin" } });
-    if (norm.mode !== (seed.mode || "script")) problems.push(`${where} seed did not normalise to its declared mode`);
-    const want = ((seed.agent || {}).allowedActions || []).slice().sort().join();
-    if (seed.mode === "agent" && norm.agent.allowedActions.slice().sort().join() !== want) {
-      problems.push(`${where} seed actions did not survive normalizeListener (got ${norm.agent.allowedActions.join(", ") || "none"})`);
+    const seedActions = (seed.agent || {}).allowedActions == null ? DEFAULT_AGENT_ACTIONS : (seed.agent || {}).allowedActions;
+
+    // ARM 1 — BYOK admin. Every capability is on, so the seed must save WHOLE.
+    let byokSaved = false;
+    try {
+      const norm = normalizeListener(filled, { gate: BYOK_GATE, savedByRole: "admin" });
+      byokSaved = true;
+      if (norm.mode !== (seed.mode || "script")) problems.push(`${where} seed did not normalise to its declared mode`);
+      const want = ((seed.agent || {}).allowedActions || []).slice().sort().join();
+      if (seed.mode === "agent" && norm.agent.allowedActions.slice().sort().join() !== want) {
+        problems.push(`${where} seed actions did not survive normalizeListener on a BYOK admin gate (got ${norm.agent.allowedActions.join(", ") || "none"})`);
+      }
+    } catch (e) {
+      problems.push(`${where} seed is REFUSED by normalizeListener under the gate a real BYOK instance builds (provider openai, ${EDITION_IDS.STANDARD} edition, admin-saved): ${e.message}`);
     }
-  } catch (e) {
-    problems.push(`${where} seed is REFUSED by normalizeListener: ${e.message}`);
+
+    // ARM 2 — Atlassian Forge LLM, Standard edition, Haiku: what a fresh install runs.
+    // Ask the gate itself which ids die there, then require the save path to agree.
+    const forgeRefused = normalizeAllowedActions(seedActions, FORGE_STANDARD_GATE).refused;
+    let forgeError = null;
+    try { normalizeListener(filled, { gate: FORGE_STANDARD_GATE, savedByRole: "admin" }); } catch (e) { forgeError = e; }
+    if (forgeRefused.length) {
+      // (a) a gated starter must still be savable SOMEWHERE, and that somewhere is an
+      //     admin-saved BYOK instance — otherwise the button exists for nobody.
+      if (!byokSaved) {
+        problems.push(`${where} holds action(s) the Forge-LLM Standard gate refuses (${forgeRefused.map((r) => `${r.id}: ${r.reason}`).join("; ")}) AND is not savable on a BYOK admin instance either — the starter is unsaveable everywhere`);
+      }
+      // (b) …and on Forge-LLM Standard it must be refused BY NAME, never silently
+      //     stripped down to the actions that happen to survive.
+      if (!forgeError) {
+        problems.push(`${where} was SAVED on a Forge-LLM Standard gate although the gate refuses ${forgeRefused.map((r) => r.id).join(", ")} — the save path dropped a gated action silently instead of refusing`);
+      } else {
+        if (forgeError.reason !== "action-not-allowed") {
+          problems.push(`${where} is refused on Forge-LLM Standard for the WRONG reason (${forgeError.reason || "none"}): ${forgeError.message}`);
+        }
+        for (const r of forgeRefused) {
+          if (!String(forgeError.message).includes(r.id)) {
+            problems.push(`${where} is refused on Forge-LLM Standard but the refusal does not NAME "${r.id}" (${r.reason}), so nothing can tell the admin which action to drop: ${forgeError.message}`);
+          }
+        }
+      }
+    } else if (forgeError) {
+      // No gated action, so the humblest real instance must be able to save it.
+      problems.push(`${where} holds no capability-gated action yet is REFUSED on a Forge-LLM Standard instance (provider atlassian, ${EDITION_IDS.STANDARD} edition, ${FORGE_LLM_DEFAULT}): ${forgeError.message}`);
+    }
   }
   // …and without the picker's repos it must be refused, loudly.
   if (needsRepos) {
     let refused = false;
-    try { normalizeListener({ ...seed, events: row.events }, { gate: { capability: true, savedByRole: "admin" } }); } catch { refused = true; }
+    try { normalizeListener({ ...seed, events: row.events }, { gate: BYOK_GATE, savedByRole: "admin" }); } catch { refused = true; }
     if (!refused) problems.push(`${where} can be saved with NO repos allow-list — a git listener must never match every repository`);
   }
 }

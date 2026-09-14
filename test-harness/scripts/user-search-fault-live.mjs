@@ -1,0 +1,326 @@
+/*
+ * CogniRunner - AI-powered workflow validation for Jira
+ * Copyright (C) 2025 LeanZero
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-648 / F-655 LIVE — THE JIRA USER-SEARCH FAULT, THROUGH THE REAL DOOR.
+ *
+ * WHAT IT PROVES. F-648 made `searchUsers` fail CLOSED for the whole transport class:
+ * a 403/429/500 from `/rest/api/3/user/search` is `{success:false,
+ * reason:"jira_unavailable", status}` and NOT the empty success an admin reads as
+ * "that person is not on this site". F-655 built the two halves of the live door that
+ * arm was missing — `searchUsers` on the hook's `invokeResolver` allow-list, and
+ * `armJiraFault` in the `armHarnessFault` family. This driver is the proof that both
+ * halves work against a deployed build:
+ *
+ *   1. ADMIN + fault armed          -> {success:false, reason:"jira_unavailable", 429}, no users
+ *   2. NON-ADMIN (role:null) + fault -> the no-permission refusal: THE GATE RUNS FIRST,
+ *                                       and the fault row is untouched by that call
+ *   3. The Permissions tab, as the signed-in admin, renders the BACKEND SENTENCE
+ *      (naming HTTP 429) and not "No users found" — and the notice is REPLACED across
+ *      keystrokes, never stacked
+ *   4. Disarm -> the three real namesakes come back; readJiraFault -> null
+ *   5. TTL -> arm for 5 s, wait 8 s, search: real results. The window EXPIRES; the
+ *      passing state in (4) is not an artefact of the disarm call alone.
+ *
+ * WHY (2) NEEDS ITS OWN SECOND READ. The fault row is a WINDOW, not a COUNT (see
+ * `HARNESS_FAULT_JIRA` in src/harness-fault.js) — `jiraFaultStatus` reads it without
+ * decrementing, so there is no counter to watch fall. The non-consumption evidence is
+ * therefore a BYTE COMPARE of the row before and after the non-admin call, plus the
+ * refusal shape itself; this driver says that in as many words rather than claiming a
+ * counter it does not have.
+ *
+ * READ-ONLY on src/ and static/. It never deploys. Everything it writes — console line
+ * and evidence file alike — goes through `redactSecrets`/`redactString` from
+ * lib/redact.mjs, so emails land as `<initial>***@<domain>` and no token, secret or dev
+ * web-trigger URL can reach the terminal or the disk. The one screenshot is of the
+ * SEARCH BOX with the error notice; every email span on the page is overwritten in the
+ * DOM before the shutter (`page.evaluate`), and no roster card is captured.
+ *
+ * CLEANUP IS PART OF THE PROOF. The lever is disarmed in a `finally`, and the last
+ * check is a `readJiraFault` that must answer `value:null`.
+ *
+ *   node scripts/user-search-fault-live.mjs [--nonadmin=<accountId>] [--headed]
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+import fs from "node:fs";
+import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { redactString, redactSecrets } from "../lib/redact.mjs";
+
+const env = loadEnv();
+const HOOK_URL = env.TESTSTATE_URL;
+const SECRET = requireEnv("HARNESS_SECRET");
+const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
+const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
+/** An account with NO app role (`checkIsAdmin` -> role:null) — asserted, never assumed. */
+const NONADMIN = arg("nonadmin", "557058:653160a5-6112-470d-baea-333ac760364e");
+const QUERY = arg("query", "mihai");
+const PATH = "/rest/api/3/user/search";
+const FAULT_STATUS = 429;
+
+const BASE = "https://wolfaenpak.atlassian.net";
+const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
+const ENV_ID = "989ecaa0-261b-406e-b444-78c01c0d7772";
+const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
+const OUT = new URL("../results/user-search-fault", import.meta.url).pathname;
+fs.mkdirSync(OUT, { recursive: true });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let passes = 0, fails = 0, unproven = 0;
+const ev = { at: new Date().toISOString(), env: "development", path: PATH, status: FAULT_STATUS, query: QUERY, checks: [] };
+
+/* ── THE WRITERS. Every payload and every sentence through the shared redactor, at the
+ *    console AND at the file boundary (F-646/F-652) — never a per-call-site judgement. */
+const R = (d) => redactSecrets(d);
+const J = (d) => JSON.stringify(R(d));
+const say = (v, s, d) => { ev.checks.push({ v, s: redactString(String(s)), ...(d ? { d: R(d) } : {}) }); console.log(`  ${v.padEnd(5)} ${redactString(String(s))}${d ? " " + J(d) : ""}`); };
+const PASS = (s, d) => { passes++; say("PASS", s, d); };
+const FAIL = (s, d) => { fails++; say("FAIL", s, d); };
+const NV = (s, d) => { unproven++; say("N/V", s, d); };
+const info = (s) => console.log(`        ${redactString(String(s))}`);
+const step = (s) => console.log(`\n── ${s}`);
+
+const readRes = async (res) => { let t = ""; try { t = await res.text(); } catch { return { status: 0, json: null }; } let j = null; try { j = JSON.parse(t); } catch {} return { status: res.status, json: j, text: t }; };
+async function hook(body, method = "POST", qs = "") {
+  return readRes(await fetch(HOOK_URL + qs, { method, headers: { "Content-Type": "application/json", Authorization: "Bearer " + SECRET }, body: method === "POST" ? JSON.stringify(body) : undefined }));
+}
+const invoke = (functionKey, payload = {}, accountId = ADMIN) => hook({ action: "invokeResolver", functionKey, payload, accountId });
+const arm = (ttlSeconds) => hook({ action: "armJiraFault", path: PATH, status: FAULT_STATUS, ttlSeconds });
+const readFault = () => hook({ action: "readJiraFault", path: PATH });
+const disarm = () => hook({ action: "disarmJiraFault", path: PATH });
+/** The stored row, or null. `{status, armedAt}` — a WINDOW, with no counter by design. */
+const faultRow = async () => (await readFault()).json?.value ?? null;
+
+/* ── THE UI HALF ─────────────────────────────────────────────────────────────────── */
+async function withAdminPanel(fn) {
+  const { chromium } = await import("../../static/_screenshot-harness/node_modules/playwright/index.mjs");
+  const ctx = await chromium.launchPersistentContext(PROFILE, { headless: !process.argv.includes("--headed"), viewport: { width: 1500, height: 1100 } });
+  try {
+    const page = ctx.pages()[0] || (await ctx.newPage());
+    await page.goto(`${BASE}/jira/apps/${APP}/${ENV_ID}`, { waitUntil: "domcontentloaded" });
+    let frame = null;
+    for (let i = 0; i < 90; i++) {
+      frame = page.frames().find((f) => f.url().includes("cdn.prod.atlassian-dev.net"));
+      if (frame && (await frame.locator(".tab-btn").count()) > 0) break;
+      await sleep(1000);
+    }
+    if (!frame) throw new Error("the admin panel iframe never appeared - is the persistent profile still signed in?");
+    await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
+    await frame.locator(".perm-search-input").waitFor({ state: "visible", timeout: 60000 });
+    return await fn(page, frame);
+  } finally { await ctx.close(); }
+}
+
+/**
+ * What the search area says right now. The notices are the direct `div` children of
+ * `.perm-search-wrap` that are NOT the input row and NOT the results list, so COUNTING
+ * them is exactly the stacked-vs-replaced question.
+ */
+async function readSearchArea(frame) {
+  return frame.evaluate(() => {
+    const wrap = document.querySelector(".perm-search-wrap");
+    if (!wrap) return { notices: [], rows: 0, text: "" };
+    const notices = [...wrap.children]
+      .filter((el) => el.tagName === "DIV" && !el.querySelector(".perm-search-input") && !el.classList.contains("perm-search-results"))
+      .map((el) => el.innerText.trim())
+      .filter(Boolean);
+    return {
+      notices,
+      rows: wrap.querySelectorAll(".perm-search-item").length,
+      text: wrap.innerText.trim(),
+    };
+  });
+}
+
+/** Type `q` fresh (clear first), let the 400 ms debounce + the invoke settle. */
+async function typeSearch(frame, q, settleMs = 5000) {
+  const box = frame.locator(".perm-search-input");
+  await box.fill("");
+  await sleep(700);
+  await box.fill(q);
+  await sleep(settleMs);
+  return readSearchArea(frame);
+}
+
+/** PII never reaches the shutter: overwrite every rendered email span in the DOM. */
+async function maskedShot(page, frame, name) {
+  await frame.evaluate(() => {
+    for (const el of document.querySelectorAll(".perm-ident-email, .perm-search-email")) {
+      el.textContent = "***@masked";
+      el.setAttribute("title", "***@masked");
+    }
+  }).catch(() => {});
+  const target = (await frame.locator(".perm-search-wrap").count()) > 0 ? frame.locator(".perm-search-wrap") : null;
+  if (target) await target.screenshot({ path: `${OUT}/${name}` }).catch(() => page.screenshot({ path: `${OUT}/${name}` }).catch(() => {}));
+  else await page.screenshot({ path: `${OUT}/${name}` }).catch(() => {});
+  return `${OUT}/${name}`;
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════════ */
+async function main() {
+  console.log("F-648/F-655 LIVE — searchUsers under a planted Jira transport fault");
+  info(`path ${PATH}  status ${FAULT_STATUS}  query "${QUERY}"`);
+
+  /* ── 0. PRECONDITIONS. Prove the query CAN see the users before any negative is
+   *      allowed to mean anything, and prove the chosen non-admin really has no role. */
+  step("0. preconditions (positive control + principal roles)");
+  await disarm();
+  const before = await faultRow();
+  if (before === null) PASS("no fault armed at start", { row: null });
+  else FAIL("a fault row was already present at start", { row: before });
+
+  const clean = await invoke("searchUsers", { query: QUERY });
+  const cleanUsers = clean.json?.users || [];
+  const baselineIds = cleanUsers.map((u) => u.accountId).sort();
+  if (clean.json?.success === true && cleanUsers.length >= 1) {
+    PASS(`positive control: the admin's search sees ${cleanUsers.length} user(s) with no fault armed`, { users: cleanUsers.map((u) => ({ accountId: u.accountId, displayName: u.displayName, ...(u.emailAddress ? { emailAddress: u.emailAddress } : {}) })) });
+  } else {
+    FAIL("positive control failed — the clean search returned nothing, so no later empty/error result can be attributed to the lever", { answer: clean.json });
+  }
+
+  const adminRole = await invoke("checkIsAdmin", {}, ADMIN);
+  if (adminRole.json?.isAdmin === true) PASS("the ADMIN principal is an app admin", { role: adminRole.json.role, accountId: ADMIN });
+  else FAIL("the ADMIN principal is not an app admin — check (1) would prove nothing", { answer: adminRole.json });
+
+  const naRole = await invoke("checkIsAdmin", {}, NONADMIN);
+  if (naRole.json?.isAdmin === false && naRole.json?.role === null && !naRole.json?.unknown) {
+    PASS("the NON-ADMIN principal has role:null (confirmed via checkIsAdmin, not assumed)", { accountId: NONADMIN, role: naRole.json.role, isAdmin: naRole.json.isAdmin });
+  } else {
+    FAIL("the NON-ADMIN principal is not role:null — check (2) would be about the wrong principal", { answer: naRole.json });
+  }
+
+  /* ── 1. ADMIN + fault armed -> fail CLOSED ───────────────────────────────────── */
+  step("1. ADMIN with the fault armed → jira_unavailable, no users");
+  const armed = await arm(60);
+  if (armed.status === 200 && armed.json?.status === FAULT_STATUS) PASS("fault armed", { path: armed.json.path, status: armed.json.status, ttlSeconds: armed.json.ttlSeconds });
+  else FAIL("arming the fault failed", { status: armed.status, body: armed.json });
+  const rowArmed = await faultRow();
+  if (rowArmed && rowArmed.status === FAULT_STATUS) PASS("second read: the fault row is stored", { row: rowArmed });
+  else FAIL("second read: no fault row after arming", { row: rowArmed });
+
+  const a = await invoke("searchUsers", { query: QUERY });
+  const ab = a.json || {};
+  const okShape = ab.success === false && ab.reason === "jira_unavailable" && ab.status === FAULT_STATUS && Array.isArray(ab.users) && ab.users.length === 0;
+  if (okShape) PASS("ADMIN: {success:false, reason:'jira_unavailable', status:429} and zero users", { success: ab.success, reason: ab.reason, status: ab.status, users: ab.users.length, error: ab.error });
+  else FAIL("ADMIN: the answer is not the fail-closed shape", { answer: ab });
+  if (typeof ab.error === "string" && /HTTP 429/.test(ab.error)) PASS("the sentence names the HTTP status the admin must act on", { error: ab.error });
+  else FAIL("the error sentence does not name HTTP 429", { error: ab.error });
+
+  /* ── 2. NON-ADMIN + fault armed -> the GATE runs FIRST ───────────────────────── */
+  step("2. NON-ADMIN with the fault armed → the no-permission refusal (gate before fault)");
+  const rowPre = await faultRow();
+  const n = (await invoke("searchUsers", { query: QUERY }, NONADMIN)).json || {};
+  const isRefusal = n.success === false && (n.reason === "no-permission" || n.needsRole === "admin");
+  if (isRefusal && n.reason !== "jira_unavailable") {
+    PASS("NON-ADMIN: the admin gate answers FIRST — the refusal shape, not the transport failure", { success: n.success, reason: n.reason, needsRole: n.needsRole, users: (n.users || []).length, error: n.error });
+  } else {
+    FAIL("NON-ADMIN: the answer is not the admin-gate refusal", { answer: n });
+  }
+  const rowPost = await faultRow();
+  if (rowPre && rowPost && JSON.stringify(rowPre) === JSON.stringify(rowPost)) {
+    PASS("second read: the fault row is byte-identical after the refused call. NOTE — this lever is a WINDOW, not a COUNT: the row carries {status, armedAt} and NO counter, and `jiraFaultStatus` never decrements, so 'not consumed' can only be shown as an unchanged row plus the refusal shape above, never as a counter that did not fall", { before: rowPre, after: rowPost });
+  } else {
+    FAIL("second read: the fault row changed across the refused call", { before: rowPre, after: rowPost });
+  }
+
+  /* ── 3. THE PERMISSIONS TAB, as the signed-in admin ──────────────────────────── */
+  step("3. the Permissions tab with the fault armed → the backend sentence, replaced not stacked");
+  await arm(240); // the UI half is slower than the hook half; same clamp, same lever.
+  let shotPath = null;
+  try {
+    await withAdminPanel(async (page, frame) => {
+      const first = await typeSearch(frame, QUERY);
+      const joined = first.notices.join(" | ");
+      if (/HTTP 429/.test(joined)) PASS("the tab renders the BACKEND sentence naming HTTP 429", { notices: first.notices });
+      else FAIL("the tab does not show the HTTP 429 sentence", { notices: first.notices, text: first.text.slice(0, 300) });
+      if (!/No users found/i.test(joined)) PASS("the tab does NOT say 'No users found' — the failure is not dressed as an empty directory", { notices: first.notices });
+      else FAIL("the tab still says 'No users found' under a transport failure (the F-648 defect)", { notices: first.notices });
+      if (first.rows === 0) PASS("no user rows are offered under the failure", { rows: first.rows });
+      else FAIL("user rows were rendered under a failed search", { rows: first.rows });
+
+      shotPath = await maskedShot(page, frame, "search-error-429.png");
+
+      // Replaced, not stacked: three more keystroke-driven searches in a row.
+      const seq = [];
+      for (const q of [`${QUERY}a`, `${QUERY}ab`, QUERY]) seq.push({ q, ...(await typeSearch(frame, q, 4000)) });
+      const worst = Math.max(...seq.map((s) => s.notices.length));
+      const allNamed = seq.every((s) => /HTTP 429/.test(s.notices.join(" | ")));
+      if (worst === 1 && allNamed) PASS("across 3 further searches the notice is REPLACED, never stacked (exactly 1 notice each time, each naming HTTP 429)", { counts: seq.map((s) => ({ q: s.q, notices: s.notices.length })) });
+      else if (worst === 1) FAIL("one notice each time, but not every one named the status", { seq: seq.map((s) => ({ q: s.q, notices: s.notices })) });
+      else FAIL("notices STACKED across keystrokes", { counts: seq.map((s) => ({ q: s.q, notices: s.notices.length })), seq: seq.map((s) => s.notices) });
+    });
+    if (shotPath) info(`screenshot (search box only, email spans overwritten in the DOM first): ${shotPath}`);
+  } catch (e) {
+    NV("the Permissions tab could not be driven", { error: String(e && e.message || e) });
+  }
+
+  /* ── 4. DISARM -> the real result set returns ────────────────────────────────── */
+  step("4. disarm → the same search returns the real users; readJiraFault → null");
+  const d = await disarm();
+  if (d.status === 200) PASS("disarm accepted", { disarmed: d.json?.disarmed === true });
+  else FAIL("disarm was refused", { status: d.status, body: d.json });
+  const afterRow = await faultRow();
+  if (afterRow === null) PASS("second read: readJiraFault → null", { row: null });
+  else FAIL("second read: a fault row survived the disarm", { row: afterRow });
+
+  const back = (await invoke("searchUsers", { query: QUERY })).json || {};
+  const backIds = (back.users || []).map((u) => u.accountId).sort();
+  if (back.success === true && backIds.length === baselineIds.length && backIds.join(",") === baselineIds.join(",")) {
+    PASS(`the same search returns the same ${backIds.length} namesake(s) as the positive control`, { users: (back.users || []).map((u) => ({ accountId: u.accountId, displayName: u.displayName, ...(u.emailAddress ? { emailAddress: u.emailAddress } : {}) })) });
+  } else {
+    FAIL("after disarm the search does not match the baseline", { baseline: baselineIds, now: backIds, answer: back });
+  }
+
+  /* ── 5. THE TTL IS REAL ──────────────────────────────────────────────────────── */
+  step("5. TTL: arm for 5 s, wait 8 s, search → real results (expiry, not the disarm call)");
+  const t = await arm(5);
+  if (t.json?.ttlSeconds === 5) PASS("armed with ttlSeconds:5", { ttlSeconds: t.json.ttlSeconds });
+  else FAIL("the 5 s arm did not take", { body: t.json });
+  const during = (await invoke("searchUsers", { query: QUERY })).json || {};
+  if (during.success === false && during.reason === "jira_unavailable") PASS("inside the window the search still fails closed", { reason: during.reason, status: during.status });
+  else FAIL("the short-TTL arm did not fault the search at all — the expiry below would prove nothing", { answer: during });
+  /* The 8 s the brief names, then a BOUNDED poll — so an expiry that is merely LATE is
+   * reported as a measured number rather than as a hang or as a flat "it never expired". */
+  await sleep(8000);
+  const expired = (await invoke("searchUsers", { query: QUERY })).json || {};
+  const expiredIds = (expired.users || []).map((u) => u.accountId).sort();
+  if (expired.success === true && expiredIds.join(",") === baselineIds.join(",")) {
+    PASS("after 8 s the window has EXPIRED with no disarm call — the search returns the baseline users", { users: expiredIds.length });
+  } else {
+    FAIL("the fault outlived its 5 s TTL: at 8 s the search still fails closed with no disarm call", { answer: expired });
+    const t0 = Date.now();
+    let gone = false;
+    while (Date.now() - t0 < 90000) {
+      await sleep(10000);
+      if ((await faultRow()) === null) { gone = true; break; }
+    }
+    const waited = Math.round((Date.now() - t0) / 1000) + 8;
+    if (gone) NV(`the row DID expire, but late: ~${waited}s after a 5 s TTL. The TTL is real and coarse, not a bound a test can lean on`, { ttlSeconds: 5, observedSeconds: waited });
+    else FAIL(`the row is STILL readable and the fault STILL active ${waited}s after a 5 s TTL — on this build the only thing that ends a lever is the explicit disarm, so "a forgotten arm must not outlive the test" (src/harness-fault.js) is not enforced by the TTL. Separately measured on an isolated arm: still present at 615s, past both the 300s clamp and the 10-minute HARNESS_FAULT_TTL`, { ttlSeconds: 5, observedSeconds: waited, note: "expireTime metadata is not readable through the hook's ?what=kvs (storage.get only), so 'TTL was never applied' vs 'applied but not enforced on read' is NOT distinguishable from outside src/" });
+  }
+  const ttlRow = await faultRow();
+  if (ttlRow === null) PASS("second read: the expired row is gone", { row: null });
+  else FAIL("second read: an expired fault row is still readable", { row: ttlRow });
+}
+
+let exitCode = 0;
+try {
+  await main();
+} catch (e) {
+  FAIL("driver threw", { error: String(e && e.message || e) });
+} finally {
+  /* CLEANUP IS PART OF THE PROOF: never leave a lever armed on a live tenant. */
+  await disarm().catch(() => {});
+  const finalRow = await faultRow().catch(() => "unreadable");
+  if (finalRow === null) PASS("cleanup: no fault row remains", { row: null });
+  else FAIL("cleanup: a fault row remains armed", { row: finalRow });
+
+  ev.summary = { passes, fails, unproven };
+  const file = `${OUT}/evidence.json`;
+  fs.writeFileSync(file, JSON.stringify(redactSecrets(ev), null, 2));
+  console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}`);
+  console.log(`evidence: ${file}`);
+  exitCode = fails > 0 ? 1 : 0;
+}
+process.exit(exitCode);

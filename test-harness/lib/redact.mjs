@@ -230,8 +230,27 @@ export function maskFaultKey(key) {
   return `${m[1]}${m[2]}:${digest}`;
 }
 
-/** The dev/staging web-trigger host: a bearer-less URL that is itself a capability. */
-const DEV_URL = /https?:\/\/[^\s"'<>]*atlassian-dev\.net[^\s"'<>]*/gi;
+/*
+ * F-828 — `DEV_URL` IS GONE, AND THE ONE HOME OWNS THE WHOLE URL.
+ *
+ * This file used to carry a `DEV_URL` regex — `https?://` then a run of non-space,
+ * non-quote, non-angle-bracket characters around `atlassian-dev.net` — matching the
+ * dev/staging web-trigger host, a bearer-less URL that is itself a capability. The SAME
+ * question was answered one layer down by the `\.atlassian-dev\.net/` literal in
+ * `src/shared/secret-shapes.js`, and the two had different WIDTHS: this one swallowed the
+ * URL, that one matched only the fixed literal in the middle of it. That did not matter
+ * while the shape was only ever asked yes/no — and then F-814 made the read ceiling replace
+ * the matched SPAN in place, so the door answered a web-trigger URL with its subdomain and
+ * its path token still in plain text around a `<masked:…>` of the literal.
+ *
+ * `findCapabilityUrlSpans` in the one home is now the URL scanner, and
+ * `replaceCredentialSpans` applies it here in exactly the position this regex occupied:
+ * same family, matched anywhere in the URL text as before, same `[REDACTED]` replacement,
+ * and the span now ends at `)` as well — which can only ever end it sooner.
+ *
+ * `isDevUrlKey` below is NOT the same rule and stays: it masks a whole VALUE because of its
+ * KEY, before the value is ever scanned, and it is the name half of this file's contract.
+ */
 
 /** `"token": "…"` inside an ALREADY-STRINGIFIED body — how F-646 actually escaped. */
 const EMBEDDED_PAIR = new RegExp(
@@ -249,17 +268,19 @@ const isDevUrlKey = (key, value) =>
  * URLs, and credential query parameters (F-650).
  *
  * Order is load-bearing: EMBEDDED_PAIR first so a `"token":"…"` pair keeps its readable
- * shape instead of being eaten value-first, and DEV_URL before SECRET_QUERY so a dev
- * web-trigger URL is swallowed whole rather than surviving with masked parameters.
- * EMAIL runs last, on whatever text is left (F-652).
+ * shape instead of being eaten value-first, and the credential-SHAPE pass (which since
+ * F-828 carries the dev web-trigger URL scanner that used to be `DEV_URL` here) before
+ * SECRET_QUERY, so such a URL is swallowed whole rather than surviving with masked
+ * parameters. EMAIL runs last, on whatever text is left (F-652).
  */
 export function redactString(s) {
   if (typeof s !== "string") return s;
   // F-815 — the credential-SHAPE pass is a SCANNER, not a `.replace(regex)`, and it sits in
   // exactly the position the regex did. Same input, same output, linear worst case.
+  // F-828 — that scanner now also spans a whole capability URL, which is why there is no
+  // `.replace(DEV_URL, …)` left in this chain.
   return redactCredentialShapes(s
-    .replace(EMBEDDED_PAIR, `$1"${REDACTED}"`)
-    .replace(DEV_URL, REDACTED))
+    .replace(EMBEDDED_PAIR, `$1"${REDACTED}"`))
     .replace(SECRET_QUERY, `$1${REDACTED}`)
     .replace(KEY_QUERY, (m, pre, val) => (looksLikeCredentialValue(val) ? `${pre}${REDACTED}` : m))
     .replace(EMAIL, maskEmail);

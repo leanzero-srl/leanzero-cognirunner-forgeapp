@@ -91,6 +91,31 @@
  * character before it is the alphanumeric tail of a hostname (`…abc123.atlassian-dev.net/`),
  * so a left anchor would turn that shape off entirely.
  *
+ * WHY A CAPABILITY URL IS A SCANNER AND NOT A SHAPE (F-828). F-814 made the read ceiling
+ * rewrite a credential IN PLACE — it replaces the matched SPAN and keeps the text around it.
+ * That is correct for every PREFIX shape, where the span IS the token, and it was WRONG for
+ * `\.atlassian-dev\.net/`, which is a FIXED LITERAL: the secret in a Forge web-trigger URL is
+ * the unguessable PATH, and the subdomain identifies the app, and neither is inside the span.
+ * MEASURED on the pre-fix door — a web-trigger URL inside a mixed row (`functions[].code`,
+ * `pf_code:*`, `job:*`, a prompt) came back as
+ * `https://abc123def<masked:35af568f67c9cdcc>x1/9f3ab7c1secretpath`: host and path in plain
+ * text, `maskedWhy:"value-redacted-in-text"` asserting it had been handled, and a fingerprint
+ * that is the SAME 16 hex characters for every tenant because it is the digest of the literal.
+ *
+ * So the URL families are `findCapabilityUrlSpans` — read a URL from `https://`/`http://` to
+ * the first whitespace, quote, `<`, `>` or `)`, and if it carries a capability host family the
+ * WHOLE URL is the credential span. The in-place rewrite then removes the entire URL, the
+ * fingerprint is of the URL (so two different triggers no longer share one digest), and a bare
+ * URL value trips `isBareCredential` and is replaced whole. The literal shape STAYS in the
+ * census below: the scanner only starts at a scheme, and a scheme-less `abc.atlassian-dev.net/x1/…`
+ * in prose must still be seen.
+ *
+ * `test-harness/lib/redact.mjs` no longer carries `DEV_URL`. It was the same rule with the same
+ * width and a different owner — the F-803 defect one layer up — and the scanner subsumes it:
+ * the family is matched anywhere in the URL TEXT, not just in the host, precisely so the file
+ * boundary is not NARROWED by the move (a family that appears in a path was redacted before and
+ * still is). The terminator set gains `)`, which only ever ends the span EARLIER.
+ *
  * WHAT IS DELIBERATELY NOT A SHAPE — a bare hex or base64 blob. `maskSecretFields` walks
  * `functions[].code` and `agent.instructions`, and a rule that masked every long opaque
  * string would mask the code, which is the thing a driver reads those rows for. The
@@ -204,6 +229,65 @@ export const findJwtLike = (s) => {
   return out;
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-828 — A CAPABILITY URL IS SCANNED WHOLE, BECAUSE THE SECRET IS THE PATH.
+ *
+ * The host families whose URLs are THEMSELVES a credential — no bearer, the unguessable
+ * path token IS the authentication. `atlassian-dev.net` is the Forge dev/staging
+ * web-trigger host: `hookUrlFor(env)` in `test-harness/lib/shared-env-guard.mjs` reads
+ * those URLs out of `.env` (`TESTSTATE_URL` / `STAGING_TESTSTATE_URL`) and they are the
+ * only host family this repo treats that way — `redact.mjs`'s `DEV_URL` and `isDevUrlKey`
+ * named the same one, which is why this list has exactly one entry rather than a guess at
+ * more. `*.ts.net` (LM Studio / the MCP remotes) is deliberately NOT here: those are
+ * addresses guarded by a SEPARATE bearer, and the bearer is what the shapes above catch.
+ *
+ * A family is matched against the whole URL TEXT, not just the host. That is wider than
+ * "the host ends in the family", and it is wider ON PURPOSE: `redact.mjs` matched the
+ * family anywhere in the URL before this cut, and the F-803 header forbids this file
+ * narrowing the last line before disk in order to tidy a rule up.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+export const CAPABILITY_URL_HOST_FAMILIES = ["atlassian-dev.net"];
+
+/* A URL ends at the first character that cannot be in one: whitespace, a quote, `<`, `>`
+   or `)`. Same class `redact.mjs`'s `DEV_URL` used, plus `)` so a URL in parentheses or in
+   a markdown link does not swallow the bracket — a terminator can only ever END the span
+   sooner, never leave more of it readable. */
+const isUrlTerminator = (c) => c === 32 || (c >= 9 && c <= 13) || c === 34 || c === 39 || c === 60 || c === 62 || c === 41;
+
+/**
+ * Every `http://` / `https://` URL span in `s`, leftmost-first. One left-to-right pass:
+ * `indexOf` never rescans, and the cursor only moves forward, so this is linear in `s`
+ * — the F-815 rule applies to a scanner exactly as it applies to a shape.
+ */
+export const findUrlSpans = (s) => {
+  if (typeof s !== "string" || s.length < 8) return [];
+  const lower = s.toLowerCase();
+  const n = s.length;
+  const out = [];
+  let i = 0;
+  while (i < n) {
+    const h = lower.indexOf("http", i);
+    if (h < 0) break;
+    const schemeLen = lower.startsWith("https://", h) ? 8 : lower.startsWith("http://", h) ? 7 : 0;
+    if (schemeLen === 0) { i = h + 4; continue; }
+    let j = h + schemeLen;
+    while (j < n && !isUrlTerminator(s.charCodeAt(j))) j++;
+    if (j > h + schemeLen) out.push({ start: h, end: j });
+    i = Math.max(j, h + schemeLen);
+  }
+  return out;
+};
+
+/** The URL spans that are themselves a credential — see the header above. */
+export const findCapabilityUrlSpans = (s) => {
+  if (typeof s !== "string" || s === "") return [];
+  const lower = s.toLowerCase();
+  return findUrlSpans(s).filter(({ start, end }) => {
+    const url = lower.slice(start, end);
+    return CAPABILITY_URL_HOST_FAMILIES.some((f) => url.includes(f));
+  });
+};
+
 /**
  * EVERY credential-shaped SPAN in a string, `[{start, end}]`, leftmost-first and
  * non-overlapping.
@@ -226,6 +310,11 @@ export const findCredentialSpans = (s) => {
   // caller has to know there are two producers: one span list, leftmost-first, with an
   // overlap absorbed into the span that started first rather than replaced twice.
   for (const j of findJwtLike(s)) spans.push(j);
+  /* F-828 — and a capability URL is a THIRD producer, merged in the same place and for the
+     same reason. It always starts at or before the `.atlassian-dev.net/` literal inside it,
+     so the merge below absorbs that literal into the whole-URL span rather than masking the
+     middle of the URL and leaving the host and the path token in plain text. */
+  for (const u of findCapabilityUrlSpans(s)) spans.push(u);
   spans.sort((a, b) => a.start - b.start || b.end - a.end);
   const out = [];
   for (const sp of spans) {

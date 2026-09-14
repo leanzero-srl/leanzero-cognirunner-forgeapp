@@ -71,6 +71,19 @@ export const hasLoneSurrogate = (value) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(
  * @param {string} [marker]
  * @returns {{ text: string, truncated: boolean }}
  */
+/**
+ * The UTF-8 BYTE length of a value (F-869). Measure-only sibling of `clampUtf8Bytes`, for
+ * the callers that must COMPARE against a byte budget rather than cut to one.
+ *
+ * It exists because `String.length` counts UTF-16 code units, so a budget named in BYTES
+ * that is compared against `.length` admits up to ~3x its budget of CJK and ~2x of most
+ * non-Latin script. The measurement and the clamp must agree, so they live in one home.
+ *
+ * @param {*} value
+ * @returns {number}
+ */
+export const utf8ByteLength = (value) => new TextEncoder().encode(String(value == null ? "" : value)).length;
+
 export const clampUtf8Bytes = (value, maxBytes, marker = "") => {
   const s = String(value == null ? "" : value);
   const max = Number(maxBytes);

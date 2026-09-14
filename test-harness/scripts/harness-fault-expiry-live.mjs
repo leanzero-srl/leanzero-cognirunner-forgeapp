@@ -34,6 +34,12 @@
  *      that BOUNDS it and `expired`; a real sweep deletes the expired ones; a second dry
  *      run shows none expired. Any row listed with `until:null` is an F-667 RESIDUAL — a
  *      pre-deploy legacy row — and is reported as such by count.
+ *      EVERY sweep in this driver is DRAINED (F-675): the sweep is bounded by a time budget
+ *      and a 200-row list cap, so a single call answers for a PAGE, never for the keyspace.
+ *      `drainSweep` loops on the returned `cursor` until a call answers `truncated:false`
+ *      (bounded at 20 calls), and `sweepUsable` FAILS — naming which — on a sweep that
+ *      stopped, a sweep with no resumable cursor, or a capped row list under an assertion
+ *      derived from rows. A partial sweep can no longer be recorded as a clean one.
  *   6. F-661 ROUTE SEAM. `searchUsers` with a query containing a SPACE and one containing
  *      a `/` must come back 200 with a well-formed answer: the `route` tag escapes the
  *      caller's text into query position, so neither reaches Jira as path manipulation nor
@@ -113,30 +119,116 @@ const disarmJira = () => hook({ action: "disarmJiraFault", path: PATH });
 const armKey = (ttlSeconds) => hook({ action: "armKeyReadFault", provider: PROVIDER, mode: "refuse", ttlSeconds });
 const readKey = () => hook({ action: "readKeyReadFault", provider: PROVIDER });
 const disarmKey = () => hook({ action: "disarmKeyReadFault", provider: PROVIDER });
-const sweep = (dryRun) => hook({ action: "sweepHarnessFaults", dryRun });
+const sweep = (dryRun, cursor) => hook({ action: "sweepHarnessFaults", dryRun, ...(typeof cursor === "string" && cursor ? { cursor } : {}) });
 
 /** A row summary that carries no key TAIL (the path/provider) and no value beyond the dates. */
 const rowShape = (r) => ({ until: r.json?.until ?? null, expired: r.json?.expired ?? null, hasValue: Boolean(r.json?.value) });
-/** Sweep rows, counted — never the keys themselves, which carry the faulted path. */
+/*
+ * Sweep rows, counted — never the keys themselves, which carry the faulted path.
+ *
+ * F-675 — THE THREE FIELDS THE ANSWER CARRIES AND THIS DRIVER USED TO THROW AWAY.
+ * `sweepHarnessFaults` answers with TWO independent truncation flags and a resume token, and
+ * each of them can turn a green assertion into a lie:
+ *   · `truncated` + `reason` — the sweep STOPPED (budget or page cap). Its counters describe
+ *     only the part it reached; `cursor` is the token to POST back to continue.
+ *   · `rowsTruncated`        — the COUNTERS are whole but the `rows` LIST was capped at
+ *     `HARNESS_FAULT_SWEEP_MAX_ROWS` (200). Anything counted OUT of that list — `expiredRows`,
+ *     `liveRows`, `legacyNoUntil`, all three derived right here — is then a count of the first
+ *     200 rows and not of the keyspace.
+ * The driver copied `truncated` into the evidence and asserted on none of them, so a sweep
+ * that listed 200 of 600 expired rows and gave up on its budget recorded as a clean keyspace.
+ * `hasCursor` rather than the cursor itself: a KVS cursor is an opaque token that may encode a
+ * key, and the keys here carry the faulted path — the same reason this shape never returns
+ * `rows`.
+ */
 const sweepShape = (j) => ({
   scanned: j?.scanned ?? null, deleted: j?.deleted ?? null, failed: j?.failed ?? null,
-  truncated: j?.truncated ?? null,
+  truncated: j?.truncated ?? null, reason: j?.reason ?? null,
+  rowsTruncated: j?.rowsTruncated ?? null, hasCursor: Boolean(j?.cursor),
   expiredRows: (j?.rows || []).filter((r) => r.expired).length,
   liveRows: (j?.rows || []).filter((r) => !r.expired).length,
   legacyNoUntil: (j?.rows || []).filter((r) => r.until === null).length,
+});
+
+/** The bound on the resume loop. A sweep that cannot finish inside 20 budgets is a finding, not a retry. */
+const MAX_SWEEP_CALLS = 20;
+
+/*
+ * DRAIN a sweep to completion instead of judging its first page.
+ *
+ * Loops `while (truncated)` on the returned `cursor`, accumulating the COUNTERS across calls,
+ * and stops on exactly one of four terminal conditions, each of which a verdict can name:
+ *   drained:true           — a call answered `truncated:false`. The accumulated counters
+ *                            describe the WHOLE keyspace and may be asserted on.
+ *   stopReason "no cursor" — `truncated:true` with no resumable token. The work is abandoned
+ *                            and nothing about the rest of the keyspace is known.
+ *   stopReason "bound"     — still truncated after MAX_SWEEP_CALLS.
+ *   stopReason "HTTP"      — a call did not answer 200/ok.
+ *
+ * A resumed sweep may RE-LIST rows it already cleaned (its cursor re-fetches the page it was
+ * working on, by design), so these totals can OVER-count. That direction is safe for every
+ * assertion built on them here: each is "this count must be zero" or "this count must be at
+ * least one", and over-counting can never turn a dirty keyspace into a clean verdict.
+ */
+const drainSweep = async (dryRun) => {
+  const totals = { scanned: 0, deleted: 0, failed: 0, expiredRows: 0, liveRows: 0, legacyNoUntil: 0 };
+  let calls = 0, cursor = null, lastShape = null, drained = false, stopReason = null, rowsTruncatedAny = false;
+  while (calls < MAX_SWEEP_CALLS) {
+    const res = await sweep(dryRun, cursor);
+    calls++;
+    if (res.status !== 200 || res.json?.ok !== true) {
+      stopReason = `sweep call ${calls} did not answer 200/ok (HTTP ${res.status})`;
+      break;
+    }
+    const shape = sweepShape(res.json);
+    lastShape = shape;
+    for (const k of Object.keys(totals)) totals[k] += Number(shape[k] || 0);
+    if (shape.rowsTruncated === true) rowsTruncatedAny = true;
+    if (shape.truncated !== true) { drained = true; break; }
+    const next = res.json?.cursor;
+    if (typeof next !== "string" || !next) {
+      stopReason = `sweep answered truncated:true (reason "${shape.reason}") with NO resumable cursor after ${calls} call(s) — the remaining rows are unreachable and their state unknown`;
+      break;
+    }
+    cursor = next;
+  }
+  if (!drained && !stopReason) stopReason = `sweep still truncated (reason "${lastShape?.reason}") after the ${MAX_SWEEP_CALLS}-call bound`;
+  return { drained, stopReason, calls, rowsTruncatedAny, ...totals, last: lastShape };
+};
+
+/*
+ * The gate every sweep assertion now sits behind. Returns false — after FAILing with the
+ * reason — whenever the drain did not reach an untruncated answer, so nothing downstream can
+ * assert over a partial count. `listMustBeWhole` additionally refuses a CAPPED ROW LIST, and
+ * is required wherever the assertion is derived from `rows` (expiredRows / liveRows /
+ * legacyNoUntil) rather than from the whole-keyspace counters `scanned` / `deleted`.
+ */
+const sweepUsable = (label, d, listMustBeWhole = true) => {
+  if (!d.drained) { FAIL(`${label}: ${d.stopReason}`, { calls: d.calls, ...(d.last || {}) }); return false; }
+  if (listMustBeWhole && d.rowsTruncatedAny) {
+    FAIL(`${label}: the sweep's row list was capped (rowsTruncated:true) — every per-row count here would be a count of the first 200 rows, not of the keyspace`, { calls: d.calls, scanned: d.scanned });
+    return false;
+  }
+  return true;
+};
+
+/** What a drained sweep leaves in the evidence file: the totals, not one call's page. */
+const drainShape = (d) => ({
+  drained: d.drained, calls: d.calls, rowsTruncated: d.rowsTruncatedAny,
+  scanned: d.scanned, deleted: d.deleted, failed: d.failed,
+  expiredRows: d.expiredRows, liveRows: d.liveRows, legacyNoUntil: d.legacyNoUntil,
+  ...(d.stopReason ? { stopReason: d.stopReason } : {}),
 });
 
 async function main() {
   console.log(`\nHARNESS FAULT EXPIRY — env=${ENV_NAME}  ttl=${TTL}s  wait=${WAIT_MS / 1000}s`);
 
   step("0 · BASELINE — what is in the fault keyspace before this driver arms anything");
-  const base = await sweep(true);
-  if (base.status !== 200 || base.json?.ok !== true) FAIL("baseline dry-run sweep did not answer 200/ok", { status: base.status });
-  else {
-    const s = sweepShape(base.json);
-    ev.baseline = s;
-    PASS("baseline dry-run sweep answered", s);
-    if (s.legacyNoUntil > 0) FAIL(`F-667 RESIDUAL: ${s.legacyNoUntil} legacy row(s) with no 'until' present before the sweep`, s);
+  const base = await drainSweep(true);
+  ev.baseline = drainShape(base);
+  if (sweepUsable("baseline dry-run sweep", base)) {
+    PASS(`baseline dry-run sweep drained in ${base.calls} call(s), ${base.scanned} row(s) scanned`, drainShape(base));
+    if (base.legacyNoUntil > 0) FAIL(`F-667 RESIDUAL: ${base.legacyNoUntil} legacy row(s) with no 'until' present before the sweep`, drainShape(base));
     else PASS("no legacy (no-'until') row present before the sweep", { legacyNoUntil: 0 });
   }
 
@@ -158,12 +250,14 @@ async function main() {
   }
 
   step("2 · POSITIVE CONTROL — a dry-run sweep can SEE a live row, and leaves it alone");
-  const live = await sweep(true);
-  const sl = sweepShape(live.json);
-  if (sl.liveRows < 1) FAIL("the dry-run sweep listed NO live row while a lever is armed — the query cannot see the keyspace", sl);
-  else PASS("dry-run sweep lists the live armed row", sl);
-  if ((live.json?.deleted ?? 0) !== 0) FAIL("a DRY RUN deleted rows", sl);
-  else PASS("dry run deleted nothing", { deleted: 0 });
+  const live = await drainSweep(true);
+  ev.positiveControl = drainShape(live);
+  if (sweepUsable("positive-control dry-run sweep", live)) {
+    if (live.liveRows < 1) FAIL("the dry-run sweep listed NO live row while a lever is armed — the query cannot see the keyspace", drainShape(live));
+    else PASS(`dry-run sweep lists the live armed row (${live.calls} call(s), ${live.scanned} row(s) scanned)`, drainShape(live));
+    if (live.deleted !== 0) FAIL("a DRY RUN deleted rows", drainShape(live));
+    else PASS("dry run deleted nothing", { deleted: 0 });
+  }
 
   step(`3 · WAIT ${WAIT_MS / 1000}s — past the window — then read the row and search for real`);
   await sleep(WAIT_MS);
@@ -203,26 +297,35 @@ async function main() {
   const a2 = await armJira(TTL);
   if (a2.status !== 200 || a2.json?.ok !== true) FAIL("could not arm the unread row for the sweep", { status: a2.status });
   await sleep(WAIT_MS);
-  const d1 = await sweep(true);
-  const sd1 = sweepShape(d1.json);
-  ev.sweepBefore = sd1;
-  if (sd1.expiredRows < 1) FAIL("the dry run listed no expired row for a lever armed 8s ago with a 5s window", sd1);
-  else PASS(`dry run lists ${sd1.expiredRows} expired row(s), and deleted nothing`, sd1);
-  if (sd1.legacyNoUntil > 0) FAIL(`F-667 RESIDUAL: ${sd1.legacyNoUntil} row(s) with no 'until'`, sd1);
-  else PASS("no row in the keyspace lacks an 'until' stamp", { legacyNoUntil: 0 });
+  const d1 = await drainSweep(true);
+  ev.sweepBefore = drainShape(d1);
+  let listedExpired = null;
+  if (sweepUsable("pre-sweep dry run", d1)) {
+    listedExpired = d1.expiredRows;
+    if (d1.expiredRows < 1) FAIL("the dry run listed no expired row for a lever armed 8s ago with a 5s window", drainShape(d1));
+    else PASS(`dry run lists ${d1.expiredRows} expired row(s), and deleted nothing`, drainShape(d1));
+    if (d1.legacyNoUntil > 0) FAIL(`F-667 RESIDUAL: ${d1.legacyNoUntil} row(s) with no 'until'`, drainShape(d1));
+    else PASS("no row in the keyspace lacks an 'until' stamp", { legacyNoUntil: 0 });
+  }
 
-  const real = await sweep(false);
-  const sr = sweepShape(real.json);
-  ev.sweepReal = sr;
-  if (real.status !== 200 || real.json?.ok !== true) FAIL("the real sweep did not answer 200/ok", { status: real.status });
-  else if (sr.deleted >= sd1.expiredRows && sr.failed === 0) PASS(`the real sweep deleted ${sr.deleted} expired row(s), 0 failures`, sr);
-  else FAIL("the real sweep did not delete every expired row it listed", { listed: sd1.expiredRows, ...sr });
+  /* The REAL sweep is judged on its COUNTERS (`deleted`, `failed`), which stay whole even when
+   * the row LIST is capped — so `listMustBeWhole` is false here. What is still not allowed is
+   * a sweep that STOPPED: a partial delete pass compared against a full listing reads as a
+   * failure to delete, and a partial listing compared against a full delete as a success. */
+  const real = await drainSweep(false);
+  ev.sweepReal = drainShape(real);
+  if (sweepUsable("the real sweep", real, false)) {
+    if (listedExpired === null) NV("the real sweep's delete count cannot be compared against anything: the pre-sweep listing was not usable", drainShape(real));
+    else if (real.deleted >= listedExpired && real.failed === 0) PASS(`the real sweep deleted ${real.deleted} expired row(s) across ${real.calls} call(s), 0 failures`, drainShape(real));
+    else FAIL("the real sweep did not delete every expired row it listed", { listed: listedExpired, ...drainShape(real) });
+  }
 
-  const d2 = await sweep(true);
-  const sd2 = sweepShape(d2.json);
-  ev.sweepAfter = sd2;
-  if (sd2.expiredRows === 0) PASS("second dry run: no expired row remains", sd2);
-  else FAIL("expired rows survived the sweep", sd2);
+  const d2 = await drainSweep(true);
+  ev.sweepAfter = drainShape(d2);
+  if (sweepUsable("post-sweep dry run", d2)) {
+    if (d2.expiredRows === 0) PASS("second dry run: no expired row remains", drainShape(d2));
+    else FAIL("expired rows survived the sweep", drainShape(d2));
+  }
 
   step("6 · F-661 ROUTE SEAM — a SPACE and a SLASH reach Jira escaped, and INTACT");
   /* 200 alone would only prove Jira did not reject the request. The second read is Jira's
@@ -257,10 +360,19 @@ try {
   const c2 = rowShape(await readKey());
   if (!c1.hasValue) PASS("second read: no Jira fault row left armed", c1); else FAIL("a Jira fault row is STILL armed after cleanup", c1);
   if (!c2.hasValue) PASS("second read: no key-read fault row left armed", c2); else FAIL("a key-read fault row is STILL armed after cleanup", c2);
-  const fin = sweepShape((await sweep(true)).json);
-  ev.finalSweep = fin;
-  say(fin.liveRows === 0 && fin.expiredRows === 0 ? "PASS" : "FAIL", "final dry-run sweep of the fault keyspace", fin);
-  if (fin.liveRows === 0 && fin.expiredRows === 0) passes++; else fails++;
+  /* THE CLOSING VERDICT (F-675). It used to be `liveRows === 0 && expiredRows === 0` over ONE
+   * call's row list — a list capped at 200 rows, produced by a sweep that may have stopped on
+   * its budget. 600 expired rows with 200 clean ones at the front printed PASS and exited 0.
+   * It is now taken from a DRAINED dry run whose row list was never capped: `sweepUsable`
+   * refuses an undrained sweep AND a `rowsTruncated:true` one, and each refusal is a FAIL that
+   * names which of the two it was. `scanned` rides along so the verdict states how much of the
+   * keyspace it actually looked at, rather than asserting over a page and calling it a whole. */
+  const fin = await drainSweep(true);
+  ev.finalSweep = drainShape(fin);
+  if (sweepUsable("final dry-run sweep of the fault keyspace", fin)) {
+    if (fin.liveRows === 0 && fin.expiredRows === 0) { passes++; say("PASS", `final dry-run sweep: the fault keyspace is clean (${fin.scanned} row(s) scanned across ${fin.calls} call(s))`, drainShape(fin)); }
+    else { fails++; say("FAIL", `final dry-run sweep: ${fin.liveRows} live and ${fin.expiredRows} expired row(s) remain`, drainShape(fin)); }
+  }
 
   ev.summary = { passes, fails, unproven };
   const file = `${OUT}/${ENV_NAME}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;

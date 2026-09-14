@@ -569,6 +569,24 @@ try {
         /from "\.\/shared\/doc-repo-keys\.js"/, `${rel} must import the doc-key home`);
     }
   });
+  await check("no backend source file carries a raw control byte", async () => {
+    // F-903 — src/memories.js joined the row identity with a RAW U+0000 byte, which made
+    // the file binary to git (`Bin 52133 -> 54022 bytes` in a review diff) and invisible
+    // to grep/rg: a LAW-1 "grep every home" pass reported the memory store held nothing.
+    // The escape `"\u0000"` is the same value; the byte is never allowed in source.
+    const { readdirSync } = await import("node:fs");
+    const dirs = ["src", "src/shared"];
+    for (const d of dirs) {
+      for (const name of readdirSync(new URL(`../../${d}/`, import.meta.url))) {
+        if (!name.endsWith(".js")) continue;
+        const raw = readFileSync(new URL(`../../${d}/${name}`, import.meta.url));
+        for (let i = 0; i < raw.length; i++) {
+          const b = raw[i];
+          assert.ok(!(b < 0x20 && b !== 0x0a && b !== 0x0d && b !== 0x09), `${d}/${name} carries a raw control byte 0x${b.toString(16)} at offset ${i}`);
+        }
+      }
+    }
+  });
   await check("kvSet is still an allowlist, not a KVS write bridge", async () => {
     // F-163 deliberately ADDED pf_memories + COGNIRUNNER_MEMORY_SETTINGS to the allowlist
     // (the harness must be able to seed a 200-row store to prove the F-160/F-161 cap policy

@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
+import { DEFAULT_ROSTER_ROLE, VALID_ROLES } from "../../../../src/shared/roster-roles.js";
 
 /*
  * F-466 - TOKEN ROLES. `src/rules-api.js` has carried an optional `role` on a token row
@@ -20,15 +21,47 @@ import { confirmDialog } from "../confirmDialog";
  *
  * The copy is the CAPABILITY, not the name - an admin picking a token for a status
  * dashboard needs to read what it can do, not guess what "viewer" means here.
+ *
+ * F-863 - the VALUES now come from the shared vocabulary; only the LABELS and the
+ * capability copy are local. This panel kept a FOURTH private copy of the role words,
+ * after F-844 pulled the other three into `src/shared/roster-roles.js`. A private copy is
+ * how F-840 got two answers to one question, and the backend already treats these as ONE
+ * vocabulary: `getTokenActorRole` in `src/rules-api.js` compares a TOKEN's stamped role
+ * against the minter's LIVE ROSTER role through a single `tokenRoleAtLeast`, so a token
+ * role the roster does not know is a role that arithmetic cannot rank.
+ *
+ * Order is the shared array's order - narrowest reach FIRST - which is also the order the
+ * Permissions tab renders, so the product's two grant surfaces read the same way round.
  */
-const ROLES = [
-  { id: "admin", label: "Admin", desc: "create and change rules, agents and settings" },
-  { id: "editor", label: "Editor", desc: "create and change rules and agents, no settings" },
-  { id: "viewer", label: "Viewer", desc: "read status, logs and agent receipts only" },
-];
-// A row minted before roles existed has no `role`; the backend reads that as admin, so we show admin.
-const roleOf = (t) => (ROLES.some((r) => r.id === (t && t.role)) ? t.role : "admin");
-const roleLabel = (id) => (ROLES.find((r) => r.id === id) || ROLES[0]).label;
+const ROLE_META = {
+  viewer: { label: "Viewer", desc: "read status, logs and agent receipts only" },
+  editor: { label: "Editor", desc: "create and change rules and agents, no settings" },
+  admin: { label: "Admin", desc: "create and change rules, agents and settings" },
+};
+const ROLES = VALID_ROLES.map((id) => ({ id, label: (ROLE_META[id] || {}).label || id, desc: (ROLE_META[id] || {}).desc || "" }));
+
+/*
+ * F-863 - AN UNRECOGNISED ROLE FALLS TO THE NARROWEST, NOT THE WIDEST.
+ *
+ * This fallback used to answer `"admin"`, the widest value in the vocabulary, on a
+ * permission surface. That is the inverse of the tie-break F-840 settled for the roster,
+ * and exactly the shape the F-853 gate arm exists to catch.
+ *
+ * WHY NARROWING IS SAFE HERE, AND WHY THIS IS NOT THE PermissionsTab CASE. The old
+ * comment justified the wide answer with legacy rows ("a row minted before roles existed
+ * has no role; the backend reads that as admin"). That justification belongs to the
+ * BACKEND, and the backend applies it BEFORE this panel ever sees a row: `publicRow` in
+ * `src/rules-api.js` emits `role: tokenRole(t)`, so a legacy role-less row arrives here
+ * ALREADY resolved to "admin" and still renders as Admin. The Permissions tab reads a RAW
+ * roster row and must therefore keep its legacy rule; this panel does not, so nothing
+ * legitimate reaches this branch and no live integration is misreported by narrowing it.
+ *
+ * What DOES reach it is a malformed or truncated payload, and there a chip asserting the
+ * widest grant over-states a permission nobody gave. Least privilege decides the tie, as
+ * it does everywhere else in this vocabulary.
+ */
+const roleOf = (t) => (VALID_ROLES.includes(t && t.role) ? t.role : DEFAULT_ROSTER_ROLE);
+const roleLabel = (id) => (ROLE_META[id] || {}).label || id;
 
 // Settings → API access: the Rules REST API endpoint URL + bearer tokens (admin only).
 // Tokens are shown ONCE at creation; only hashes are stored server-side.
@@ -37,7 +70,11 @@ export default function ApiAccessPanel({ invoke }) {
   const [url, setUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
-  const [role, setRole] = useState("admin");
+  /* F-863 - the mint form pre-selects the NARROWEST role, from the one home, for the same
+     reason F-853 moved the Permissions tab's Add form off its literal: the fastest
+     possible mis-click (type a name, press Create) must hand over the least reach, and a
+     token is shown exactly once so a too-wide one is not quietly re-read and corrected. */
+  const [role, setRole] = useState(DEFAULT_ROSTER_ROLE);
   const [creating, setCreating] = useState(false);
   const [fresh, setFresh] = useState(null); // { token, row }
   const [busyId, setBusyId] = useState(null);

@@ -408,10 +408,15 @@ ok(scanRosterDefaults(`const [rulesFilter, setRulesFilter] = useState("all");\n`
 const ROSTER_ALLOW = [
   { file: "components/PermissionsTab.jsx", match: 'const role = typeof user === "object" ? (user.role || "admin")',
     why: "the LEGACY-ROW rule, not a default: a bare account-id string (and an object with no role at all) IS an admin row - that is what the backend's rosterRowRole reads it as, and F-840 deliberately did not narrow it. Mirroring a rule the read enforces, not inventing a configurable default" },
-  { file: "components/ApiAccessPanel.jsx", match: 'const roleOf = (t) =>',
-    why: "an API-TOKEN role, not a roster row: this panel keeps its own ROLES list for token scopes and falls back to \"admin\" for a token whose role is unrecognised. Shares the words, not the vocabulary - see the finding filed against this fallback being the WIDEST value" },
-  { file: "components/ApiAccessPanel.jsx", match: 'useState("admin")',
-    why: "the token-creation form's initial selection (same API-TOKEN vocabulary as the entry above), not the scope a roster row confers" },
+  /* F-863 CLOSED the two ApiAccessPanel.jsx entries that used to sit here. Both were
+     admitted on the argument that a TOKEN role "shares the words, not the vocabulary" of
+     a roster row - and the entry itself recorded the finding filed against the wider of
+     them. That argument does not survive reading `src/rules-api.js`: `getTokenActorRole`
+     ranks a token's stamped role against the minter's LIVE ROSTER role with one
+     `tokenRoleAtLeast`, so the two ARE one vocabulary wherever it matters. The panel now
+     imports `VALID_ROLES` / `DEFAULT_ROSTER_ROLE`, falls back to the NARROWEST role and
+     seeds its mint form with the narrowest, so it types no literal and needs no excuse.
+     The gate guards the file from here on; do not re-admit it without re-reading this. */
 ];
 
 const rosterUsed = new Set();

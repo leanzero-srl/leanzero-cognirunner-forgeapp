@@ -805,11 +805,19 @@ const JOB_FULL = {
   job_b2: { id: "job_b2", name: "Weekly release digest", description: "", enabled: false, schedule: { cron: "0 17 * * 5", timeZone: "UTC" }, scope: null, mode: "script", functions: [{ id: "fn-1", name: "Digest", operationType: "work_item_query", operationPrompt: "Find issues resolved this week and post a digest comment on PROJ-1", variableName: "result1", code: "const r = await api.searchJql(\"resolved >= startOfWeek()\");\nawait api.forIssue(\"PROJ-1\").addComment(`${r.issues.length} issues resolved this week`);\nreturn r.issues.length;", includeBackoff: false, method: "GET", endpoint: "", conditionPrompt: "" }], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: false, suppressNotifications: false, createdBy: ACCT, createdAt: "2026-08-20T10:00:00.000Z", updatedAt: "2026-08-20T10:00:00.000Z", stats: JOB_ROWS[1].stats },
 };
 const LISTENER_TEST_RESULT = { type: "listener", source: "test", isValid: true, reason: "Ran 1 step(s), 1 change(s)", executionTimeMs: 812, eventType: "avi:jira:created:issue", eventUsed: "synthetic", gate: null, changes: [{ action: "addLabels", key: "PROJ-42", simulated: true }], logs: ["Starting 1 step(s) for PROJ-42", "\"Add triage label\": [SIMULATION] editIssue(\"PROJ-42\", update {\"labels\":[{\"add\":\"needs-triage\"}]})", "\"Add triage label\": Completed in 310ms", "Finished: 1/1 step(s) succeeded in 812ms, 1 change(s) made"] };
-/* F-466 - tok_1 deliberately carries NO `role`: that is the LEGACY row shape minted before
-   token roles existed, and the panel must show it as Admin (which is what rules-api.js's
-   tokenRole() resolves a missing role to). createApiToken below APPENDS the minted row to
-   this list, so a mint-then-reload journey sees its own new token with its own role chip. */
-const API_TOKENS = { success: true, url: "https://a1b2c3.hello.atlassian-dev.net/x1/demo-rules-api", tokens: [{ id: "tok_1", name: "CI pipeline", prefix: "cgr_0a1b2c", createdAt: "2026-08-20T10:00:00.000Z", createdBy: ACCT, lastUsedAt: "2026-09-01T06:00:00.000Z", revokedAt: null }] };
+/* tok_1 is the LEGACY row - minted before token roles existed, so what is STORED carries
+   no `role`.
+   F-863 - but a role-less row is NOT what this resolver puts on the wire, and this fixture
+   used to pretend it was. `getApiTokens` (src/index.js) returns `listApiTokens()`, which
+   maps every row through `publicRow` in `src/rules-api.js`, and `publicRow` emits
+   `role: tokenRole(t)` - the legacy-to-admin resolution happens SERVER-side, before the
+   panel sees anything. Emitting a role-less row here made the mock WIDER in its demands
+   than the product is: it forced the panel to re-implement the compatibility default
+   client-side, and that re-implementation was the fail-open `roleOf` fallback F-863 cut.
+   The row still renders the Admin chip, because "admin" is exactly what the wire carries.
+   createApiToken below APPENDS the minted row to this list, so a mint-then-reload journey
+   sees its own new token with its own role chip. */
+const API_TOKENS = { success: true, url: "https://a1b2c3.hello.atlassian-dev.net/x1/demo-rules-api", tokens: [{ id: "tok_1", name: "CI pipeline", prefix: "cgr_0a1b2c", createdAt: "2026-08-20T10:00:00.000Z", createdBy: ACCT, role: "admin", lastUsedAt: "2026-09-01T06:00:00.000Z", revokedAt: null }] };
 
 /* ----------------------------- MARKETING dataset (admin-* scenarios) --------------
  * The `admin` scenario above is pinned by listeners-jobs.test.mjs (row counts, badge
@@ -921,9 +929,14 @@ const MKT_LOGS = [
   { id: "mlg-06", type: "listener", source: "async", issueKey: "OPS-433", fieldId: "avi:jira:commented:issue", eventType: "avi:jira:commented:issue", mode: "script", isValid: true, reason: "Ran 1 step(s), 4 change(s)", executionTimeMs: 1980, changes: [{ action: "updateIssue", key: "OPS-433", fields: { priority: { name: "Highest" } } }, { action: "editIssue", key: "OPS-433", update: { labels: [{ add: "p1-escalated" }] } }, { action: "addWatcher", key: "OPS-433", accountId: "5f8a2c1e0b3d4e001c9a7b21" }, { action: "addComment", key: "OPS-433", id: "31285" }], logs: ["Comment matched /urgent|outage|sev ?1|escalat/i", "Starting 1 step(s) for OPS-433", "\"Raise priority and page on-call\": updateIssue(\"OPS-433\", {\"priority\":{\"name\":\"Highest\"}})", "\"Raise priority and page on-call\": addWatcher 5f8a2c1e0b3d4e001c9a7b21", "\"Raise priority and page on-call\": addComment: 31285", "Finished: 1/1 step(s) succeeded in 1980ms, 4 change(s) made"], ruleId: "lst_p1", ruleName: "Escalate P1 comments", ruleWorkflow: null, timestamp: "2026-09-07T05:18:00.000Z" },
 ];
 const MKT_API_TOKENS = { success: true, url: "https://9d2f6b1c-3e4a-4f8b-a1c7-5e0d2b9f7a63.hello.atlassian-dev.net/x1/Qm9vbVdvcmtmbG93/2c7a4e19-8f3b-4d6e-9a21-b5c8e0f4d7a2", tokens: [
-  { id: "tok_ci", name: "CI pipeline", prefix: "cgr_4d8e1f", createdAt: "2026-08-12T09:30:00.000Z", createdBy: ACCT, lastUsedAt: "2026-09-07T06:15:00.000Z", revokedAt: null },
-  { id: "tok_harness", name: "Test harness", prefix: "cgr_b07c92", createdAt: "2026-08-28T14:05:00.000Z", createdBy: ACCT, lastUsedAt: "2026-09-06T22:40:00.000Z", revokedAt: null },
-  { id: "tok_old", name: "Migration script (Aug)", prefix: "cgr_11aa2b", createdAt: "2026-08-03T08:00:00.000Z", createdBy: ACCT, lastUsedAt: "2026-08-19T10:12:00.000Z", revokedAt: "2026-08-20T07:00:00.000Z" },
+  /* F-863 - `role` stated on every row, as publicRow in src/rules-api.js states it on
+     every row it puts on the wire. "admin" is what all three read as today (they are
+     legacy-shaped rows and the server resolves a missing role to admin), so the shots are
+     unchanged; what changes is that the dataset no longer relies on the panel to supply a
+     compatibility default the backend has already applied. */
+  { id: "tok_ci", name: "CI pipeline", prefix: "cgr_4d8e1f", createdAt: "2026-08-12T09:30:00.000Z", createdBy: ACCT, role: "admin", lastUsedAt: "2026-09-07T06:15:00.000Z", revokedAt: null },
+  { id: "tok_harness", name: "Test harness", prefix: "cgr_b07c92", createdAt: "2026-08-28T14:05:00.000Z", createdBy: ACCT, role: "admin", lastUsedAt: "2026-09-06T22:40:00.000Z", revokedAt: null },
+  { id: "tok_old", name: "Migration script (Aug)", prefix: "cgr_11aa2b", createdAt: "2026-08-03T08:00:00.000Z", createdBy: ACCT, role: "admin", lastUsedAt: "2026-08-19T10:12:00.000Z", revokedAt: "2026-08-20T07:00:00.000Z" },
 ] };
 // Returns a Promise for the resolvers the marketing dataset overrides, else null.
 function mktInvoke(name, payload) {

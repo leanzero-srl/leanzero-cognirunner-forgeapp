@@ -355,12 +355,18 @@ try {
       await page.locator(".apx").waitFor({ timeout: 10000 });
       ok((await page.locator(".apx-code").first().innerText()).includes("hello.atlassian-dev.net"), `A1 ${theme} endpoint URL rendered`);
       ok(await page.locator(".apx-table tbody tr").count() === 1, `A1 ${theme} existing token listed`);
-      // the legacy row carries no `role` at all — it must read as Admin, never blank
-      ok((await page.locator(".apx-table tbody tr").first().locator(".apx-role-chip").innerText()).trim() === "Admin", `A1 ${theme} legacy role-less token shows the Admin chip`);
+      /* The legacy row (stored without a role) reaches the panel already resolved to
+         "admin" by publicRow in src/rules-api.js (F-863). It must read as Admin, never
+         blank and never narrowed: the panel displays the role the server grants. */
+      ok((await page.locator(".apx-table tbody tr").first().locator(".apx-role-chip").innerText()).trim() === "Admin", `A1 ${theme} legacy token still shows the Admin chip`);
 
       ok(await page.locator(".apx-roles [role='radio']").count() === 3, `A1 ${theme} three roles offered`);
       ok(await page.locator(".apx-roles select, .apx select").count() === 0, `A1 ${theme} no native select in the role picker`);
-      ok(await page.locator(".apx-role-btn.apx-role-admin").getAttribute("aria-checked") === "true", `A1 ${theme} defaults to Admin`);
+      /* F-863 - the mint form pre-selects the NARROWEST role, not the widest. A token is
+         shown exactly once, so a too-wide default is not something an admin gets to
+         re-read and correct later. Admin must NOT be pre-checked. */
+      ok(await page.locator(".apx-role-btn.apx-role-viewer").getAttribute("aria-checked") === "true", `A1 ${theme} mint form defaults to the narrowest role (Viewer)`);
+      ok(await page.locator(".apx-role-btn.apx-role-admin").getAttribute("aria-checked") === "false", `A1 ${theme} mint form does not pre-select Admin`);
       const rolesText = await page.locator(".apx-roles-block").innerText();
       ok(rolesText.includes("create and change rules, agents and settings"), `A1 ${theme} admin copy`);
       ok(rolesText.includes("create and change rules and agents, no settings"), `A1 ${theme} editor copy`);
@@ -368,6 +374,11 @@ try {
       ok(rolesText.includes("Tokens created before roles existed act as Admin."), `A1 ${theme} legacy-token note`);
 
       await page.locator(".apx-input").fill("Status dashboard");
+      /* Viewer is now the DEFAULT, so clicking it proves nothing on its own. Move the
+         selection away first, then back, so the picker is shown to actually drive the
+         mint payload rather than the default happening to be right. */
+      await page.locator(".apx-role-btn.apx-role-editor").click();
+      ok(await page.locator(".apx-role-btn.apx-role-editor").getAttribute("aria-checked") === "true", `A1 ${theme} picker moves the selection (editor)`);
       await page.locator(".apx-role-btn.apx-role-viewer").click();
       ok(await page.locator(".apx-role-btn.apx-role-viewer").getAttribute("aria-checked") === "true", `A1 ${theme} viewer selected`);
       await page.locator(".apx-create").click();

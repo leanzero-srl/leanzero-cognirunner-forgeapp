@@ -738,6 +738,115 @@ for (const f of permDrivers) {
     `${f}: …and EVERY makeShot( call resolved to a binding — an unresolved one is a capture the swallow rule cannot police (at: ${b.madeUnresolved.join(", ")})`);
 }
 
+/* ── 4c-ii-b. F-681 / F-689 — THE SUCCESSFUL CAPTURE HAS A WRITER, AND A LEAK FAILS
+   THE RUN ───────────────────────────────────────────────────────────────────────
+   Everything above polices the capture that did NOT happen: strict is armed, the answer
+   is not swallowed, the one home is `makeShot`. None of it says a word about the capture
+   that DID — and that is the branch carrying the proof. `{total, masked, readable}` IS
+   the F-660 DOM assertion; without it "no PNG in this directory is unmasked" can only be
+   ARGUED from the absence of a throw, never READ off the artefact set.
+
+   `makeShot` grew the PASS writer and the `shots` ledger under F-681. The fix reached the
+   library and ONE driver of four, and it stayed that way through TWO passes — F-681's own
+   surgeon deliberately WITHHELD this rule because it would have failed the gate on the
+   three unconverted drivers, and the file-scoped test that landed with 50291a7 names only
+   the two it converted. That is precisely the mechanism that lets a fix stall at one call
+   site: the rule that would have caught it was postponed until the code agreed with it.
+   So the rule goes on the DIRECTORY, and its cohort is derived — every `*-live.mjs` whose
+   CODE calls `makeShot(` — so the fifth driver written next month is inside it on the day
+   it is written, without anyone remembering to add a filename to a list.
+
+   Three things are required of such a driver:
+
+     1. `makeShot` is handed the writer TRIPLE `{ pass, nv, fail }`, not a bare function.
+        A bare `NV` is read by `makeShot` as "this driver offered no PASS writer" and the
+        successful capture is recorded NOWHERE — the exact pre-fix shape. `pass:` is the
+        load-bearing key: `{ nv: NV, fail: FAIL }` is an object and still records nothing.
+        Where the driver also builds `makeRosterUI`, its `record` needs the same triple,
+        because grantRole/removeAccount take captures the driver never holds. That half is
+        conditional on the call being present — `user-search-fault-live.mjs` has no roster.
+     2. The ledger reaches the evidence FILE. An `ev.shots = …` (or an equivalent
+        assignment onto an evidence field) before the write, or the numbers die in a
+        variable nobody kept.
+     3. A leak is a RUN-level FAIL. Every one of these drivers wraps its capture in a seam
+        that converts a throw into a recorded sentence and carries on — `attempt()` inside
+        `restoreRosterToSnapshot`, or a plain step-level `catch` that writes N/V — so a PII
+        refusal came back as prose in a run that still exited 0. The driver must READ a
+        `leaked` flag and turn it into `FAIL(`.
+
+   THE SCAN READS CODE, NOT PROSE. These drivers now document their own history — "this
+   used to be `makeShot(NV)`" is a sentence three of them carry — and a rule reading the
+   comments goes red on a file that is CORRECT. Block and line comments are stripped
+   first; `://` is spared so a URL on a code line survives. */
+const stripComments = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, " ")
+  .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+/** Every `makeShot(` call in the file is passed an object literal carrying a `pass:` key. */
+const hasPassWriter = (code) => {
+  const calls = [...code.matchAll(/makeShot\s*\(([\s\S]{0,160}?)\)/g)].map((m) => m[1]);
+  return calls.length > 0 && calls.every((a) => /^\s*\{/.test(a) && /\bpass\s*:/.test(a));
+};
+/** …and `makeRosterUI`'s `record`, WHERE THE DRIVER BUILDS ONE. */
+const rosterRecordHasPass = (code) => {
+  const m = code.match(/makeRosterUI\s*\(\{[\s\S]{0,400}?\}\)/);
+  return !m || /record\s*:\s*\{[^}]*\bpass\s*:/.test(m[0]);
+};
+const usesRosterUI = (code) => /makeRosterUI\s*\(/.test(code);
+/** The ledger is assigned onto the evidence object before it is written. */
+const writesShotLedger = (code) => /\bev\.shots\s*=/.test(code)
+  || /\bev\.[A-Za-z_$][\w$]*\s*=\s*[^=;]*\bshots\b/.test(code);
+/** A `leaked` flag is read AND turned into a FAIL. */
+const failsOnLeak = (code) => /\.leaked\b|\bleaked\s*\(\s*\)/.test(code) && /FAIL\s*\(/.test(code);
+
+/* POSITIVE CONTROLS — the PRE-FIX shapes, written out, so a green rule is evidence that
+   the rule can still go red rather than evidence that it forgot how. */
+ok(hasPassWriter("const shot_ = makeShot({ pass: PASS, nv: NV, fail: FAIL });"),
+  "the PASS-writer rule ACCEPTS the writer triple");
+ok(!hasPassWriter("const shot_ = makeShot(NV);"),
+  "POSITIVE CONTROL (F-689): the PASS-writer rule FIRES on the pre-fix `makeShot(NV)` — the shape three drivers carried");
+ok(!hasPassWriter("const shot_ = makeShot({ nv: NV, fail: FAIL });"),
+  "POSITIVE CONTROL: …and on an object with no `pass:` key, which is the same defect wearing braces");
+ok(!hasPassWriter("await shot_(page, frame, p);"),
+  "POSITIVE CONTROL: a file with no makeShot call at all does not satisfy the rule by vacuous truth");
+ok(!hasPassWriter("const a = makeShot({ pass: PASS });\nconst b = makeShot(NV);"),
+  "POSITIVE CONTROL: EVERY call must carry the writer — one conforming sibling does not cover an unconverted one");
+ok(!rosterRecordHasPass("makeRosterUI({ withAdminPanel, rosterRows: rosterRaw, out: OUT, record: NV })"),
+  "POSITIVE CONTROL (F-689): the roster-record rule FIRES on the pre-fix `record: NV`");
+ok(rosterRecordHasPass("makeRosterUI({ withAdminPanel, out: OUT, record: { pass: PASS, nv: NV, fail: FAIL } })"),
+  "…and ACCEPTS the triple");
+ok(rosterRecordHasPass("const shot_ = makeShot({ pass: PASS, nv: NV, fail: FAIL });"),
+  "NEGATIVE CONTROL: a driver that builds no roster UI is not held to a `record` it never passes");
+ok(!writesShotLedger("const allShots = [...shot_.shots];"),
+  "POSITIVE CONTROL (F-689): the ledger rule FIRES when the shots are computed but never assigned into the evidence");
+ok(writesShotLedger("ev.shots = shot_.shots;"),
+  "…and ACCEPTS the direct assignment");
+ok(writesShotLedger("ev.captures = [...shot_.shots, ...uiShots()];"),
+  "NEGATIVE CONTROL: an equivalently-named evidence field carrying the shots is accepted — the rule is about the ledger reaching evidence.json, not about one property name");
+ok(!failsOnLeak("if (shot_.leaked) NV('a capture was refused');"),
+  "POSITIVE CONTROL (F-689): the leak rule FIRES when `leaked` is read but only recorded as N/V — the run still exits 0");
+ok(!failsOnLeak("FAIL('something else went wrong');"),
+  "POSITIVE CONTROL: …and when there is a FAIL writer but nothing ever reads `leaked`");
+ok(failsOnLeak("if (shot_.leaked || uiLeaked()) FAIL('a capture was REFUSED', { paths });"),
+  "…and ACCEPTS a run-level FAIL driven off either binding's leak flag");
+
+const shotDrivers = liveFiles.filter((f) => /makeShot\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
+ok(shotDrivers.length >= 4,
+  `the PASS-writer rule found every driver that binds makeShot (${shotDrivers.join(", ")})`);
+for (const f of shotDrivers) {
+  const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+  ok(hasPassWriter(code),
+    `${f}: every makeShot( call is handed the writer TRIPLE — a bare N/V records a SUCCESSFUL capture nowhere (F-681/F-689)`);
+  if (usesRosterUI(code)) {
+    ok(rosterRecordHasPass(code),
+      `${f}: …and makeRosterUI's \`record\` carries a \`pass\` writer too — grantRole/removeAccount take captures this driver never holds`);
+  }
+  ok(writesShotLedger(code),
+    `${f}: the capture ledger is assigned into the evidence object — otherwise the {total, masked, readable} proof dies in a variable`);
+  ok(failsOnLeak(code),
+    `${f}: a refused capture is a RUN-level FAIL — the step-level seam converts the throw into a sentence and would otherwise exit 0`);
+}
+
 /* ── 4c-iii. F-657 — NO PERMISSION DRIVER PICKS AN ACCOUNT ITS OWN WAY ──────────
    F-654 was fixed in one driver; the driver written as the PROOF of that fix carried the
    same defect verbatim, because it had its own selection code. So the rule is on the

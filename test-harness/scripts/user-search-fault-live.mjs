@@ -108,8 +108,17 @@ const NV = (s, d) => { unproven++; say("N/V", s, d); };
 
 /* F-668 — the capture's answer is RECORDED, never discarded, and `strict` is the default:
    a readable address ABORTS rather than reaching disk. `makeShot` is the one home of that
-   recording, so no call site here carries a `.catch(() => {})` or a `strict` flag. */
-const shot_ = makeShot(NV);
+   recording, so no call site here carries a `.catch(() => {})` or a `strict` flag.
+
+   F-689 — AND THE SUCCESSFUL CAPTURE GETS A WRITER TOO. This binding used to be a bare
+   N/V function, which `makeShot` reads as "this driver offered no PASS writer" — so a
+   capture that actually HAPPENED was recorded nowhere, and the `{total, masked, readable}`
+   numbers that ARE the F-660 DOM assertion never reached `evidence.json`. The three
+   verdicts are distinct and all three are written: PASS for a capture taken, N/V for one
+   that could not be, FAIL for one REFUSED because a readable address survived the mask.
+   The driver no longer writes its own "captured" PASS — that would double-count the one
+   `makeShot` now emits, from the same numbers. */
+const shot_ = makeShot({ pass: PASS, nv: NV, fail: FAIL });
 const info = (s) => console.log(`        ${redactString(String(s))}`);
 const step = (s) => console.log(`\n── ${s}`);
 
@@ -272,7 +281,6 @@ async function main() {
          render: it was masking nothing on half its selector.) */
       const shot = await shot_(page, frame, `${OUT}/search-error-429.png`);
       shotPath = shot.captured ? shot.path : null;
-      if (shot.captured) PASS("the error-state screenshot was captured with every email span masked in the DOM first", { path: shot.path, spans: shot.total, masked: shot.masked, readable: shot.readable });
 
       // Replaced, not stacked: three more keystroke-driven searches in a row.
       const seq = [];
@@ -375,7 +383,20 @@ try {
   if (finalRow === null) PASS("cleanup: no fault row remains", { row: null });
   else FAIL("cleanup: a fault row remains armed", { row: finalRow });
 
-  ev.summary = { passes, fails, unproven };
+  /* F-689 — THE CAPTURE RECORD IS EVIDENCE, AND A LEAK FAILS THE RUN ON ITS OWN.
+     Without `ev.shots` the F-660 DOM assertion lives only in a variable nobody kept, and
+     "no PNG in this directory is unmasked" could only be ARGUED from the absence of a
+     throw. Here that argument is especially weak: the only capture this driver takes sits
+     inside a `try` whose `catch` records N/V and carries on, so a PII refusal became an
+     "the Permissions tab could not be driven" sentence in a run that still exited 0. The
+     leak check below is therefore at RUN level, not at the call site, and it names the
+     refused PNG paths so the operator knows which artefacts to destroy. */
+  ev.shots = shot_.shots;
+  const leaks = shot_.shots.filter((s) => s.readable > 0);
+  if (shot_.leaked) {
+    FAIL("a screenshot capture was REFUSED because a readable email address survived the mask - the F-660 guarantee fired and this run FAILS on it regardless of the fault-lever verdicts", { paths: leaks.map((s) => s.path), leaks });
+  }
+  ev.summary = { passes, fails, unproven, shots: shot_.shots.length, captured: shot_.shots.filter((s) => s.captured).length, leaks: leaks.length };
   const file = `${OUT}/evidence.json`;
   fs.writeFileSync(file, JSON.stringify(redactSecrets(ev), null, 2));
   console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}`);

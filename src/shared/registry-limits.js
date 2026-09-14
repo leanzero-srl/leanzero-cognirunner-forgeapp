@@ -166,6 +166,15 @@ export function slimRegistryRow(row) {
     if (v === null || v === undefined || v === "") continue;
     if (v === false && SLIM_FALSE_FLAGS.has(k)) continue;
     if (Array.isArray(v) && v.length === 0 && !(k === "functions" && row.codeRef)) continue;
+    // F-801 — the ONE clamp for step provenance on the registry side. Every other
+    // step field arrives from a resolver that already substring()s or types it;
+    // `generationMeta` arrived WHOLESALE from the config-ui / admin-panel save, so
+    // nested caller JSON (a credential included) could land in the shared
+    // `config_registry` value. It sits here because saveRegistry (src/index.js
+    // ~296) slims EVERY row on EVERY write — no write site can reintroduce the
+    // unbounded shape. The pf_code offload writes `functions` to its own KVS key
+    // and therefore calls normalizeFunctionsForStorage directly.
+    if (k === "functions" && Array.isArray(v)) { out[k] = normalizeFunctionsForStorage(v); continue; }
     if (k === "ruleKind" && v === "ai") continue;
     if (SLIM_EPOCH_FIELDS.has(k) && typeof v === "string") {
       const ms = Date.parse(v);
@@ -830,4 +839,30 @@ export function normalizeGenerationMeta(input) {
   }
 
   return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * Clamp the `generationMeta` of every step in a `functions` array — F-801.
+ *
+ * Pure, idempotent and byte-stable: a step whose meta already has the shape the
+ * UI's compactMeta emits comes back with the same keys in the same order, and a
+ * step carrying no `generationMeta` key is returned as the SAME object, so this
+ * can sit on a hot write path without rewriting clean rows.
+ *
+ * Nothing else about a step is touched here. Code, endpoint and names are
+ * clamped by their own owners (the register resolvers for workflow rules,
+ * normalizeStep in src/listeners.js for job/listener steps).
+ */
+export function normalizeFunctionsForStorage(functions) {
+  if (!Array.isArray(functions)) return functions;
+  return functions.map((f) => {
+    if (!f || typeof f !== "object" || Array.isArray(f)) return f;
+    if (f.generationMeta === undefined) return f;
+    const gm = normalizeGenerationMeta(f.generationMeta);
+    // Assigning an EXISTING key keeps its original position in the object, so a
+    // clean step re-serialises byte-identically.
+    const out = { ...f, generationMeta: gm };
+    if (gm === null) delete out.generationMeta;
+    return out;
+  });
 }

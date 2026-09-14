@@ -123,6 +123,7 @@ import {
   registryPressure,
   registrySerializedBytes,
   slimRegistryRow,
+  normalizeFunctionsForStorage,
   brakeRefusalText,
 } from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
@@ -7394,7 +7395,13 @@ const premadePostFunctionConfig = (payload) => {
 
 resolver.define("registerPostFunction", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt, requestCodeOffload, legacyUpgrade, ruleInstanceId } = payload;
+    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions: rawFunctions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt, requestCodeOffload, legacyUpgrade, ruleInstanceId } = payload;
+    // F-801 — clamp the step provenance stamps ONCE, before anything hashes,
+    // sizes or stores this array, so the pf_code bundle and the registry row
+    // carry the same bounded shape. slimRegistryRow re-applies the same helper
+    // on the way into `config_registry` (idempotent), which is what covers the
+    // other write sites; here it is what keeps the OFFLOADED bundle bounded.
+    const functions = normalizeFunctionsForStorage(rawFunctions);
     if (!id) return { success: false, error: "Missing post-function ID" };
     if (!type) return { success: false, error: "Missing post-function type" };
     // F-398 — a PREMADE post-function is validated against the catalogue BEFORE anything
@@ -7843,7 +7850,11 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
       }
     }
     // 5b. Static-PF code: carry inline, offload if the slim config would exceed the cap.
-    let functions = Array.isArray(clean.functions) ? clean.functions.map((f) => ({ name: f.name, operationType: f.operationType, variableName: f.variableName, code: f.code, description: f.description })) : [];
+    // The field pick below is already a whitelist (no generationMeta crosses an
+    // import), and it goes through the F-801 helper anyway so this path has the
+    // same one home as the register resolver — if a field is ever added here,
+    // the clamp is already on it.
+    let functions = normalizeFunctionsForStorage(Array.isArray(clean.functions) ? clean.functions.map((f) => ({ name: f.name, operationType: f.operationType, variableName: f.variableName, code: f.code, description: f.description })) : []);
     if (functions.length) {
       if (ruleType === "postfunction-static" && Buffer.byteLength(JSON.stringify({ ...cfg, functions }), "utf8") > PF_FUNCTIONS_OFFLOAD_BYTES) {
         const codeRef = pfCodeKeyFor(freshId, functions);

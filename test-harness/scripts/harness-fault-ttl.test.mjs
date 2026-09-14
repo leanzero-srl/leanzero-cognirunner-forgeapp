@@ -453,9 +453,10 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     drainKeys.push(key);
     await storage.set(key, { count: 1, armedAt: stale, until: stale });
   }
-  let token = null, calls = 0, drained = 0, ran = true;
+  let token = null, calls = 0, drained = 0, ran = true, last = null;
   while (ran) {
     const r = await fault.sweepHarnessFaults({ maxMs: 500, cursor: token });
+    last = r;
     drained += r.deleted;
     token = r.cursor;
     calls++;
@@ -468,6 +469,74 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   for (const key of drainKeys) if ((await storage.get(key)) !== undefined) stillThere++;
   ok(stillThere === 0 && drained === DRAIN,
     `…with the whole ${DRAIN}-row keyspace actually EMPTY when it stops (deleted ${drained}, still there ${stillThere})`);
+  // F-683 - and the FINISHED answer says so in one field, not by the caller re-deriving it.
+  ok(last.complete === true && last.failed === 0 && last.truncated === false,
+    `…and only THAT answer is \`complete\` (got ${JSON.stringify({ complete: last.complete, failed: last.failed, truncated: last.truncated })})`);
+
+  /* F-682/F-683 - A STORE THAT REFUSES EVERY DELETE.
+   *
+   * `progressed` was set after `Promise.allSettled` whatever the outcomes, so an all-failed
+   * batch armed the gate the whole termination argument rests on: the budget was then free
+   * to break MID-PAGE with that page's own cursor, and the resumed call re-fetched the same
+   * page, failed the same way, and answered the same token - forever. And even when the walk
+   * DID reach the end of the keyspace, a sweep whose deletes all failed answered
+   * `truncated: false, cursor: null`: the finished signal, over rows it had condemned and
+   * left standing.
+   *
+   * The offline mock deletes instantly and never refuses, which is exactly why no suite
+   * could see either one. Refuse every delete and both answers become readable: the call
+   * ENDS with `reason: "deletes-failing"`, `failed > 0` and a cursor, and a loop that treats
+   * that as "not converging" terminates instead of spinning. */
+  const failKeys = [];
+  for (let i = 0; i < 9; i++) {
+    const key = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_682", `d-${String(i).padStart(4, "0")}`);
+    failKeys.push(key);
+    await storage.set(key, { count: 1, armedAt: stale, until: stale });
+  }
+  const okDelete = kvs.delete;
+  kvs.delete = async function refusingDelete(key) {
+    if (failKeys.includes(key)) { const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e; }
+    return okDelete.call(this, key);
+  };
+  let failToken = null, failCalls = 0, spun = 0, lastFail = null;
+  while (failCalls < 50) {
+    const r = await fault.sweepHarnessFaults({ maxMs: 5_000, cursor: failToken });
+    lastFail = r; failCalls++;
+    spun += r.deleted;
+    // The contract a caller writes: keep going while there is a cursor, but STOP when the
+    // answer says the deletes are not landing. Without F-682 this loop never exits.
+    if (r.reason === "deletes-failing") break;
+    failToken = r.cursor;
+    if (failToken === null) break;
+  }
+  ok(failCalls === 1 && lastFail.reason === "deletes-failing",
+    `an all-failed batch ENDS the call as "deletes-failing" rather than counting as progress (calls ${failCalls}, reason ${JSON.stringify(lastFail.reason)})`);
+  ok(lastFail.truncated === true && lastFail.failed > 0 && spun === 0,
+    `…with failed > 0 and nothing deleted, so a caller can see it is NOT converging (got ${JSON.stringify({ truncated: lastFail.truncated, failed: lastFail.failed, deleted: spun })})`);
+  ok(lastFail.complete === false && typeof lastFail.cursor === "string" && lastFail.cursor.length > 0,
+    "…never `complete`, and still carrying the cursor of the page that failed so a retry resumes there");
+  // The rows are all still present — a refused delete must leave the row, which is the whole
+  // reason `failed > 0` may not share an answer shape with "finished".
+  let survivors = 0;
+  for (const key of failKeys) if ((await storage.get(key)) !== undefined) survivors++;
+  ok(survivors === failKeys.length, `…and every refused row is still there (${survivors}/${failKeys.length})`);
+
+  /* THE PARTIAL CASE: some deletes land, some do not, and the walk reaches the end of the
+   * keyspace. That used to be `truncated: false, cursor: null, ok: true, failed: n`. */
+  const stubborn = new Set(failKeys.slice(0, 2));
+  kvs.delete = async function partlyRefusingDelete(key) {
+    if (stubborn.has(key)) { const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e; }
+    return okDelete.call(this, key);
+  };
+  const partial = await fault.sweepHarnessFaults({ maxMs: 5_000 });
+  ok(partial.failed > 0 && partial.deleted > 0,
+    `(fixture) a sweep where some deletes land and some are refused (deleted ${partial.deleted}, failed ${partial.failed})`);
+  ok(partial.truncated === true && partial.reason === "deletes-failed" && partial.complete === false,
+    `a sweep that could not delete what it condemned is NOT finished - it says "deletes-failed" (got ${JSON.stringify({ truncated: partial.truncated, reason: partial.reason, complete: partial.complete })})`);
+  ok(typeof partial.cursor === "string" && partial.cursor.length > 0,
+    "…and carries the cursor of the page the failures started on, so a retry resumes at the mess");
+  kvs.delete = okDelete;
+  for (const key of failKeys) await storage.delete(key);
 
   // THE BUDGET ITSELF: a default, a ceiling no caller may raise past the 25 s trigger, and a
   // floor, so "maxMs: 0" is one check-and-stop rather than a loop that never checks.

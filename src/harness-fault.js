@@ -528,6 +528,10 @@ export const jiraFaultStatus = async (path) => {
  *
  * BEST-EFFORT ON EACH DELETE, like every other cleanup in this module: a key that refuses to
  * go is counted in `failed`, never thrown out of a sweep that cleaned up everything else.
+ * But best-effort is about not THROWING, not about calling the result finished (F-683): any
+ * `failed > 0` makes the answer `truncated: true, reason: "deletes-failed"` with a cursor to
+ * retry from, and `complete: false`. `complete = !truncated && failed === 0` is the ONLY
+ * definition of a finished sweep, and it is computed in `sweepHarnessFaults` and nowhere else.
  */
 export const HARNESS_FAULT_KEY_PREFIX = "harness_fault:";
 
@@ -665,6 +669,34 @@ export const sweepBudgetMs = (maxMs) => {
  * already deleted are GONE, so re-fetching the same page returns the remainder and nothing
  * is re-deleted. No skip count is needed and none is kept - the deletes themselves are the
  * progress the cursor does not have to encode.
+ *
+ * F-682 - A BATCH THAT LANDED NOTHING IS NOT PROGRESS.
+ *
+ * `progressed` was set after `Promise.allSettled` regardless of outcome, so a batch in which
+ * EVERY delete was rejected armed the gate the termination argument rests on. Under
+ * throttling - the exact condition the pacing above exists for - batch 0 of a page failed
+ * three times, set `progressed`, and the budget was then free to break MID-PAGE with
+ * `cursor = resume`: the page's own token. The resumed call re-fetched the identical page,
+ * built the identical `doomed` list, failed identically, and answered with the identical
+ * token, forever, burning a trigger per turn and deleting nothing. Only a FULFILLED delete
+ * or an advanced page counts now.
+ *
+ * And an all-failed batch ENDS THE CALL, with `reason: "deletes-failing"` and the same
+ * cursor: a caller that sees a byte-identical answer has no way to tell a converging sweep
+ * from a stuck one, but `deletes-failing` beside `failed > 0` says outright "this is not
+ * converging, back off". That is what makes a `while (cursor)` loop against a permanently
+ * refusing store terminate instead of spin.
+ *
+ * F-683 - `cursor === null` MEANS SWEPT *AND* CLEARED.
+ *
+ * A sweep whose deletes failed still advanced its cursor and, at the end of the keyspace,
+ * answered `truncated: false, cursor: null, ok: true, failed: 63` - the "finished" signal,
+ * for a call that left 63 rows it had itself condemned. F-677 changed the RATE; it did not
+ * change the ANSWER. There is now ONE definition of finished, computed here and nowhere
+ * else: `complete = !truncated && failed === 0`, returned as a field so no caller has to
+ * re-derive it. When any delete failed, the answer is `truncated: true,
+ * reason: "deletes-failed"` carrying the cursor of the FIRST page whose deletes failed, so
+ * retrying resumes where the mess is rather than at the top.
  */
 export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startCursor = null } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
@@ -679,6 +711,8 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
   // Anything the caller hands back - our token, a legacy raw cursor, or nothing at all.
   let cursor = decodeSweepCursor(typeof startCursor === "string" && startCursor ? startCursor : null);
   let progressed = false;
+  // The resume point of the FIRST page a delete failed on - where a retry should pick up.
+  let failedResume = null;
   for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
     // The cursor that re-fetches THIS page - the resume point for anything that stops inside it.
     const resume = cursor;
@@ -720,21 +754,44 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
         if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
         const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
         const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
-        for (const outcome of settled) { if (outcome.status === "fulfilled") deleted++; else failed++; }
-        progressed = true;
+        let landed = 0;
+        for (const outcome of settled) { if (outcome.status === "fulfilled") { deleted++; landed++; } else failed++; }
+        if (landed < settled.length && failedResume === null) failedResume = resume;
+        // F-682: ONLY a delete that actually landed is progress. A batch of pure rejections
+        // shrinks nothing, so it must not license a mid-page break with this page's cursor.
+        if (landed > 0) progressed = true;
+        else if (settled.length > 0) {
+          // Nothing landed: this call is not converging. Stop HERE, with this page's cursor
+          // and a reason that says so, rather than pacing on into a budget break that would
+          // be indistinguishable from a healthy partial sweep.
+          truncated = true; reason = "deletes-failing"; cursor = resume; break;
+        }
       }
       if (truncated) break;
     }
     cursor = (result && result.nextCursor) || null;
+    // The page MOVED, which is the other half of the progress guarantee (F-682): a page
+    // that deleted nothing because there was nothing to delete has still gone forward.
     progressed = true;
     if (!cursor) break;
     if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) { truncated = true; reason = "pages"; }
   }
+  /* F-683: a delete that did not land is NOT a finished sweep. If the loop otherwise ran to
+   * the end, say `deletes-failed` and hand back the page where the failures started, so a
+   * retry resumes at the mess instead of re-walking the keyspace. A break that already has a
+   * reason (budget, pages, deletes-failing) keeps it - it is the more specific answer and it
+   * already carries a resumable cursor. */
+  if (failed > 0 && !truncated) { truncated = true; reason = "deletes-failed"; cursor = failedResume; }
   return {
     ok: true, dryRun: dry, scanned, deleted, failed,
     truncated, reason, budgetMs, rows, rowsTruncated,
-    // Carried ONLY when there is more to do, so a `truncated: false` answer with a null
-    // cursor is the one unambiguous way a caller reads "finished" rather than "stopped".
+    /* THE ANSWER CONTRACT, in ONE place (F-683): the whole keyspace was walked and every
+     * delete landed. Anything else is a stop, not a finish - including a sweep that reached
+     * the end with `failed > 0`, which used to answer `truncated: false, cursor: null`. */
+    complete: !truncated && failed === 0,
+    // Carried ONLY when there is more to do, so a null cursor is the one unambiguous way a
+    // caller reads "finished" rather than "stopped" - and since F-683 forces `truncated` on
+    // any failed delete, null now agrees with `complete` rather than contradicting it.
     // NEVER null while work remains (F-674): the token encodes a null KVS cursor too.
     cursor: truncated ? encodeSweepCursor(cursor) : null,
   };

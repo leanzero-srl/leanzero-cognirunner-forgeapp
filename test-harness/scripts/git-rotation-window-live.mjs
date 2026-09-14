@@ -53,7 +53,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 // F-686 — every driver that arms a harness fault goes through the ONE acknowledgement.
-import { requireEnvAck } from "../lib/shared-env-guard.mjs";
+import { requireEnvAck, forgeEnvId } from "../lib/shared-env-guard.mjs";
 import { gitHookUrl } from "../lib/git-hook-url.mjs";
 
 /* F-686 — DEV-ONLY BY CONSTRUCTION: both hook calls below go to `env.TESTSTATE_URL`, and

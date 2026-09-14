@@ -1612,6 +1612,16 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
       // never-ticked agent is bounded exactly as it always was.
       watchedTicks: watch.known ? watch.watched : null,
       savedByRole,
+      /* F-927 — THE ONE STRICT CALLER. An unknown key under `persona`, `scope`,
+       * `intake`, `cadence`, `powers` or `guardrails` is refused BY NAME here, because
+       * this is the single door behind BOTH save paths (the classic form resolver in
+       * src/index.js and the Rules REST API's `?resource=agents`). Every other
+       * `normalizeVa` call — the second pass inside `normalizeJob`, the wizard machine,
+       * the admin panel's live preview — stays lenient, so a stored row carrying a key
+       * from an older build still LOADS instead of becoming unopenable. The throw lands
+       * in the `va_invalid` catch below, which is the refusal shape these doors already
+       * speak. */
+      strict: true,
     });
   } catch (e) {
     // A STRUCTURAL refusal (no persona name, a site-wide write scope, an unusable

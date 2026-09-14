@@ -11428,10 +11428,13 @@ resolver.define("testListener", async ({ payload, context }) => {
       });
       if (refusal) return refusal;
     }
-    // TODO(F-302): `listeners.testListener` does not thread `gateFacts` through to
-    // `runListener` yet, so a test run still gates arity-1 and drops git actions. The
-    // facts are supplied here against the contract the run sites already use; threading
-    // them is one line in src/listeners.js, which is another surgeon's file this commit.
+    // F-302, CLOSED (F-851 corrected this note, which outlived the wiring it described):
+    // `listeners.testListener` DOES thread `gateFacts` through to `runListener`
+    // (src/listeners.js:1560), which builds the run's gate context from them with
+    // `triggerSource:"external"` and the ROW's `savedByRole`. The REST `action=test` door
+    // threads them too (src/rules-api.js, F-850) — read FRESH there as here — so the two
+    // test doors and the queued run (`resolveFreshGateFacts`, src/async-handler.js, F-842)
+    // now answer the same allowed/refused sets for the same rule.
     const result = await listenersMod.testListener({
       listener,
       issueKey: payload?.issueKey ? String(payload.issueKey).trim() : null,

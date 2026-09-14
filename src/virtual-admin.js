@@ -1134,7 +1134,7 @@ export const toolActionsFor = (va) => [
  * `attempts`; at the cap the item PARKS with the reason in its history. A turn that ends
  * in prose rather than `finish` is not an error (§3.14 law 10) — it is simply an attempt.
  */
-export const runVaItem = async ({ agent, issueKey, tickId, deps: injected = {} } = {}) => {
+export const runVaItem = async ({ agent, issueKey, tickId, enqueuedAt = null, deps: injected = {} } = {}) => {
   const deps = withDeps(injected);
   const job = isObj(agent) ? agent : await deps.getJob(agent);
   const va = vaOf(job);
@@ -1160,7 +1160,7 @@ export const runVaItem = async ({ agent, issueKey, tickId, deps: injected = {} }
 
   // THE CLAIM, before anything is read, spent or written.
   const held = await withItemClaim(deps.store, agentId, issueKey, tick, async () => {
-    return oneItemTurn({ job, va, agentId, issueKey, tick, deps });
+    return oneItemTurn({ job, va, agentId, issueKey, tick, enqueuedAt, deps });
   });
   if (!held.ok) {
     // `already_claimed` is the healthy duplicate-delivery path and is not an error;
@@ -1207,7 +1207,7 @@ export const buildFieldGuideQuery = (va, { summary = "", lastComment = "" } = {}
   return defangQuery(parts.filter(Boolean).join(" ")).replace(/\s+/g, " ").trim();
 };
 
-const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
+const oneItemTurn = async ({ job, va, agentId, issueKey, tick, enqueuedAt = null, deps }) => {
   const now = () => deps.now();
   /*
    * THE SAME CAPABILITY GATE, ASKED AGAIN (F-482). Not belt and braces: an item task is
@@ -1493,6 +1493,43 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     return t.purged === true;
   };
 
+  /*
+   * F-912 — THE KILL SWITCH AND THE PAUSE, RE-READ INSIDE THE TURN.
+   *
+   * Two holes, one shape. The post gate's "kill switch" asked `isJobCancelled("va:<id>")`
+   * - a `pf_cancel:va:<id>` key NOTHING in this repository ever writes - so the tenant's
+   * cancel-all did nothing to a Virtual Administrator, and a RUNNING item turn had no kill
+   * check at all beyond the purge tombstone: pausing an agent from the Agents tab stopped
+   * the NEXT tick and not the 120-second turn already writing to Jira.
+   *
+   * ONE PREDICATE, IMPORTED: `isJobCancelled` (src/index.js), the same function the
+   * consumer checkpoint uses, asked the same way - the run's `enqueuedAt` against the
+   * tenant cancel EPOCH. The task params already carry `enqueuedAt` (the tick writes it at
+   * fan-out), so a turn queued before a cancel-all is cancelled by it exactly as a
+   * post-function would be. The PAUSE is re-read from the agent's own record, because
+   * `job` is the snapshot the consumer loaded and the whole point is that the flag moved
+   * afterwards.
+   *
+   * FAIL-SOFT, BOTH ARMS, and for F-571's stated reason: a storage blip must not kill
+   * healthy turns. A read that throws answers "not cancelled" and the turn continues.
+   *
+   * CHECKED AT THE ROUND BOUNDARY (via `isCancelled`, which stops the next model call) AND
+   * BEFORE EVERY WRITE, because a round already in flight may have several writes left in
+   * its tool-call list.
+   */
+  let stoppedBy = null;
+  const cancelReason = async () => {
+    try {
+      const fresh = await deps.getJob(agentId);
+      const status = fresh && isObj(fresh.va) && isObj(fresh.va.status) ? fresh.va.status : null;
+      if (status && status.paused === true) return "paused";
+      if (fresh && fresh.enabled === false) return "paused";
+    } catch (e) { /* fail-soft: an unreadable record is not a pause */ }
+    try { if (await deps.isKillSwitchActive(job, enqueuedAt)) return "cancelled"; }
+    catch (e) { /* fail-soft */ }
+    return null;
+  };
+
   const execute = async (name, args) => {
     const action = getAgentAction(name);
     /*
@@ -1514,6 +1551,19 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
           : "This agent is in shadow mode and has already recorded the most changes one run may hold. Say what is left in a note and finish.",
       };
     }
+    if (action && action.kind === "write") {
+      const stop = await cancelReason();
+      if (stop) {
+        stoppedBy = stop;
+        outcome.refusals.push({ name, code: stop });
+        return {
+          success: false, code: stop,
+          error: stop === "paused"
+            ? "This agent was paused while the run was in progress. Nothing further will be written; stop and finish."
+            : "This instance cancelled the work queued before now. Nothing further will be written; stop and finish.",
+        };
+      }
+    }
     if (action && action.kind === "write" && (await isPurged())) {
       outcome.refusals.push({ name, code: "agent-purged" });
       return {
@@ -1533,7 +1583,15 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     log: deps.log,
     // F-571 — the round-boundary half of the cancellation. `runAgentLoop` ends the turn
     // with `endedBy: "cancelled"` and never makes the next call.
-    isCancelled: isPurged,
+    // F-912 — the pause and the tenant cancel epoch end the turn the same way. A turn
+    // stopped here has already refused its remaining writes at the seam above; this is
+    // what stops it BUYING ANOTHER MODEL CALL to think about them.
+    isCancelled: async () => {
+      if (await isPurged()) return true;
+      const stop = await cancelReason();
+      if (stop) { stoppedBy = stop; return true; }
+      return false;
+    },
   });
 
   /*
@@ -1639,6 +1697,27 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
       reason: `shadow mode: ${heldWrites.length} change${heldWrites.length === 1 ? "" : "s"} held for review`,
     }, { now: now() });
     if (!kept.ok) deps.log(`[va] ${agentId}: ${heldWrites.length} held write(s) on ${issueKey} could not be kept (${kept.reason})`);
+  }
+
+  /*
+   * F-912 — A TURN THE INSTANCE STOPPED IS NOT AN ATTEMPT AND NOT A FAILURE.
+   *
+   * It ends CLEANLY, with the reason on the result, and it does NOT bump the item's
+   * attempt counter: the item was workable, the instance simply withdrew its permission
+   * mid-turn. Three cancel-alls in a row must not park an issue nobody has a problem with.
+   */
+  if (stoppedBy) {
+    return {
+      ok: true, ran: true, issueKey, reason: stoppedBy,
+      endedBy: loop.endedBy, rounds: loop.rounds,
+      staged: outcome.staged, asked: outcome.asked, proposed: outcome.proposed,
+      notes: outcome.notes, memories: outcome.memories, refusals: outcome.refusals,
+      changes: (session.changes || []).length,
+      heldWrites, held: heldWrites.length,
+      shadow: shadow ? { until: shadow.until, ticksLeft: shadow.ticksLeft } : null,
+      prefixLength, messages,
+      tokens: (loop.usage && loop.usage.tokens) || 0,
+    };
   }
 
   /* — ATTEMPTS (F-414): a turn that produced no outcome is an attempt, and it parks — */
@@ -2036,7 +2115,7 @@ export const gateVoice = (body, voice) => {
  * the whole allowance be spent twice (F-431). Over-counting by one on a failed post is
  * the safe direction; under-counting is not.
  */
-export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = {}) => {
+export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps: injected = {} } = {}) => {
   const deps = withDeps(injected);
   const job = isObj(agent) ? agent : await deps.getJob(agent);
   const va = vaOf(job);
@@ -2086,7 +2165,7 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
     // unreadable counter is the only one that keeps the promise shadow mode makes.
     const health = await readHealth(deps.store, agentId);
     const watched = health.ok ? health.prepareTicks : 0;
-    const g1 = gatePausedShadow({ va, tickIndex: watched, killSwitchActive: await deps.isKillSwitchActive(job) });
+    const g1 = gatePausedShadow({ va, tickIndex: watched, killSwitchActive: await deps.isKillSwitchActive(job, enqueuedAt) });
     // PAUSED AND THE KILL SWITCH STOP THE WHOLE PASS. SHADOW DOES NOT (F-464).
     //
     // Shadow mode means "post nothing until a person has watched you" — and a person who
@@ -2705,12 +2784,31 @@ export const DEFAULT_DEPS = {
     return { repaired: true };
   },
 
-  /** The tenant kill switch (the existing cancel epoch), read at the post gate. */
-  isKillSwitchActive: async (job) => {
-    try { return await (await import("./index.js")).isJobCancelled(`va:${job && job.id}`); }
-    catch (e) { return false; }
+  /**
+   * THE TENANT KILL SWITCH — the cancel EPOCH, and nothing else (F-912).
+   *
+   * It used to ask `isJobCancelled("va:<id>")`, which reads `pf_cancel:va:<id>`: a key
+   * NOTHING in this repository writes. `cancelJob` (src/index.js) writes
+   * `pf_cancel:{taskId}` for a queue task id, and the cancel-ALL writes the epoch. So the
+   * gate that names itself the kill switch was reading a key that is always absent, and a
+   * tenant that cancelled everything cancelled every surface except its agents.
+   *
+   * ONE PREDICATE, IMPORTED, ASKED THE WAY THE CONSUMER ASKS IT: `enqueuedAt` against the
+   * epoch (`isJobCancelled(taskId, enqueuedAt)`, src/index.js, the same call
+   * `runGatedTask` makes at its checkpoint). The task id arm is left OUT rather than
+   * passed a fabricated id: a per-agent cancel flag would need a writer, and inventing one
+   * here is how the dead read happened in the first place.
+   *
+   * NO `enqueuedAt` MEANS NOW, which is the correct reading for a MANUAL run: a
+   * cancel-all cancels the work that was already queued when it was pressed, not work a
+   * person asks for afterwards.
+   */
+  isKillSwitchActive: async (job, enqueuedAt = null) => {
+    try {
+      const { isJobCancelled } = await import("./index.js");
+      return await isJobCancelled(null, enqueuedAt || nowIso());
+    } catch (e) { return false; }
   },
-
 
   /** THE LOOP. One implementation, shared with the listener, the job and the Coder. */
   /**

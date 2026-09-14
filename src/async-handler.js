@@ -2351,7 +2351,11 @@ const executeVaItemTask = async (params) => {
   if (skip) return { skipped: true, reason: skip };
   const { runVaItem, primeDeps } = await import("./virtual-admin.js");
   await primeDeps();
-  return runVaItem({ agent: job, issueKey: params?.issueKey, tickId: params?.tickId });
+  // F-912 — `enqueuedAt` is the turn's own kill-switch clock: the item turn compares it to
+  // the tenant cancel epoch before every write, exactly as `runGatedTask` does at its
+  // checkpoint. The tick writes it at fan-out; dropping it here would leave the turn with
+  // no way to tell whether the cancel-all came before or after it was queued.
+  return runVaItem({ agent: job, issueKey: params?.issueKey, tickId: params?.tickId, enqueuedAt: params?.enqueuedAt || null });
 };
 
 const executeVaPostTask = async (params) => {
@@ -2359,7 +2363,7 @@ const executeVaPostTask = async (params) => {
   if (skip) return { skipped: true, reason: skip };
   const { runVaPost, primeDeps } = await import("./virtual-admin.js");
   await primeDeps();
-  return runVaPost({ agent: job, tickId: params?.tickId || null });
+  return runVaPost({ agent: job, tickId: params?.tickId || null, enqueuedAt: params?.enqueuedAt || null });
 };
 
 // === Task registry — add new async task types here ===

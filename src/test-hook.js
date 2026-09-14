@@ -1155,6 +1155,25 @@ export async function testStateTrigger(req) {
         // row: that WRITE is the thing under test (the auth_dead banner has one
         // source), it creates no credential, and it cannot delete one.
         "listGitConnections", "testGitConnection", "getForgeIdentityStatus",
+        /* F-762 — `listGitWebhooks`, a READ, admitted ONLY THROUGH THE MASKING
+         * PROJECTION below. It was refused by name, so the F-481 rotation banner
+         * (`hookState:"rotation-failed"`) could only ever be read live through
+         * `listGitConnections` — our own record — and never against what the PROVIDER
+         * actually has on the repo, which is the whole reason the resolver exists.
+         *
+         * IT CARRIES NO SECRET: the signing secret is absent from every return value in
+         * src/git-connections.js (including the error paths), and `recorded` is
+         * `publicWebhooks()` — hookId/provider/createdAt/rotatedAt/hookState only.
+         * BUT IT DOES CARRY `hooks[].url`, AND THAT URL IS A CAPABILITY: it is this
+         * installation's `gitWebhook` webtrigger URL, whose path token is unguessable and
+         * is the only thing standing between the open internet and our inbound delivery
+         * path. HMAC verification means a leaked URL cannot forge a delivery, which is why
+         * this is a masking and not a refusal — but a dev hook that prints it into a
+         * harness log has published it, and that is not a ceiling, so the raw url NEVER
+         * leaves this handler. The masked projection keeps everything the banner and the
+         * identity check need (host, the `conn`/`repo` routing the caller already knows,
+         * and a stable fingerprint two hooks can be compared by) and drops the token. */
+        "listGitWebhooks",
         // 1.4 commit 7 — the pipeline READ. `git_pipeline:*` rows are also reachable
         // through the GET `?what=kvs` read (deliberately unrestricted: it is a read,
         // behind HARNESS_SECRET), which is how a tester confirms the bounded row landed
@@ -1281,6 +1300,47 @@ export async function testStateTrigger(req) {
           { call: { functionKey, payload: hookPayload }, context: {} },
           { principal: body.accountId ? { accountId: body.accountId } : undefined, license: hookLicense },
         );
+        /* F-762 — THE MASKING PROJECTION, on the way OUT. The resolver answers with the
+         * provider's real hook urls; this hook may not repeat them (see the allow-list
+         * note above). Built field by field, never a spread-and-delete, so a new field on
+         * a hook object is absent here until someone decides it may be shown. */
+        if (functionKey === "listGitWebhooks" && r && Array.isArray(r.hooks)) {
+          const { createHash } = await import("node:crypto");
+          const maskUrl = (u) => {
+            const raw = String(u || "");
+            if (!raw) return null;
+            let host = null;
+            let conn = null;
+            let repo = null;
+            try {
+              const parsed = new URL(raw);
+              host = parsed.host || null;
+              conn = parsed.searchParams.get("conn");
+              repo = parsed.searchParams.get("repo");
+            } catch (e) { /* an unparseable url is masked to nothing but its fingerprint */ }
+            return {
+              host,
+              // The routing the CALLER already supplied — disclosing it back discloses nothing.
+              conn,
+              repo,
+              // Stable across calls, so two hooks can be compared for identity; one-way,
+              // so it can never be turned back into the trigger token.
+              fingerprint: createHash("sha256").update(raw).digest("hex").slice(0, 16),
+            };
+          };
+          return json(200, {
+            ...r,
+            hooks: r.hooks.map((h) => ({
+              hookId: h && h.hookId != null ? String(h.hookId) : null,
+              events: h && Array.isArray(h.events) ? h.events.slice() : [],
+              active: !(h && h.active === false),
+              // `url` is DELIBERATELY ABSENT, not nulled: an absent field cannot be
+              // mistaken for "the provider had no url on this hook".
+              urlMasked: maskUrl(h && h.url),
+            })),
+            urlsMasked: true,
+          });
+        }
         return json(200, r);
       } catch (e) {
         return json(500, { error: String((e && e.message) || e) });

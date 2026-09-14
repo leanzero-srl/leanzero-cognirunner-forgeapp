@@ -779,6 +779,145 @@ try {
     assert.equal(JSON.stringify(masked.value).includes("leaf"), false, "…and the unread leaf never reaches the wire");
     assert.equal(await maskSecretFields({ plain: "row" }), null, "a clean row masks NOTHING — the cut is narrow");
   });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-802 — THE CEILING IS A PROPERTY OF THE ANSWER, NOT OF ONE QUERY PARAMETER.
+   *
+   * The F-794 field ceiling lived in the `?what=kvs` arm alone, and the same GET handler
+   * has three other arms that return stored rows: `?what=registry` (`config_registry`),
+   * `?what=logs` (`validation_logs`) and `?what=execlogs` (every `log_entry:*`, through
+   * `readLogs`). All three answered VERBATIM. These checks read ONE planted row through
+   * EVERY door and assert the answers are identical — the equality is the cut, because a
+   * ceiling that is a property of one arm is a ceiling one query parameter away from none.
+   * Each door also carries its own POSITIVE CONTROL: it still answers a clean row plain,
+   * so a green line means the projection is narrow rather than that it masks everything.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  const hookGet = (queryParameters) => testStateTrigger({
+    method: "GET", headers: { authorization: ["Bearer offline-claim-secret"] }, queryParameters,
+  });
+  await check("BLOCK: `?what=registry` masks the same fields `?what=kvs` does, on the same row (F-802)", async () => {
+    const BEARER = "zz-harness-cross-door-registry-bearer-zz";
+    const row = { id: "r-802", name: "Cross-door", enabled: true,
+      endpoint: { url: "https://example.test/x", headers: { Authorization: `Bearer ${BEARER}`, "X-Trace": "t-1" } } };
+    storage.__seed("config_registry", [row]);
+    const res = await hookGet({ what: ["registry"] });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.body.includes(BEARER), false, "`?what=registry` put the endpoint bearer on the wire — this is F-802");
+    const parsed = JSON.parse(res.body);
+    assert.deepEqual(parsed.maskedFields, ["[0].endpoint.headers.Authorization"],
+      "the ARRAY is one value, so the path carries the entry INDEX rather than a per-entry maskedFields");
+    assert.equal(parsed.registry[0].name, "Cross-door", "the envelope name and the plain siblings are unchanged");
+    assert.equal(parsed.registry[0].endpoint.headers["X-Trace"], "t-1");
+    // THE EQUALITY. The same bytes, read through the door that already had the ceiling.
+    const viaKvs = JSON.parse((await kvsRead("config_registry")).body);
+    assert.deepEqual(parsed.maskedFields, viaKvs.maskedFields, "the two doors name the same masked paths");
+    assert.deepEqual(parsed.registry, viaKvs.value, "…and hand back byte-identical rows");
+    // POSITIVE CONTROL: a clean registry is still answered plain, with no masking noise.
+    storage.__seed("config_registry", [{ id: "r1", name: "Clean" }]);
+    const clean = JSON.parse((await hookGet({ what: ["registry"] })).body);
+    assert.deepEqual(clean.registry, [{ id: "r1", name: "Clean" }], "a clean registry reads exactly as it always did");
+    assert.equal("maskedFields" in clean, false, "…and says nothing about masking");
+  });
+  await check("BLOCK: `?what=logs` masks the same fields `?what=kvs` does, on the same row (F-802)", async () => {
+    const BEARER = "zz-harness-cross-door-logs-bearer-zz";
+    const entry = { at: "2026-09-14T00:00:00.000Z", ruleId: "r1", result: true,
+      response: { headers: { Authorization: `Bearer ${BEARER}` } }, reason: "ok" };
+    storage.__seed("validation_logs", [entry]);
+    const res = await hookGet({ what: ["logs"] });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.body.includes(BEARER), false, "`?what=logs` put a logged bearer on the wire — this is F-802");
+    const parsed = JSON.parse(res.body);
+    assert.deepEqual(parsed.maskedFields, ["[0].response.headers.Authorization"]);
+    assert.equal(parsed.logs[0].reason, "ok", "the rest of the entry is readable — a log is what a driver reads this door for");
+    const viaKvs = JSON.parse((await kvsRead("validation_logs")).body);
+    assert.deepEqual(parsed.maskedFields, viaKvs.maskedFields);
+    assert.deepEqual(parsed.logs, viaKvs.value, "one row, one answer, whichever door");
+    // POSITIVE CONTROL: a clean log list is plain.
+    storage.__seed("validation_logs", [{ at: "now", reason: "clean" }]);
+    const clean = JSON.parse((await hookGet({ what: ["logs"] })).body);
+    assert.deepEqual(clean.logs, [{ at: "now", reason: "clean" }]);
+    assert.equal("maskedFields" in clean, false);
+  });
+  await check("BLOCK: `?what=execlogs` masks every log_entry:* the same way (F-802)", async () => {
+    /* THE DOOR ITSELF IS NOT DRIVABLE HERE, AND THAT IS STATED RATHER THAN PAPERED OVER.
+     * The `?what=execlogs` arm does `await import("./index.js")` for `readLogs`, and
+     * `src/index.js:12448` re-exports from the EXTENSIONLESS specifier `"./test-hook"`,
+     * which Node's ESM resolver refuses — so the module cannot be loaded offline at all
+     * (filed separately; src/index.js belongs to another cut). What is asserted instead is
+     * the exact projection that arm performs: `readCeiling("log_entry:", entries)` on the
+     * rows `readLogs` returns, and the EQUALITY against the `?what=kvs` answer for the very
+     * same stored row — which is the property F-802 is about. The arm's routing through
+     * `answerStored` is pinned by the MECHANISM gate below. */
+    const { LOG_ENTRY_PREFIX } = await import("../../src/rule-stats.js");
+    const { readCeiling } = await import("../../src/test-hook.js");
+    const BEARER = "zz-harness-cross-door-execlog-bearer-zz";
+    // `log_entry:` is the key SPREAD_BOUNDED_BY excuses as `unbounded-field-masked-at-the-door`
+    // — and before this cut, `readLogs` was the door those rows were actually read through.
+    const key = `${LOG_ENTRY_PREFIX}9999999999999_aaaaaaaa`;
+    const entry = { ruleId: "r1", outcome: "pass", aiResponse: { authorization: `Bearer ${BEARER}` } };
+    storage.__seed(key, entry);
+    const answer = await readCeiling("log_entry:", [entry]);   // what `readLogs` hands the arm
+    assert.equal(JSON.stringify(answer).includes(BEARER), false,
+      "`?what=execlogs` would have put a step result's bearer on the wire — this is F-802");
+    assert.deepEqual(answer.maskedFields, ["[0].aiResponse.authorization"],
+      "a LIST of entries is one value, so the path carries the entry INDEX");
+    assert.equal(answer.value[0].outcome, "pass", "the entry is otherwise readable");
+    // THE EQUALITY, against the row's own key through the door that already had the ceiling.
+    const viaKvs = JSON.parse((await kvsRead(key)).body);
+    assert.deepEqual(answer.value[0].aiResponse.authorization, viaKvs.value.aiResponse.authorization,
+      "the same field, the same fingerprint, whichever door read it");
+    // POSITIVE CONTROL: a clean entry is plain, and says nothing about masking.
+    const cleanAnswer = await readCeiling("log_entry:", [{ ruleId: "r1", outcome: "pass" }]);
+    assert.deepEqual(cleanAnswer, { value: [{ ruleId: "r1", outcome: "pass" }] });
+  });
+  await check("BLOCK: `?what=provider` is a stored row too, and answers through the same ceiling (F-802)", async () => {
+    storage.__seed("COGNIRUNNER_AI_PROVIDER", "openai");
+    const plain = JSON.parse((await hookGet({ what: ["provider"] })).body);
+    assert.equal(plain.provider, "openai", "POSITIVE CONTROL: the ordinary answer is unchanged — this is the arm every driver reads");
+    assert.equal("maskedFields" in plain, false);
+    // …and it is not exempt: a credential-SHAPED value at the root is masked like any other.
+    storage.__seed("COGNIRUNNER_AI_PROVIDER", "sk-abcdefghijklmnop");
+    const res = await hookGet({ what: ["provider"] });
+    assert.equal(res.body.includes("sk-abcdefghijklmnop"), false, "a credential shape reached the wire through `?what=provider`");
+    const masked = JSON.parse(res.body);
+    assert.deepEqual(masked.maskedFields, ["(root)"]);
+    assert.equal(masked.provider.masked, true);
+    storage.__seed("COGNIRUNNER_AI_PROVIDER", "openai");
+  });
+  await check("MECHANISM: every GET arm that reads storage answers through `answerStored` (F-802)", async () => {
+    // The recurrence this closes is not "the registry leaked" — it is "the projection was
+    // a property of ONE arm". So the gate reads the switch itself: an arm that touches
+    // storage (or `readLogs`) and hands the result to `json(...)` on its own is the defect.
+    const src = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+    // `stripJsComments` is the file-wide scanner and it does not survive this file's regex
+    // literals, so the comments are dropped LINE-WISE here instead: every line of this
+    // switch that is a comment starts with `//` or `*`, and dropping them is what keeps a
+    // prose mention of `answerStored` from standing in for a call to it.
+    const uncomment = (code) => code.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    const armsOf = (code) => {
+      const start = code.indexOf('const what = q(req, "what")');
+      const end = code.indexOf("unknown what=", start);
+      assert.ok(start >= 0 && end > start, "the GET `what` switch must still be findable");
+      const region = uncomment(code.slice(start, end));
+      return region.split(/\n(?=\s*if \(what === )/).filter((a) => /if \(what === /.test(a));
+    };
+    const readsStorage = (arm) => /storage\.(get|query)\(|readLogs\(/.test(arm);
+    const arms = armsOf(src);
+    assert.ok(arms.length >= 5, `the scanner must SEE the arms (found ${arms.length})`);
+    const storedArms = arms.filter(readsStorage);
+    assert.equal(storedArms.length, 5,
+      "five arms read storage: registry, provider, logs, execlogs, kvs — a sixth needs a judgement, not a silent pass");
+    const bypassing = storedArms.filter((arm) => !/answerStored\(/.test(arm));
+    assert.deepEqual(bypassing.map((a) => (/if \(what === "([a-z]+)"/.exec(a) || [])[1] || a.slice(0, 60)), [],
+      "a GET arm returns a stored row without the ONE read ceiling — route it through `answerStored`");
+    // POSITIVE CONTROL: the pre-fix shape of `?what=registry` IS caught by this gate.
+    const preFix = 'const what = q(req, "what") || "registry";\n'
+      + '    if (what === "registry") return json(200, { registry: (await storage.get("config_registry")) || [] });\n'
+      + '    return json(400, { error: `unknown what=${what}` });';
+    const preArms = armsOf(preFix).filter(readsStorage);
+    assert.equal(preArms.length, 1);
+    assert.equal(/answerStored\(/.test(preArms[0]), false,
+      "POSITIVE CONTROL: the exact pre-fix arm — a raw `json(200, {registry: await storage.get(...)})` — is still SEEN as a bypass");
+  });
   await check("kvStash/kvRestore move a credential by NAME, never by value (F-769)", async () => {
     // THE DRIVER THIS DOOR EXISTS FOR: va-compaction-live.mjs replaces the BYOK key with a
     // deliberately dead one to drive F-506's scenario, and must put the tenant's own key

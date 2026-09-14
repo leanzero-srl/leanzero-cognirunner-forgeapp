@@ -16,7 +16,7 @@ import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 import { readBearerToken } from "./shared/http-headers.js";
 // F-770: "is this a legal KVS key" has ONE home, and it is not this file. Same module the
 // key BUILDERS assert against, so this door and the builders cannot drift apart again.
-import { isKvsKey, KVS_KEY_PATTERN, KVS_KEY_MAX_CHARS } from "./shared/kvs-keys.js";
+import { isKvsKey, safeKeyPart, KVS_KEY_PATTERN, KVS_KEY_MAX_CHARS } from "./shared/kvs-keys.js";
 // F-163: the memory-store key NAMES come from the module that owns them — never retyped here.
 import { MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY } from "./memories.js";
 // F-566: same discipline for the knowledge-pack settings slot — the module that owns it.
@@ -81,11 +81,153 @@ const SECRET_KEY_HINTS = [
   "token", "secret", "password", "credential", "apikey", "privatekey", "bearer",
   "authorization", "cookie", "webtrigger", "webhookurl", "cognirunnerkey", "gitconnection",
 ];
-/** COGNIRUNNER_KEY_* slots, GitHub/Bitbucket/OpenAI token shapes, Forge web-trigger URLs. */
-const SECRET_VALUE_RE =
-  /(COGNIRUNNER_KEY_|git_conn_secret:|\bgh[pousr]_[A-Za-z0-9]{8}|\bgithub_pat_|\bsk-[A-Za-z0-9_-]{12}|\bxoxb-|\.atlassian-dev\.net\/)/;
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-769 — THE CREDENTIAL KEY FAMILIES, AND THE READ CEILING THEY CARRY. ONE HOME.
+ *
+ * This list is the answer to one question — "is the VALUE behind this KVS key a
+ * credential?" — and it is asked in exactly two places, which is why it is a list and
+ * not two regexes:
+ *
+ *   1. `isCredentialKey`, the READ CEILING on the GET `?what=kvs` (see its call site).
+ *   2. `SECRET_VALUE_RE` below, the WRITE refusal (`findPlantedSecret`), which used to
+ *      keep its own retyped copy of `COGNIRUNNER_KEY_` and `git_conn_secret:` — two
+ *      homes for one census, so a family added to one was missing from the other.
+ *
+ * THE CENSUS, and where each family's value comes from (read, not guessed):
+ *   COGNIRUNNER_KEY_*                   — the BYOK provider keys (src/shared/provider-slots.js)
+ *   COGNIRUNNER_OPENAI_API_KEY          — the legacy single-provider slot index.js still reads
+ *   COGNIRUNNER_FORGE_IDENTITY          — carries the identity's token (src/git-connections.js)
+ *   COGNIRUNNER_DOC_PROCESSOR_REMOTE    — `{url, bearer}` (index.js)
+ *   COGNIRUNNER_WEB_SEARCH_REMOTE       — `{url, bearer}` (index.js)
+ *   git_conn_secret:*                   — the connection token (git-connections.js)
+ *   git_hook_secret:*                   — the webhook SIGNING secret (shared/git-ids.js)
+ *   webtrigger_url:*                    — a CAPABILITY URL with an unguessable path token
+ *                                         (attachment-bridge, attachment-upload, rules-api)
+ *   att_token:* / upload_token:*        — minted capability tokens (index.js)
+ *   probe:webhook:secret                — the Part 0 probe's HMAC secret (this file)
+ *   harness_stash:*                     — the F-769 stash itself; see `kvStash` below
+ *
+ * …plus a NAME catch-all, so a family invented next quarter is covered on the day it is
+ * invented rather than on the day it leaks. It reuses `SECRET_KEY_HINTS` — the same
+ * words the write door already refuses a FIELD for. Deliberately coarse in the SAFE
+ * direction: a false positive costs a driver a fingerprint instead of a value (and every
+ * driver found in the F-769 census only ever wanted PRESENT/ABSENT), while a false
+ * negative costs a tenant a live credential in a committed evidence file.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+export const CREDENTIAL_KEY_FAMILIES = [
+  "COGNIRUNNER_KEY_",
+  "COGNIRUNNER_OPENAI_API_KEY",
+  "COGNIRUNNER_FORGE_IDENTITY",
+  "COGNIRUNNER_DOC_PROCESSOR_REMOTE",
+  "COGNIRUNNER_WEB_SEARCH_REMOTE",
+  "git_conn_secret:",
+  "git_hook_secret:",
+  "webtrigger_url:",
+  "att_token:",
+  "upload_token:",
+  "probe:webhook:secret",
+  "harness_stash:",
+];
+
+/**
+ * TRUE when the VALUE behind this key is a credential and must never be returned.
+ * Prefix match on the declared families, then the name catch-all.
+ */
+export const isCredentialKey = (key) => {
+  if (typeof key !== "string" || key.length === 0) return false;
+  if (CREDENTIAL_KEY_FAMILIES.some((p) => key.startsWith(p))) return true;
+  const flat = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return SECRET_KEY_HINTS.some((h) => flat.includes(h));
+};
+
+/**
+ * What a masked read answers INSTEAD of the value: a sha256, truncated to 16 hex
+ * characters, of the row's JSON serialisation.
+ *
+ * WHY A FINGERPRINT AND NOT JUST `present`. The two things drivers actually do with a
+ * credential row are "prove the F-126 planted fault landed" (present/absent) and "prove
+ * a snapshot came back byte-identical" (equality). A fingerprint serves the second
+ * without serving the value. 16 hex characters is 64 bits — far too little to brute a
+ * key back out of, and far more than enough that two different rows will not collide in
+ * a test run. `null` and a missing row both fingerprint as `null`, never as a hash of
+ * the string "null", so "absent" is one answer and not two.
+ */
+export const credentialFingerprint = async (value) => {
+  if (value === null || value === undefined) return null;
+  const { createHash } = await import("node:crypto");
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+};
+
+/** Regex-escape a literal so a family prefix can be spliced into `SECRET_VALUE_RE`. */
+const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * A plant body that MENTIONS a credential key family, plus the token/URL SHAPES that no
+ * key family can describe (GitHub/Bitbucket/OpenAI/Slack tokens, Forge web-trigger URLs).
+ * The family half is DERIVED from `CREDENTIAL_KEY_FAMILIES` above — never retyped.
+ */
+const SECRET_VALUE_RE = new RegExp(
+  "(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|")
+  + "|\\bgh[pousr]_[A-Za-z0-9]{8}|\\bgithub_pat_|\\bsk-[A-Za-z0-9_-]{12}|\\bxoxb-|\\.atlassian-dev\\.net/)",
+);
 
 export const SECRET_PLANT_REFUSAL = "harnessRefusal: a plant body may never carry a credential — this door plants state, never secrets";
+
+/**
+ * THE WRITE ALLOW-LIST, in one place because TWO doors are bounded by it: `kvSet` and
+ * the F-769 `kvStash`/`kvRestore` pair. The reasoning for each entry lives at the `kvSet`
+ * call site, which is still the only place that grows it. Built per call — a Set that
+ * outlives a request is a Set a future edit can mutate.
+ */
+const kvWriteAllowList = () => {
+  const keys = new Set([
+    "COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT",
+    "COGNIRUNNER_AI_PROVIDER", MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY,
+    KNOWLEDGE_SETTINGS_KEY,
+  ]);
+  for (const p of PROVIDER_IDS) for (const slot of providerSlotsFor(p)) keys.add(slot);
+  return keys;
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-769 — `kvStash` / `kvRestore`: PUT THE TENANT'S OWN CREDENTIAL BACK WITHOUT EVER
+ * HAVING READ IT.
+ *
+ * The read ceiling (see the `?what=kvs` call site) creates one honest problem, and this
+ * is its answer rather than an exception to it. A driver that REPLACES a credential to
+ * plant a fault — `va-compaction-live.mjs` points the instance at a deliberately dead
+ * BYOK key to drive F-506's own scenario — must put the tenant's real key back in its
+ * `finally`, and it did that by snapshotting the value through the read and replaying it
+ * through `kvSet`. With the value masked, that restore would write `undefined` and
+ * DESTROY a working credential: strictly worse than the leak it fixed.
+ *
+ * So the value moves SERVER-SIDE and is addressed by NAME. `kvStash` copies the row to
+ * `harness_stash:{stashId}` and answers `{stashed:true, stashId, key, present,
+ * fingerprint}`; `kvRestore` writes it back to the key it came from and answers
+ * `{restored:true, key, present, fingerprint}`. The value never crosses the wire in
+ * either direction, and the fingerprint on both ends lets a driver PROVE the round trip
+ * was byte-identical — which is strictly more than the old snapshot-and-compare proved,
+ * because it compares hashes of the stored rows rather than of what a script remembered.
+ *
+ * WHAT BOUNDS IT:
+ *   - the same `kvWriteAllowList()` as `kvSet` — this door writes, so it may not reach a
+ *     row `kvSet` may not write. `git_conn_secret:*` and `git_hook_secret:*` stay off it,
+ *     exactly as F-339 left them: secrets are never plantable, and they are not stashable.
+ *   - `harness_stash:*` is ITSELF a credential family, so the stash row cannot be read
+ *     back out through `?what=kvs` either. Closing that is the whole point.
+ *   - a TTL, through `faultTtlOption` (the one home for the option shape), so a driver
+ *     that dies between stash and restore leaves nothing behind for long. The stash is
+ *     deleted on a successful restore anyway.
+ *   - `stashId` is opaque and server-minted; a caller cannot name a stash into existence.
+ *
+ * A restore of a stash whose row was ABSENT deletes the key rather than writing `null`,
+ * because "there was no key here" and "there was a key holding null" are different
+ * states and only one of them is what the driver found.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+const STASH_KEY_PREFIX = "harness_stash:";
+const STASH_TTL_SECONDS = 3600;
+const stashKey = (id) => `${STASH_KEY_PREFIX}${safeKeyPart(id)}`;
 
 /*
  * F-632 — ONE PREDICATE FOR "THE HARNESS PLANTED THIS ROW", AND ONE REFUSAL FOR WHEN IT
@@ -1191,7 +1333,25 @@ export async function testStateTrigger(req) {
          * harness log has published it, and that is not a ceiling, so the raw url NEVER
          * leaves this handler. The masked projection keeps everything the banner and the
          * identity check need (host, the `conn`/`repo` routing the caller already knows,
-         * and a stable fingerprint two hooks can be compared by) and drops the token. */
+         * and a stable fingerprint two hooks can be compared by) and drops the token.
+         *
+         * F-769 — AND THE THREE DOCTRINES IN THIS FILE ARE NOW ONE. For a while they
+         * contradicted each other on the same surface: the WRITE refused a body that so
+         * much as mentioned a credential (`findPlantedSecret`); THIS resolver had its url
+         * masked on the reasoning just above; and the GET `?what=kvs` READ, one query
+         * string away, handed out `COGNIRUNNER_KEY_*`, `git_conn_secret:*`,
+         * `git_hook_secret:*` and `webtrigger_url:*` in plain text — the signing secret
+         * that makes the masked url above merely inconvenient to lose. The read now
+         * carries the same ceiling, through the same projection pattern: a
+         * credential-family key (`isCredentialKey`, ONE HOME near `findPlantedSecret`)
+         * answers `{present, fingerprint, masked:true}` and never the value.
+         *
+         * THE RULE, stated once so it stops being re-derived per door: WHICH rows this
+         * hook may reach is a question each door answers for itself (the read answers
+         * "all of them", and that is unchanged and not up for revision). WHAT a credential
+         * row may say on the way out is NOT a per-door question — it is `present`, a
+         * fingerprint, and nothing else, at every door, in both directions. A driver that
+         * needs the value MOVED rather than SEEN has `kvStash`/`kvRestore`. */
         "listGitWebhooks",
         // 1.4 commit 7 — the pipeline READ. `git_pipeline:*` rows are also reachable
         // through the GET `?what=kvs` read (deliberately unrestricted: it is a read,
@@ -1389,10 +1549,10 @@ export async function testStateTrigger(req) {
       // driver can back up the instance's pack switches before it flips them and put them
       // back afterwards. The resolver alone cannot do that: it clamps to the known pack
       // ids, which is right for a product surface and wrong for a restore.
-      const KEYS = new Set(["COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT",
-        "COGNIRUNNER_AI_PROVIDER", MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY,
-        KNOWLEDGE_SETTINGS_KEY]);
-      for (const p of PROVIDER_IDS) for (const slot of providerSlotsFor(p)) KEYS.add(slot);
+      // F-769 — the list itself moved to `kvWriteAllowList()` (module scope) so the
+      // `kvStash`/`kvRestore` door below is bounded by the SAME authorisation and cannot
+      // reach a row `kvSet` may not write. One home; the reasoning above is its docblock.
+      const KEYS = kvWriteAllowList();
       /* F-742 — THE SHAPE IS ASKED BEFORE THE ALLOW-LIST, and before the platform.
        * Key shape first: a non-string key cannot be looked up in a Set of strings in any
        * meaningful way, and `key not allowlisted: [object Object]` is a worse answer than
@@ -1417,7 +1577,61 @@ export async function testStateTrigger(req) {
       if (valueBad) return json(400, valueBad);
       if (body.value === null) await storage.delete(body.key);
       else await storage.set(body.key, body.value);
-      return json(200, { key: body.key, set: body.value === null ? "deleted" : true, now: (await storage.get(body.key)) ?? null });
+      // F-769 — `now` is the caller's OWN value read back (or null after a delete), never
+      // a row this door did not just write, so it discloses nothing the caller did not
+      // send. A credential slot is nevertheless answered by fingerprint, so that "what
+      // this door says about a credential row" has one shape wherever it is said.
+      const now = (await storage.get(body.key)) ?? null;
+      const set = body.value === null ? "deleted" : true;
+      if (isCredentialKey(body.key)) {
+        return json(200, { key: body.key, set, present: now !== null, fingerprint: await credentialFingerprint(now), masked: true });
+      }
+      return json(200, { key: body.key, set, now });
+    }
+    /* F-769 — the two halves of the stash door; see its docblock at `kvWriteAllowList`. */
+    if (body.action === "kvStash" || body.action === "kvRestore") {
+      if (body.action === "kvStash") {
+        const keyBad = kvsKeyRefusal(body.key);
+        if (keyBad) return json(400, keyBad);
+        if (!kvWriteAllowList().has(body.key)) return json(400, { error: `key not allowlisted: ${body.key}` });
+        const stored = (await storage.get(body.key)) ?? null;
+        const stashId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        const row = { key: body.key, value: stored, present: stored !== null, stashedAt: new Date().toISOString() };
+        // The TTL OPTION SHAPE has one home (`{ttl:{value,unit}}` — the `{ttlSeconds}`
+        // form is silently ignored by @forge/kvs). Imported the way every other
+        // harness-fault use in this file does, so production loads none of it.
+        const { faultTtlOption } = await import("./harness-fault.js");
+        try { await storage.set(stashKey(stashId), row, faultTtlOption(STASH_TTL_SECONDS)); }
+        catch { await storage.set(stashKey(stashId), row); } // KVS refused the TTL option; the restore still deletes it.
+        return json(200, {
+          ok: true, stashed: true, stashId, key: body.key,
+          present: row.present, fingerprint: await credentialFingerprint(stored),
+          ttlSeconds: STASH_TTL_SECONDS,
+        });
+      }
+      // kvRestore — by NAME. The value is never named, sent or returned.
+      if (typeof body.stashId !== "string" || body.stashId.length === 0) {
+        return json(400, { ok: false, error: "bad-request", field: "stashId", reason: "stashId must be a non-empty string" });
+      }
+      const row = (await storage.get(stashKey(body.stashId))) ?? null;
+      if (!row || typeof row !== "object" || typeof row.key !== "string") {
+        // A stash that expired is indistinguishable from one that never existed, and the
+        // driver must treat both the same way: it no longer holds the tenant's row.
+        return json(404, { ok: false, error: "no such stash (unknown id, or its TTL ran out)", stashId: body.stashId });
+      }
+      // The allow-list is asked AGAIN on the way out. A row stashed before a list change
+      // must not become a write door for a key the list no longer admits.
+      if (!kvWriteAllowList().has(row.key)) return json(400, { error: `key not allowlisted: ${row.key}` });
+      if (row.present === true) await storage.set(row.key, row.value);
+      else await storage.delete(row.key);
+      try { await storage.delete(stashKey(body.stashId)); } catch { /* the restore is the contract, not the sweep */ }
+      const now = (await storage.get(row.key)) ?? null;
+      return json(200, {
+        ok: true, restored: true, key: row.key,
+        present: now !== null,
+        // The SAME fingerprint the stash answered, when the round trip was byte-identical.
+        fingerprint: await credentialFingerprint(now),
+      });
     }
     /*
      * F-627 — THE PIPELINE-ROW DOOR, and why it had to exist.
@@ -1756,9 +1970,35 @@ export async function testStateTrigger(req) {
       const r = await webTrigger.getUrl("rules-api");
       return json(200, { url: typeof r === "string" ? r : r && r.url });
     }
-    // The kvs READ is deliberately unrestricted (no key allowlist): it is a read, it is
-    // behind HARNESS_SECRET, and the harness must be able to confirm a planted fault
-    // (F-126) landed on the exact slot it wrote. Nothing to widen here.
+    /* The kvs READ has NO KEY ALLOW-LIST and never grows one: it is a read, it is behind
+     * HARNESS_SECRET, and the harness must be able to confirm a planted fault (F-126)
+     * landed on the exact slot it wrote. WHICH KEYS may be read is therefore not a
+     * question this door asks.
+     *
+     * F-769 — WHAT COMES BACK *IS* A QUESTION, AND IT HAS A CEILING. An unrestricted read
+     * is not the same thing as an unrestricted DISCLOSURE, and the file had been reading
+     * it as though it were: `?what=kvs&key=COGNIRUNNER_KEY_azure` returned the tenant's
+     * BYOK key in plain text, as did `git_conn_secret:*`, `git_hook_secret:*` and
+     * `webtrigger_url:*`. F-762 masked a webtrigger URL out of `listGitWebhooks` on the
+     * reasoning that "a dev hook that prints it into a harness log has published it, and
+     * that is not a ceiling" — and that reasoning applies HARDER here, because the value
+     * one query-string away is the signing secret that URL's HMAC check depends on.
+     * MEASURED on test-harness/lib/redact.mjs: a bare provider key has no `sk-`/`ghp_`
+     * prefix and the JSON field is `value`, so the evidence redactor masks NOTHING — the
+     * key lands in a committed file verbatim.
+     *
+     * So a credential-family key (`isCredentialKey`, ONE HOME above) answers
+     * `{key, present, fingerprint, masked:true}` and never `value`. EVERY OTHER KEY IS
+     * UNCHANGED — `pf_code:*`, `job:*`, `va_*`, `config_registry`, `app_admins`, a key
+     * this file has never heard of: all still return their value.
+     *
+     * THIS DOES NOT COST THE F-126 CONFIRMATION the comment above protects. F-126 plants
+     * a provider fault by CLEARING a slot, and `present:false` answers that precisely;
+     * `fingerprint` additionally proves a snapshot came back byte-identical, which is the
+     * only other thing the census of live drivers did with these rows. A driver that must
+     * REPLACE a credential and put the tenant's own back uses `kvStash`/`kvRestore`
+     * (POST, below), which moves the value server-side and never returns it.
+     */
     if (what === "kvs") {
       const key = q(req, "key");
       if (!key) return json(400, { error: "key required" });
@@ -1767,7 +2007,16 @@ export async function testStateTrigger(req) {
       // with the field named, rather than 500 with a `ForgeKvsAPIError` message.
       const keyBad = kvsKeyRefusal(key);
       if (keyBad) return json(400, keyBad);
-      return json(200, { key, value: (await storage.get(key)) ?? null });
+      const stored = (await storage.get(key)) ?? null;
+      if (isCredentialKey(key)) {
+        return json(200, {
+          key,
+          present: stored !== null,
+          fingerprint: await credentialFingerprint(stored),
+          masked: true,
+        });
+      }
+      return json(200, { key, value: stored });
     }
     return json(400, { error: `unknown what=${what}` });
   } catch (e) {

@@ -21,6 +21,9 @@ import { testStateTrigger } from "../../src/test-hook.js";
 // F-770 — the platform's key predicate, imported from its ONE home so these checks
 // assert the same rule the door now asks rather than a retyped copy of it.
 import { isKvsKey } from "../../src/shared/kvs-keys.js";
+// F-769 — the credential census, imported from its ONE home so these checks ask the same
+// predicate the read ceiling asks rather than a retyped list of prefixes.
+import { isCredentialKey } from "../../src/test-hook.js";
 
 // F-137 — the two "no retyped slot name" gates below stripped only WHOLE-LINE comments,
 // so a trailing `// COGNIRUNNER_KEY_openai` (a comment is allowed to NAME a slot) read as
@@ -595,6 +598,168 @@ try {
     const code = stripJsComments(src);
     assert.equal(/KVS_KEY_MAX_CHARS\s*=/.test(code), false, "test-hook.js must not redeclare KVS_KEY_MAX_CHARS");
     assert.equal(/KVS_KEY_PATTERN\s*=/.test(code), false, "test-hook.js must not redeclare KVS_KEY_PATTERN");
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-769 — THE READ CEILING. `?what=kvs` is unrestricted in WHICH rows it may reach
+   * and must stay that way; what it may SAY about a credential row is the thing that
+   * had no ceiling. These checks pin both halves: the credential families are masked,
+   * and everything else is byte-for-byte unchanged.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  const POST = (body) => testStateTrigger({
+    method: "POST", headers: { authorization: ["Bearer offline-claim-secret"] }, body: JSON.stringify(body),
+  });
+  await check("BLOCK: a credential-family row never returns its value (F-769)", async () => {
+    // One planted value, used for every family, so a leak is one grep rather than nine.
+    const PLANTED = "zz-harness-planted-credential-zz";
+    const families = [
+      "COGNIRUNNER_KEY_azure",              // the BYOK provider key the finding measured
+      "COGNIRUNNER_OPENAI_API_KEY",         // the legacy single-provider slot
+      "COGNIRUNNER_FORGE_IDENTITY",         // carries the identity's token
+      "COGNIRUNNER_DOC_PROCESSOR_REMOTE",   // {url, bearer}
+      "COGNIRUNNER_WEB_SEARCH_REMOTE",      // {url, bearer}
+      "git_conn_secret:c1",                 // the connection token
+      "git_hook_secret:c1:acme#widget.1a2b", // the webhook SIGNING secret
+      "webtrigger_url:rules-api",           // a capability URL with an unguessable token
+      "att_token:abc123",
+      "upload_token:abc123",
+      "probe:webhook:secret",
+      // …and the NAME catch-all, for a family nobody has invented yet.
+      "some_future_api_token:9",
+    ];
+    for (const key of families) {
+      assert.equal(isCredentialKey(key), true, `premise: ${key} is a credential family`);
+      storage.__seed(key, PLANTED);
+      const res = await kvsRead(key);
+      assert.equal(res.statusCode, 200, `${key}: a credential row is still READABLE — the ceiling is on the value, not on the key`);
+      // THE ASSERTION THE FINDING IS ABOUT: the value is nowhere in the response BODY,
+      // asserted on the raw text so a nested or re-encoded copy cannot slip through.
+      assert.equal(res.body.includes(PLANTED), false, `${key}: the value reached the wire — this is F-769`);
+      const parsed = JSON.parse(res.body);
+      assert.equal(parsed.masked, true, `${key}: the answer says it is masked`);
+      assert.equal("value" in parsed, false, `${key}: there is no \`value\` field at all`);
+      assert.equal(parsed.present, true, `${key}: present:true still answers the F-126 planted-fault question`);
+      assert.match(parsed.fingerprint, /^[0-9a-f]{16}$/, `${key}: a sha256-16 fingerprint`);
+    }
+    // ABSENT is one answer, not two: `present:false` with a null fingerprint.
+    const absent = JSON.parse((await kvsRead("COGNIRUNNER_KEY_neverset")).body);
+    assert.equal(absent.present, false, "a cleared slot reads present:false — F-126's planted fault is still confirmable");
+    assert.equal(absent.fingerprint, null, "…and an absent row has no fingerprint, rather than a hash of \"null\"");
+    // The fingerprint is an EQUALITY witness: same bytes, same hash; different bytes, not.
+    storage.__seed("COGNIRUNNER_KEY_openai", PLANTED);
+    const a = JSON.parse((await kvsRead("COGNIRUNNER_KEY_openai")).body).fingerprint;
+    storage.__seed("COGNIRUNNER_KEY_openai", PLANTED);
+    assert.equal(JSON.parse((await kvsRead("COGNIRUNNER_KEY_openai")).body).fingerprint, a, "identical rows fingerprint identically");
+    storage.__seed("COGNIRUNNER_KEY_openai", PLANTED + "!");
+    assert.notEqual(JSON.parse((await kvsRead("COGNIRUNNER_KEY_openai")).body).fingerprint, a, "a changed row fingerprints differently");
+  });
+  await check("ALLOW: every non-credential row reads exactly as before (F-769)", async () => {
+    // The ceiling must be a NARROW cut. These are the key shapes the live drivers in the
+    // F-769 census actually read, plus a key this file has never heard of.
+    const rows = {
+      "config_registry": [{ id: "r1" }],
+      "app_admins": ["557058:abc"],
+      "validation_logs": [{ at: "now" }],
+      "pf_code:rule-1:a1b2c3": { code: "api.log('x')" },
+      "job:7f3a9c21": { id: "7f3a9c21" },
+      "va_health:agent-1": { state: "green" },
+      "COGNIRUNNER_AI_PROVIDER": "openai",
+      "COGNIRUNNER_MEMORY_SETTINGS": { injection: true },
+      "COGNIRUNNER_AGENT_MODEL_atlassian": "gpt-5.4-mini",
+      "git_pipeline:c1:acme#widget.1a2b": { status: "installed" },
+      "a key nobody declared": { arbitrary: true },
+    };
+    for (const [key, value] of Object.entries(rows)) {
+      assert.equal(isCredentialKey(key), false, `premise: ${key} is NOT a credential family`);
+      storage.__seed(key, value);
+      const parsed = JSON.parse((await kvsRead(key)).body);
+      assert.deepEqual(parsed.value, value, `${key}: the value still comes back verbatim`);
+      assert.equal(parsed.masked, undefined, `${key}: an ordinary row is not marked masked`);
+    }
+  });
+  await check("kvStash/kvRestore move a credential by NAME, never by value (F-769)", async () => {
+    // THE DRIVER THIS DOOR EXISTS FOR: va-compaction-live.mjs replaces the BYOK key with a
+    // deliberately dead one to drive F-506's scenario, and must put the tenant's own key
+    // back in its `finally`. With the value masked it can no longer snapshot it — so the
+    // value moves server-side and is addressed by an opaque id.
+    const SLOT = "COGNIRUNNER_KEY_openai";
+    const REAL = "zz-the-tenants-own-key-zz";
+    storage.__seed(SLOT, REAL);
+
+    const stashed = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    assert.equal(stashed.stashed, true);
+    assert.equal(stashed.present, true, "the door reports the row WAS there");
+    assert.equal(typeof stashed.stashId === "string" && stashed.stashId.length > 0, true, "an opaque, server-minted id");
+    assert.match(stashed.fingerprint, /^[0-9a-f]{16}$/);
+    assert.equal(JSON.stringify(stashed).includes(REAL), false, "the stash answer carries no value");
+
+    // The driver now plants its OWN dead key through the ordinary write door…
+    await kvSet(SLOT, "sk-harness-deliberately-dead-key-0000");
+    assert.equal(storage.__raw(SLOT), "sk-harness-deliberately-dead-key-0000");
+    // …and the stash row itself is NOT readable back out through the read door.
+    const peek = JSON.parse((await kvsRead(`harness_stash:${stashed.stashId}`)).body);
+    assert.equal(peek.masked, true, "harness_stash:* is itself a credential family — the stash is not a new leak");
+    assert.equal("value" in peek, false);
+
+    const restored = JSON.parse((await POST({ action: "kvRestore", stashId: stashed.stashId })).body);
+    assert.equal(restored.restored, true);
+    assert.equal(restored.key, SLOT, "the key came from the STASH, not from the caller");
+    assert.equal(restored.fingerprint, stashed.fingerprint, "the round trip was byte-identical — provable without ever reading the value");
+    assert.equal(JSON.stringify(restored).includes(REAL), false, "the restore answer carries no value either");
+    assert.equal(storage.__raw(SLOT), REAL, "the tenant's own key is back");
+    // A stash is single-use: the row is gone, so a replay cannot resurrect an old value.
+    assert.equal((await POST({ action: "kvRestore", stashId: stashed.stashId })).statusCode, 404, "a consumed stash is gone");
+  });
+  await check("kvStash refuses what kvSet refuses, and an unknown stash (F-769)", async () => {
+    // The stash door WRITES, so it may not reach a row the write allow-list excludes.
+    // `git_conn_secret:*` / `git_hook_secret:*` are the F-339 line: never plantable, and
+    // therefore never stashable either.
+    for (const key of ["git_conn_secret:c1", "git_hook_secret:c1:r1", "config_registry", "app_admins"]) {
+      const res = await POST({ action: "kvStash", key });
+      assert.equal(res.statusCode, 400, `${key} must be refused by the stash door`);
+      assert.match(JSON.parse(res.body).error, /not allowlisted/, `${key}: refused on AUTHORISATION`);
+    }
+    // The shape door applies here too — "/" is illegal and is named, not thrown.
+    const illegal = JSON.parse((await POST({ action: "kvStash", key: "acme/app" })).body);
+    assert.equal(illegal.error, "bad-request");
+    assert.equal(illegal.field, "key");
+    // An unknown or expired stash is one answer, and it is not a 500.
+    assert.equal((await POST({ action: "kvRestore", stashId: "no-such-stash" })).statusCode, 404);
+    const noId = JSON.parse((await POST({ action: "kvRestore" })).body);
+    assert.equal(noId.field, "stashId", "a missing stashId is a named 400");
+    // Restoring a stash taken of an ABSENT row DELETES the key — "there was nothing here"
+    // and "there was a null here" are different states, and only one is what was found.
+    await storage.delete("COGNIRUNNER_KEY_azure");
+    const s2 = JSON.parse((await POST({ action: "kvStash", key: "COGNIRUNNER_KEY_azure" })).body);
+    assert.equal(s2.present, false);
+    await kvSet("COGNIRUNNER_KEY_azure", "planted-while-stashed");
+    await POST({ action: "kvRestore", stashId: s2.stashId });
+    assert.equal(storage.__raw("COGNIRUNNER_KEY_azure"), undefined, "the absent state is restored as ABSENT, not as null");
+  });
+  await check("the stash door stays behind HARNESS_SECRET (F-769)", async () => {
+    for (const body of [{ action: "kvStash", key: "COGNIRUNNER_KEY_openai" }, { action: "kvRestore", stashId: "x" }]) {
+      const res = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify(body) });
+      assert.equal(res.statusCode, 404, `${body.action} must be invisible without the secret`);
+    }
+    // …and so does the masked read: a wrong secret gets no fingerprint either.
+    const read = await testStateTrigger({
+      method: "GET", headers: { authorization: ["Bearer wrong-secret"] },
+      queryParameters: { what: ["kvs"], key: ["COGNIRUNNER_KEY_openai"] },
+    });
+    assert.equal(read.statusCode, 404);
+  });
+  await check("the credential census has ONE home (F-769)", async () => {
+    // The families list is asked by the READ ceiling and by the WRITE refusal
+    // (`SECRET_VALUE_RE`). The write door used to keep its own retyped copy of
+    // COGNIRUNNER_KEY_ / git_conn_secret:, so a family added to one was missing from the
+    // other. This asserts against the DUPLICATION, not against today's behaviour.
+    const code = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    const families = (code.match(/CREDENTIAL_KEY_FAMILIES/g) || []).length;
+    assert.ok(families >= 3, `CREDENTIAL_KEY_FAMILIES must be declared once and USED by both doors (found ${families} mentions)`);
+    assert.equal(/SECRET_VALUE_RE\s*=\s*\//.test(code), false,
+      "SECRET_VALUE_RE must be BUILT from the families list, not retyped as a literal regex");
+    // Both doors still answer on the same family — the write refuses a body mentioning it.
+    const plant = await POST({ action: "pipelineRow", op: "plant", connId: "c1", repoId: "acme/widget", note: "COGNIRUNNER_KEY_openai" });
+    assert.equal(plant.statusCode, 400, "the write door still refuses a body that mentions a credential family");
   });
   await check("kvSet stays behind HARNESS_SECRET", async () => {
     const response = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "kvSet", key: "COGNIRUNNER_AI_PROVIDER", value: null }) });

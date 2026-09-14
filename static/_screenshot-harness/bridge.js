@@ -2126,6 +2126,14 @@ function invoke(name, payload) {
       });
       return Promise.resolve({ success: true, model: FORGE_HAIKU, isByok: true, edition: edName(), clamped: false });
     case "getAgentModel":
+      /* F-914 - `window.__AGENT_MODEL__` forces the saved agent model for a BYOK
+         provider, so a journey can model the one state the walk asked about: Haiku on a
+         customer's own key, which agentCapability() ALLOWS (provider !== "atlassian"
+         returns enabled). Vendor-billed engines ignore it - their lists are fixed. */
+      if (payload && payload.provider !== MANAGED_PROVIDER_ID && payload.provider !== "atlassian"
+          && typeof window !== "undefined" && window.__AGENT_MODEL__) {
+        return Promise.resolve({ success: true, model: String(window.__AGENT_MODEL__), edition: edName(), frontierOnly: false });
+      }
       // frontierOnly is true on BOTH vendor-billed engines: every id in MANAGED_MODELS
       // is a frontier model, so the selector offers the same fixed list, not free text.
       if (payload && payload.provider === MANAGED_PROVIDER_ID) {

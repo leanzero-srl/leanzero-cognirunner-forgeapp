@@ -9,6 +9,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { router } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import AgentOffState from "./AgentOffState";
+/* Imported UNDER A NEW NAME: this file already has a component-scoped `providerLabel`
+   string for the VIEWED provider, and the two in one scope is how the first cut of
+   F-914 called a string. */
+import { PROVIDER_LABELS, providerLabel as productProviderLabel, HAIKU_ON_BYOK_SENTENCE, looksLikeHaiku } from "./productNames";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
 import { providerReady } from "./capability";
@@ -32,18 +36,18 @@ const ExtLink = ({ href, children, style }) => (
 );
 
 const PROVIDER_OPTIONS = [
-  { value: "openai", label: "OpenAI", icon: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M14.949 6.547a3.94 3.94 0 0 0-.348-3.273 4.11 4.11 0 0 0-4.4-1.934 4.1 4.1 0 0 0-1.778-.14 4.15 4.15 0 0 0-2.118-.114 4.1 4.1 0 0 0-1.891.948 4.04 4.04 0 0 0-1.158 1.753 4.1 4.1 0 0 0-1.563.679 4 4 0 0 0-1.14 1.253.99 3.99 0 0 0 .502 4.731 3.94 3.94 0 0 0 .346 3.274 4.11 4.11 0 0 0 4.402 1.933c.382.425.852.764 1.377.995.526.231 1.095.35 1.67.346 1.78.002 3.358-1.132 3.901-2.804a4.1 4.1 0 0 0 1.563-.68 4 4 0 0 0 1.14-1.253 3.99 3.99 0 0 0-.506-4.716m-6.097 8.406a3.05 3.05 0 0 1-1.945-.694l.096-.054 3.23-1.838a.53.53 0 0 0 .265-.455v-4.49l1.366.778q.02.011.025.035v3.722c-.003 1.653-1.361 2.992-3.037 2.996m-6.53-2.75a2.95 2.95 0 0 1-.36-2.01l.095.057L5.29 12.09a.53.53 0 0 0 .527 0l3.949-2.246v1.555a.05.05 0 0 1-.022.041L6.473 13.3c-1.454.826-3.311.335-4.15-1.098m-.85-6.94A3.02 3.02 0 0 1 3.07 3.949v3.785a.51.51 0 0 0 .262.451l3.93 2.237-1.366.779a.05.05 0 0 1-.048 0L2.585 9.342a2.98 2.98 0 0 1-1.113-4.094zm11.216 2.571L8.747 5.576l1.362-.776a.05.05 0 0 1 .048 0l3.265 1.86a3 3 0 0 1 1.173 1.207 2.96 2.96 0 0 1-.27 3.2 3.05 3.05 0 0 1-1.36.997V8.279a.52.52 0 0 0-.276-.445m1.36-2.015-.097-.057-3.226-1.855a.53.53 0 0 0-.53 0L6.249 6.153V4.598a.04.04 0 0 1 .019-.04L9.533 2.7a3.07 3.07 0 0 1 3.257.139c.474.325.843.778 1.066 1.303.223.526.289 1.103.191 1.664zM5.503 8.575 4.139 7.8a.05.05 0 0 1-.026-.037V4.049c0-.57.166-1.127.476-1.607s.752-.864 1.275-1.105a3.08 3.08 0 0 1 3.234.41l-.096.054-3.23 1.838a.53.53 0 0 0-.265.455zm.742-1.577 1.758-1 1.762 1v2l-1.755 1-1.762-1z"/></svg>' },
-  { value: "azure", label: "Azure OpenAI", icon: '<svg viewBox="0 0 96 96" fill="currentColor"><path d="M33.338 6.544h26.038l-27.03 80.087a4.152 4.152 0 0 1-3.933 2.824H8.149a4.145 4.145 0 0 1-3.928-5.47L29.404 9.368a4.152 4.152 0 0 1 3.934-2.825z" opacity="0.8"/><path d="M71.175 60.261h-41.29a1.911 1.911 0 0 0-1.305 3.309l26.532 24.764a4.171 4.171 0 0 0 2.846 1.121h23.38z" opacity="0.6"/><path d="M33.338 6.544a4.118 4.118 0 0 0-3.943 2.879L4.252 83.917a4.14 4.14 0 0 0 3.908 5.538h20.787a4.443 4.443 0 0 0 3.41-2.9l5.014-14.777 17.91 16.705a4.237 4.237 0 0 0 2.666.972H81.24L71.024 60.261l-29.781.007L59.47 6.544z" opacity="0.9"/></svg>' },
-  { value: "openrouter", label: "OpenRouter", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>' },
-  { value: "anthropic", label: "Anthropic", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
-  { value: "lmstudio", label: "LM Studio", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8h2v3H7zM11 8h2v3h-2zM15 8h2v3h-2z"/></svg>' },
-  { value: "atlassian", label: "Atlassian (Forge LLM)", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.12 11.084c-.282-.302-.717-.284-.92.072L.123 23.305a.585.585 0 0 0 .523.847h8.46a.563.563 0 0 0 .523-.323c1.825-3.772.719-9.508-2.51-12.745zM11.434.323c-3.022 4.785-2.822 10.085-.831 14.066l4.079 8.157a.585.585 0 0 0 .523.323h8.46a.585.585 0 0 0 .523-.847S12.81 1.255 12.524.685c-.256-.51-.865-.518-1.09-.362z"/></svg>' },
+  { value: "openai", label: PROVIDER_LABELS.openai, icon: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M14.949 6.547a3.94 3.94 0 0 0-.348-3.273 4.11 4.11 0 0 0-4.4-1.934 4.1 4.1 0 0 0-1.778-.14 4.15 4.15 0 0 0-2.118-.114 4.1 4.1 0 0 0-1.891.948 4.04 4.04 0 0 0-1.158 1.753 4.1 4.1 0 0 0-1.563.679 4 4 0 0 0-1.14 1.253.99 3.99 0 0 0 .502 4.731 3.94 3.94 0 0 0 .346 3.274 4.11 4.11 0 0 0 4.402 1.933c.382.425.852.764 1.377.995.526.231 1.095.35 1.67.346 1.78.002 3.358-1.132 3.901-2.804a4.1 4.1 0 0 0 1.563-.68 4 4 0 0 0 1.14-1.253 3.99 3.99 0 0 0-.506-4.716m-6.097 8.406a3.05 3.05 0 0 1-1.945-.694l.096-.054 3.23-1.838a.53.53 0 0 0 .265-.455v-4.49l1.366.778q.02.011.025.035v3.722c-.003 1.653-1.361 2.992-3.037 2.996m-6.53-2.75a2.95 2.95 0 0 1-.36-2.01l.095.057L5.29 12.09a.53.53 0 0 0 .527 0l3.949-2.246v1.555a.05.05 0 0 1-.022.041L6.473 13.3c-1.454.826-3.311.335-4.15-1.098m-.85-6.94A3.02 3.02 0 0 1 3.07 3.949v3.785a.51.51 0 0 0 .262.451l3.93 2.237-1.366.779a.05.05 0 0 1-.048 0L2.585 9.342a2.98 2.98 0 0 1-1.113-4.094zm11.216 2.571L8.747 5.576l1.362-.776a.05.05 0 0 1 .048 0l3.265 1.86a3 3 0 0 1 1.173 1.207 2.96 2.96 0 0 1-.27 3.2 3.05 3.05 0 0 1-1.36.997V8.279a.52.52 0 0 0-.276-.445m1.36-2.015-.097-.057-3.226-1.855a.53.53 0 0 0-.53 0L6.249 6.153V4.598a.04.04 0 0 1 .019-.04L9.533 2.7a3.07 3.07 0 0 1 3.257.139c.474.325.843.778 1.066 1.303.223.526.289 1.103.191 1.664zM5.503 8.575 4.139 7.8a.05.05 0 0 1-.026-.037V4.049c0-.57.166-1.127.476-1.607s.752-.864 1.275-1.105a3.08 3.08 0 0 1 3.234.41l-.096.054-3.23 1.838a.53.53 0 0 0-.265.455zm.742-1.577 1.758-1 1.762 1v2l-1.755 1-1.762-1z"/></svg>' },
+  { value: "azure", label: PROVIDER_LABELS.azure, icon: '<svg viewBox="0 0 96 96" fill="currentColor"><path d="M33.338 6.544h26.038l-27.03 80.087a4.152 4.152 0 0 1-3.933 2.824H8.149a4.145 4.145 0 0 1-3.928-5.47L29.404 9.368a4.152 4.152 0 0 1 3.934-2.825z" opacity="0.8"/><path d="M71.175 60.261h-41.29a1.911 1.911 0 0 0-1.305 3.309l26.532 24.764a4.171 4.171 0 0 0 2.846 1.121h23.38z" opacity="0.6"/><path d="M33.338 6.544a4.118 4.118 0 0 0-3.943 2.879L4.252 83.917a4.14 4.14 0 0 0 3.908 5.538h20.787a4.443 4.443 0 0 0 3.41-2.9l5.014-14.777 17.91 16.705a4.237 4.237 0 0 0 2.666.972H81.24L71.024 60.261l-29.781.007L59.47 6.544z" opacity="0.9"/></svg>' },
+  { value: "openrouter", label: PROVIDER_LABELS.openrouter, icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>' },
+  { value: "anthropic", label: PROVIDER_LABELS.anthropic, icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
+  { value: "lmstudio", label: PROVIDER_LABELS.lmstudio, icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8h2v3H7zM11 8h2v3h-2zM15 8h2v3h-2z"/></svg>' },
+  { value: "atlassian", label: PROVIDER_LABELS.atlassian, icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.12 11.084c-.282-.302-.717-.284-.92.072L.123 23.305a.585.585 0 0 0 .523.847h8.46a.563.563 0 0 0 .523-.323c1.825-3.772.719-9.508-2.51-12.745zM11.434.323c-3.022 4.785-2.822 10.085-.831 14.066l4.079 8.157a.585.585 0 0 0 .523.323h8.46a.585.585 0 0 0 .523-.847S12.81 1.255 12.524.685c-.256-.51-.865-.518-1.09-.362z"/></svg>' },
   /* CogniRunner Cloud AI - the LeanZero-MANAGED engine. The id and the label come from
      the ONE home (src/shared/edition.js), never retyped, so a rename follows here. The
      row is FILTERED OUT below on Standard: the managed engine is a Coder entitlement,
      and offering a row a tenant can never pick is a worse answer than not offering it. */
-  { value: MANAGED_PROVIDER_ID, label: MANAGED_PROVIDER_LABEL, icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM10.5 16.5v-6l5 3z"/></svg>' },
-  { value: "bedrock", label: "AWS Bedrock", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5z"/></svg>' },
+  { value: MANAGED_PROVIDER_ID, label: PROVIDER_LABELS[MANAGED_PROVIDER_ID], icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM10.5 16.5v-6l5 3z"/></svg>' },
+  { value: "bedrock", label: PROVIDER_LABELS.bedrock, icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5z"/></svg>' },
 ];
 
 const PROVIDER_HELP = {
@@ -305,7 +309,10 @@ export default function OpenAIConfig({ invoke }) {
   // Tracks the provider whose config is currently being loaded, so a fast switch
   // doesn't let a slow in-flight load() overwrite the newer provider's state.
   const providerRef = useRef("atlassian");
-  const providerLabelFor = (p) => PROVIDER_OPTIONS.find((o) => o.value === p)?.label || p;
+  /* F-914 - one home for the product name. This used to search PROVIDER_OPTIONS, which
+     meant the Code tab could not reach it; the table now lives in productNames.js and
+     PROVIDER_OPTIONS reads its labels from there too. */
+  const providerLabelFor = (p) => productProviderLabel(p);
 
   // "Unchanged" flags so Save buttons disable when there's nothing to save (no confusing
   // always-active Save). baseUrl holds the VIEWED provider's saved URL (set by loadProviderConfig).
@@ -1323,7 +1330,7 @@ export default function OpenAIConfig({ invoke }) {
     );
   }
 
-  const providerLabel = PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider;
+  const providerLabel = productProviderLabel(provider);
 
   // --- Edition (1.3) -------------------------------------------------------
   const isAdvanced = edition === EDITION_IDS.ADVANCED;
@@ -1462,7 +1469,7 @@ export default function OpenAIConfig({ invoke }) {
             <div className="usage-providers">
               {Object.entries(usage.month.byProvider).sort((a, b) => (b[1].total || 0) - (a[1].total || 0)).map(([prov, v]) => (
                 <div className="usage-prov-row" key={prov}>
-                  <span className="usage-prov-name">{prov}</span>
+                  <span className="usage-prov-name">{providerLabelFor(prov)}</span>
                   <span className="usage-prov-bar"><span className="usage-prov-fill" style={{ width: `${Math.round(((v.total || 0) / usageProviderMax) * 100)}%` }} /></span>
                   <span className="usage-prov-val">{(v.total || 0).toLocaleString()} tok · {v.calls} calls</span>
                 </div>
@@ -2321,6 +2328,17 @@ export default function OpenAIConfig({ invoke }) {
                   <AgentOffState
                     sentence="On Atlassian Forge LLM the agent model needs the Coder edition AND Claude Sonnet 5 or Opus 5, so an upgrade on its own still leaves it off. Pointing CogniRunner at your own provider key turns it on with no upgrade at all."
                   />
+                )}
+                {/* F-914 - THE SENTENCE THAT STOPS A POINTLESS MODEL CHANGE. Verified
+                    against agentCapability() in src/shared/edition.js: a BYOK provider
+                    returns `enabled: true, reason: "byok"` without looking at the model
+                    at all, so Haiku genuinely drives an agent there. An admin who has
+                    read the Forge LLM rule elsewhere on this screen would otherwise go
+                    hunting for a frontier model they do not need. */}
+                {!isAtlassian && !isManaged && looksLikeHaiku(agentModel) && (
+                  <p className="agent-haiku-note" style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" }}>
+                    {HAIKU_ON_BYOK_SENTENCE}
+                  </p>
                 )}
                 {isAtlassian && isAdvanced && agentFrontierOnly && (
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>

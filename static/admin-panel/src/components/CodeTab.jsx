@@ -48,6 +48,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import CustomSelect from "./CustomSelect";
 import AgentOffState from "./AgentOffState";
+import { providerLabel, editionLabel } from "./productNames";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
 import {
@@ -1140,8 +1141,12 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
         <p className="code-status-text">{capCopy.remedy}</p>
         {capability && (
           <div className="code-facts">
-            <span className="code-fact"><span className="code-fact-k">Provider</span><span className="code-fact-v">{capability.provider || "not set"}</span></span>
-            <span className="code-fact"><span className="code-fact-k">Edition</span><span className="code-fact-v">{capability.edition || "unknown"}</span></span>
+            {/* F-914 - PRODUCT NAMES, never the internal ids. "advanced" is a Marketplace
+                edition type; the product the site bought is called Coder, and edition.js
+                has always said so. The model id is left as the id on purpose: it is what
+                the admin picked and what the backend clamps against. */}
+            <span className="code-fact"><span className="code-fact-k">Provider</span><span className="code-fact-v">{capability.provider ? providerLabel(capability.provider) : "not set"}</span></span>
+            <span className="code-fact"><span className="code-fact-k">Edition</span><span className="code-fact-v">{capability.edition ? editionLabel(capability.edition) : "unknown"}</span></span>
             <span className="code-fact"><span className="code-fact-k">Agent model</span><span className="code-fact-v">{capability.agentModel || "not set"}</span></span>
           </div>
         )}

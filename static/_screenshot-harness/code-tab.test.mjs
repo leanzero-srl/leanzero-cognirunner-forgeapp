@@ -28,7 +28,7 @@ import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
    assertions read them rather than retyping a label the app could stop using. */
 import { GIT_EVENT_IDS, EVENT_CATEGORIES } from "../../src/shared/jira-events.js";
 import { AGENT_ACTIONS, agentActionNamespace } from "../../src/shared/agent-actions.js";
-import { agentCapabilityCopy } from "../../src/shared/edition.js";
+import { agentCapabilityCopy, EDITIONS } from "../../src/shared/edition.js";
 /* F-526: the scaffold's OWN defaults, so "the form did not just ship the default" is
    asserted against the value the renderer would really have used. */
 import { SCAFFOLDS, scaffoldHasCustomUi } from "../../src/shared/git-scaffolds.js";
@@ -102,7 +102,16 @@ try {
       // Status: ON, and the sentence is the ONE copy map's, not a wording this test invents.
       ok(await page.locator(".code-status-badge", { hasText: "CODER IS ON" }).count() === 1, `C1 ${theme} status badge reads ON`);
       ok((await page.locator(".code-status-title").first().innerText()).includes(agentCapabilityCopy("byok").title), `C1 ${theme} the status sentence comes from AGENT_CAPABILITY_REASONS`);
-      ok((await page.locator(".code-facts").first().innerText()).includes("anthropic"), `C1 ${theme} the provider fact is rendered`);
+      /* F-914 - the fact chips print PRODUCT NAMES. They used to print the ids the
+         backend stores ("anthropic", "advanced"), which is a vocabulary that appears on
+         no invoice and in no listing. The edition label is read from edition.js so a
+         rename there fails this run rather than going stale here. */
+      const facts = await page.locator(".code-facts").first().innerText();
+      ok(facts.includes("Anthropic"), `C1 ${theme} the provider fact is the product name, got: ${facts}`);
+      ok(facts.includes(EDITIONS.standard.label), `C1 ${theme} the edition fact is the product name`);
+      ok(!/\banthropic\b/.test(facts), `C1 ${theme} and the raw provider id is gone`);
+      ok(!/\badvanced\b|\bstandard\b/.test(facts), `C1 ${theme} and the raw edition id is gone`);
+      ok(facts.includes("claude-sonnet-5"), `C1 ${theme} the model id is kept as the id the admin picked`);
       // Connections: two rows, both kinds, the "set" credential state, the repo chips.
       ok(await page.locator(".code-conn").count() === 2, `C1 ${theme} two connection rows`);
       ok(await page.locator(".code-kind-github").count() === 1 && await page.locator(".code-kind-bitbucket").count() === 1, `C1 ${theme} one chip per provider kind`);

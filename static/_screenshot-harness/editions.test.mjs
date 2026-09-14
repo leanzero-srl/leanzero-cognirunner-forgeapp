@@ -910,6 +910,68 @@ try {
       }
     }
   }
+  /* ---------------- E5 - F-914: PRODUCT NAMES, and the Haiku-on-BYOK sentence -----------
+     The usage rows printed the ids the backend stores, and a CSS capitalize turned
+     "openai" into "Openai" - a name that exists nowhere except this screen. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E5 product names on the usage rows (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      const names = (await page.locator(".usage-prov-name").allInnerTexts()).map((t) => t.trim());
+      ok(names.includes("Anthropic") && names.includes("OpenAI") && names.includes("Atlassian (Forge LLM)"),
+        `E5 ${theme} the usage rows name products, got ${JSON.stringify(names)}`);
+      ok(!names.some((n) => /^Openai$|^openai$|^anthropic$|^atlassian$/.test(n)),
+        `E5 ${theme} and no raw provider id survives, got ${JSON.stringify(names)}`);
+      // The capitalize that produced "Openai" must not now mangle "OpenAI".
+      const tt = await page.locator(".usage-prov-name").first().evaluate((el) => getComputedStyle(el).textTransform);
+      ok(tt === "none", `E5 ${theme} the row no longer transforms its own text (got ${tt})`);
+      await shot(page, `E5-product-names-${theme}`);
+      ok(env.errors.length === 0, `E5 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E5 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* E5b - the sentence that stops a pointless model change. Checked against
+       agentCapability() in src/shared/edition.js, which returns `enabled: true` for any
+       provider that is not Forge LLM WITHOUT looking at the model: Haiku really does
+       drive an agent on a customer's own key. The negative control is the same screen
+       with a frontier agent model, where the sentence must not appear. */
+    const { agentCapability } = await import("../../src/shared/edition.js");
+    const byokHaiku = agentCapability({ provider: "anthropic", edition: "standard", agentModel: "claude-haiku-4-5-20251001" });
+    ok(byokHaiku.enabled === true && byokHaiku.reason === "byok",
+      "E5b the CLAIM is true at its source: Haiku on a BYOK provider is enabled");
+
+    console.log("E5b the Haiku-on-BYOK sentence");
+    const env = await openAdmin(browser, "light", false, false, { __AGENT_MODEL__: "claude-haiku-4-5-20251001" });
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      await page.locator(".agent-haiku-note").first().waitFor({ timeout: 8000 });
+      const note = (await page.locator(".agent-haiku-note").first().innerText()).trim();
+      ok(note.includes("Haiku is only refused on Atlassian Forge LLM"), `E5b it names WHERE Haiku is refused, got: ${note}`);
+      ok(!/[\u2013\u2014]/.test(note), "E5b no em dash or en dash in it");
+      await shot(page, "E5b-haiku-byok");
+      ok(env.errors.length === 0, "E5b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E5b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    console.log("E5c negative control: a frontier BYOK agent model gets no Haiku sentence");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      await page.waitForTimeout(600);
+      ok(await page.locator(".agent-haiku-note").count() === 0, "E5c no Haiku sentence when the agent model is not Haiku");
+      ok(env.errors.length === 0, "E5c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E5c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
 } finally {
   await browser.close();
 }

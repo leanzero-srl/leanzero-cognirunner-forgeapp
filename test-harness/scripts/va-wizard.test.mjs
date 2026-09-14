@@ -21,7 +21,7 @@
 import {
   createWizard, stepWizard, resumeWizard, serializeWizardState, buildVaRecord,
   catalogToCtx, checkJqlShape, clampSay, renderVoiceSamples, renderReviewSummary,
-  writeSiteRefusalReason, optionsForStep,
+  writeSiteRefusalReason, optionsForStep, wizardResumeInfo, WIZARD_QUESTION_COUNT,
   WIZARD_STEPS, VOICE_SAMPLE_CHIPS, VA_WIZARD_SAY_MAX, VA_WIZARD_STATE_MAX_BYTES,
   VA_WIZARD_VERSION,
 } from "../../src/shared/va-wizard.js";
@@ -526,6 +526,46 @@ const at = (stepId) => {
   ok(resumeWizard({ ...state, v: 99 }, CATALOG).stepId === "persona_name", "a state from another version restarts the interview");
   ok(resumeWizard({ ...state, stepId: "invented_step" }, CATALOG).stepId === "persona_name", "a state on an unknown step restarts the interview");
   ok(resumeWizard(null, CATALOG).stepId === "persona_name", "a missing state starts a fresh interview");
+}
+
+/* ── 8b. F-953 the stored draft can be DESCRIBED, so it can be offered back ── */
+
+{
+  /*
+   * The wizard resumed `va_wizard:{accountId}` SILENTLY, so "Create your first one" put a
+   * reviewer on the review card of an agent they had never configured. The resume is a
+   * question now, and this is the data the question is asked from.
+   */
+  const fresh = createWizard({ catalog: CATALOG, now: 1_757_000_000_000 }).state;
+  ok(fresh.startedAt === 1_757_000_000_000, "a fresh interview records when it was started");
+  const freshInfo = wizardResumeInfo(fresh);
+  ok(freshInfo.resumable === false, "an interview that has answered nothing is not a draft worth offering");
+  ok(freshInfo.total === WIZARD_QUESTION_COUNT && freshInfo.total === 9, `the promise on the empty tab is nine questions (got ${freshInfo.total})`);
+
+  const named = stepWizard(fresh, { answer: "Nadia" });
+  const one = wizardResumeInfo(named.state);
+  ok(one.resumable === true && one.answered === 1 && one.name === "Nadia", `one answer is a resumable draft (got ${JSON.stringify(one)})`);
+  ok(one.startedAt === 1_757_000_000_000, "the start time survives a turn");
+
+  const atReview = wizardResumeInfo(happy.turns[8].state);
+  ok(atReview.stepId === "review" && atReview.answered === 8, `the eight answered steps are counted (got ${JSON.stringify(atReview)})`);
+  const finished = wizardResumeInfo(happy.turn.state);
+  ok(finished.answered === 9, `a confirmed review is the ninth answer (got ${finished.answered})`);
+
+  /* THROUGH KVS AND BACK: the card has to be able to date a draft a week later. */
+  const stored = serializeWizardState(happy.turns[8].state).state;
+  ok(stored.startedAt === happy.turns[8].state.startedAt, "the start time is persisted");
+  const back = wizardResumeInfo(resumeWizard(stored, CATALOG));
+  ok(back.answered === 8 && back.name === "Nadia" && back.startedAt === stored.startedAt, "a resumed draft describes itself the same way");
+
+  /* A state from an older build carries no start time; it is still resumable, undated. */
+  const legacy = { ...stored }; delete legacy.startedAt;
+  const li = wizardResumeInfo(resumeWizard(legacy, CATALOG));
+  ok(li.resumable === true && li.answered === 8, "a draft stored before this field existed is still offered");
+  ok(wizardResumeInfo(null).resumable === false, "no state is not a draft");
+  /* Going BACK does not un-answer anything: the count is the answers, not the step index. */
+  const wentBack = stepWizard(happy.turns[8].state, { answer: { back: "persona_voice" } });
+  ok(wizardResumeInfo(wentBack.state).answered === 8, "a draft that went back to an earlier step still counts its answers");
 }
 
 /* ── 9. options and the catalogue translation ───────────────────────────────── */

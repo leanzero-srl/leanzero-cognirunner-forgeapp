@@ -40,7 +40,7 @@ import {
   VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_COPY,
   resolveDefaultTimeZone, viewerTimeZone,
 } from "../../../../src/shared/va-config.js";
-import { renderReviewSummary } from "../../../../src/shared/va-wizard.js";
+import { renderReviewSummary, wizardResumeInfo } from "../../../../src/shared/va-wizard.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 
@@ -53,6 +53,15 @@ export default function VaWizard({ client, catalog = {}, onCreated, onFallback, 
   // the interview can know because it is computed by the resolver, not by `stepWizard`.
   // Same rendering the classic form uses, and it holds `onCreated` until it is dismissed.
   const [saveNotes, setSaveNotes] = useState(null);
+  /*
+   * F-953 - THE STORED DRAFT IS OFFERED, NEVER ASSUMED. The resolver resumes
+   * `va_wizard:{accountId}` on every open, so "Create your first one" used to drop a
+   * reviewer straight onto the review card of an agent they had never configured, with
+   * "Create the agent" under it. The opening turn is now read for a resume, and while
+   * there is one the admin picks: carry on, or throw it away. Only the OPENING turn sets
+   * this; every later turn is an answer the admin just gave.
+   */
+  const [resume, setResume] = useState(null);
   // Every turn carries a token: a slow answer that lands after a newer one must never
   // overwrite the newer turn (the generation-token pattern this app uses for async AI).
   const token = useRef(0);
@@ -70,7 +79,16 @@ export default function VaWizard({ client, catalog = {}, onCreated, onFallback, 
     return r.turn;
   }, [client]);
 
-  useEffect(() => { send({}); }, [send]);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const t = await send({});
+      if (!live || !t) return;
+      const info = wizardResumeInfo(t.state);
+      if (info.resumable) setResume(info);
+    })();
+    return () => { live = false; };
+  }, [send]);
 
   // The create step's answer comes back with the normalized record on it. The SAVE is a
   // separate call on purpose: `stepWizard` is pure and stores nothing, so the record only
@@ -109,7 +127,7 @@ export default function VaWizard({ client, catalog = {}, onCreated, onFallback, 
     );
   }
 
-  const restart = async () => { await client.wizardReset(); token.current += 1; send({}); };
+  const restart = async () => { setResume(null); await client.wizardReset(); token.current += 1; send({}); };
 
   if (error) {
     return (
@@ -120,6 +138,42 @@ export default function VaWizard({ client, catalog = {}, onCreated, onFallback, 
     );
   }
   if (!turn) return <div className="card va-card"><div className="empty-state">Opening the setup interview…</div></div>;
+
+  /*
+   * F-953 - THE RESUME CARD. Never the review card, never "Create the agent" for an agent
+   * the reader has not configured. It says what the draft IS - when it was started, what
+   * it is called so far, how far it got - and offers exactly two ways out, both of them
+   * an answer to the question on screen.
+   */
+  if (resume) {
+    const started = resume.startedAt ? new Date(resume.startedAt).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) : null;
+    return (
+      <div className="section va-wizard anim-rise">
+        <div className="section-header">
+          <span className="section-title">New virtual administrator</span>
+          <div className="section-actions">
+            <button type="button" className="btn-small" onClick={onCancel}>← Back to agents</button>
+          </div>
+        </div>
+        <div className="card va-card va-resume">
+          <p className="va-ask">
+            {`You have an unfinished administrator${started ? ` from ${started}` : ""}${resume.name ? `: ${resume.name}` : ""}, ${resume.answered} of ${resume.total} steps answered.`}
+          </p>
+          <p className="hint">Carry on where you stopped, or throw the draft away and answer the {resume.total} questions from the start. Nothing has been created either way.</p>
+          <div className="va-actions">
+            <button type="button" className="btn-small btn-solid va-resume-continue" disabled={busy} onClick={() => setResume(null)}>Continue where you left off</button>
+            {/* Solid, white text, and the app's own error token so the dark theme is
+                already covered. Inline rather than a class because the component CSS home
+                is App.js and this card has to stay self-contained. */}
+            <button
+              type="button" className="btn-small btn-solid va-resume-fresh" disabled={busy} onClick={restart}
+              style={{ background: "var(--error-color)", borderColor: "var(--error-color)", color: "#fff" }}
+            >Start fresh</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const ex = turn.extras || {};
   const opts = arr(turn.options);

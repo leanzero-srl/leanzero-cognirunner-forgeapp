@@ -1495,6 +1495,73 @@ try {
     } finally { await close(env); }
   }
 
+  /* ---------- A20 F-953: a stored draft is OFFERED, never resumed silently ---------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A20 F-953 the resume card (${theme})`);
+    const env = await openAgents(browser, theme, { __VA_RESUME__: true });
+    const { page } = env;
+    try {
+      await page.locator(".va-new").click();
+      await page.locator(".va-resume").waitFor({ timeout: 8000 });
+      ok(await page.locator('.va-step[data-step="review"]').count() === 0, "A20 the wizard does not open on the review card");
+      ok(await page.locator("button", { hasText: /Create the agent/ }).count() === 0, "A20 nothing offers to create an agent nobody configured");
+      const said = await page.locator(".va-resume .va-ask").innerText();
+      ok(/unfinished administrator/i.test(said), `A20 the card says what it found (got ${said})`);
+      ok(/Nadia/.test(said), "A20 it names the draft");
+      /* The date is rendered in the reader's own locale, so it is asserted by its parts. */
+      ok(/September/.test(said) && /\b10\b/.test(said) && /2026/.test(said), `A20 it dates the draft (got ${said})`);
+      ok(/8 of 9 steps answered/.test(said), `A20 it counts the answers, not the step index (got ${said})`);
+      /* Both buttons are SOLID with white text, and neither carries a left rail. */
+      for (const sel of [".va-resume-continue", ".va-resume-fresh"]) {
+        const css = await page.locator(sel).evaluate((el) => {
+          const c = getComputedStyle(el);
+          return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth, weight: c.fontWeight };
+        });
+        ok(!/rgba\(.*0?\.\d+\)/.test(css.bg) && css.bg !== "rgba(0, 0, 0, 0)", `A20 ${sel} is a solid fill (got ${css.bg})`);
+        ok(/^rgba?\(255, 255, 255/.test(css.fg), `A20 ${sel} carries white text (got ${css.fg})`);
+        ok(css.bl === css.bt, `A20 ${sel} has no left accent rail (left ${css.bl}, top ${css.bt})`);
+        ok(Number(css.weight) >= 600, `A20 ${sel} carries the emphasis weight (got ${css.weight})`);
+      }
+      await page.waitForTimeout(600);   // let anim-rise settle, or the PNG reads as faded copy
+      await shot(page, `agents-wizard-resume-${theme}`);
+      /* CONTINUE lands on the step the draft stood on, with the answers intact. */
+      await page.locator(".va-resume-continue").click();
+      await stepIs(page, "review");
+      const review = await page.locator('.va-step[data-step="review"] .va-review').innerText();
+      ok(/Nadia/.test(review), "A20 Continue keeps the draft's answers");
+      ok(env.errors.length === 0, `A20 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  {
+    console.log("A20b F-953 Start fresh really does start fresh");
+    const env = await openAgents(browser, "light", { __VA_RESUME__: true });
+    const { page } = env;
+    try {
+      await page.locator(".va-new").click();
+      await page.locator(".va-resume").waitFor({ timeout: 8000 });
+      await page.locator(".va-resume-fresh").click();
+      await stepIs(page, "persona_name");
+      ok(await page.locator(".va-resume").count() === 0, "A20b the resume card is gone");
+      ok(await page.locator(".va-name").inputValue() === "", "A20b the name box is empty, so the draft really was discarded");
+      /* And the promise the empty tab makes is true again: nine questions, from the first. */
+      await page.locator(".va-name").fill("Ada");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "persona_voice");
+      ok(env.errors.length === 0, `A20b no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  {
+    console.log("A20c F-953 no draft, no card");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await page.locator(".va-new").click();
+      await stepIs(page, "persona_name");
+      ok(await page.locator(".va-resume").count() === 0, "A20c a fresh interview is never interrupted by a resume card");
+      ok(env.errors.length === 0, `A20c no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
 } finally {
   await browser.close();
 }

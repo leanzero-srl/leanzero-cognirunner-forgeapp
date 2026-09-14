@@ -755,6 +755,9 @@ export const createWizard = (opts = {}) => {
   const state = {
     v: VA_WIZARD_VERSION,
     stepId: STEP_IDS[0],
+    // F-953 - WHEN THIS INTERVIEW WAS OPENED. It rides the state because the resume card
+    // has to date the draft it is offering back, and only the state survives the tab.
+    startedAt: Number.isFinite(o.now) ? o.now : Date.now(),
     answers: isObj(o.answers) ? clone(o.answers) : {},
     history: [],
     refused: [],
@@ -787,6 +790,7 @@ export const serializeWizardState = (state) => {
   const out = {
     v: VA_WIZARD_VERSION,
     stepId: STEP_IDS.includes(s.stepId) ? s.stepId : STEP_IDS[0],
+    startedAt: Number.isFinite(s.startedAt) ? s.startedAt : Date.now(),
     answers: isObj(s.answers) ? clone(s.answers) : {},
     history: asArray(s.history).slice(-VA_WIZARD_HISTORY_MAX),
     refused: asArray(s.refused).slice(0, 20),
@@ -815,12 +819,66 @@ export const resumeWizard = (stored, catalog) => {
   return {
     v: VA_WIZARD_VERSION,
     stepId: stored.stepId,
+    startedAt: Number.isFinite(stored.startedAt) ? stored.startedAt : Date.now(),
     answers: isObj(stored.answers) ? clone(stored.answers) : {},
     history: asArray(stored.history).slice(-VA_WIZARD_HISTORY_MAX),
     refused: [],
     notes: [],
     done: stored.done === true,
     catalog: isObj(catalog) ? catalog : {},
+  };
+};
+
+/**
+ * F-953 - THE STEP THAT OWNS EACH ANSWER, so "how far did I get" is counted from the
+ * answers themselves rather than from the step the interview happens to be standing on.
+ * A `review` reached and then left by "go back to the voice" has still been answered
+ * eight times, and an admin who is told "2 of 9" when they answered eight would not
+ * recognise their own draft.
+ *
+ * `review` has no answer key: it is answered by confirming it, which is `done`.
+ */
+export const WIZARD_ANSWER_KEYS = Object.freeze({
+  persona_name: "personaName", persona_voice: "voice", intake: "intake",
+  read_scope: "readScope", write_scope: "writeScope", cadence: "cadence",
+  powers: "powers", guardrails: "guardrails", review: null,
+});
+
+/** The questions an admin is asked. `create` is not one of them (F-916 folded it away). */
+export const WIZARD_QUESTION_COUNT = Object.keys(WIZARD_ANSWER_KEYS).length;
+
+/**
+ * F-953 - WHAT A STORED DRAFT IS, for the card that offers it back.
+ *
+ * The wizard resumes from `va_wizard:{accountId}` on every open, which is right: an admin
+ * who closed the tab mid-interview should not lose eight answers. What was WRONG is that
+ * it resumed SILENTLY - "Create your first one" landed a reviewer on the review card of an
+ * agent they had never configured, with "Create the agent" under it. So the resume is
+ * OFFERED instead: this function says whether there is anything to offer and what to call
+ * it, and the UI renders the choice.
+ *
+ * `resumable` is FALSE for an interview that has answered nothing, because an empty draft
+ * and a fresh start are the same thing and a card that asked about it would be noise.
+ *
+ * @returns {{resumable:boolean, startedAt:number|null, name:string, answered:number,
+ *            total:number, stepId:string}}
+ */
+export const wizardResumeInfo = (state) => {
+  const s = isObj(state) ? state : {};
+  const answers = isObj(s.answers) ? s.answers : {};
+  let answered = 0;
+  for (const [id, key] of Object.entries(WIZARD_ANSWER_KEYS)) {
+    if (key === null) { if (s.done === true) answered += 1; continue; }
+    if (answers[key] !== undefined && !(id === "persona_name" && !String(answers[key] || "").trim())) answered += 1;
+  }
+  const stepId = STEP_IDS.includes(s.stepId) ? s.stepId : STEP_IDS[0];
+  return {
+    resumable: answered > 0 || stepIndex(stepId) > 0,
+    startedAt: Number.isFinite(s.startedAt) ? s.startedAt : null,
+    name: clampPersonaName(String(answers.personaName || "")),
+    answered,
+    total: WIZARD_QUESTION_COUNT,
+    stepId,
   };
 };
 
@@ -997,6 +1055,7 @@ export const stepWizard = (state, input) => {
   const next = {
     v: VA_WIZARD_VERSION,
     stepId: base.stepId,
+    startedAt: Number.isFinite(base.startedAt) ? base.startedAt : Date.now(),
     answers: isObj(base.answers) ? clone(base.answers) : {},
     history: asArray(base.history).slice(-VA_WIZARD_HISTORY_MAX),
     refused: [],

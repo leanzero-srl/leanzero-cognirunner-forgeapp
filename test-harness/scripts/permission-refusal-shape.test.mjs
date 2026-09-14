@@ -434,3 +434,74 @@ console.log("permission-refusal-shape: OK");
 }
 
 console.log("refusal forwarding (F-307): OK");
+
+// ── F-840 — THE ROSTER SCOPE DEFAULT, ON THE REAL RESOLVERS ─────────────────────
+//
+// THE DEFECT. `getUserPermissions` READ a row that stated a non-admin role but no
+// `scope` as `scope: "all"` — reach over every rule on the instance — while the
+// WRITES (`addAppAdmin`, `updateUserRole`) clamped a missing scope to `"own"`. One
+// rule with two answers, and the wider one governed enforcement.
+//
+// THE CUT. `DEFAULT_ROSTER_SCOPE` ("own") in `src/shared/roster-roles.js` is the only
+// answer, imported by the read and both writes. An editor whose scope was never stated
+// must not gain site-wide reach.
+//
+// BLOCK / ALLOW asserted here, through the resolvers rather than the constant:
+//   BLOCK — a scope-less editor row READS as `own`, and a scope-less GRANT writes `own`;
+//   ALLOW — an explicit `all` editor row still reads `all`, and an admin row still reads
+//           `all` by construction (the default is never consulted on that branch).
+{
+  const EDITOR = "acct-scopeless-editor";
+
+  // READ — scope-less editor row. `checkIsAdmin` returns the resolved {role, scope}.
+  await reset();
+  await storage.set("app_admins", [{ accountId: EDITOR, displayName: "Scopeless", role: "editor" }]);
+  const readNoScope = await invoke("checkIsAdmin", {}, EDITOR);
+  assert.equal(readNoScope?.role, "editor", "F-840: a scope-less row keeps its stated role");
+  assert.equal(readNoScope?.scope, "own",
+    `F-840 BLOCK: a scope-less EDITOR row reads as "own", never "all" (got ${JSON.stringify(readNoScope)})`);
+
+  // ALLOW — a scope somebody actually stated is never narrowed by the default.
+  await reset();
+  await storage.set("app_admins", [{ accountId: EDITOR, role: "editor", scope: "all" }]);
+  const readAll = await invoke("checkIsAdmin", {}, EDITOR);
+  assert.equal(readAll?.scope, "all", "F-840 ALLOW: an explicit `all` editor row survives the read");
+
+  // ALLOW — the admin role is "all" BY CONSTRUCTION; the default is not consulted.
+  await reset();
+  await storage.set("app_admins", [{ accountId: EDITOR, role: "admin" }]);
+  const readAdmin = await invoke("checkIsAdmin", {}, EDITOR);
+  assert.equal(readAdmin?.role, "admin", "F-840: an admin row is an admin");
+  assert.equal(readAdmin?.scope, "all", "F-840 ALLOW: an ADMIN row reads `all` by construction");
+
+  // WRITE — a grant that names a role but no scope stores "own", the SAME default.
+  await reset();
+  const ADMIN_CALLER = "acct-the-admin";
+  await storage.set("app_admins", [{ accountId: ADMIN_CALLER, role: "admin", scope: "all" }]);
+  const granted = await invoke("addAppAdmin", { accountId: EDITOR, displayName: "Scopeless", role: "editor" }, ADMIN_CALLER);
+  assert.equal(granted?.success, true, `F-840: the grant itself succeeds (got ${JSON.stringify(granted)})`);
+  const storedRow = ((await storage.get("app_admins")) || []).find((u) => u?.accountId === EDITOR);
+  assert.equal(storedRow?.scope, "own",
+    `F-840 BLOCK: addAppAdmin stores "own" for a scope-less grant (got ${JSON.stringify(storedRow)})`);
+
+  // AND THE TWO SIDES AGREE — the row just written reads back as what was written.
+  // This is the whole cut: before it, this grant stored "own" and read back "all".
+  const readBack = await invoke("checkIsAdmin", {}, EDITOR);
+  assert.equal(readBack?.scope, storedRow?.scope,
+    `F-840: the WRITE and the READ answer the same scope (wrote ${storedRow?.scope}, read ${readBack?.scope})`);
+
+  // updateUserRole's clamp is the same constant — demoting to editor with no scope
+  // named must not hand out `all` either.
+  await reset();
+  await storage.set("app_admins", [
+    { accountId: ADMIN_CALLER, role: "admin", scope: "all" },
+    { accountId: EDITOR, role: "admin", scope: "all" },
+  ]);
+  const updated = await invoke("updateUserRole", { accountId: EDITOR, role: "editor" }, ADMIN_CALLER);
+  assert.equal(updated?.success, true, `F-840: the demotion succeeds (got ${JSON.stringify(updated)})`);
+  const afterUpdate = ((await storage.get("app_admins")) || []).find((u) => u?.accountId === EDITOR);
+  assert.equal(afterUpdate?.scope, "own",
+    `F-840 BLOCK: updateUserRole clamps a missing scope to "own" too (got ${JSON.stringify(afterUpdate)})`);
+}
+
+console.log("roster scope default (F-840): OK");

@@ -44,8 +44,9 @@
  *   convention, so an unbound one is always the F-712 defect and never a false positive
  *   from an inner scope.
  *
- *   RULE 2b (F-729). The guard's OWN RESULT FIELDS - `envName`, `hookUrl`, `envId`, parsed
- *   out of the CONTRACT docblock that publishes them - are policed WHATEVER their case.
+ *   RULE 2b (F-729, F-749). The guard's OWN RESULT FIELDS - EVERY field `requireEnvAck`
+ *   returns, parsed out of its RETURN LITERAL and not out of the docblock example that
+ *   destructures three of them (F-749) - are policed WHATEVER their case.
  *   RULE 2 is a convention test and these names are lowercase BY CONTRACT, so they were the
  *   one family convention could not reach: a driver that copies the docblock's own
  *   `const { envName, hookUrl, envId } = requireEnvAck(...)` and drops a field dies at module
@@ -183,26 +184,52 @@ ok(GUARD_EXPORTS.has("requireEnvAck") && GUARD_EXPORTS.has("forgeEnvId"),
  * the F-712 edit in the shape the library TELLS authors to write. The driver dies at module
  * evaluation with no evidence file, and `npm run test:offline` calls the directory sound.
  *
- * The policed names are PARSED OUT OF THAT DOCBLOCK, never listed here: the contract the
+ * The policed names are PARSED OUT OF THE LIBRARY, never listed here: the contract the
  * library publishes is the contract this rule holds authors to, and a field added to the
- * documented destructuring is policed the day it is documented. The set is then checked
- * against `requireEnvAck`'s return literal, so the docblock cannot quietly drift from the
- * function it describes — which is the same one-home demand every rule in this pair makes. */
+ * guard's result is policed the day it is added.
+ *
+ * F-749 — AND THE SOURCE IS THE RETURN LITERAL, NOT THE DOCBLOCK EXAMPLE. The first draft
+ * parsed `const { envName, hookUrl, envId } = requireEnvAck(` out of the CONTRACT docblock,
+ * so RULE 2b policed the three fields that one EXAMPLE happens to destructure while
+ * `urlVar`, `shared` and `acknowledged` — returned by the same function, listed in the same
+ * `@returns` row — stayed invisible. F-729's exact defect survived for half of its own
+ * return. MEASURED on the shape the library itself tells authors to write, one field renamed
+ * and three read bare:
+ *
+ *   scopeViolations('import { requireEnvAck } from "../lib/shared-env-guard.mjs";\n' +
+ *                   'const { envName: ENV_NAME } = requireEnvAck(argv, {…});\n' +
+ *                   'if (shared && !acknowledged) console.log(urlVar);')
+ *   → { missingGuardImport: [], unbound: [] }   ← both gates green, ReferenceError at load
+ *
+ * The check then runs the OTHER way too: the docblock's example must be a SUBSET of what the
+ * function really returns, so the published contract cannot quietly drift from the code it
+ * describes. A docblock→return check alone can only ever police what the example mentions,
+ * which is how the gap got in. */
 const GUARD_RESULT_FIELDS = (() => {
-  const m = guardSrc.match(/const\s*\{([^}]*)\}\s*=\s*requireEnvAck\s*\(/);
-  if (!m) return [];
-  return [...m[1].matchAll(/([A-Za-z_$][\w$]*)/g)].map((x) => x[1]);
+  const ret = guardSrc.match(/\breturn\s*\{([^}]*)\}\s*;/g) || [];
+  /* `requireEnvAck`'s return is the one that opens with `envName`. Keys only — the literal
+     is `{ envName, hookUrl, envId: row.forgeEnvId, … }` and `row` is not a result field. */
+  const mine = ret.find((r) => /\{\s*envName\b/.test(r));
+  if (!mine) return [];
+  return mine.replace(/^\breturn\s*\{|\}\s*;$/g, "").split(",")
+    .map((part) => (part.match(/^\s*([A-Za-z_$][\w$]*)\s*(?::|$)/) || [])[1])
+    .filter(Boolean);
 })();
-ok(GUARD_RESULT_FIELDS.length >= 3 && GUARD_RESULT_FIELDS.includes("envName") && GUARD_RESULT_FIELDS.includes("hookUrl"),
-  "the guard's documented destructuring is READ from its CONTRACT docblock, not listed here (got: " + GUARD_RESULT_FIELDS.join(", ") + ")");
+ok(GUARD_RESULT_FIELDS.length >= 6
+  && ["envName", "hookUrl", "envId", "urlVar", "shared", "acknowledged"].every((f) => GUARD_RESULT_FIELDS.includes(f)),
+  "F-749: the policed vocabulary is READ from requireEnvAck's RETURN LITERAL — every field it hands back, not the three its docblock example destructures (got: " + GUARD_RESULT_FIELDS.join(", ") + ")");
 {
   /* …and the docblock describes the function. A `@returns` row or a docblock is prose until
-     something checks it against the code, and prose that is wrong reads authoritative. */
-  const ret = guardSrc.match(/return\s*\{\s*envName[\s\S]*?\};/);
-  ok(!!ret, "requireEnvAck's return literal is readable from here");
-  for (const f of GUARD_RESULT_FIELDS) {
-    ok(!!ret && new RegExp(`\\b${f}\\b`).test(ret[0]),
-      `F-729: the CONTRACT docblock destructures \`${f}\`, and requireEnvAck really returns it — the documented shape and the real one are the same shape`);
+     something checks it against the code, and prose that is wrong reads authoritative.
+     Direction matters: the EXAMPLE must be a subset of the RETURN, never the reverse — an
+     example is allowed to be short, but it may not name a field that does not exist. */
+  const m = guardSrc.match(/const\s*\{([^}]*)\}\s*=\s*requireEnvAck\s*\(/);
+  ok(!!m, "the CONTRACT docblock's example destructuring is readable from here");
+  const documented = m ? [...m[1].matchAll(/([A-Za-z_$][\w$]*)/g)].map((x) => x[1]) : [];
+  ok(documented.length >= 3, "…and names at least the three fields every driver needs (got: " + documented.join(", ") + ")");
+  for (const f of documented) {
+    ok(GUARD_RESULT_FIELDS.includes(f),
+      `F-729/F-749: the CONTRACT docblock destructures \`${f}\`, and requireEnvAck really returns it — the documented shape is a subset of the real one`);
   }
 }
 
@@ -308,6 +335,27 @@ for (const f of drivers) {
     "NEGATIVE CONTROL (F-729): a parameter of the same name BINDS it — the rule reports an unbound use, not a forbidden word");
   ok(scopeViolations('import { hookUrlFor } from "../lib/shared-env-guard.mjs";\nconst u = hookUrlFor("dev");').unbound.length === 0,
     "NEGATIVE CONTROL (F-729): `hookUrlFor` is an EXPORT, not a result field — the two families do not bleed into each other");
+
+  /* ── F-749 — THE HALF OF THE SAME RETURN THE DOCBLOCK EXAMPLE DOES NOT MENTION ────
+     `urlVar`, `shared` and `acknowledged` are handed back by the same call, on the same
+     line, and were unpoliced purely because the example above them destructures three
+     fields and stops. This is the F-712 shape written against the OTHER half. */
+  const f749 = [
+    'import { requireEnvAck } from "../lib/shared-env-guard.mjs";',
+    'const { envName: ENV_NAME } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [] });',
+    "if (shared && !acknowledged) console.log(urlVar);",
+  ].join("\n");
+  const v749 = scopeViolations(f749);
+  for (const f of ["shared", "acknowledged", "urlVar"]) {
+    ok(v749.unbound.includes(f),
+      `POSITIVE CONTROL (F-749): the bare \`${f}\` is caught — a field requireEnvAck really returns, invisible to the rule while the vocabulary came from the docblock's three-field example (measured pre-fix: unbound: [])`);
+  }
+  ok(!v749.unbound.includes("ENV_NAME"),
+    "...and the name the SAME destructuring binds is still not reported");
+  ok(scopeViolations(f749.replace("{ envName: ENV_NAME }", "{ envName: ENV_NAME, shared, acknowledged, urlVar }")).unbound.length === 0,
+    "NEGATIVE CONTROL (F-749): with all three destructured, the same source is CLEAN — the rule reports an unbound use, not a forbidden word");
+  ok(scopeViolations('const row = { shared: true };\nconst a = row.shared;\nconst b = "acknowledged";\nconst c = e.urlVar;').unbound.length === 0,
+    "NEGATIVE CONTROL (F-749): an object KEY, a PROPERTY read and a STRING spelling one of the three are none of them reads of a local — `shared` is a common enough word that this matters more here than for `hookUrl`");
 }
 
 /* The stripper itself, because both rules stand on it. */

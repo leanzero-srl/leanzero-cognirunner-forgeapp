@@ -398,29 +398,109 @@ for (const f of permDrivers) {
    So the rule is on the directory, not the file: a driver does not name `shotMasked` at
    all. It binds `makeShot(NV)` ONCE and calls that. Two things are forbidden in a
    `*-live.mjs`: waiving `strict`, and swallowing the capture's answer. */
-const WAIVES_STRICT = /strict\s*:\s*false/;
-const SWALLOWS_SHOT = /(shotMasked|shot_)\s*\([^)]*\)[^;\n]*\.catch\s*\(/;
+/* F-672 — THE RULE MUST KEY ON THE BINDING, NOT ON A NAME THE DRIVER CHOOSES.
+   As first written, the swallow rule was `/(shotMasked|shot_)\s*\(...\.catch\s*\(/` and
+   the direct-call rule was `/\bshotMasked\s*\(/`. Both name RECEIVERS, and nothing
+   requires a `makeShot` binding to be called `shot_`. Two one-line bypasses defeat the
+   whole directory rule:
+
+     const snap = makeShot(NV);  await snap(page, frame, p).catch(() => {});
+     import { shotMasked as snap } from "../lib/roster-ui.mjs";  await snap(...).catch(...);
+
+   Neither waives `strict`, neither spells `shotMasked`, and `/makeShot\s*\(/` is satisfied
+   — so a green run silently drops the PNG. And with `strict` now defaulting true, the
+   throw being eaten is F-660's LEAK REFUSAL, not a cosmetic loss. So the scan RESOLVES
+   BINDINGS first: every identifier imported from `roster-ui.mjs` (honouring `as`
+   aliases) and every identifier assigned from a `makeShot(` call, per file. The rules
+   then apply to those identifiers, whatever the driver named them. */
 const codeLines = (src) => src.split("\n").map((l, i) => ({ l, n: i + 1 }))
   .filter(({ l }) => !/^\s*\*/.test(l) && !/^\s*\/\//.test(l));
+
+/** The identifiers in `src` that ultimately denote a capture function. */
+function captureBindings(src) {
+  const code = codeLines(src).map(({ l }) => l).join("\n");
+  const imported = new Map();           // local name -> exported name from roster-ui.mjs
+  for (const m of code.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'][^"']*roster-ui\.mjs["']/g)) {
+    for (const spec of m[1].split(",")) {
+      const a = spec.trim().match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+      if (a) imported.set(a[2] || a[1], a[1]);
+    }
+  }
+  const local = (exported) => [...imported.entries()].filter(([, e]) => e === exported).map(([l]) => l);
+  /* An alias of `shotMasked` IS a capture function — calling it is calling shotMasked. */
+  const shotMaskedNames = new Set(["shotMasked", ...local("shotMasked")]);
+  for (const n of [...shotMaskedNames]) {
+    for (const m of code.matchAll(new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${n}\\s*[;,\\n]`, "g"))) shotMaskedNames.add(m[1]);
+  }
+  /* A `makeShot(...)` RESULT is a capture function, under whatever name it is bound. */
+  const makeShotNames = ["makeShot", ...local("makeShot")];
+  const madeNames = new Set();
+  for (const n of makeShotNames) {
+    for (const m of code.matchAll(new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:await\\s+)?${n}\\s*\\(`, "g"))) madeNames.add(m[1]);
+  }
+  return { shotMaskedNames, madeNames, all: new Set([...shotMaskedNames, ...madeNames]) };
+}
+
+const WAIVES_STRICT = /strict\s*:\s*false/;
+/** `.catch` anywhere on a line (or its continuation) that CALLS a capture binding. */
+function scanSwallowedShots(src) {
+  const { all } = captureBindings(src);
+  if (all.size === 0) return [];
+  const calls = new RegExp(`\\b(?:${[...all].join("|")})\\s*\\(`);
+  const lines = codeLines(src);
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!calls.test(lines[i].l)) continue;
+    /* The continuation line is read too, so wrapping the `.catch` onto the next line is
+       not a third bypass of the same rule. */
+    const tail = (lines[i].l + "\n" + (lines[i + 1] ? lines[i + 1].l : "")).split("\n")[1] || "";
+    if (/\.catch\s*\(/.test(lines[i].l) || /^\s*\.catch\s*\(/.test(tail)) hits.push(lines[i].n);
+  }
+  return hits;
+}
+/** Calling `shotMasked` — or any alias of it — instead of the driver's makeShot binding. */
+function scanDirectShotMasked(src) {
+  const { shotMaskedNames } = captureBindings(src);
+  const re = new RegExp(`\\b(?:${[...shotMaskedNames].join("|")})\\s*\\(`);
+  return codeLines(src).filter(({ l }) => re.test(l) && !/\bmakeShot\s*\(/.test(l)).map(({ n }) => n);
+}
 
 ok(WAIVES_STRICT.test("await shotMasked(page, frame, p, { strict: false });"),
   "POSITIVE CONTROL: the strict-waiver rule FIRES on the line all nine call sites carried");
 ok(!WAIVES_STRICT.test("await shot_(page, frame, `${OUT}/01.png`);"),
   "NEGATIVE CONTROL: a makeShot call that takes the default is not flagged");
-ok(SWALLOWS_SHOT.test("await shotMasked(page, frame, p, { strict: false }).catch(() => {});"),
-  "POSITIVE CONTROL: the swallowed-answer rule FIRES on the discarded capture");
-ok(!SWALLOWS_SHOT.test("const shot = await shot_(page, frame, p);"),
+
+const ALIAS_MADE = 'import { makeRosterUI, makeShot } from "../lib/roster-ui.mjs";\nconst snap = makeShot(NV);\nawait snap(page, frame, `${OUT}/01.png`).catch(() => {});';
+const ALIAS_IMPORTED = 'import { shotMasked as snap } from "../lib/roster-ui.mjs";\nawait snap(page, frame, `${OUT}/01.png`).catch(() => {});';
+ok(scanSwallowedShots('const shot_ = makeShot(NV);\nawait shot_(page, frame, p).catch(() => {});').length === 1,
+  "POSITIVE CONTROL: the swallowed-answer rule still FIRES on the conventional `shot_` receiver");
+ok(scanSwallowedShots(ALIAS_MADE).length === 1,
+  "POSITIVE CONTROL (F-672): …and on a makeShot binding named ANYTHING — the receiver-name bypass is closed");
+ok(scanSwallowedShots(ALIAS_IMPORTED).length === 1,
+  "POSITIVE CONTROL (F-672): …and on an `import { shotMasked as snap }` alias, which defeated the old /\\bshotMasked\\(/ too");
+ok(scanSwallowedShots('const shot_ = makeShot(NV);\nconst r = await shot_(page, frame, p);').length === 0,
   "NEGATIVE CONTROL: a recorded capture is not flagged");
+ok(scanSwallowedShots('const rows = await readRows(frame, ".perm-admin-card").catch(() => []);').length === 0,
+  "NEGATIVE CONTROL: a `.catch` on a call that is NOT a capture binding is nobody's business here");
+ok(scanSwallowedShots('const shot_ = makeShot(NV);\nawait shot_(page, frame, p)\n  .catch(() => {});').length === 1,
+  "POSITIVE CONTROL: wrapping the `.catch` onto the next line is not a third bypass");
+ok(scanDirectShotMasked(ALIAS_IMPORTED).length === 1,
+  "POSITIVE CONTROL (F-672): the direct-call rule resolves the `as` alias rather than matching the literal name");
+ok(scanDirectShotMasked('import { makeShot } from "../lib/roster-ui.mjs";\nconst shot_ = makeShot(NV);\nawait shot_(page, frame, p);').length === 0,
+  "NEGATIVE CONTROL: going through a makeShot binding is the sanctioned route, not an offence");
 
 for (const f of permDrivers) {
   const src = readFileSync(path.join(here, f), "utf8");
   const waived = codeLines(src).filter(({ l }) => WAIVES_STRICT.test(l)).map(({ n }) => n);
   ok(waived.length === 0, `${f}: no capture waives \`strict\` — a readable address aborts the run (at: ${waived.join(", ")})`);
-  const swallowed = codeLines(src).filter(({ l }) => SWALLOWS_SHOT.test(l)).map(({ n }) => n);
-  ok(swallowed.length === 0, `${f}: no capture's answer is discarded with .catch (at: ${swallowed.join(", ")})`);
-  const direct = codeLines(src).filter(({ l }) => /\bshotMasked\s*\(/.test(l)).map(({ n }) => n);
-  ok(direct.length === 0, `${f}: shotMasked is not called directly — makeShot is the one home of the recording (at: ${direct.join(", ")})`);
+  const swallowed = scanSwallowedShots(src);
+  ok(swallowed.length === 0, `${f}: no capture's answer is discarded with .catch, under ANY binding name (at: ${swallowed.join(", ")})`);
+  const direct = scanDirectShotMasked(src);
+  ok(direct.length === 0, `${f}: shotMasked is not called directly, nor through an alias — makeShot is the one home of the recording (at: ${direct.join(", ")})`);
   ok(/makeShot\s*\(/.test(src), `${f}: captures are bound to this driver's own N/V writer via makeShot`);
+  /* The rule is only worth anything if it FOUND the binding it is policing. */
+  ok(captureBindings(src).madeNames.size >= 1,
+    `${f}: …and the scan RESOLVED that binding by name (${[...captureBindings(src).madeNames].join(", ") || "none — the rule would be scanning nothing"})`);
 }
 
 /* ── 4c-iii. F-657 — NO PERMISSION DRIVER PICKS AN ACCOUNT ITS OWN WAY ──────────

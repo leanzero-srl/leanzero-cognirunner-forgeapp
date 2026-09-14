@@ -84,8 +84,16 @@ const NV = (s, d) => { const r = d ? redactSecrets(d) : d; unproven++; ev.checks
  * missing PNG was a silent hole in a green run. `makeShot` binds this driver's N/V writer
  * once. Strict is the default again — a readable address ABORTS rather than reaching disk
  * — and a capture that did not happen now says so, with its reason, in the evidence.
- * `scripts/evidence-redaction.test.mjs` keeps both halves true for the whole directory. */
-const shot_ = makeShot(NV);
+ * `scripts/evidence-redaction.test.mjs` keeps both halves true for the whole directory.
+ *
+ * F-689 — AND THE SUCCESSFUL CAPTURE GETS A WRITER TOO. This binding used to be
+ * `makeShot(NV)`, a bare N/V function, which `makeShot` reads as "this driver offered no
+ * PASS writer" — so a capture that actually HAPPENED was recorded nowhere, and the
+ * `{total, masked, readable}` numbers that ARE the F-660 DOM assertion never reached
+ * `evidence.json`. F-681 fixed that at the library and in one driver of four; this is the
+ * same cut here. PASS for a capture taken, N/V for one that could not be, FAIL for one
+ * REFUSED because a readable address survived the mask. */
+const shot_ = makeShot({ pass: PASS, nv: NV, fail: FAIL });
 const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 const readRes = async (res) => {
@@ -193,8 +201,8 @@ const rosterRows = async () => (await kvs("app_admins"))?.value || [];
  * same defect verbatim because it had its own copy of these three functions. Two homes for
  * "click the right namesake and put the roster back" is how that happens; there is now
  * one, and both drivers call it. The DECISIONS stay pure in `lib/roster-restore.mjs`. */
-const { grantRole, restoreRosterToSnapshot } =
-  makeRosterUI({ withAdminPanel, rosterRows, out: OUT, record: NV });
+const { grantRole, restoreRosterToSnapshot, shots: uiShots, leaked: uiLeaked } =
+  makeRosterUI({ withAdminPanel, rosterRows, out: OUT, record: { pass: PASS, nv: NV, fail: FAIL } });
 
 async function main() {
   console.log(`\nF-642 — the knowledge/provider doors as a scope-"own" EDITOR, live on ${ENV_NAME.toUpperCase()}\n`);
@@ -475,7 +483,9 @@ async function main() {
     {
       const rosterEnd = await rosterRows();
       ev.rosterAfter = rosterEnd;
-      ev.rosterRestore = restore && { ok: restore.ok, verdict: restore.verdict, actions: restore.actions, plan: restore.plan };
+      /* F-689 — `leaked`/`leaks` ride out too. This projection used to drop them, so the
+         one field that says a capture was refused during a repair never reached the file. */
+      ev.rosterRestore = restore && { ok: restore.ok, verdict: restore.verdict, actions: restore.actions, plan: restore.plan, ...(restore.leaked ? { leaked: true, leaks: restore.leaks, leakInfo: restore.leakInfo } : {}) };
       /* The comparison is RAW on both sides — a redacted diff would pass while two
          different addresses sat behind the same mask. Only the FAIL payload is
          redacted, and it is redacted BEFORE the slice: cutting first can leave a
@@ -516,6 +526,28 @@ async function main() {
 
     /* F-646 — redacted AGAIN at the file boundary: `ev.f626`/`ev.f633`/`ev.saveSkill`
        are assigned directly and never pass through PASS/FAIL/NV. */
+    /* F-689 — THE CAPTURE RECORD IS EVIDENCE, AND A LEAK FAILS THE RUN ON ITS OWN.
+       Two bindings take screenshots here — this file's `shot_` and the one inside
+       `makeRosterUI` (grantRole/removeAccount) — so BOTH sets are folded in; reading one
+       would leave the library's captures as invisible as they were before. With this
+       written, "no PNG in this directory is unmasked" is something a reader can READ off
+       `evidence.json` instead of inferring it from the absence of a throw.
+
+       And the restore's own verdict is asserted HERE, at run level. `restoreRosterToSnapshot`
+       runs its repairs under `attempt()`, which deliberately converts a throw into a
+       recorded sentence and carries on — so a PII refusal during a repair came back as
+       `{ok:false, leaked:true}` and this driver simply ignored it: the roster verdict above
+       was clean, `fails` stayed 0, and the run exited green on a capture that had leaked.
+       The PNG paths are named so the operator knows which artefacts to destroy. */
+    const allShots = [...shot_.shots, ...uiShots()];
+    ev.shots = allShots;
+    const leaks = allShots.filter((s) => s.readable > 0);
+    if (shot_.leaked || uiLeaked()) {
+      FAIL("a screenshot capture was REFUSED because a readable email address survived the mask — the F-660 guarantee fired and this run FAILS on it regardless of the roster verdict", { paths: leaks.map((s) => s.path), leaks });
+    }
+    if (restore && restore.leaked) FAIL("the roster restore reports leaked:true — a capture taken during a repair was refused for a readable address", { paths: (restore.leaks || []).map((l) => l.path), leakInfo: restore.leakInfo });
+    if (restore && restore.ok === false) FAIL("the roster restore reports ok:false — the repair did not complete cleanly", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
+    ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length };
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
     if (fails > 0) process.exitCode = 1;

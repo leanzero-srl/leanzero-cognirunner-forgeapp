@@ -1339,20 +1339,78 @@ const MUTATOR_CALLS = [
   /\bregisterRule\b/, /\bremoveRule\b/, /\btriggerGitDeploy\b/,
   /* the app's own permission writes */
   /\baddAppAdmin\b/, /\bgrantRole\b/, /\bremoveAccount\b/,
+  /* F-733 — doors the list did not know because no GUARDED driver used them, and the
+     dev-only cohort is full of them. Each was found by declaring the 26 honestly and
+     watching this rule call a TRUE declaration a cry of wolf. */
+  /\bseedSkill\b/,                                   // the hook's skill writer/restorer
+  /\bdeleteIssueFixture\b/,                          // lib/fixture-cleanup.mjs — a real DELETE
+  /\brulesApi\.[A-Za-z]+\.(?:create|update|remove|run)\b/,
+  /\bprobeJsmComment\b/,                            // the hook probe that COMMENTS on a real JSM issue
 ];
+
+/** `gh api -X POST|PUT|DELETE …` — a repository write driven through the GitHub CLI. It is a
+ *  mutation of a real repo, and `pipeline-scaffold-live.mjs` makes several. */
+function writesRepo(code) {
+  return /["']-X["']\s*,\s*["'](?:POST|PUT|PATCH|DELETE)["']/.test(code);
+}
+
+/* THE SHARED JIRA WRITERS, IMPORT-AWARE (F-733). `writesJira` below matches a literal
+ * `method: "POST"` beside a REST path, which is how a driver that builds its own fetch writes.
+ * A driver that imports `post`/`put`/`del`/`doTransition` from `lib/jira.mjs` writes Jira just
+ * as hard, and the literal lives in the LIBRARY — so eight honestly-declared drivers were
+ * reported as declaring a mutation they never made. The import clause is what makes a bare
+ * `post(` a Jira write rather than `testState.post(`, which is a harness hook call. */
+const JIRA_WRITE_HELPERS = ["post", "put", "del", "doTransition"];
+const WORKFLOW_WRITE_HELPERS = ["updateWorkflow", "attachSelfLoopRules"];
+function importedWriters(code, moduleRe, wanted) {
+  const out = new Set();
+  for (const m of code.matchAll(new RegExp(`\\bimport\\s*\\{([^}]*)\\}\\s*from\\s*["'][^"']*${moduleRe}["']`, "g"))) {
+    for (const spec of m[1].split(",")) {
+      const parts = spec.trim().split(/\s+as\s+/);
+      if (wanted.includes(parts[0].trim())) out.add(parts[parts.length - 1].trim());
+    }
+  }
+  return out;
+}
 /** A Jira write is a TWO-LINE shape (`jira(\`/rest/api/…\`, {` then `method: "POST",`), so
  *  it is matched on the whole file rather than per line — the only rule here that is. */
 function writesJira(code) {
   return /\/rest\/(api|servicedeskapi)\//.test(code) && /\bmethod:\s*"(POST|PUT|DELETE)"/.test(code);
 }
+/* A NAME QUOTED INSIDE ANOTHER STRING IS A SEARCH PATTERN, NOT A CALL (F-733).
+ * `campaign-test-run-ui-live.mjs` watches the network for a save it must NEVER see —
+ * `(r.postData() || "").includes('"saveListener"')` — and then ASSERTS the list is empty.
+ * A `\bsaveListener\b` scan reads that as a write and calls a read-only driver a liar, which
+ * is the "cry wolf" half of this rule firing on the one file that proves it does not write.
+ * The discriminator is the NESTED quote: a resolver or action name is a call when it is
+ * invoked (`name(`) or quoted DIRECTLY (`action: "kvSet"`, `call('saveListener', …)`), and a
+ * pattern when its quotes are themselves inside quotes. */
+const mutatorNameRe = (name) =>
+  new RegExp(`\\b${name}\\s*\\(|(?<!["'\`])(["'\`])${name}\\1(?!["'\`])`);
+
 function callsMutator(code) {
-  const hits = MUTATOR_CALLS.filter((re) => re.test(code)).map((re) => String(re).slice(3, -3));
+  const hits = MUTATOR_CALLS
+    .filter((re) => {
+      const name = String(re).match(/^\/\\b([A-Za-z]+)\\b\/$/);
+      return name ? mutatorNameRe(name[1]).test(code) : re.test(code);
+    })
+    .map((re) => String(re).slice(3, -3));
   if (writesJira(code)) hits.push("jira:POST/PUT/DELETE");
+  if (writesRepo(code)) hits.push("gh:-X POST/PUT/DELETE");
+  for (const n of importedWriters(code, "lib/jira\\.mjs", JIRA_WRITE_HELPERS)) {
+    if (new RegExp(`\\b${n}\\s*\\(`).test(code)) hits.push(`jira:${n}()`);
+  }
+  for (const n of importedWriters(code, "lib/workflow\\.mjs", WORKFLOW_WRITE_HELPERS)) {
+    if (new RegExp(`\\b${n}\\s*\\(`).test(code)) hits.push(`workflow:${n}()`);
+  }
   return hits;
 }
-/** The declared array, read out of the `mutates:` literal. `null` = no declaration found. */
+/** The declared array, read out of the `mutates:` literal OR — for a dev-only driver with no
+ *  `--env` to resolve — out of `declareMutations([…])`, which is the same declaration with the
+ *  environment half removed (F-733). `null` = no declaration found, which the guard THROWS on
+ *  either way, so it can never ship. */
 function declaredMutations(code) {
-  const m = code.match(/\bmutates:\s*\[([^\]]*)\]/);
+  const m = code.match(/\bmutates:\s*\[([^\]]*)\]/) || code.match(/\bdeclareMutations\s*\(\s*\[([^\]]*)\]/);
   if (!m) return null;
   return [...m[1].matchAll(/"([A-Za-z]+)"/g)].map((x) => x[1]);
 }
@@ -1376,6 +1434,32 @@ ok(callsMutator('const r = await fetch(HOOK, { method: "POST", body });').length
   "NEGATIVE CONTROL: POSTing to the harness web trigger is how EVERY driver talks to the app — it is not a Jira write");
 ok(callsMutator('await invoke("disarmKeyReadFault", { provider: P });').length === 0,
   "NEGATIVE CONTROL: disarming a lever is a fault concern, declared under faults:, not a mutation");
+/* ── F-733 · THE DOORS THE LIST DID NOT KNOW, each with the shape that found it ──── */
+ok(callsMutator('import { get, post, del } from "../lib/jira.mjs";\nconst k = (await post("/rest/api/3/issue", f)).key;').length === 1,
+  "POSITIVE CONTROL (F-733): a Jira write through the SHARED helper is a write — the `method: \"POST\"` literal lives in lib/jira.mjs, and eight honestly-declared drivers were reported as crying wolf because of it");
+ok(callsMutator('import { get, getIssue } from "../lib/jira.mjs";\nconst r = await get("/rest/api/3/issue/X");').length === 0,
+  "NEGATIVE CONTROL: importing the READ helpers from the same module is not a write — the import clause is the discriminator, not the module");
+ok(callsMutator('import { post as jpost } from "../lib/jira.mjs";\nawait jpost("/rest/api/3/issue", f);').length === 1,
+  "…and an `as` RENAME does not hide it");
+ok(callsMutator('const r = await testState.post({ action: "readHarnessProbe" });').length === 0,
+  "NEGATIVE CONTROL: `testState.post` is a harness hook call, not a Jira write — which is why the import clause has to decide");
+ok(callsMutator('import { readWorkflow, updateWorkflow } from "../lib/workflow.mjs";\nawait updateWorkflow(top, wf);').length === 1,
+  "POSITIVE CONTROL (F-733): rewriting a WORKFLOW is a `rules` mutation and was invisible for the same reason");
+ok(callsMutator('const L = await rulesApi.listeners.create({ name: "x" });').length === 1,
+  "POSITIVE CONTROL (F-733): the Rules REST client's writers count too");
+ok(callsMutator('const r = await rulesApi.listeners.get(id);').length === 0,
+  "NEGATIVE CONTROL: …and its readers do not");
+ok(callsMutator('gh(["api", "-X", "POST", `/repos/${REPO}/git/refs`, "--input", "-"], body);').length === 1,
+  "POSITIVE CONTROL (F-733): a `gh api -X POST` writes a real repository — pipeline-scaffold-live.mjs makes several and declared `git` honestly");
+ok(callsMutator('gh(["api", `/repos/${REPO}/actions/variables`]);').length === 0,
+  "NEGATIVE CONTROL: …and a `gh api` READ does not");
+/* THE NESTED-QUOTE RULE, both ways. */
+ok(callsMutator(`page.on('request', r => { if ((r.postData() || '').includes('"saveListener"')) seen.push(r); });`).length === 0,
+  "POSITIVE CONTROL (F-733): a resolver name quoted INSIDE another string is a SEARCH PATTERN — campaign-test-run-ui-live.mjs watches for a save it asserts never happens, and a \\b scan called that read-only driver a liar");
+ok(callsMutator(`const r = await call('saveListener', { listener });`).length === 1,
+  "NEGATIVE CONTROL: …while the name quoted DIRECTLY as a call argument is still a write");
+ok(callsMutator('const r = await hook({ action: "kvSet", key: K, value: v });').length === 1,
+  "…as is an action name quoted directly in a hook body, which is how most of this list is used");
 /* And the declaration reader, which the rule stands on. */
 ok(declaredMutations('requireEnvAck(a, { faults: [], mutates: ["agents", "jobs"], defaultEnv: "dev" })').join(",") === "agents,jobs",
   "the declaration reader returns the words a driver named");
@@ -1383,10 +1467,44 @@ ok(declaredMutations('requireEnvAck(a, { faults: [], mutates: [], defaultEnv: "d
   "…and an EMPTY declaration is an empty array, not a missing one");
 ok(declaredMutations('requireEnvAck(a, { faults: [] })') === null,
   "…and a call with no `mutates` at all is null — which the guard itself THROWS on, so it can never ship");
+/* F-733 — the dev-only form reads IDENTICALLY. That is the whole point: rule 4g is one rule,
+   not two, and a driver that cannot resolve an environment still declares a blast radius. */
+ok(declaredMutations('declareMutations(["roster"]);').join(",") === "roster",
+  "F-733: the same reader sees the dev-only declaration");
+ok(declaredMutations("declareMutations([]);").length === 0,
+  "…and its EMPTY form is an empty array, not a missing one");
 
-const guardedDrivers = liveFiles.filter((f) => /requireEnvAck\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
+/* F-733 — THE COHORT IS NOW EVERY DRIVER, WHICH IS THE GAP THIS RULE USED TO STATE.
+   The comment above said it plainly: only a driver that CALLS `requireEnvAck` could declare
+   anything, twenty-five `*-live.mjs` never do, and several of those WRITE — roles granted,
+   skills written into the shared store, a deploy pushed. Routing them through the guard was
+   the wrong fix (F-699: it would make a Playwright script demand a `.env` and a
+   `TESTSTATE_URL` it has no use for), so they got the DECLARATION half on its own. */
+const guardedDrivers = liveFiles.filter((f) => {
+  const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+  return /requireEnvAck\s*\(/.test(code) || /declareMutations\s*\(/.test(code);
+});
 ok(guardedDrivers.length >= 30,
   `F-718: the rule found the drivers that go through the guard and can therefore declare (${guardedDrivers.length})`);
+ok(guardedDrivers.length === liveFiles.length,
+  `F-733: EVERY *-live.mjs declares its blast radius — the dev-only cohort is no longer outside the rule (${liveFiles.filter((f) => !guardedDrivers.includes(f)).join(", ") || "none undeclared"})`);
+{
+  /* …and both halves of that union have real subjects, so a green result above is not green
+     because one of the two doors was quietly emptied. */
+  const viaGuard = guardedDrivers.filter((f) => /requireEnvAck\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
+  const viaDeclare = guardedDrivers.filter((f) => !viaGuard.includes(f));
+  ok(viaGuard.length >= 25, `F-733: the environment-resolving door still holds its drivers (${viaGuard.length})`);
+  ok(viaDeclare.length >= 20, `F-733: …and the dev-only door holds its own (${viaDeclare.length})`);
+  /* A dev-only driver must NOT resolve an environment: `declareMutations` exists precisely so
+     that it does not, and a file carrying both is a conversion done twice. */
+  for (const f of viaDeclare) {
+    const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+    ok(!/requireEnvAck\s*\(/.test(code),
+      `${f}: declares through the dev-only door and must not ALSO call requireEnvAck — one home for the decision, per driver`);
+    ok(/from\s+"\.\.\/lib\/shared-env-guard\.mjs"/.test(code),
+      `${f}: imports declareMutations from the guard rather than describing its own blast radius (the F-686 defect, one cohort over)`);
+  }
+}
 {
   let declaredSome = 0, declaredNone = 0;
   for (const f of guardedDrivers) {

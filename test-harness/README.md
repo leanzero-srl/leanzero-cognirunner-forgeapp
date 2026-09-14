@@ -165,6 +165,7 @@ what they need from the one table:
 | one environment, settled and guarded | `requireEnvAck(argv, { faults: [], mutates: [], defaultEnv })` → `{ envName, hookUrl, envId }` |
 | the Forge env id alone (dev-only Playwright script, no web trigger, no `.env`) | `forgeEnvId("dev")` |
 | both environments in one run (`probes-1.5-live.mjs`) | `hookUrlFor(name)` / `hookUrlVar(name)` |
+| a dev-only driver with no `--env` at all | `declareMutations([...])` — the blast-radius half alone (F-733) |
 
 `evidence-redaction.test.mjs` §4f fails any `*-live.mjs` whose **code** reads
 `STAGING_TESTSTATE_URL` or retypes an environment id UUID, and §4f-1 widens the **env-id**
@@ -175,6 +176,25 @@ second homes is the last one that should have two). Docblock prose naming the
 variable an operator must set is exempt — the discriminator is a read, not a mention.
 `TESTSTATE_URL` on its own is fine: a dev-only driver naming the only environment it has is
 not deciding a mapping.
+
+**Can the driver even be loaded?** `node --check` exits 0 on an undeclared identifier — it is
+a parser, and a ReferenceError is a runtime error — so the F-699 conversion shipped eight
+drivers that died on the first line of module evaluation while every text rule read straight
+past them. `scripts/live-driver-scope.test.mjs` is the **one home** of that scope check
+(F-728: `evidence-redaction.test.mjs` carried a second copy as §4f-2, and that copy *retyped*
+the guard's export list while the original parsed it — so adding an export turned one rule red
+and left the other green about the same file). Its RULE 1 catches a guard export used and
+never imported, RULE 2 an unbound `SCREAMING_SNAKE` name, and **RULE 2b** (F-729) the guard's
+own **lowercase** result fields — `envName`, `hookUrl`, `envId`, parsed out of the CONTRACT
+docblock that publishes them — because a driver that copies that docblock and drops a field
+was invisible to both of the others, measured.
+
+Both suites read source through `lib/js-source-scan.mjs`, which **masks** comments, strings,
+template text and regex literals to spaces of the *same length* (`${…}` holes are kept — an
+interpolated identifier is a real read). The length is what lets `callArgs` balance parens on
+the mask and slice the original, so a `)` inside a FAIL message no longer truncates that
+call's own arguments (F-730: it made the leak-artefact rule go **red on a correct driver**,
+and an unmatched `(` re-opened the unbounded window F-716 had just closed).
 
 **The acknowledgement is drawn at MUTATES, not at ARMS (F-718).** It used to be drawn at
 arming, and the line fell in a place nobody would have chosen: `plant-sweep-live.mjs`, which
@@ -196,8 +216,29 @@ never performs fails too, because a refusal nobody believes is one people learn 
 through. Six drivers legitimately **default to dev** (`knowledge-doors-editor`,
 `perm-namesake-ui`, `sandbox-confluence`, `va-capability-gate`, `va-rest-doors`, `va-shadow`);
 five of those six mutate and now ask for the flag there, and `perm-namesake-ui` is read-only
-and still does not. The 26 `*-live.mjs` that take no `--env` at all cannot declare anything
-and are **not** covered — that gap is named in §4g and is not closed.
+and still does not.
+
+**The dev-only drivers declare too (F-733).** §4g used to name its own gap: only a driver that
+calls `requireEnvAck` could declare anything, and the 26 `*-live.mjs` that take no `--env` at
+all could not — while several of them write hard (`perm-discriminator` grants and removes app
+roles, `skills-knowledge-ui` writes skills into the shared store, `pipeline-scaffold` pushes a
+deploy). Routing them through `requireEnvAck` is the wrong fix and F-699 already said why: it
+would make a Playwright script that never opens a web trigger demand a `.env` and a
+`TESTSTATE_URL` it has no use for. So the guard also exports **`declareMutations([...])`** —
+the declaration half on its own, called at module top, same closed vocabulary, same sentences,
+same exit code, **no environment resolved and no `.env` read**. There is nothing to choose:
+dev is the only tenant these drivers have, so a non-empty set always asks for
+`--i-know-dev-is-shared` and `declareMutations([])` runs with no ceremony. §4g reads the call
+exactly as it reads `mutates:`, and now asserts that **every** `*-live.mjs` declares —
+`guardedDrivers.length === liveFiles.length`.
+
+Measured 2026-09-14 over all 26: 23 of 23 mutating drivers exit 2 with the refusal, and the 3
+read-only ones (`campaign-history-ui`, `campaign-test-run-ui`, `campaign-ui`) run on to their
+own fixtures. One limit, stated rather than implied: ESM evaluates imports before the module
+body and `lib/jira.mjs` / `lib/rules-api.mjs` call `loadEnv()` at module scope, so on an
+**unconfigured** machine 24 of the 26 print "Missing .env" before the refusal. The guarantee
+that holds for all of them is that the refusal precedes every **network** call and every
+browser — `loadEnv` reads a file, it does not touch a tenant.
 
 **`--envid` may not re-decide the row (F-732).** F-714 fixed the hook-half/browser-half split
 in one driver and left it available **by flag** in eight siblings: `--envid` took a raw
@@ -208,11 +249,11 @@ armed — the driver then fails with "the notice never appeared" and `ev.env` re
 typed on the **command line** is the same decision made outside the one home, and the
 shared-dev ack cannot cover it because that keys off `--env`. `requireEnvAck` now refuses any
 `--envid` that is not `forgeEnvId(envName)`, naming the environment that id belongs to; the
-eight drivers keep the flag for the one meaning it can honestly have.
-`va-shadow-door-live.mjs` is deliberately two-environment and its override is now
-`--staging-envid`. `scripts/shared-env-guard.test.mjs` drives the refusal as a refusal — in a
-child process, because it `process.exit(2)`s — and asserts it arrives **without** an env file,
-which is what keeps the "refuse before `loadEnv`" ordering honest.
+eight drivers keep the flag for the one meaning it can honestly have. `va-shadow-door-live.mjs`
+is deliberately two-environment and its override is now `--staging-envid`.
+`scripts/shared-env-guard.test.mjs` drives both refusals as refusals — in a child process,
+because they `process.exit(2)` — and asserts each arrives **without** an env file, which is
+what keeps the "refuse before `loadEnv`" ordering honest.
 
 ### JSM & Assets prerequisites
 

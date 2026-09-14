@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 /*
- * THE GUARD'S REFUSALS, DRIVEN AS REFUSALS — F-732.
+ * THE GUARD'S REFUSALS, DRIVEN AS REFUSALS — F-732, F-733.
  *
  * `lib/shared-env-guard.mjs` refuses by calling `process.exit(2)`, so the only honest test of
  * a refusal is a CHILD PROCESS: an in-process call would take the exit with it. Every case
@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENVS, ENV_NAMES } from "../lib/shared-env-guard.mjs";
+import { ENVS, ENV_NAMES, MUTATION_NAMES } from "../lib/shared-env-guard.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GUARD = path.join(here, "..", "lib", "shared-env-guard.mjs");
@@ -36,7 +36,7 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } 
  * @returns {{code:number, out:string, err:string}}
  */
 function run(body, argv = []) {
-  const src = `import { requireEnvAck, forgeEnvId } from ${JSON.stringify(GUARD)};\n${body}\n`;
+  const src = `import { requireEnvAck, declareMutations, forgeEnvId } from ${JSON.stringify(GUARD)};\n${body}\n`;
   try {
     const out = execFileSync(process.execPath, ["--input-type=module", "-e", src, "driver.mjs", ...argv], {
       encoding: "utf8",
@@ -57,7 +57,43 @@ function run(body, argv = []) {
     "the child can import the guard and run — an exit code below is the guard's answer, not a broken spawn");
 }
 
-console.log("\n1 · F-732 — `--envid` MAY NOT RE-DECIDE THE ROW");
+console.log("\n1 · F-733 — THE DEV-ONLY DECLARATION, AND THE FLAG THAT IS THE WHOLE ACK");
+{
+  /* READ-ONLY PROCEEDS. This is the control that keeps the refusal worth reading: if every
+     driver had to pass the flag, nobody would read the sentence on the one that matters. */
+  const r = run('declareMutations([]);\nconsole.log("PROCEEDED");');
+  ok(r.code === 0 && /PROCEEDED/.test(r.out),
+    "a read-only dev-only driver declares `[]` and runs with no ceremony — and with NO .env, which is the point of the declaration-only door");
+
+  /* MUTATING REFUSES, and the sentence names what it would change. */
+  const r2 = run('declareMutations(["roster"]);\nconsole.log("PROCEEDED");');
+  ok(r2.code === 2, `a non-empty declaration without the ack exits 2 (got ${r2.code})`);
+  ok(!/PROCEEDED/.test(r2.out), "…and the driver body never runs");
+  ok(/REFUSING to run/.test(r2.err), "…with a refusal on stderr");
+  ok(/ADMIN\/EDITOR roster/.test(r2.err),
+    "…that names the harm from the guard's own MUTATION_HARMS table, not a sentence typed at the call site");
+  ok(/--i-know-dev-is-shared/.test(r2.err), "…and tells the operator the one thing they can do about it");
+  ok(!/--env/.test(r2.err.replace(/no `--env`/g, "")),
+    "…and does NOT offer a safer environment, because this cohort has none — an offer that lands back here is how a refusal becomes wallpaper");
+
+  /* THE ACK LETS IT THROUGH — the refusal is a question, not a wall. */
+  const r3 = run('declareMutations(["roster"]);\nconsole.log("PROCEEDED");', ["--i-know-dev-is-shared"]);
+  ok(r3.code === 0 && /PROCEEDED/.test(r3.out),
+    "…and with the acknowledgement it proceeds, still with no .env and no environment resolved");
+
+  /* THE VOCABULARY IS CLOSED, and an omission is a THROW rather than a default of `[]` —
+     a default would let the next driver be written without ever facing the question. */
+  const r4 = run('declareMutations(["rooster"]);');
+  ok(r4.code !== 0 && /unknown mutation "rooster"/.test(r4.err),
+    "a typo is an unknown word and THROWS, on any machine, before the refusal can be reached");
+  const r5 = run("declareMutations();");
+  ok(r5.code !== 0 && /name what this driver CHANGES/.test(r5.err),
+    "…and an OMITTED declaration throws too: an empty blast radius must be stated, never defaulted");
+  ok(MUTATION_NAMES.length >= 10 && MUTATION_NAMES.includes("roster") && MUTATION_NAMES.includes("kvs"),
+    "the closed vocabulary this door shares with requireEnvAck is the guard's own (" + MUTATION_NAMES.join(", ") + ")");
+}
+
+console.log("\n2 · F-732 — `--envid` MAY NOT RE-DECIDE THE ROW");
 {
   const DEV = ENVS.dev.forgeEnvId, STAGING = ENVS.staging.forgeEnvId;
   const call = 'const r = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [], defaultEnv: "staging" });\nconsole.log("ENVID:" + r.envId);';

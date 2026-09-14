@@ -6,6 +6,15 @@ import assert from 'node:assert/strict';
 import { BASE, get, del, sleep } from '../lib/jira.mjs';
 import { loadEnv } from '../lib/env.mjs';
 import { rulesApi, closeRulesApi } from '../lib/rules-api.mjs';
+
+/* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
+   THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
+   closed vocabulary, and a non-empty set asks for `--i-know-dev-is-shared` before anything is
+   written. No environment is resolved and no `.env` is demanded: this is the DECLARATION half
+   of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
+   web trigger out of the mapping it has no use for (F-699's reasoning). */
+import { declareMutations } from "../lib/shared-env-guard.mjs";
+declareMutations(["listeners", "issues"]);
 assert.equal(new URL(BASE).hostname, 'wolfaenpak.atlassian.net');
 const dir = new URL('../results/listeners-jobs-campaign/', import.meta.url);
 const state = JSON.parse(fs.readFileSync(new URL('state.json', dir)));

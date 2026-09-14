@@ -72,7 +72,11 @@ const SHADOW_TICKS = 3;
 /* The staging admin panel, for the one question only a browser can answer. */
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const STAGING_ENV = arg("envid", forgeEnvId("staging"));
+/* F-732 — NOT `--envid`. This driver is deliberately TWO-environment, so its browser half
+   is staging while `requireEnvAck` settles the hook half; `--envid` now means "confirm the
+   settled row" everywhere and may not name another environment, so the override that is
+   legitimate HERE gets its own name. */
+const STAGING_ENV = arg("staging-envid", forgeEnvId("staging"));
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 
 /* The slot, and the rule the restore follows — see va-rest-doors-live.mjs's note. */

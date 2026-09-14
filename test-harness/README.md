@@ -199,6 +199,21 @@ five of those six mutate and now ask for the flag there, and `perm-namesake-ui` 
 and still does not. The 26 `*-live.mjs` that take no `--env` at all cannot declare anything
 and are **not** covered — that gap is named in §4g and is not closed.
 
+**`--envid` may not re-decide the row (F-732).** F-714 fixed the hook-half/browser-half split
+in one driver and left it available **by flag** in eight siblings: `--envid` took a raw
+environment id that overrode the settled row, so `--env=staging --envid=<dev id>` armed a
+fault on staging for 240 s and pointed Playwright at the **dev** admin page, where nothing was
+armed — the driver then fails with "the notice never appeared" and `ev.env` records
+`"staging"` for a run whose UI half was dev. §4f forbids retyping an id **in a file**; an id
+typed on the **command line** is the same decision made outside the one home, and the
+shared-dev ack cannot cover it because that keys off `--env`. `requireEnvAck` now refuses any
+`--envid` that is not `forgeEnvId(envName)`, naming the environment that id belongs to; the
+eight drivers keep the flag for the one meaning it can honestly have.
+`va-shadow-door-live.mjs` is deliberately two-environment and its override is now
+`--staging-envid`. `scripts/shared-env-guard.test.mjs` drives the refusal as a refusal — in a
+child process, because it `process.exit(2)`s — and asserts it arrives **without** an env file,
+which is what keeps the "refuse before `loadEnv`" ordering honest.
+
 ### JSM & Assets prerequisites
 
 `test:jsm-assets` needs the API user to be a **service-desk agent AND project admin**

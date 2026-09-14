@@ -63,6 +63,11 @@
  *     and gets the mapping only: a read-only driver runs on dev with no ceremony, which is
  *     exactly what keeps the refusal worth reading when it does fire. Both arrays are
  *     REQUIRED, so an empty blast radius is a statement rather than an omission.
+ *   - `--envid` is NOT a second way to choose an environment (F-732). It survives only for
+ *     the identity it already has: an id that is not `forgeEnvId(envName)` is a refusal,
+ *     because the HOOK half and the BROWSER half of a driver must come from ONE row, and an
+ *     id typed on the command line is rule 4f's banned literal typed somewhere the file rule
+ *     cannot see it.
  *   - `scripts/evidence-redaction.test.mjs` rule 4g keeps the declaration HONEST: a driver
  *     that calls a mutator must declare a non-empty `mutates`, and one that declares
  *     `mutates: []` must call none. `requireAck: true` survives for a driver whose blast
@@ -372,6 +377,46 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
           `      # the unshared environment — note this driver DEFAULTS to dev`]
         : [`  node scripts/${name}`, `      # ${defaultEnv}, the default`]),
       `  node scripts/${name} --env=dev --i-know-dev-is-shared`,
+    ]);
+  }
+
+  /* ── F-732 — `--envid` MAY NOT RE-DECIDE THE ROW ─────────────────────────────────
+   * F-714 fixed the hook-half/browser-half split in ONE driver and left the same split
+   * available BY FLAG in eight siblings: `--envid` took a RAW environment id that overrode
+   * the settled row, so `--env=staging --envid=<dev id>` armed a fault on STAGING for 240 s
+   * and then pointed Playwright at the DEV admin page, where nothing was armed. The driver
+   * FAILs "the notice never appeared" and `ev.env` records "staging" for a run whose UI half
+   * was dev — F-698's exact complaint, re-entered through a flag.
+   *
+   * Rule 4f forbids retyping an environment id IN A FILE, and an id typed on the COMMAND LINE
+   * is the same decision made outside the one home, so the rule belongs here rather than in a
+   * convention: the flag survives, and it may only ever say what the row already says. The
+   * shared-dev ack cannot cover this by construction — it keys off `--env`, and `--envid`
+   * never reaches it, so pointing the BROWSER at dev was unacknowledged.
+   *
+   * It is checked BEFORE `loadEnv()` for the same reason everything else here is: an operator
+   * on an unconfigured machine must read the refusal, not "Missing .env". */
+  const rawEnvId = arg(argv, "envid", null);
+  if (rawEnvId !== null && rawEnvId !== row.forgeEnvId) {
+    const named = ENV_NAMES.find((n) => ENVS[n].forgeEnvId === rawEnvId);
+    die([
+      `REFUSING to run: --envid does not name the environment this run settled on (${envName}).`,
+      "",
+      "A driver has a HOOK half and a BROWSER half, and both must come from ONE row of the",
+      "guard's table. `--envid` used to override the browser half alone, so",
+      "`--env=staging --envid=<dev id>` armed the fault on one tenant and drove the admin page",
+      "of the other — and the evidence file recorded the environment of the half that did not",
+      "fail (F-698, F-714, F-732).",
+      "",
+      ...(named
+        ? [`The id given is ${named}'s. If that is the environment you want, name it:`,
+          `  node scripts/${name} --env=${named}`]
+        : ["The id given is not one this harness knows at all. Environment ids are not typed;",
+          "they come out of the one table, which `--env` already reads for you:",
+          `  node scripts/${name} --env=${envName}`]),
+      "",
+      `\`--envid\` survives only for the identity it already has: --envid=${row.forgeEnvId} is`,
+      `what --env=${envName} means, and passing it changes nothing.`,
     ]);
   }
 

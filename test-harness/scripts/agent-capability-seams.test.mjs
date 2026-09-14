@@ -42,6 +42,7 @@
 import "../lib/register-mocks-index.mjs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import storage from "../lib/mock-kvs.mjs";
 const { default: forgeApi } = await import("@forge/api");
@@ -54,6 +55,173 @@ const CAP_OFF = process.env.CR_CAP_SEAMS_OFF === "1";
 const world = CAP_OFF ? "OFF" : "ON";
 
 const ADMIN = "acct-admin";
+
+/* ═════ F-811 — THE TWO ARMS OF THE CAPABILITY ANSWER MUST NEVER SPLIT ═════
+ *
+ * The capability question has TWO doors on one instance, and until F-811 they could
+ * answer opposite things about it:
+ *
+ *   the STATUS arm — `getAgentCapability` (src/index.js), what the admin panel's Code
+ *     tab and the listener checklist render; it read `agentGateFacts` MEMOISED.
+ *   the SAVE arm — `vaCapabilityVerdict` (src/virtual-admin.js), which the VA save door
+ *     (src/va-admin.js) and the tick ride; FRESH since F-485.
+ *
+ * And `agentGateFacts` was only HALF freshenable: `fresh:true` re-read the provider, the
+ * allowance and the edition without the 30 s memo, but the agent MODEL always came from
+ * `getAgentModel()`, which resolved a provider OF ITS OWN through that same memo. So one
+ * fact set could be half one provider and half another. Measured on staging: the memo
+ * held `managed` after the provider row was deleted, the status card said
+ * enabled/`managed` with agentModel `anthropic/claude-sonnet-5`, and the fresh arm read
+ * provider `atlassian` (an absent row defaults there) with that SAME managed model id and
+ * refused `needs-frontier-model`. The permissive answer was the one the user could see.
+ *
+ * These cases are CHILD PROCESSES (`CR_F811_CASE`), because the 30 s provider memo in
+ * src/index.js has no test seam and cannot be flipped once the file has read it — the
+ * same reason this suite already re-execs itself for the capability-OFF world. Each case
+ * seeds its instance BEFORE src/index.js is imported and then asks BOTH doors.
+ *
+ * THE PROPERTY IS AGREEMENT, not a particular verdict: every case asserts that the two
+ * arms return the same `enabled`, the same `reason` and the same `agentModel`. The
+ * expected reason is asserted too, so "they agree because both broke" cannot pass.
+ */
+
+const seedF811Common = async () => {
+  await storage.set("COGNIRUNNER_EDITION_SNAPSHOT", { active: true, edition: "advanced", at: new Date().toISOString() });
+  await storage.set("COGNIRUNNER_SEAT_SNAPSHOT", { seats: 10, at: new Date().toISOString() });
+  await storage.set("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
+};
+
+/** The STATUS arm, through the real resolver door (permission gate included). */
+const f811StatusArm = async () => {
+  const { handler } = await import("../../src/index.js");
+  return handler({ call: { functionKey: "getAgentCapability", payload: {} }, context: {} }, { principal: { accountId: ADMIN } });
+};
+
+/** The SAVE arm, through the function the VA save door and the tick both ride. */
+const f811SaveArm = async () => (await import("../../src/virtual-admin.js")).vaCapabilityVerdict();
+
+const f811Agree = async (label, expected) => {
+  const status = await f811StatusArm();
+  const save = await f811SaveArm();
+  eq(status.enabled, save.enabled, `${label}: the STATUS arm and the SAVE arm agree on enabled`);
+  eq(status.reason, save.reason, `${label}: …and on the reason`);
+  eq(String(status.agentModel), String(save.agentModel),
+    `${label}: …and on the AGENT MODEL, which is the fact that used to cross providers`);
+  eq(status.reason, expected.reason, `${label}: …and the reason is the one this instance earns`);
+  eq(status.enabled, expected.enabled, `${label}: …and the verdict is the one this instance earns`);
+  if (expected.provider !== undefined) eq(status.provider, expected.provider, `${label}: …on the provider this instance really has`);
+  if (expected.agentModel !== undefined) eq(String(status.agentModel), expected.agentModel, `${label}: …naming a model that provider can actually run`);
+  return { status, save };
+};
+
+const runF811Case = async (name) => {
+  await seedF811Common();
+  if (name === "cold-no-row") {
+    // BLOCK — no provider row and no model slot at all, on a COLD container: an absent
+    // row defaults to `atlassian`, whose default model is Haiku, which never drives an
+    // agent. The point is that both doors say so.
+    await f811Agree("F-811.BLOCK_cold", { enabled: false, reason: "needs-frontier-model", provider: "atlassian", agentModel: "claude-haiku-4-5-20251001" });
+    return;
+  }
+  if (name === "memo-managed-row-deleted") {
+    // THE REGRESSION, and the measured one. Prime the 30 s memo with `managed`, then
+    // delete the provider row underneath it. The memo now holds a provider the instance
+    // no longer has; the fresh arm sees `atlassian`. Before F-811 the status arm answered
+    // enabled/`managed` here while the save arm refused `needs-frontier-model`.
+    await storage.set("COGNIRUNNER_AI_PROVIDER", "managed");
+    const { handler, readProviderConfigFresh } = await import("../../src/index.js");
+    // The primer: this resolver resolves the ACTIVE provider's ordinary model, which goes
+    // through getProviderConfig() and stamps the memo. Nothing else here writes it.
+    await handler({ call: { functionKey: "getAgentModel", payload: {} }, context: {} }, { principal: { accountId: ADMIN } });
+    await storage.delete("COGNIRUNNER_AI_PROVIDER");
+    eq((await readProviderConfigFresh()).provider, "atlassian", "F-811.REGRESSION: the row really is gone — a fresh read says atlassian");
+    await f811Agree("F-811.REGRESSION_memo_managed", { enabled: false, reason: "needs-frontier-model", provider: "atlassian", agentModel: "claude-haiku-4-5-20251001" });
+    return;
+  }
+  if (name === "managed-null-slot" || name === "managed-junk-slot" || name === "managed-opus") {
+    // ALLOW — the managed engine on Coder is capable whatever the slot holds, because
+    // every id in the offer is a frontier model and anything else is CLAMPED to Sonnet 5
+    // server-side. A junk slot must not be able to turn the agent off, and it must not be
+    // able to name a model outside the offer on either door.
+    await storage.set("COGNIRUNNER_AI_PROVIDER", "managed");
+    if (name === "managed-junk-slot") await storage.set("COGNIRUNNER_AGENT_MODEL_managed", "totally/bogus-9");
+    if (name === "managed-opus") await storage.set("COGNIRUNNER_AGENT_MODEL_managed", "anthropic/claude-opus-5");
+    await f811Agree(`F-811.ALLOW_${name}`, {
+      enabled: true,
+      reason: "managed",
+      provider: "managed",
+      agentModel: name === "managed-opus" ? "anthropic/claude-opus-5" : "anthropic/claude-sonnet-5",
+    });
+    return;
+  }
+  if (name === "atlassian-vendor-prefixed") {
+    // BLOCK — a Forge LLM instance whose agent slot still holds the OpenRouter-namespaced
+    // id a `managed` stint wrote. The gate is exact-id, so this could only ever be
+    // refused; the belt makes both doors refuse it while naming the model Forge LLM would
+    // actually run, instead of naming another vendor's id. NOT a prefix strip:
+    // "anthropic/claude-opus-5" does not become "claude-opus-5", because the exact-id
+    // policy in src/shared/edition.js is a pricing decision.
+    await storage.set("COGNIRUNNER_AI_PROVIDER", "atlassian");
+    await storage.set("COGNIRUNNER_AGENT_MODEL_atlassian", "anthropic/claude-opus-5");
+    await f811Agree("F-811.BLOCK_atlassian_vendor_prefixed", { enabled: false, reason: "needs-frontier-model", provider: "atlassian", agentModel: "claude-haiku-4-5-20251001" });
+    return;
+  }
+  fail++; console.log("FAIL: unknown F-811 case", name);
+};
+
+const F811_CASE = process.env.CR_F811_CASE || "";
+if (F811_CASE) {
+  await runF811Case(F811_CASE);
+  console.log(`agent capability F-811 [${F811_CASE}]: ${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+}
+
+/* ═════ F-811 — THE SOURCE SHAPE THAT KEEPS THE TWO ARMS TOGETHER ═════
+ *
+ * The behavioural cases above prove today's answers agree. These two assertions are what
+ * stop the NEXT call site re-splitting them, because a freshness policy is invisible at
+ * the call site and a `getAgentModel()` inside the fact reader looks harmless.
+ *
+ * THE POLICY, chosen here and stated in the docblock on `agentGateFacts`: every ANSWER
+ * and every SAVE door reads `{fresh:true}`, because the other half of the same answer
+ * already does — `vaCapabilityVerdict` has been fresh since F-485, and `prepareVaSave`
+ * rides it INSIDE THE SAME saveScheduledJob request as the action gate at :11454. One
+ * request, two arms; a memo on one of them is a verdict that contradicts itself. The ONE
+ * exception is the RUN-TIME gate at the transition site, which is neither arm of that
+ * pair and runs per transition, so it keeps the memo and says so IN PLACE — that marker
+ * is what this assertion matches, so an unmarked cached call site fails the run.
+ */
+{
+  /* F-819 — THE POLICY IS PER CALL SITE, NOT PER FILE. `restGateContext` in
+   * src/rules-api.js read the facts MEMOISED while being the REST skin over the very
+   * save doors this policy had just made fresh, so the assertion below reads EVERY
+   * source that calls the fact reader. A new file that calls it inherits the rule the
+   * moment its name goes in this list. */
+  const SOURCES = ["src/index.js", "src/rules-api.js", "src/virtual-admin.js"];
+  const srcOf = (rel) => readFileSync(path.join(fileURLToPath(new URL(`../../${rel}`, import.meta.url))), "utf8")
+    .split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  const callSites = (code) => code.split("\n").filter((l) => /agentGateFacts\(/.test(l)
+    && !/const agentGateFacts/.test(l) && !/^\s*agentGateFacts,\s*$/.test(l) && !/^\s*const \{ agentGateFacts \}/.test(l));
+  const idxCode = srcOf("src/index.js");
+  const idxSites = callSites(idxCode);
+  ok(idxSites.length >= 6, `F-811.SHAPE: found ${idxSites.length} agentGateFacts call sites in src/index.js`);
+  const allCached = [];
+  for (const rel of SOURCES) {
+    const sites = callSites(srcOf(rel));
+    ok(sites.length >= 1, `F-819.SHAPE: ${rel} calls agentGateFacts (found ${sites.length})`);
+    for (const l of sites.filter((l) => !/fresh:\s*true/.test(l))) allCached.push(`${rel}: ${l.trim()}`);
+  }
+  ok(allCached.length === 1,
+    `F-819.SHAPE: across ${SOURCES.join(" + ")}, exactly ONE call site is memoised (got ${allCached.length}: ${allCached.join(" | ")})`);
+  ok(allCached.every((l) => /F-811 HOT PATH: memoised on purpose/.test(l)),
+    `F-811.SHAPE: …and it is the RUN-TIME one, marked in place (got ${allCached.join(" | ")})`);
+  const gf = (idxCode.match(/const agentGateFacts = async \(context, \{ fresh = false \} = \{\}\) => \{[\s\S]*?\n\};/) || [, ""])[0] || "";
+  ok(gf.length > 0, "F-811.SHAPE: found agentGateFacts");
+  ok(/getAgentModelFor\(facts\.provider\)/.test(gf),
+    "F-811.SHAPE: the agent model is resolved FOR THIS FACT SET'S PROVIDER");
+  ok(!/[^A-Za-z]getAgentModel\(\)/.test(gf),
+    "F-811.SHAPE: …and there is no bare getAgentModel() left in it — that is the call that read a provider of its own");
+}
 
 /* ── THE INSTANCE, seeded before src/index.js is ever imported ─────────────────
  *
@@ -230,6 +398,26 @@ const vaRecord = {
 }
 
 console.log(`agent capability seams (F-485, world ${world}): ${pass} passed, ${fail} failed`);
+
+/* F-811 — one child per instance shape, for the same reason the OFF world is a child:
+ * the 30 s provider memo cannot be flipped once index.js has read it. */
+if (!CAP_OFF && fail === 0) {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const c of ["cold-no-row", "memo-managed-row-deleted", "managed-null-slot", "managed-junk-slot", "managed-opus", "atlassian-vendor-prefixed"]) {
+    const env = { ...process.env, CR_F811_CASE: c };
+    // The managed arms need the vendor engine to LOOK deployed, or every one of them
+    // answers `managed-key-missing` and proves nothing about the model. The value is a
+    // placeholder: `managedCloudStatus()` reports a boolean and nothing reads it here.
+    if (c.startsWith("managed")) env.COGNIRUNNER_MANAGED_OPENROUTER_KEY = "sk-or-v1-000000000000000000000000";
+    else delete env.COGNIRUNNER_MANAGED_OPENROUTER_KEY;
+    const r = spawnSync(process.execPath, [
+      "--import", path.join(here, "../lib/register-mocks-index.mjs"),
+      path.join(here, "agent-capability-seams.test.mjs"),
+    ], { encoding: "utf8", env });
+    process.stdout.write((r.stdout || "").split("\n").filter((l) => /passed|FAIL/.test(l)).join("\n") + "\n");
+    if (r.status !== 0) { process.stderr.write(r.stderr || ""); fail++; console.log(`FAIL: the F-811 case ${c} failed`); }
+  }
+}
 
 /* The OFF world, as a child process: see the header — the provider memo cannot be
  * flipped once index.js has read it. */

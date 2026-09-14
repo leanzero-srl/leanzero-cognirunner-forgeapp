@@ -574,6 +574,20 @@ ok(/probe \(g\)/.test(readFileSync(path.join(srcDir, "shared/ai-budget.js"), "ut
     "agentGateFacts supplies managedKeyPresent as a BOOLEAN from the safe accessor");
   ok(/VENDOR_BILLED_PROVIDERS\.includes\(facts\.provider\)/.test(gf),
     "the fresh allowance read covers BOTH vendor-billed engines, not just Forge LLM");
+  // F-811 — THE MODEL IS THE FACT SET'S OWN. `getAgentModel()` resolved a provider of its
+  // own through the 30 s memo, so a fact set could carry `atlassian` with the managed
+  // engine's Sonnet id (or the reverse) and two doors then disagreed about one instance.
+  ok(/getAgentModelFor\(facts\.provider\)/.test(gf),
+    "agentGateFacts resolves the agent model FOR THE PROVIDER IT JUST READ, not for the memo's");
+  const gam = (indexSrc.match(/export const getAgentModelFor = async \(provider\) => \{[\s\S]*?\n\};/) || [, ""])[0] || "";
+  ok(gam.length > 0, "found getAgentModelFor");
+  ok(!/getProviderConfig\(/.test(gam),
+    "…and it reads NO provider of its own — the provider is the ARGUMENT, which is the whole fix");
+  // It is a SECOND reader of the model slot, so it must share the POLICY: a managed slot
+  // holding anything outside the offer is clamped server-side here too, or the agent path
+  // would be the one place a junk id could name a model we never agreed to bill for.
+  ok(/clampManagedModel\(model\)/.test(gam),
+    "…and it applies the SAME managed clamp, from the same one home in src/shared/edition.js");
 }
 
 console.log(`managed-provider: ${pass} passed, ${fail} failed`);

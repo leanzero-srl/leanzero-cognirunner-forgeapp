@@ -43,6 +43,8 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+/* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
+import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
 /* F-714 — the HOOK half and the BROWSER half must come from ONE guard row. This driver
    used to take `hookUrl` from `--env` while pinning `ADMIN_PAGE` to `forgeEnvId("staging")`,
@@ -164,14 +166,25 @@ async function main() {
   PASS(`hook reachable on ${ENV_NAME}`);
 
   const slot0 = await kvs(AGENT_MODEL_SLOT);
-  restore.agentModelSlot = slot0;
   info(`${AGENT_MODEL_SLOT} recorded: ${slot0 === null ? "EMPTY" : JSON.stringify(slot0)}`);
-  const set = await invoke("saveAgentModel", { model: FRONTIER });
-  if (!(set.body && set.body.success)) throw new Error(`saveAgentModel refused: ${JSON.stringify(set.body).slice(0, 240)}`);
-  await sleep(35000);
-  const cap = await invoke("getAgentCapability");
-  if (!(cap.body && cap.body.enabled === true)) { FAIL("capability did not come on", { cap: cap.body }); return; }
-  PASS(`capability ON (${cap.body.agentModel})`);
+  const cap0 = await invoke("getAgentCapability");
+  /* F-782 — the flip is decided from the INSTANCE, by the lib, and only the slot it names is
+     touched: a capability that is already on is no longer flipped (and so nothing is restored). */
+  const flip = decideInstanceFlip({ cap: cap0.body || {}, frontier: FRONTIER, envName: ENV_NAME });
+  info(`model flip: ${flip.flip ? "ON" : "OFF"} - ${flip.reason}`);
+  if (flip.flip) {
+    restore.agentModelSlot = slot0;
+    const set = await invoke("saveAgentModel", { model: FRONTIER });
+    if (!(set.body && set.body.success)) throw new Error(`saveAgentModel refused: ${JSON.stringify(set.body).slice(0, 240)}`);
+    // The provider/model config is TTL-cached ~30s in index.js, so the read below must wait it out.
+    await sleep(35000);
+  }
+  const cap = flip.flip ? (await invoke("getAgentCapability")).body : cap0.body;
+  /* F-767/F-782 — ONE home for the verdict: a slot that never came on leaves the RECEIPT COPY
+     unproven with the remedy named, not FAILED. */
+  const capVerdict = judgeAgentCapability({ cap: cap || {}, flipped: flip.flip, envName: ENV_NAME, frontier: FRONTIER });
+  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what, { cap });
+  if (!capVerdict.proceed) return;
   const cBefore = await commentTotal();
 
   /* ── the agent, one normal tick ─────────────────────────────────────────── */
@@ -205,10 +218,16 @@ async function main() {
   }
 
   /* ── capability: put the model back, tick again ─────────────────────────── */
-  const back = await hook({ action: "kvSet", key: AGENT_MODEL_SLOT, value: slot0 });
-  if (back.status === 200) { restore.agentModelSlot = undefined; PASS("the agent model slot is back to its recorded value — capability goes off"); }
-  else FAIL("could not put the agent model slot back", { status: back.status });
-  await sleep(35000);
+  /* This arm DRIVES the capability gate by putting the model back, so it only means anything
+     on a run that flipped it in the first place (F-782). */
+  if (flip.flip) {
+    const back = await hook({ action: "kvSet", key: AGENT_MODEL_SLOT, value: slot0 });
+    if (back.status === 200) { restore.agentModelSlot = undefined; PASS("the agent model slot is back to its recorded value — capability goes off"); }
+    else FAIL("could not put the agent model slot back", { status: back.status });
+    await sleep(35000);
+  } else {
+    NV("this run did not flip the agent model, so putting it back cannot drive the capability gate; the capability receipt below is whatever the tenant already produces");
+  }
   const cap2 = await invoke("getAgentCapability");
   info(`getAgentCapability now: ${JSON.stringify(cap2.body)}`);
   if (restore.agentId) {

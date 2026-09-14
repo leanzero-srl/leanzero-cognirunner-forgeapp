@@ -34,6 +34,8 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+/* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
+import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -130,8 +132,9 @@ async function main() {
   let rest = null;
   try {
     const cap0 = await invoke("getAgentCapability");
-    if (cap0.json && cap0.json.enabled !== true) {
-      if (cap0.json.reason !== "needs-frontier-model") { NV(`capability is off for "${cap0.json.reason}" and this script may not change that`); return; }
+    const flip = decideInstanceFlip({ cap: cap0.json || {}, frontier: FRONTIER, envName: ENV_NAME });
+    info(`model flip: ${flip.flip ? "ON" : "OFF"} - ${flip.reason}`);
+    if (flip.flip) {
       const slot = await kvs(AGENT_MODEL_SLOT);
       restore.agentModelSlot = slot.value;
       info(`${AGENT_MODEL_SLOT} recorded before the flip: ${slot.value === null ? "EMPTY" : "(a model id, recorded)"}`);
@@ -140,9 +143,12 @@ async function main() {
       info("waiting 35s for the ~30s provider/model config cache");
       await sleep(35000);
     }
-    const cap1 = await invoke("getAgentCapability");
-    if (!(cap1.json && cap1.json.enabled === true)) { FAIL("capability is still off", { cap: cap1.json }); return; }
-    PASS(`capability is ON (edition=${cap1.json.edition} agentModel=${cap1.json.agentModel})`);
+    const cap1 = flip.flip ? (await invoke("getAgentCapability")).json : cap0.json;
+    /* F-767/F-782 — ONE home for the verdict: a provider slot that never came on leaves the
+       settling carrier UNPROVEN with the remedy named, not FAILED. */
+    const capVerdict = judgeAgentCapability({ cap: cap1 || {}, flipped: flip.flip, envName: ENV_NAME, frontier: FRONTIER });
+    ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what, { cap: cap1 });
+    if (!capVerdict.proceed) return;
 
     const cBefore = await commentTotal();
     info(`${PROJECT} before: ${JSON.stringify(cBefore)}`);

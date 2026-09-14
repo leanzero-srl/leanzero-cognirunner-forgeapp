@@ -4,6 +4,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
    evidence-redaction.test.mjs never looked at it, and it is exactly the "nearest sibling"
    a new driver gets copied from. One row, one home. */
 import { forgeEnvId } from "../lib/shared-env-guard.mjs";
+import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 const env = loadEnv();
 const ENV_ID = forgeEnvId("staging");
 const U = env.STAGING_TESTSTATE_URL, S = requireEnv("HARNESS_SECRET"), A = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
@@ -18,7 +19,24 @@ const va={persona:{name:"Probe",voice:{register:"terse",greeting:false,maxSenten
  powers:{replyPublic:false,replyInternal:true,assign:false,transition:false,editFields:false,confluenceRead:false,confluenceWrite:false,git:false,webSearch:false,skillIds:[]},
  guardrails:{capsPerHour:6,capsPerDay:20,owedPerHour:12,shadowTicks:3,minPostGapMinutes:15,antiPileUpDays:3,otherWriterQuietMinutes:20,approvalProjectKey:"",maxItemsPerTick:1,maxWritesPerRun:10},
  status:{paused:true,shadowUntilTick:500}};
-await inv("saveAgentModel",{model:"claude-sonnet-5"});
+/* F-782 — even a probe does not spell the flip decision or the precondition verdict itself:
+   both live in lib/agent-capability-precondition.mjs. This file used to point the agent model
+   slot at a frontier model UNCONDITIONALLY and then delete the slot at the end — a mutation of
+   a live tenant's provider config that nothing in the probe had established was needed. It now
+   flips only when the instance says it must, and only then puts it back. */
+const FRONTIER = "claude-sonnet-5";
+const cap0 = (await inv("getAgentCapability", {})).j;
+const flip = decideInstanceFlip({ cap: cap0 || {}, frontier: FRONTIER, envName: "staging" });
+console.log("model flip:", flip.flip ? "ON" : "OFF", "-", flip.reason);
+/* The provider/model config is TTL-cached ~30s in index.js, so the capability read below has
+   to wait it out or it answers with the model the slot held BEFORE the flip. */
+if (flip.flip) { await inv("saveAgentModel",{model:FRONTIER}); await sleep(35000); }
+{
+  const cap1 = flip.flip ? (await inv("getAgentCapability", {})).j : cap0;
+  const v = judgeAgentCapability({ cap: cap1 || {}, flipped: flip.flip, envName: "staging", frontier: FRONTIER });
+  console.log(`${v.verdict}  ${v.what}`);
+  if (!v.proceed) process.exit(0);   // N/V, not a red: nothing below the gate ran.
+}
 const c=await inv("saveScheduledJob",{job:{name:"badge probe "+Date.now(),mode:"va",enabled:false,va}});
 const id=c.j.job&&c.j.job.id;
 if(!c.j.job){console.log("SAVE REFUSED",JSON.stringify(c.j).slice(0,400));process.exit(1);}
@@ -50,4 +68,5 @@ try{
 }finally{await ctx.close();}
 const d=await inv("deleteScheduledJob",{id});
 console.log("deleted:",JSON.stringify(d.j));
-console.log("model slot restored:",JSON.stringify((await post({action:"kvSet",key:"COGNIRUNNER_AGENT_MODEL_atlassian",value:null})).j));
+if (flip.flip) console.log("model slot restored:",JSON.stringify((await post({action:"kvSet",key:"COGNIRUNNER_AGENT_MODEL_atlassian",value:null})).j));
+else console.log("model slot untouched: this run never flipped it, so it has nothing to put back");

@@ -315,6 +315,21 @@ export function preconditionViolations(src) {
      which is the exact line five drivers carried. */
   if (/flip-model/.test(code)) out.push("reads the --flip-model flag itself");
   if (/cannot hold an agent/.test(code)) out.push("writes the precondition verdict sentence itself");
+  /* F-782 — the SENTENCE CLASS, not the words. The rule above matched the F-767 sentence
+     verbatim and five drivers said the same thing differently ("capability is still off",
+     "capability did not come on", `capability is off for "<reason>"`), two of them graded
+     FAIL. A rule that only catches one phrasing polices spelling, not the decision. */
+  if (/capability (is still off|did not come on|is off for|cannot hold)/.test(code))
+    out.push("writes a PARAPHRASE of the precondition verdict");
+  /* F-782 — and the decision behind it. `reason !== "needs-frontier-model"` is the driver
+     asking, in its own words, which capability reasons it may fix by flipping the model;
+     that is `decideInstanceFlip`'s question and its answer must not fork.
+     NOT POLICED: the EQUALITY form. `before.reason === "needs-frontier-model"` is how
+     coder-skills-live asserts the starting and restored state of the tenant it is proving
+     things about — for it the reason is the SUBJECT, exactly as `cap.enabled` is
+     va-rest-doors-live's subject, and banning the word would have forced it to lie. */
+  if (/!==\s*["'`]needs-frontier-model/.test(code))
+    out.push("decides the flip by comparing the capability reason itself");
   return out;
 }
 {
@@ -322,8 +337,10 @@ export function preconditionViolations(src) {
   const libSrc = fs.readFileSync(path.join(libDir, PRECONDITION_LIB), "utf8");
   ok(/export function resolveFlipModel/.test(libSrc) && /export function judgeAgentCapability/.test(libSrc),
     "RULE 4 (F-776): lib/" + PRECONDITION_LIB + " exports both halves of the precondition");
-  ok(preconditionViolations(libSrc).length === 2,
-    "...and the lib is where BOTH policed things live (it is exempt by not being a driver)");
+  ok(/export function decideInstanceFlip/.test(libSrc) && /export const FLIPPABLE_REASON/.test(libSrc),
+    "RULE 4b (F-782): ...and the FLAG-LESS decision has a home there too — decideInstanceFlip plus the one reason a driver may fix itself, so the five drivers that decide from the instance have somewhere to call");
+  ok(preconditionViolations(libSrc).length === 3,
+    "...and the lib is where ALL THREE policed things live (it is exempt by not being a driver)");
 
   for (const f of drivers) {
     const v = preconditionViolations(fs.readFileSync(path.join(here, f), "utf8"));
@@ -332,14 +349,14 @@ export function preconditionViolations(src) {
       + " (import resolveFlipModel / judgeAgentCapability)");
   }
 
-  /* NOT POLICED HERE: "every driver that calls saveAgentModel must ask resolveFlipModel".
-     It was drafted and MEASURED — five more drivers flip the slot without any operator flag
-     (_probe-shadow-badge, coder-skills-live, va-purge-on-delete-live, va-receipt-copy-live,
-     va-settling-carrier-live), each deciding from the instance's OWN capability read rather
-     than from argv. That is a different question from the one the lib answers, and a rule
-     that turned all five red would only teach the next author to route around it. They are
-     recorded as their own finding instead; F-776's claim is about the FLAG and the SENTENCE,
-     and this rule says exactly that much. */
+  /* STILL NOT POLICED: "every driver that calls saveAgentModel must ask resolveFlipModel".
+     Five drivers legitimately have no operator flag (_probe-shadow-badge, coder-skills-live,
+     va-purge-on-delete-live, va-receipt-copy-live, va-settling-carrier-live) and decide from
+     the instance's OWN capability read. F-782 did NOT force them onto the flag — a rule that
+     turned all five red would only teach the next author to route around it. It gave that
+     shape its own home instead (`decideInstanceFlip` + `judgeAgentCapability({flipped})`),
+     and widened this rule to the two things that were actually forking: the VERDICT SENTENCE,
+     now matched as a class rather than verbatim, and the `needs-frontier-model` COMPARISON. */
 
   /* ── POSITIVE CONTROLS — the six-home shape, verbatim ──────────────────────── */
   const f776flag = 'const FLIP_MODEL = flag("flip-model");\nif (FLIP_MODEL) await invoke("saveAgentModel", { model: FRONTIER });';
@@ -363,6 +380,39 @@ export function preconditionViolations(src) {
     "NEGATIVE CONTROL (F-776): PROSE may say both — a usage block that documents the flag is not a second home");
   ok(preconditionViolations('if (cap.enabled !== true) { FAIL("F-485 REGRESSED: the save door accepted it"); }').length === 0,
     "NEGATIVE CONTROL (F-776): judging cap.enabled is NOT forbidden — va-rest-doors-live asserts that refusal, and it is its subject, not a precondition");
+
+  /* ── POSITIVE CONTROLS (F-782) — one per driver shape, verbatim as each file carried it ──
+     Every line below answered CLEAN under F-776's two patterns, measured: none of them
+     contains "flip-model" or "cannot hold an agent", and all five were live in the cohort. */
+  const f782 = {
+    "va-purge-on-delete-live (FAIL, its own words)":
+      'else { FAIL(`capability is still off: ${JSON.stringify(cap1.body)} - no item row can be staged`); return; }',
+    "va-receipt-copy-live (FAIL, a third phrasing)":
+      'if (!(cap.body && cap.body.enabled === true)) { FAIL("capability did not come on", { cap: cap.body }); return; }',
+    "va-settling-carrier-live (N/V, but still a second home for the sentence)":
+      'NV(`capability is off for "${cap0.json.reason}" and this script may not change that`); return;',
+  };
+  for (const [shape, src] of Object.entries(f782)) {
+    ok(preconditionViolations(src).includes("writes a PARAPHRASE of the precondition verdict"),
+      `POSITIVE CONTROL (F-782): ${shape} — caught by the sentence CLASS, where F-776's verbatim pattern answered clean`);
+  }
+  ok(preconditionViolations('if (cap0.body.reason !== "needs-frontier-model") { NV("…"); return; }')
+      .includes("decides the flip by comparing the capability reason itself"),
+    "POSITIVE CONTROL (F-782): the flip DECISION spelled in a driver — `reason !== \"needs-frontier-model\"` is decideInstanceFlip's question, and four files each answered it themselves");
+  ok(preconditionViolations("if (r.reason !== `needs-frontier-model`) return;").length === 1,
+    "…in a template literal too: the quote style is not the rule");
+  const f782fixed = [
+    'import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";',
+    'const flip = decideInstanceFlip({ cap: cap0.body || {}, frontier: FRONTIER, envName: ENV_NAME });',
+    'const capVerdict = judgeAgentCapability({ cap: cap1 || {}, flipped: flip.flip, envName: ENV_NAME, frontier: FRONTIER });',
+    '({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);',
+  ].join("\n");
+  ok(preconditionViolations(f782fixed).length === 0,
+    "NEGATIVE CONTROL (F-782): the converged flag-less shape — decision and verdict both taken from the lib — is clean");
+  ok(preconditionViolations('check(`${ENV_NAME} starts on the Coder edition`, before.reason === "needs-frontier-model");').length === 0,
+    "NEGATIVE CONTROL (F-782): the EQUALITY form is untouched — coder-skills-live asserts the tenant's starting and restored reason, which is its SUBJECT, and a rule that banned the word would have forced it to lie");
+  ok(preconditionViolations("/* on DEV the capability is still off, and capability is off for needs-frontier-model */\n").length === 0,
+    "NEGATIVE CONTROL (F-782): PROSE may say all of it — six drivers' docblocks explain this precondition and must keep being able to");
 }
 
 /* RULE 3 (F-715) HAS MOVED. It lived here only because `evidence-redaction.test.mjs` was

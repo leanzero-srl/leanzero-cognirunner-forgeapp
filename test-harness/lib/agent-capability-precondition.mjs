@@ -91,7 +91,7 @@ export function resolveFlipModel({ envName, argv = [], defaultEnvs = FLIP_MODEL_
  * positive control; here it is a precondition, and a precondition that did not hold leaves
  * everything below it UNPROVEN rather than broken.
  */
-export function judgeAgentCapability({ cap, flipModel, envName, frontier } = {}) {
+export function judgeAgentCapability({ cap, flipModel, flipped, envName, frontier } = {}) {
   const c = cap || {};
   if (c.enabled === true) {
     return {
@@ -99,6 +99,12 @@ export function judgeAgentCapability({ cap, flipModel, envName, frontier } = {})
       verdict: "PASS",
       what: `the instance can hold an agent: enabled=true, edition=${c.edition}, provider=${c.provider}, agentModel=${c.agentModel}`,
     };
+  }
+  /* F-782 — the flag-less arm. A driver that decided the flip from the INSTANCE (see
+     `decideInstanceFlip` below) passes what HAPPENED, not what was asked for, and gets the
+     same grading rule: a precondition that did not hold is N/V with the remedy named. */
+  if (flipModel === undefined && typeof flipped === "boolean") {
+    return judgeFlagless({ c, flipped, envName, frontier });
   }
   const reason = c.reason === undefined ? "no reason given" : c.reason;
   if (!flipModel) {
@@ -112,5 +118,86 @@ export function judgeAgentCapability({ cap, flipModel, envName, frontier } = {})
     proceed: false,
     verdict: "N/V",
     what: `the instance STILL cannot hold an agent (${reason}) after --flip-model pointed the agent model at "${frontier}" on ${envName}, so nothing below this point ran. Not graded FAIL because the door under test was never reached: if the slot really does hold that model, the capability resolver disagreeing with it is a finding in its own right, and va-capability-gate-live is where it is argued.`,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-782 — THE SAME PRECONDITION, DECIDED WITHOUT AN OPERATOR FLAG.
+ *
+ * `resolveFlipModel` answers "did the operator ask for the flip?". Five more drivers never
+ * ask that question: `_probe-shadow-badge`, `coder-skills-live`, `va-purge-on-delete-live`,
+ * `va-receipt-copy-live` and `va-settling-carrier-live` decide the flip from the INSTANCE —
+ * "the capability is off and the reason is `needs-frontier-model`, therefore point the slot
+ * at a frontier model for the run and put it back in the finally". That is a legitimate
+ * second shape (they are agent-model-mutating drivers whose `mutates` list already declares
+ * the slot), and forcing them onto a flag they do not have would only teach the next author
+ * to route around the rule.
+ *
+ * What was NOT legitimate is that each of them also re-spelled the F-767 VERDICT in its own
+ * words — "capability is still off", "capability did not come on", `capability is off for
+ * "<reason>"` — and two graded it FAIL. Same defect as F-767: a provider slot that never came
+ * on is a missing precondition, so everything below it is UNPROVEN rather than broken, and
+ * the sentence must carry the remedy. RULE 4b in `live-driver-scope.test.mjs` policed the
+ * F-767 WORDS, so five paraphrases of one verdict walked straight past it; it now polices the
+ * CLASS, and these two functions are that class's one home.
+ *
+ * `decideInstanceFlip` owns the DECISION (including the `needs-frontier-model` comparison —
+ * the one reason a driver may fix by itself); `judgeAgentCapability`'s flag-less arm owns the
+ * VERDICT. A driver calls both and grades neither itself.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
+/** The one capability reason a driver may fix on its own, by pointing the slot at a frontier model. */
+export const FLIPPABLE_REASON = "needs-frontier-model";
+
+/**
+ * Should THIS RUN flip the agent model slot, judged from the instance rather than from argv?
+ *
+ * @returns {{flip: boolean, blocked: boolean, reason: string}} — `flip` is the only thing to
+ * branch on; `blocked` says the capability is off for something a flip cannot fix (a caller may
+ * stop early on it, but need not: `judgeAgentCapability` reaches the same verdict either way).
+ * `reason` is printed, so it is a sentence.
+ */
+export function decideInstanceFlip({ cap, frontier, envName } = {}) {
+  const c = cap || {};
+  if (c.enabled === true) {
+    return {
+      flip: false,
+      blocked: false,
+      reason: `the instance already holds the capability (edition=${c.edition} agentModel=${c.agentModel}), so the agent model slot is not touched and there is nothing to restore`,
+    };
+  }
+  const reason = c.reason === undefined ? "no reason given" : c.reason;
+  if (reason === FLIPPABLE_REASON) {
+    return {
+      flip: true,
+      blocked: false,
+      reason: `the capability is off for "${FLIPPABLE_REASON}" — the one reason this run may fix itself: it records the agent model slot, points it at "${frontier}" on ${envName} for the run, and replays the recorded value in its finally`,
+    };
+  }
+  return {
+    flip: false,
+    blocked: true,
+    reason: `the capability is off for "${reason}", which pointing the agent model at "${frontier}" cannot fix, so this run changes NOTHING on ${envName}`,
+  };
+}
+
+/**
+ * The flag-less arm of the verdict, reached through `judgeAgentCapability({ cap, flipped })`:
+ * `flipped` is what HAPPENED, where `flipModel` is what the operator ASKED FOR. Same grading
+ * rule on both arms — a capability that is off is N/V with the remedy named, never FAIL.
+ */
+function judgeFlagless({ c, flipped, envName, frontier }) {
+  const reason = c.reason === undefined ? "no reason given" : c.reason;
+  if (!flipped) {
+    return {
+      proceed: false,
+      verdict: "N/V",
+      what: `the instance cannot hold an agent (${reason}) and no agent-model flip was attempted, because "${reason}" is not "${FLIPPABLE_REASON}" — the one reason a driver may fix by itself. NOTHING below this point ran and nothing below it is proven: this is a provider-slot precondition, not a defect in the door under test. REMEDY: put the instance on an edition/provider that satisfies "${reason}" and re-run.`,
+    };
+  }
+  return {
+    proceed: false,
+    verdict: "N/V",
+    what: `the instance STILL cannot hold an agent (${reason}) after this run pointed the agent model at "${frontier}" on ${envName}, so nothing below this point ran. Not graded FAIL because the door under test was never reached. REMEDY: confirm the slot really holds that model — the provider/model config is TTL-cached ~30s, so a capability read taken sooner than 35s after the write still answers with the OLD model; a slot that does hold it beside a capability that still says no is a finding in its own right, and va-capability-gate-live is where it is argued.`,
   };
 }

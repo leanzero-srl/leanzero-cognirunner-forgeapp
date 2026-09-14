@@ -23,6 +23,7 @@
 
 import {
   resolveFlipModel, judgeAgentCapability, FLIP_MODEL_DEFAULT_ENVS,
+  decideInstanceFlip, FLIPPABLE_REASON,
 } from "../lib/agent-capability-precondition.mjs";
 
 let pass = 0, fail = 0;
@@ -102,6 +103,58 @@ console.log("\n5 · judgeAgentCapability — THE MISSING AND MALFORMED ANSWER");
     "the STRING \"true\" does not open it either — the shape a query string or a hand-written hook answer produces must not be the shape that licenses the run");
   ok(/no reason given/.test(judgeAgentCapability({ cap: { enabled: false }, flipModel: false }).what),
     "…and a refusal with no reason says 'no reason given' rather than 'undefined', because the missing field is itself the thing to chase");
+}
+
+console.log("\n6 · decideInstanceFlip (F-782) — THE FLIP DECIDED FROM THE INSTANCE, NOT FROM ARGV");
+{
+  const need = decideInstanceFlip({ cap: { enabled: false, reason: "needs-frontier-model" }, frontier: "claude-sonnet-5", envName: "staging" });
+  ok(need.flip === true && need.blocked === false,
+    "the one reason a driver may fix itself DOES flip the slot — this is the shape five flag-less drivers carried inline (F-782)");
+  ok(/replays the recorded value/.test(need.reason) && /claude-sonnet-5/.test(need.reason),
+    "…and the printed reason promises the restore and names the model, so a mutation nobody passed a flag for is never silent");
+
+  const on = decideInstanceFlip({ cap: { enabled: true, edition: "coder", agentModel: "claude-sonnet-5" }, frontier: "claude-sonnet-5", envName: "staging" });
+  ok(on.flip === false && on.blocked === false && /nothing to restore/.test(on.reason),
+    "an instance that ALREADY holds the capability is not flipped — the probe and the receipt driver used to point the slot unconditionally and then delete it, which mutates a tenant that needed nothing");
+
+  const other = decideInstanceFlip({ cap: { enabled: false, reason: "needs-coder-edition" }, frontier: "claude-sonnet-5", envName: "dev" });
+  ok(other.flip === false && other.blocked === true,
+    "a reason a model flip CANNOT fix does not flip anything — `blocked` is the DEV arm, where the script must change nothing");
+  ok(/needs-coder-edition/.test(other.reason) && /cannot fix/.test(other.reason),
+    "…and it says which reason stopped it, so the operator is not left to guess which of the two arms they are in");
+
+  ok(decideInstanceFlip({ cap: { enabled: "true" } }).flip === false && decideInstanceFlip({}).blocked === true,
+    "the STRING \"true\" is not enabled, and an empty call is blocked — the same `enabled === true` gate as the verdict, so the two halves cannot disagree about what 'on' means");
+  ok(FLIPPABLE_REASON === "needs-frontier-model",
+    "the flippable reason is ONE exported constant: four drivers each spelled this literal in a `!==`, which is how a rename would have silently changed four decisions");
+}
+
+console.log("\n7 · judgeAgentCapability — THE FLAG-LESS ARM, BOTH WAYS (F-782)");
+{
+  const blocked = judgeAgentCapability({ cap: { enabled: false, reason: "needs-coder-edition" }, flipped: false, envName: "dev", frontier: "claude-sonnet-5" });
+  ok(blocked.verdict === "N/V" && blocked.proceed === false,
+    "a flag-less driver that did NOT flip grades the precondition N/V — va-purge-on-delete and va-settling-carrier used to grade this FAIL and N/V respectively, about the same situation");
+  ok(/REMEDY/.test(blocked.what) && /needs-coder-edition/.test(blocked.what),
+    "…and the sentence carries the instance's own reason AND a remedy, which is the whole of F-767's claim restated for the flag-less shape");
+  ok(!/--flip-model/.test(blocked.what),
+    "…but it does NOT name --flip-model: these drivers have no such flag, and a remedy naming an argument the file does not read is worse than none");
+
+  const still = judgeAgentCapability({ cap: { enabled: false, reason: "needs-frontier-model" }, flipped: true, envName: "staging", frontier: "claude-sonnet-5" });
+  ok(still.verdict === "N/V" && still.proceed === false,
+    "a flag-less driver that DID flip and still got nothing is also N/V, never FAIL — the door under test was never reached, so it cannot be the thing that broke");
+  ok(/claude-sonnet-5/.test(still.what) && /va-capability-gate-live/.test(still.what),
+    "…naming the model it set and the driver where a disagreeing capability resolver is argued, so the N/V is a lead");
+  ok(/~30s/.test(still.what),
+    "…and naming the ~30s provider/model cache, which is the most likely reason a freshly-written slot reads back as the old model — the trap this arm exists to explain");
+  ok(still.what !== blocked.what,
+    "the two flag-less arms do not share a sentence: 'no flip was possible' and 'the flip did not help' have different next steps");
+
+  ok(judgeAgentCapability({ cap: { enabled: true, edition: "coder", provider: "atlassian", agentModel: "m" }, flipped: false }).verdict === "PASS",
+    "an enabled capability is a PASS on the flag-less arm too — `enabled === true` is judged before either arm, so there is ONE gate and not two");
+
+  const flagged = judgeAgentCapability({ cap: { enabled: false, reason: "needs-frontier-model" }, flipModel: false, flipped: true, envName: "staging", frontier: "m" });
+  ok(/--flip-model/.test(flagged.what),
+    "a caller that passes flipModel gets the FLAGGED sentence even with `flipped` set — the operator-flag drivers are unchanged by F-782, which is the arm that must not have moved");
 }
 
 console.log(`\nagent-capability-precondition: ${pass} passed, ${fail} failed`);

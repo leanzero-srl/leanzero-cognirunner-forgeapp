@@ -60,7 +60,10 @@ import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-776 - the flip decision and the capability verdict have ONE home; see the lib for why a
    capability that is off is N/V and not a FAIL. `--no-flip-model` is the explicit opt-out. */
-import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+/* F-782 — `decideInstanceFlip` is imported for the SECOND half of the decision: which capability
+   reasons this run may fix at all. The `needs-frontier-model` comparison below used to be spelled
+   here, which is the same second-home defect F-776 closed for the flag and the verdict. */
+import { resolveFlipModel, judgeAgentCapability, decideInstanceFlip } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -200,8 +203,15 @@ async function main() {
   const cap0 = await invoke("getAgentCapability", {});
   info(`getAgentCapability before: ${JSON.stringify(cap0.body)}`);
   info(`model flip: ${FLIP_MODEL ? "ON" : "OFF"} - ${FLIP_MODEL_REASON}`);
-  if (cap0.body && cap0.body.enabled !== true && FLIP_MODEL) {
-    if (cap0.body.reason !== "needs-frontier-model") { NV(`capability is off for "${cap0.body.reason}" and this script may not change that`); return; }
+  const instanceFlip = decideInstanceFlip({ cap: cap0.body || {}, frontier: FRONTIER, envName: ENV_NAME });
+  if (FLIP_MODEL) info(`the instance's own reading: ${instanceFlip.reason}`);
+  if (FLIP_MODEL && instanceFlip.blocked) {
+    /* Off for something no model flip can fix: the lib's flag-less arm says so, with the remedy. */
+    const blocked = judgeAgentCapability({ cap: cap0.body || {}, flipped: false, envName: ENV_NAME, frontier: FRONTIER });
+    ({ PASS, FAIL, NV }[blocked.verdict])(blocked.what);
+    return;
+  }
+  if (FLIP_MODEL && instanceFlip.flip) {
     const slot = await kvs(AGENT_MODEL_SLOT);
     restore.agentModelSlot = slot.value;
     info(`${AGENT_MODEL_SLOT} recorded before the flip: ${slot.value === null ? "EMPTY" : JSON.stringify(slot.value)}`);

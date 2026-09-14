@@ -39,6 +39,8 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
+/* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
+import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -57,6 +59,14 @@ const check = (label, ok, data = {}) => {
   evidence.checks.push({ label, ok, ...data });
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
 };
+/* F-782 — a row that is neither proven nor broken. A missing provider-slot precondition is
+   UNPROVEN: it must not count as a failure, and it must still be on the evidence file. */
+const nv = (label, data = {}) => {
+  evidence.checks.push({ label, ok: null, verdict: "N/V", ...data });
+  console.log(`N/V   ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
+};
+/* Did THIS run point the agent model slot anywhere? Only a run that did may restore it. */
+let flipped = false;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /*
  * TRANSPORT RETRY, AND WHY IT IS NOT OPTIONAL HERE.
@@ -105,13 +115,24 @@ const main = async () => {
   const skill = skills.find((s) => s.builtin) || skills[0];
   check("a builtin skill exists to bind to the turn", !!skill, { id: skill && skill.id, name: skill && skill.name });
 
-  // ── the documented staging agent-model switch ──
-  const sw = await call("saveAgentModel", { model: FRONTIER });
-  check(`the agent model switched to ${FRONTIER}`, sw.success === true && sw.model === FRONTIER, { model: sw.model, error: sw.error });
-  console.log("waiting 40s for the ~30s provider/model cache…");
-  await sleep(40000);
-  const cap = await call("getAgentCapability");
-  check(`the Coder is now ENABLED on ${ENV_NAME}`, cap.enabled === true, { enabled: cap.enabled, reason: cap.reason, agentModel: cap.agentModel });
+  // ── the documented staging agent-model switch, decided by the lib (F-782) ──
+  const flip = decideInstanceFlip({ cap: before, frontier: FRONTIER, envName: ENV_NAME });
+  console.log(`      model flip: ${flip.flip ? "ON" : "OFF"} — ${flip.reason}`);
+  if (flip.flip) {
+    flipped = true;
+    const sw = await call("saveAgentModel", { model: FRONTIER });
+    check(`the agent model switched to ${FRONTIER}`, sw.success === true && sw.model === FRONTIER, { model: sw.model, error: sw.error });
+    console.log("waiting 40s for the ~30s provider/model cache…");
+    await sleep(40000);
+  }
+  const cap = flip.flip ? await call("getAgentCapability") : before;
+  /* F-767/F-782 — the capability is this script's PRECONDITION, not its subject: a slot that
+     never came on leaves the skills-injection proof unproven, with the remedy named, and the
+     sentence is the lib's. The SUBJECT assertions about `needs-frontier-model` (the starting
+     state above, the restored state below) stay here, because those are what this file proves. */
+  const capVerdict = judgeAgentCapability({ cap, flipped: flip.flip, envName: ENV_NAME, frontier: FRONTIER });
+  if (capVerdict.verdict === "PASS") check(`the Coder is now ENABLED on ${ENV_NAME}`, true, { enabled: cap.enabled, agentModel: cap.agentModel });
+  else { nv(capVerdict.what, { enabled: cap.enabled, reason: cap.reason, agentModel: cap.agentModel }); return; }
 
   // ── the unknown-skill refusal, asked FIRST so a real turn never hides it ──
   const bogus = await call("startCoderTurn", { issueKey: ISSUE, threadId: `t_bogus_${Date.now().toString(36)}`, message: "Summarise this issue in two sentences.", skillIds: ["skill_definitely_not_here"] });
@@ -218,8 +239,12 @@ const main = async () => {
 
 try { await main(); } catch (e) { console.error("THREW", e.stack); failures += 1; }
 finally {
-  // RESTORE, on every path. The slot was absent; absent is what it goes back to.
+  /* RESTORE, on every path THIS RUN MUTATED. The slot was absent; absent is what it goes back
+     to. F-782: a run that never flipped must not delete a slot somebody else set — deleting
+     what you did not write is a mutation, not a cleanup. */
   try {
+    if (!flipped) console.log("        no restore: this run did not point the agent model slot anywhere");
+    else {
     /* THE RESTORE RETRIES ON ITS OWN. `post` already retries the transport; this loop
      * additionally retries a hook that ANSWERED but not with `now:null`. A frontier
      * model left armed on a live tenant is the worst outcome this script can have, so
@@ -236,6 +261,7 @@ finally {
     const after = await call("getAgentCapability");
     check(`${ENV_NAME} is back to needs-frontier-model`, after.enabled === false && after.reason === "needs-frontier-model",
       { enabled: after.enabled, reason: after.reason, agentModel: after.agentModel });
+    }
   } catch (e) { console.error("RESTORE FAILED", e.message); failures += 1; }
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(evidence, null, 2));
   console.log(`\n${failures} failure(s). Evidence: ${OUT}/evidence.json`);

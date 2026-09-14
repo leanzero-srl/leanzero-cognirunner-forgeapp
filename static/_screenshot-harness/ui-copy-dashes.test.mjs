@@ -163,6 +163,11 @@ const APPS = ["config-ui", "admin-panel", "config-view", "issue-glance"];
    was swept clean in the same cut that added it. */
 const BACKEND_COPY = [
   "src/va-admin.js",
+  /* F-847 - the Coder writes COPY INTO SOMEONE ELSE'S ISSUE: the "Coder log" comment
+     title, one comment per completed step with its links, the artifact-name refusal and
+     the HTTP detail that rides an error back to the panel. A dash there is the owner's
+     house style broken on a customer's ticket, where no reviewer of this repo sees it. */
+  "src/coder-workspace.js",
 ];
 
 const sources = [];

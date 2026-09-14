@@ -285,7 +285,7 @@ const jira = async (path, options = {}) => {
     if (!res.ok) {
       let body = "";
       try { body = String(await res.text()).slice(0, 200); } catch { /* the body is optional */ }
-      return { ok: false, status: res.status, errorClass: classifyStatus(res.status), detail: `HTTP ${res.status}${body ? ` — ${body}` : ""}` };
+      return { ok: false, status: res.status, errorClass: classifyStatus(res.status), detail: `HTTP ${res.status}${body ? `: ${body}` : ""}` };
     }
     let json = null;
     try { json = await res.json(); } catch { json = null; }
@@ -388,7 +388,7 @@ export const appendStepComment = async ({ issueKey, step, links = [], simulation
   const body = plainTextAdf(
     [`Coder step: ${clampChars((step && step.title) || step || "step", 200)}`,
       ...(step && step.detail ? [String(step.detail)] : []),
-      ...clean.map((l) => `${l.kind}: ${l.title} — ${l.url}`)].join("\n"),
+      ...clean.map((l) => `${l.kind}: ${l.title} (${l.url})`)].join("\n"),
     { maxLines: PLAN_MAX_LINES, maxBytes: STEP_MAX_BYTES },
   );
   if (simulation === true) {
@@ -465,7 +465,7 @@ export const updateCoderLog = async ({ issueKey, threadId, lines, simulation = f
     try { row = await store.get(coderLogKey(key, thread)); } catch (e) { console.warn(`[coder-workspace] ${key}: log row read failed: ${e && e.message}`); }
     const sameThread = row && typeof row === "object" && row.threadId === thread;
     const kept = clampLogLines([...(sameThread && Array.isArray(row.lines) ? row.lines : []), ...incoming]);
-    const body = plainTextAdf([`${CODER_LOG_TITLE} — thread ${thread || "(none)"}`, "", ...kept].join("\n"),
+    const body = plainTextAdf([`${CODER_LOG_TITLE}, thread ${thread || "(none)"}`, "", ...kept].join("\n"),
       { maxLines: CODER_LOG_MAX_LINES + 4, maxBytes: CODER_LOG_MAX_BYTES });
 
     let commentId = sameThread && row.commentId ? String(row.commentId) : "";
@@ -512,7 +512,7 @@ export const attachSessionArtifact = async ({ issueKey, name, content, simulatio
   if (!key) return badIssue("Attaching the session artifact");
   const filename = String(name || "").trim();
   if (!ARTIFACT_NAME_RE.test(filename)) {
-    return { ok: false, errorClass: "invalid", error: `A Coder artifact must be named coder-session-<n>.md — "${filename.slice(0, 60)}" is not.` };
+    return { ok: false, errorClass: "invalid", error: `A Coder artifact must be named coder-session-<n>.md, and "${filename.slice(0, 60)}" is not.` };
   }
   // The allow-list lives in src/index.js and is reached lazily. A module load that faults
   // is a FAULT, not an exception the engine has to catch: this function's contract is that

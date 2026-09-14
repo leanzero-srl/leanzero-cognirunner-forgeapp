@@ -31,6 +31,12 @@ import { redactSecrets, redactString } from "../lib/redact.mjs";
    redactor can see. Every capture goes through `shotMasked`, which masks every
    `.perm-ident-email`, asserts nothing readable is left, shoots, and restores. */
 import { shotMasked } from "../lib/roster-ui.mjs";
+/* F-657 — the ROW is chosen by `selectByDiscriminator`, which matches the FULL account id
+   in the `.perm-ident-id` title, falls back to the visible segment only when it is unique,
+   and refuses on a duplicate or a miss. Never `.perm-ident` `.first()`: that class is the
+   BASE class on the email span too, so on a row carrying an address `.first()` is the
+   address, and the segment comparison could only ever fail. */
+import { selectByDiscriminator } from "../lib/roster-restore.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -103,14 +109,20 @@ async function readSearchRows(shot) {
     for (let i = 0; i < n; i++) {
       const r = rows.nth(i);
       const name = (await r.locator(".perm-search-name").innerText().catch(() => "")).trim();
-      const identLoc = r.locator(".perm-ident");
-      const hasIdent = (await identLoc.count()) > 0;
+      /* F-657 — `.perm-ident` is the BASE class on BOTH the email span and the id chip, so
+         `.first()` is the ADDRESS on any row that carries one, and every comparison below
+         against an id segment would silently fail. The DISCRIMINATOR is `.perm-ident-id`;
+         `.perm-ident` is read only to report whether anything else is rendered beside it. */
+      const idLoc = r.locator(".perm-ident-id");
+      const hasId = (await idLoc.count()) > 0;
+      const anyIdent = r.locator(".perm-ident");
       out.push({
         i,
         name,
-        ident: hasIdent ? (await identLoc.first().innerText()).trim() : null,
-        identTitle: hasIdent ? await identLoc.first().getAttribute("title") : null,
-        identClass: hasIdent ? await identLoc.first().getAttribute("class") : null,
+        ident: hasId ? (await idLoc.first().innerText()).trim() : null,
+        identTitle: hasId ? await idLoc.first().getAttribute("title") : null,
+        identClass: hasId ? await idLoc.first().getAttribute("class") : null,
+        identSpans: await anyIdent.count(),
         cls: (await r.getAttribute("class")) || "",
       });
     }
@@ -131,19 +143,47 @@ async function clickRowBySegment(segment, role = "Editor", scope = /^Own Rules/)
     await sleep(400);
     await frame.locator(".perm-search-input").fill(NAME);
     await sleep(5000);
+    /* F-657 — READ AND SELECT IN THIS CONTEXT, THROUGH `selectByDiscriminator`.
+       The read/click were already in one context here, which is why this driver never
+       produced the F-654 damage — but the match was `.perm-ident` `.first()`, and
+       `.perm-ident` is the BASE class on BOTH the email span and the id chip
+       (PermissionsTab.jsx renders `perm-ident perm-ident-email` and
+       `perm-ident perm-ident-id`). On a row that carries an email, `.first()` is the
+       ADDRESS, so the comparison against an id segment could only ever fail — and there
+       was no uniqueness guard, so the first match won. The selection now reads
+       `.perm-ident-id` specifically, prefers the FULL id in the title, and refuses on a
+       duplicate or a miss instead of taking a neighbour. */
     const rows = frame.locator(".perm-search-item");
     const n = await rows.count();
+    const read = [];
     for (let i = 0; i < n; i++) {
       const r = rows.nth(i);
-      const ident = (await r.locator(".perm-ident").first().innerText().catch(() => "")).trim();
-      if (ident !== segment) continue;
-      if (((await r.getAttribute("class")) || "").includes("perm-search-disabled")) return { clicked: false, why: "already on roster" };
-      await r.click();
-      await sleep(5000);
-      await shotMasked(page, frame, `${OUT}/02-granted-roster.png`, { strict: false }).catch(() => {});
-      return { clicked: true, index: i, ident };
+      const idEl = r.locator(".perm-ident-id");
+      const hasId = (await idEl.count()) > 0;
+      read.push({
+        i,
+        disabled: ((await r.getAttribute("class")) || "").includes("perm-search-disabled"),
+        idShown: hasId ? (await idEl.first().innerText()).trim() : null,
+        idTitle: hasId ? await idEl.first().getAttribute("title") : null,
+      });
     }
-    return { clicked: false, why: `no search row carried segment ${segment}`, rows: n };
+    const pick = selectByDiscriminator(read, TARGET);
+    if (pick.index < 0) {
+      if (pick.disabledHit) return { clicked: false, why: "already on roster", reason: pick.reason };
+      return { clicked: false, why: pick.reason, rows: n, ambiguous: !!pick.ambiguous };
+    }
+    /* THE LAST READ BEFORE THE CLICK: the row's FULL id, off the live DOM. A re-render
+       between the read above and this click cannot move the grant onto a namesake. */
+    const target = rows.nth(pick.index);
+    const confirm = await target.locator(".perm-ident-id").first().getAttribute("title").catch(() => null);
+    const confirmShown = (await target.locator(".perm-ident-id").first().innerText().catch(() => "")).trim();
+    if (!(confirm === TARGET || (confirm === null && confirmShown === segment))) {
+      return { clicked: false, raced: true, why: `the row at index ${pick.index} no longer carries the target id when re-read immediately before the click (chip: ${confirmShown || "absent"}) — refusing to click` };
+    }
+    await target.click();
+    await sleep(5000);
+    await shotMasked(page, frame, `${OUT}/02-granted-roster.png`, { strict: false }).catch(() => {});
+    return { clicked: true, index: pick.index, how: pick.how, ident: confirmShown };
   });
 }
 
@@ -157,7 +197,9 @@ async function readRosterCards(shot) {
     const out = [];
     for (let i = 0; i < n; i++) {
       const c = cards.nth(i);
-      const identLoc = c.locator(".perm-ident");
+      /* F-657 — the DISCRIMINATOR is `.perm-ident-id`, never `.perm-ident` `.first()`,
+         which is the email span on a card that carries an address. */
+      const identLoc = c.locator(".perm-ident-id");
       const hasIdent = (await identLoc.count()) > 0;
       out.push({
         i,
@@ -176,20 +218,33 @@ async function removeRosterBySegment(segment) {
   return withAdminPanel(async (page, frame) => {
     await frame.locator(".perm-admin-card").first().waitFor({ state: "visible", timeout: 60000 });
     await sleep(1500);
+    /* F-657 — same discriminator, same refusal. `.perm-ident` `.first()` is the EMAIL span
+       on a card that carries one; the id chip is `.perm-ident-id`. A REMOVE opts into
+       disabled rows, because the roster card is the on-roster row by definition. */
     const cards = frame.locator(".perm-admin-card");
     const n = await cards.count();
+    const read = [];
     for (let i = 0; i < n; i++) {
       const c = cards.nth(i);
-      const ident = (await c.locator(".perm-ident").first().innerText().catch(() => "")).trim();
-      if (ident !== segment) continue;
+      const idEl = c.locator(".perm-ident-id");
+      const hasId = (await idEl.count()) > 0;
+      read.push({
+        i,
+        idShown: hasId ? (await idEl.first().innerText()).trim() : null,
+        idTitle: hasId ? await idEl.first().getAttribute("title") : null,
+      });
+    }
+    const pick = selectByDiscriminator(read, TARGET, { allowDisabled: true });
+    if (pick.index >= 0) {
+      const c = cards.nth(pick.index);
       await c.locator(".perm-remove-btn").click();
       await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
       await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
       await sleep(4000);
       await shotMasked(page, frame, `${OUT}/04-roster-restored.png`, { strict: false }).catch(() => {});
-      return { removed: true, index: i };
+      return { removed: true, index: pick.index, how: pick.how };
     }
-    return { removed: false, cards: n };
+    return { removed: false, cards: n, reason: pick.reason };
   });
 }
 
@@ -228,9 +283,17 @@ async function main() {
     if (new Set(idents).size === idents.length) PASS("the discriminators are DISTINCT — the three rows are told apart by the UI alone", { idents });
     else FAIL("two namesake rows carry the SAME discriminator", { idents });
 
+    /* F-657 — this used to read `.perm-ident` `.first()` and check its CLASS, which on a
+       row carrying an address is the email span, not the chip. The id chip is now read
+       directly, so the question it asked ("is the id chip suppressed when an email is
+       present?" — F-647) is answered by COUNTING the `.perm-ident` spans instead: an
+       id-only row renders one, a row with both renders two, and the chip must be there
+       either way. */
     const idKind = named.every((r) => (r.identClass || "").includes("perm-ident-id"));
-    if (idKind) PASS("the discriminator is the ACCOUNT-ID kind on this build (searchUsers carries no emailAddress) — F-647's email branch is dormant here, so nothing is suppressed");
-    else NV("a row rendered a NON-id discriminator — F-647's email/id namespace split may be live; inspect search-rows.json", { named });
+    const withBoth = named.filter((r) => r.identSpans >= 2);
+    if (!idKind) FAIL("a namesake row renders NO `.perm-ident-id` chip — F-647's 'always' is not held on this build", { named });
+    else if (withBoth.length === 0) PASS("every namesake row carries the ACCOUNT-ID chip, and Jira returned no emailAddress on this site, so F-647's email branch is dormant here", { rows: named.length });
+    else PASS("every namesake row carries the ACCOUNT-ID chip ALONGSIDE its email span — the F-647 suppression is gone", { rowsWithBoth: withBoth.length, of: named.length });
 
     const titlesOk = named.every((r) => typeof r.identTitle === "string" && r.identTitle.includes(":") && r.identTitle.endsWith(r.ident));
     if (titlesOk) PASS("each row's `title` carries the FULL account id, of which the visible chip is the tail", { titles: named.map((r) => r.identTitle) });

@@ -387,6 +387,31 @@ for (const f of permDrivers) {
   ok(/shotMasked/.test(src), `${f}: …and it imports the mask helper rather than rolling its own`);
 }
 
+/* ── 4c-iii. F-657 — NO PERMISSION DRIVER PICKS AN ACCOUNT ITS OWN WAY ──────────
+   F-654 was fixed in one driver; the driver written as the PROOF of that fix carried the
+   same defect verbatim, because it had its own selection code. So the rule is on the
+   directory, not on the file: every `*-live.mjs` that drives the Permissions tab must go
+   through `selectByDiscriminator` (directly, or via `makeRosterUI`, which is the only
+   other caller), and none may use the AMBIGUOUS `.perm-ident` locator as a discriminator
+   — that class is the BASE class on the email span as well as the id chip, so `.first()`
+   is the ADDRESS on any row that carries one. */
+const AMBIGUOUS_IDENT = /\.locator\(\s*["']\.perm-ident["']\s*\)\s*\.first\(\)/;
+ok(AMBIGUOUS_IDENT.test('const ident = (await r.locator(".perm-ident").first().innerText().catch(() => "")).trim();'),
+  "POSITIVE CONTROL: the ambiguous-discriminator rule FIRES on the line the drivers used");
+ok(!AMBIGUOUS_IDENT.test('const idEl = r.locator(".perm-ident-id"); const t = await idEl.first().getAttribute("title");'),
+  "NEGATIVE CONTROL: reading the id chip specifically is not flagged");
+ok(!AMBIGUOUS_IDENT.test('identSpans: await r.locator(".perm-ident").count(),'),
+  "NEGATIVE CONTROL: COUNTING the ident spans is legitimate — it is how the suppression check works");
+for (const f of permDrivers) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  const drivesTab = /perm-search-item|perm-admin-card/.test(src);
+  if (!drivesTab) continue;
+  ok(/selectByDiscriminator|makeRosterUI/.test(src),
+    `${f}: the account is chosen by selectByDiscriminator, not by this driver's own idea of which row`);
+  const amb = src.split("\n").map((l, i) => ({ l, n: i + 1 })).filter(({ l }) => AMBIGUOUS_IDENT.test(l)).map(({ n }) => n);
+  ok(amb.length === 0, `${f}: no ambiguous \`.perm-ident\` discriminator read (at: ${amb.join(", ")})`);
+}
+
 /* ── 4d. F-662 — NO DRIVER MAY KEEP A SECOND EMAIL MASK ─────────────────────────
    The defect was not a bad regex, it was a SECOND regex. Removing the one copy without
    this rule schedules its return: the next driver that wants "belt and braces" writes its

@@ -755,10 +755,12 @@ try {
   await check("POSITIVE CONTROL: the field walker still SEES, and fails CLOSED on what it cannot read (F-794)", async () => {
     const { findSecretFields, findPlantedSecret, maskSecretFields } = await import("../../src/test-hook.js");
     // It sees both kinds of hit, at depth, and reports ALL of them rather than the first.
-    const hits = findSecretFields({ a: { password: 1 }, b: ["ghp_abcdefgh"], c: "fine" }, { maxDepth: 12 });
+    // F-825 — the name hit is asserted on a STRING value, because a number under a
+    // credential name is not a credential and no longer hits (its own checks are below).
+    const hits = findSecretFields({ a: { password: "hunter2" }, b: ["ghp_abcdefgh"], c: "fine" }, { maxDepth: 12 });
     assert.deepEqual(hits.map((h) => h.field), ["a.password", "b[0]"], "every path, not just the first");
     // The WRITE refusal is unchanged: the same first hit, the same shape, the same depth 6.
-    assert.deepEqual(findPlantedSecret({ a: { password: 1 }, b: ["ghp_abcdefgh"] }),
+    assert.deepEqual(findPlantedSecret({ a: { password: "hunter2" }, b: ["ghp_abcdefgh"] }),
       { field: "a.password", why: "field-name-reads-like-a-credential" });
     assert.equal(findPlantedSecret({ nothing: "here" }), null, "a clean body is still null, never an empty array");
     // FAIL CLOSED: a subtree the read walker cannot reach is fingerprinted, not answered.
@@ -858,6 +860,54 @@ try {
     // POSITIVE CONTROL: a clean entry is plain, and says nothing about masking.
     const cleanAnswer = await readCeiling("log_entry:", [{ ruleId: "r1", outcome: "pass" }]);
     assert.deepEqual(cleanAnswer, { value: [{ ruleId: "r1", outcome: "pass" }] });
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-825 — A NUMBER UNDER A CREDENTIAL-LOOKING NAME IS NOT A CREDENTIAL.
+   *
+   * `SECRET_KEY_HINTS` holds `token` and the name test is a SUBSTRING match, so `tokens`
+   * — the NUMERIC AI usage counter on every `log_entry:*` row — matched, and once F-802
+   * put the execlog arm behind the ceiling, 12 of 47 entries on dev answered
+   * `{masked:true}` where a driver reads a number. The four controls the live report
+   * named are pinned here: the plural counter plain, the singular string masked, an
+   * all-numeric usage OBJECT plain, a string-bearing one masked.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("BLOCK: the numeric `tokens` counter answers PLAIN; a string under `token` is still masked (F-825)", async () => {
+    const { LOG_ENTRY_PREFIX } = await import("../../src/rule-stats.js");
+    const { readCeiling, findSecretFields, findPlantedSecret } = await import("../../src/test-hook.js");
+    const GHP = "ghp_abcdefghijklmnopqrst";
+    // 1) the counter, exactly as a log entry carries it
+    const counted = await readCeiling("log_entry:", [{ ruleId: "r1", outcome: "pass", tokens: 1234 }]);
+    assert.deepEqual(counted, { value: [{ ruleId: "r1", outcome: "pass", tokens: 1234 }] },
+      "a NUMBER under `tokens` reads plain and the entry says nothing about masking — this is F-825");
+    // 2) the singular, holding a real credential string — unchanged
+    const secret = await readCeiling("log_entry:", [{ token: GHP }]);
+    assert.deepEqual(secret.maskedFields, ["[0].token"], "a STRING under a credential name is still masked whole");
+    assert.equal(secret.value[0].token.masked, true);
+    assert.equal(secret.value[0].token.why, "field-name-reads-like-a-credential");
+    assert.equal(JSON.stringify(secret).includes(GHP), false, "…and never reaches the wire");
+    // 3) an all-numeric usage OBJECT is plain, and the walk still descends into it
+    const usage = { tokens: { prompt: 12, completion: 3 } };
+    assert.deepEqual(findSecretFields(usage, { maxDepth: 12 }), [], "no string beneath it, so nothing a credential could hide in");
+    assert.deepEqual(await readCeiling("log_entry:", [usage]), { value: [usage] });
+    // 4) …but an object that CONTAINS a string under that name is masked WHOLE, subtree and all
+    const bearing = await readCeiling("log_entry:", [{ token: { value: "abcdefghijklmnop" } }]);
+    assert.deepEqual(bearing.maskedFields, ["[0].token"], "the field-name hit still claims the whole subtree");
+    assert.equal(bearing.value[0].token.masked, true);
+    assert.equal(JSON.stringify(bearing).includes("abcdefghijklmnop"), false);
+    // booleans and null are values a credential cannot be, so they answer plain too
+    assert.deepEqual(findSecretFields({ apiKey: true, secret: null, password: 0 }, { maxDepth: 12 }), [],
+      "boolean/null/zero under credential names: masking them disclosed nothing and blinded the reader");
+    // THE WRITE REFUSAL SHARES THE TRAVERSAL and therefore the rule.
+    assert.deepEqual(findPlantedSecret({ token: GHP }), { field: "token", why: "field-name-reads-like-a-credential" },
+      "a plant body carrying a credential STRING is still refused");
+    assert.equal(findPlantedSecret({ tokens: 1234 }), null, "…and a usage counter is not a reason to refuse a body");
+    // A CREDENTIAL DEEPER DOWN IS STILL FOUND: the name hit no longer fires, so the walk continues.
+    const deeper = findSecretFields({ tokens: { count: 3, apiKey: GHP } }, { maxDepth: 12 });
+    assert.deepEqual(deeper, [{ field: "tokens", why: "field-name-reads-like-a-credential" }],
+      "a string-bearing subtree is claimed whole by the name — the plural is NOT exempted by name, only by type");
+    assert.deepEqual(findSecretFields({ usage: { tokens: { count: 3 }, note: GHP } }, { maxDepth: 12 }),
+      [{ field: "usage.note", why: "value-looks-like-a-credential" }],
+      "…and past a numeric `tokens` the walker keeps going and still catches a credential by SHAPE");
   });
   await check("BLOCK: `?what=provider` is a stored row too, and answers through the same ceiling (F-802)", async () => {
     storage.__seed("COGNIRUNNER_AI_PROVIDER", "openai");

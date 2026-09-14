@@ -493,9 +493,48 @@ export const notPlantedRefusal = (what) => ({
  *
  * A FIELD-NAME hit does NOT descend: the whole subtree under a field called `headers` is
  * the credential, not one leaf of it, and the read mask replaces exactly that subtree.
+ * F-825 — but a name hit only FIRES on a value that could hold a credential (a string, or
+ * a subtree containing one); see `couldHoldCredential` below for why a number never does.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
 const WRITE_REFUSAL_MAX_DEPTH = 6;
 const READ_MASK_MAX_DEPTH = 12;
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-825 — A FIELD NAME IS A GUESS ABOUT THE VALUE; THE VALUE'S TYPE SETTLES IT.
+ *
+ * `SECRET_KEY_HINTS` contains `token`, and `flat.includes(h)` is a SUBSTRING test, so the
+ * name `tokens` matches. Every `log_entry:*` row carries `tokens` — the NUMERIC AI usage
+ * counter — and once F-802 put the execlog arm behind the ceiling, 12 of 47 execlog
+ * entries on dev answered `tokens` as `{masked:true,…}`. A number cannot authenticate
+ * anything: masking it disclosed nothing and blinded every driver that reads token usage,
+ * which is the F-814 lesson (an over-mask asserts a false cause about the field) arriving
+ * by the NAME door instead of the value-shape one.
+ *
+ * So a name hit now only fires on a value that COULD hold a credential: a string, or an
+ * object/array that contains one anywhere beneath it. Numbers, booleans, null, and
+ * all-numeric subtrees answer PLAIN and the walk continues into them, so a credential
+ * deeper down is still found by name or by shape. The WRITE refusal shares this traversal
+ * and therefore this rule: `{token:"ghp_…"}` still refuses a plant body, `{tokens:1234}`
+ * no longer does — and refusing a number was never protecting anything.
+ *
+ * WHY THERE IS NO `tokens` / `usage.tokens` NAME EXEMPTION, though the live report asked.
+ * A name exemption would be a SECOND home for the credential-name rule (the F-778 shape:
+ * a hand-written list beside a hint list, drifting), and it would answer `{tokens:"ghp_…"}`
+ * — a list of real tokens under a plural name — in plain text. The type rule is general,
+ * needs no per-name maintenance, and errs in the safe direction: it can only ever UNMASK a
+ * value that cannot carry a secret. The plural stays claimed whenever it holds strings.
+ *
+ * FAILS CLOSED on what it cannot read: a subtree deeper than the read ceiling is treated
+ * as string-bearing, because "I could not look" must not be spelled like "I looked and
+ * there was nothing a credential could hide in" — the same rule the walker itself keeps.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+const couldHoldCredential = (v, depth = 0) => {
+  if (typeof v === "string") return true;
+  if (!v || typeof v !== "object") return false;
+  if (depth > READ_MASK_MAX_DEPTH) return true;
+  const subs = Array.isArray(v) ? v : Object.values(v);
+  return subs.some((s) => couldHoldCredential(s, depth + 1));
+};
 
 export const findSecretFields = (value, { maxDepth = WRITE_REFUSAL_MAX_DEPTH, maxItems = 50, extraFieldNames = [] } = {}) => {
   const extra = new Set(extraFieldNames);
@@ -522,8 +561,14 @@ export const findSecretFields = (value, { maxDepth = WRITE_REFUSAL_MAX_DEPTH, ma
       const p = path ? `${path}.${k}` : k;
       const flat = k.toLowerCase().replace(/[^a-z0-9]/g, "");
       // `key` alone is a legitimate harness word (a KVS key); the hints below are not.
+      // The REVIEWED per-key mask is unconditional: a human named that exact field on that
+      // exact key after reading the row, so it is a decision, not a guess, and the type rule
+      // below (which exists only to correct a NAME GUESS) has no business overriding it.
       if (extra.has(k)) { out.push({ field: p, why: "reviewed-field-mask-for-this-key" }); continue; }
-      if (SECRET_KEY_HINTS.some((h) => flat.includes(h))) { out.push({ field: p, why: "field-name-reads-like-a-credential" }); continue; }
+      // F-825 — A NAME HIT ONLY MASKS A VALUE THAT COULD HOLD A CREDENTIAL.
+      if (SECRET_KEY_HINTS.some((h) => flat.includes(h)) && couldHoldCredential(sub)) {
+        out.push({ field: p, why: "field-name-reads-like-a-credential" }); continue;
+      }
       walk(sub, p, depth + 1);
     }
   };

@@ -44,6 +44,14 @@ import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect.jsx";
 import FieldGuideChip from "./FieldGuideChip.jsx";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
+/* F-915 - THE WORDS FOR AN ACTION, from the one home that owns the ids. This panel used to
+   print `open_pull_request`, `sourceBranch`, `draft false` and "ended by final" to a
+   developer who is being asked to authorise a write on their own repository. Every one of
+   those is an identifier out of src/shared/agent-actions.js, and the fix is to read that
+   file's own words rather than to grow a second vocabulary here. */
+import {
+  describeAgentAction, agentActionLabel, previewKeyLabel, agentEndingText, decisionRowSentence,
+} from "../../../../src/shared/agent-actions.js";
 import { isPermissionRefusal, isUpgradeRequired, permissionRefusalText, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "../refusal.js";
 // F-436 - the capability read with a retry ladder, and the ONE wording for a read that never
 // came back. Byte-identical with config-ui/admin-panel's components/capability.js.
@@ -130,6 +138,14 @@ const paragraphs = (text) => String(text || "").split(/\n{2,}/).map((p) => p.tri
 
 const ROLE_LABEL = { user: "You", assistant: "Coder", system: "Coder" };
 
+/* F-915 - the kinds `stepLinksFromResult` (src/coder-engine.js) can emit, in words. An
+   unlisted kind renders as "Link" rather than as its own id: the kind is derived from an
+   action id by a regex over there, so it is not a closed set this file can pin. */
+const LINK_KIND_LABEL = { pr: "Pull request", branch: "Branch", repo: "Repository", deploy: "Deployment", commit: "Commit", link: "Link" };
+
+/** A provider URL is untrusted input. Only http(s) may ever reach an href. */
+const safeHttpUrl = (u) => (/^https?:\/\//i.test(String(u || "")) ? String(u) : "");
+
 /* F-374 - THE CONSENT PREVIEW IS DATA, NOT A SENTENCE.
    `buildArgsPreview` (src/coder-engine.js) returns an OBJECT keyed by the action's own
    parameter schema, already clamped: scalars, arrays of scalars-or-flat-objects, and flat
@@ -161,8 +177,15 @@ export const previewRows = (preview) => {
       for (const [k, v] of entries) push(`${key}.${k}`, v);
       return;
     }
-    // String(false) is "false" and String(0) is "0": a literal, not a blank.
-    rows.push({ key, text: typeof value === "string" ? value.slice(0, PREVIEW_VALUE_MAX) : String(value) });
+    /* A value is never blanked: `false` and `0` are statements, not absences (F-374). What
+       CHANGED in F-915 is only how a boolean is SPELT - "no" rather than "false" - because
+       the row is read by a person deciding whether to authorise a write, and "no" is the
+       same statement in their language. A number and a string are still printed exactly. */
+    rows.push({
+      key,
+      text: typeof value === "boolean" ? (value ? "yes" : "no")
+        : typeof value === "string" ? value.slice(0, PREVIEW_VALUE_MAX) : String(value),
+    });
   };
   for (const [k, v] of Object.entries(preview)) push(k, v);
   return rows.slice(0, PREVIEW_MAX_ROWS);
@@ -191,6 +214,13 @@ export default function CoderPanel({ issueKey, accountId }) {
   const [changeText, setChangeText] = useState("");
   const [deciding, setDeciding] = useState("");    // which decision button is in flight
   const [outcome, setOutcome] = useState(null);    // the finished turn: { reply, actions, endedBy, rounds }
+  /* F-915 - what the CONFIRMED step produced, as links. They arrive on the confirm answer
+     (the engine builds them for the step comment it writes onto the issue) and NOT on the
+     turn that resumes afterwards, so they are held beside the outcome rather than inside
+     it: the resume's `applyResult` replaces the outcome wholesale and would drop them.
+     Cleared whenever the conversation moves on, because a link to the last pull request
+     under the NEXT turn's answer is a claim about work that turn did not do. */
+  const [links, setLinks] = useState([]);
   const [error, setError] = useState("");
 
   const defaultThreadId = threadIdFor(accountId);
@@ -452,7 +482,7 @@ export default function CoderPanel({ issueKey, accountId }) {
     genRef.current++;
     if (pollRef.current) clearTimeout(pollRef.current);
     setThreadId(id);
-    setMessages([]); setTicket(null); setOutcome(null); setError(""); setRounds(0);
+    setMessages([]); setTicket(null); setOutcome(null); setError(""); setRounds(0); setLinks([]);
     setChangeOpen(false); setChangeText("");
     // A fresh conversation is where the dry-run choice lives again (F-371).
     setTurns(0);
@@ -511,7 +541,7 @@ export default function CoderPanel({ issueKey, accountId }) {
     if (!text || running) return;
     const token = ++genRef.current;
     if (pollRef.current) clearTimeout(pollRef.current);
-    setRunning(true); setError(""); setOutcome(null); setRounds(0);
+    setRunning(true); setError(""); setOutcome(null); setRounds(0); setLinks([]);
     // Show the user's own words immediately. The thread re-read after the turn replaces
     // this optimistic row with the stored one, so nothing is duplicated.
     setMessages((prev) => [...prev, { role: "user", content: text, at: new Date().toISOString() }]);
@@ -588,6 +618,18 @@ export default function CoderPanel({ issueKey, accountId }) {
       }
       if (!res || res.success !== true) { setError(String((res && res.error) || "The decision could not be recorded.")); return; }
       setTicket(null); setChangeOpen(false); setChangeText("");
+      /* F-915 - WHAT THE CONFIRMED STEP PRODUCED. Only ever present on a CONFIRM that
+         actually ran. The LENGTHS are already the engine's (`cleanLinks` in
+         src/coder-workspace.js clamps kind, title and url and caps the list at
+         STEP_MAX_LINKS) and re-clamping them here would be a second set of numbers that
+         can disagree with the first. The one thing this side must still assert is the
+         SCHEME: a URL becomes an href, and `javascript:` in an href is a different class
+         of problem from a long string. */
+      setLinks(Array.isArray(res.links)
+        ? res.links
+          .map((l) => ({ kind: String((l && l.kind) || "link"), url: safeHttpUrl(l && l.url), title: String((l && l.title) || "") }))
+          .filter((l) => l.url)
+        : []);
       if (res.error) { setError(String(res.error)); return; } // recorded, but not resumed
       if (res.async && res.taskId) { setRunning(true); setOutcome(null); pollTask(res.taskId, token); }
     } catch (e) {
@@ -706,10 +748,19 @@ export default function CoderPanel({ issueKey, accountId }) {
           {messages.map((m, i) => {
             const decision = m.kind === "decision";
             const role = decision ? "decision" : (m.role === "user" ? "user" : "assistant");
+            /* F-915 - A DECISION ROW IS WRITTEN FOR THE MODEL AND WAS BEING SHOWN TO THE
+               PERSON WHO MADE IT: "DECISION: the user CONFIRMED open_pull_request and it
+               was performed." It stays exactly that on the wire - the next turn's prompt
+               depends on it - and is re-told here through the one parser in
+               src/shared/agent-actions.js. A row that parser does not recognise renders
+               UNCHANGED: degrading to the engine's sentence is honest, inventing is not. */
+            const said = decision ? decisionRowSentence(m.content) : "";
             return (
               <div className={`coder-msg coder-msg-${role} anim-rise`} key={i}>
                 <div className="coder-msg-who">{decision ? "Decision" : (ROLE_LABEL[m.role] || "Coder")}</div>
-                {paragraphs(m.content).map((p, j) => <p className="coder-msg-p" key={j}>{p}</p>)}
+                {said
+                  ? <p className="coder-msg-p">{said}</p>
+                  : paragraphs(m.content).map((p, j) => <p className="coder-msg-p" key={j}>{p}</p>)}
                 {/* 1.4 commit 14b - what BAKED knowledge this turn was shown. The receipt
                     rides on the USER message, because that is the turn the engine stamped
                     (summarizeKnowledge, src/agent-runner.js) - the reply is the model's
@@ -726,7 +777,15 @@ export default function CoderPanel({ issueKey, accountId }) {
         <div className="coder-consent">
           <div className="coder-consent-head">
             <span className="coder-chip coder-chip-consent">Needs your OK</span>
-            <span className="coder-consent-action">{ticket.action || "a step"}</span>
+            {/* F-915 - THE SENTENCE, not the id. `describeAgentAction` reads the action's
+                own label and only the argument keys its schema declares, so what stands
+                here is "Open a pull request on acme/web from proj-42-retry-guard into main
+                (draft: no)" and never `open_pull_request`. A ticket that outlived the page
+                has no arguments, and then the sentence is just the action's name, which is
+                the whole truth available - the row under it says so in as many words. */}
+            <span className="coder-consent-action">
+              {ticket.action ? describeAgentAction(ticket.action, ticket.argsPreview) : "A step needs your OK"}
+            </span>
           </div>
           {(() => {
             // F-374: an OBJECT preview becomes rows; a string one (or none) stays a sentence.
@@ -739,7 +798,10 @@ export default function CoderPanel({ issueKey, accountId }) {
               <dl className="coder-consent-args coder-args">
                 {rows.map((r) => (
                   <div className="coder-arg-row" key={r.key}>
-                    <dt className="coder-arg-k">{r.key}</dt>
+                    {/* The KEY is the action's schema name, which is the engine's word for
+                        it; `previewKeyLabel` turns it into the reader's without losing the
+                        path, so two nested leaves still read as two different rows. */}
+                    <dt className="coder-arg-k">{previewKeyLabel(r.key)}</dt>
                     <dd className="coder-arg-v">{r.text}</dd>
                   </div>
                 ))}
@@ -775,7 +837,7 @@ export default function CoderPanel({ issueKey, accountId }) {
               {outcome.actions.map((a, i) => (
                 <li className="coder-action" key={i}>
                   <span className={`coder-action-dot ${a.ok === false ? "coder-action-bad" : "coder-action-ok"}`} aria-hidden="true" />
-                  <span className="coder-action-name">{a.name}</span>
+                  <span className="coder-action-name">{agentActionLabel(a.name)}</span>
                   <span className="coder-action-verdict">{a.ok === false ? "failed" : "ok"}</span>
                   {Number.isFinite(Number(a.ms)) && <span className="coder-action-ms">{Number(a.ms)} ms</span>}
                 </li>
@@ -788,9 +850,30 @@ export default function CoderPanel({ issueKey, accountId }) {
                 || `Workspace: ${outcome.workspaceFailures} write${outcome.workspaceFailures === 1 ? "" : "s"} did not land on this issue.`}
             </p>
           )}
+          {/* F-915 - WHAT THE TURN PRODUCED, as a link the reader can follow.
+              `confirmCoderTicket` already builds these for the step comment it writes onto
+              the issue (`stepLinksFromResult`, src/coder-engine.js) out of the provider's
+              own `url`; before this they never left the backend, so the panel's only word
+              for a finished pull request was whatever sentence the model chose to type.
+              Rendered with rel="noreferrer" and a real title, because the URL is the
+              PROVIDER's and the title is attacker-authorable text on somebody's repo. */}
+          {links.length > 0 && (
+            <ul className="coder-links">
+              {links.map((l, i) => (
+                <li className="coder-link-row" key={i}>
+                  <span className={`coder-link-kind coder-link-${l.kind || "link"}`}>{LINK_KIND_LABEL[l.kind] || "Link"}</span>
+                  <a className="coder-link" href={l.url} target="_blank" rel="noreferrer noopener">{l.title || l.url}</a>
+                </li>
+              ))}
+            </ul>
+          )}
           <p className="coder-outcome-foot">
             {outcome.rounds ? `${outcome.rounds} round${outcome.rounds === 1 ? "" : "s"}` : "Finished"}
-            {outcome.endedBy ? ` · ended by ${outcome.endedBy}` : ""}
+            {/* "ended by final" was the engine's field printed raw, and `final` is not even
+                one of the loop's endings - the mock had invented it and nothing could tell.
+                One word per real ending, from the one table; an ending with no word is left
+                unsaid rather than printed as a token. */}
+            {agentEndingText(outcome.endedBy) ? ` · ${agentEndingText(outcome.endedBy)}` : ""}
           </p>
         </div>
       )}

@@ -210,7 +210,11 @@ try {
       await page.locator(".coder-cap-off").waitFor({ timeout: 10000 });
       const txt = (await page.locator(".coder-cap-off").innerText());
       ok(/This needs CogniRunner Coder\./.test(txt), `${id} the headline names the edition (got "${txt.replace(/\n/g, " ")}")`);
-      ok(/Upgrade in Settings to unlock /.test(txt), `${id} the remedy is an upgrade, not a role request`);
+      /* F-915 - and it names the page the upgrade is actually ON. "Upgrade in Settings"
+         sent a paying admin to the provider picker; the edition is a Marketplace
+         subscription, changed under Apps, Manage apps. Both places, each with its subject. */
+      ok(/Upgrade CogniRunner under Apps, Manage apps to unlock /.test(txt), `${id} the remedy is an upgrade, not a role request`);
+      ok(/Settings changes the AI provider, not the edition/.test(txt), `${id} Settings is named for what it DOES change`);
       ok(!/Ask a CogniRunner admin/.test(txt), `${id} it is NOT told as a permission refusal`);
       ok(await page.locator(".coder-composer").count() === 0, `${id} no composer`);
       await designRules(page, id);
@@ -327,19 +331,29 @@ try {
       ok(/Working/.test(await page.locator(".veil-label").innerText()), `${id} the running state says what it is doing`);
 
       await page.locator(".coder-consent").waitFor({ timeout: 20000 });
-      ok(await page.locator(".coder-consent-action").innerText() === "open_pull_request", `${id} the action is named`);
+      /* F-915 - THE CONSENT HEAD IS A SENTENCE, NOT AN IDENTIFIER. It read
+         `open_pull_request` over a grid of schema keys, to the person being asked to
+         authorise a write on their own repository. The words come from
+         src/shared/agent-actions.js, which is where the ids live too. */
+      const head = await page.locator(".coder-consent-action").innerText();
+      ok(head === "Open a pull request on acme/web from proj-42-retry-guard into main (draft: no)",
+        `${id} the action is a sentence naming repo, both branches and the draft flag (got "${head}")`);
+      ok(!/open_pull_request|[a-z]+_[a-z]+/.test(head), `${id} no engine identifier survives into the consent head`);
       const args = await page.locator(".coder-consent-args").innerText();
       ok(args.includes("proj-42-retry-guard"), `${id} the argument preview is shown (got "${args}")`);
       /* F-374 - the preview is an OBJECT and is rendered as KEY/VALUE ROWS. Every schema key
-         the engine put in it has a row, and a boolean is printed as a value: `draft false`
-         is the statement "this PR is not a draft", which a sentence would have swallowed. */
+         the engine put in it has a row, and a boolean is still a VALUE: "this PR is not a
+         draft" is a statement, never an absence. F-915 changed only the two vocabularies
+         around it - the key is the reader's word for the key, and a boolean is spelled
+         "no" rather than "false", which is the same statement in the reader's language. */
       const rows = await page.locator(".coder-arg-row").evaluateAll((els) =>
         els.map((el) => [el.querySelector(".coder-arg-k").innerText, el.querySelector(".coder-arg-v").innerText]));
       const byKey = Object.fromEntries(rows);
       ok(rows.length === 6, `${id} every preview key has a row (got ${rows.length}: ${rows.map((r) => r[0]).join(",")})`);
-      ok(byKey.repo === "acme/web" && byKey.sourceBranch === "proj-42-retry-guard" && byKey.targetBranch === "main",
-        `${id} the preview rows carry their values (got ${JSON.stringify(byKey)})`);
-      ok(byKey.draft === "false", `${id} a FALSE boolean is printed literally (got ${JSON.stringify(byKey.draft)})`);
+      ok(byKey.Repository === "acme/web" && byKey["Source branch"] === "proj-42-retry-guard" && byKey["Target branch"] === "main",
+        `${id} the preview rows read as words and carry their values (got ${JSON.stringify(byKey)})`);
+      ok(byKey.Draft === "no", `${id} a FALSE boolean is still printed as a value (got ${JSON.stringify(byKey.Draft)})`);
+      ok(!rows.some((r) => /[a-z]+[A-Z]|_/.test(r[0])), `${id} no schema key is printed raw (got ${rows.map((r) => r[0]).join(",")})`);
       ok(errors.length === 0, `${id} the object preview did not throw during render (${errors.join(" | ")})`);
       // Rule 3 — the ticket id is a capability handle, never copy. Asserted over the WHOLE
       // panel text and the DOM's attributes, because "not rendered" has to include a title=.
@@ -369,17 +383,39 @@ try {
       const sent = await page.evaluate(() => window.__CODER_LAST_DECISION__ || {});
       ok(sent.decision === "confirm" && sent.ticketId === "ct_9f31c0de", `${id} the decision carried the ticket id back on the wire`);
       const actions = await page.locator(".coder-action").allInnerTexts();
-      ok(actions.length === 1 && /open_pull_request/.test(actions[0]) && /ok/i.test(actions[0]) && /ms/.test(actions[0]),
-        `${id} the actions list shows name, verdict and ms (got ${JSON.stringify(actions)})`);
+      ok(actions.length === 1 && /Open a pull request/.test(actions[0]) && /ok/i.test(actions[0]) && /ms/.test(actions[0]),
+        `${id} the actions list shows the action's NAME, verdict and ms (got ${JSON.stringify(actions)})`);
+      ok(!/open_pull_request/.test(actions[0]), `${id} the actions list does not print the action id`);
+      /* F-915 - WHAT THE CONFIRMED STEP PRODUCED, as a link. The engine has always built
+         it for the step comment it writes onto the issue; it now rides the confirm answer
+         so the panel can offer it, and the reader is not left to find the pull request the
+         Coder just opened by reading the model's sentence. */
+      const link = await page.locator(".coder-link").first();
+      ok(await page.locator(".coder-link-row").count() === 1, `${id} the confirmed step's artifact is offered as one link row`);
+      // innerText is the RENDERED text and the chip is text-transform:uppercase.
+      ok(/^pull request$/i.test(await page.locator(".coder-link-kind").innerText()), `${id} the link says what KIND of thing it is`);
+      ok(/^https:\/\//.test(await link.getAttribute("href")), `${id} the link is an http(s) URL`);
+      ok((await link.getAttribute("rel") || "").includes("noreferrer"), `${id} the outbound link carries rel=noreferrer`);
       const okDot = await page.locator(".coder-action-ok").evaluate((el) => getComputedStyle(el).backgroundColor);
       ok(okDot === (theme === "dark" ? "rgb(34, 197, 94)" : "rgb(22, 163, 74)"), `${id} the ok dot is the solid green (got ${okDot})`);
       const foot = await page.locator(".coder-outcome-foot").innerText();
-      ok(/ended by final/.test(foot), `${id} the turn says how it ended (got "${foot}")`);
+      /* F-915 - "ended by final" was the engine's field printed raw, and `final` was not
+         even one of `runAgentLoop`'s endings: the mock had invented it and nothing could
+         tell, because the panel rendered whatever string arrived. The fixture now speaks
+         the loop's vocabulary and the panel renders one word per ending. */
+      ok(/finished/.test(foot) && !/ended by/.test(foot), `${id} the turn says how it ended, in words (got "${foot}")`);
       // The reply is on screen exactly ONCE: the transcript re-read owns it after a turn.
       const replies = await page.locator(".glance").evaluate((el) => (el.innerText.match(/acme\/web #418/g) || []).length);
       ok(replies === 1, `${id} the reply appears once, not twice (got ${replies})`);
-      // The decision is in the transcript, written by code and kept verbatim.
+      // The decision is in the transcript, written by code and kept verbatim ON THE WIRE.
       ok(await page.locator(".coder-msg-decision").count() === 1, `${id} the decision row is in the thread`);
+      /* F-915 - ...and RE-TOLD on screen. The stored row is addressed to the model
+         ("DECISION: the user CONFIRMED open_pull_request and it was performed.") and was
+         being shown to the person who made the decision. The parser has one home and a
+         gate of its own in refusal-contract.test.mjs; this asserts the panel uses it. */
+      const said = await page.locator(".coder-msg-decision .coder-msg-p").innerText();
+      ok(said === "You confirmed: open a pull request. Done.", `${id} the decision reads as the reader's own sentence (got "${said}")`);
+      ok(!/DECISION:|open_pull_request/.test(said), `${id} the model-facing row is not what the reader is shown`);
       /* The transcript is a scroll box, so "rendered" is not "visible". This turn's answer
          must be IN VIEW, not below the fold of the box — the defect the commit's own
          screenshots caught, where the reply existed in the DOM and nobody could see it. */
@@ -399,9 +435,11 @@ try {
        the screen could not render them. These two arms are the ones the finding names:
        `create_repo` with `private:false` (public repository) and `trigger_deploy` with a
        NESTED `inputs` (which environment). Both must be readable, key by key. */
-    for (const [action, must] of [
-      ["create_repo", { "private": "false", org: "acme", name: "acme-internal" }],
-      ["trigger_deploy", { "inputs.environment": "production", "inputs.canary": "false", "inputs.batch": "4", workflow: "deploy.yml" }],
+    for (const [action, must, sentence] of [
+      ["create_repo", { "Private": "no", "Org": "acme", "Name": "acme-internal" },
+        "Create a repository named acme-internal in acme (visible to everyone)"],
+      ["trigger_deploy", { "Inputs, environment": "production", "Inputs, canary": "no", "Inputs, batch": "4", "Workflow": "deploy.yml" },
+        "Trigger a deployment deploy.yml on acme/web for main (environment: production)"],
     ]) {
       await withPanel({ __THEME__: theme, __CODER_TICKET__: action }, async (page, errors) => {
         const id = `args/${action}/${theme}`;
@@ -409,7 +447,10 @@ try {
         await page.locator("textarea.coder-input").fill("Do it.");
         await page.locator(".coder-composer .coder-btn-go").click();
         await page.locator(".coder-consent").waitFor({ timeout: 20000 });
-        ok(await page.locator(".coder-consent-action").innerText() === action, `${id} the action is named`);
+        /* F-915 - the blast-radius argument reaches the SENTENCE as well as its row:
+           "visible to everyone" for a public repository, the environment for a deploy. */
+        ok(await page.locator(".coder-consent-action").innerText() === sentence,
+          `${id} the action reads as a sentence (want "${sentence}", got "${await page.locator(".coder-consent-action").innerText()}")`);
         const rows = await page.locator(".coder-arg-row").evaluateAll((els) =>
           Object.fromEntries(els.map((el) => [el.querySelector(".coder-arg-k").innerText, el.querySelector(".coder-arg-v").innerText])));
         for (const [k, v] of Object.entries(must)) {
@@ -478,7 +519,11 @@ try {
       ok(sent.decision === "skip", `${id} the wire carried decision "skip" (got ${sent.decision})`);
       ok(await page.locator(".coder-action").count() === 0, `${id} nothing was performed, so no actions are listed`);
       const thread = await page.locator(".coder-thread").innerText();
-      ok(/SKIPPED/.test(thread), `${id} the refusal is recorded in the transcript`);
+      /* F-915 - the row on the WIRE still says "DECISION: the user SKIPPED …" (the model
+         reads it next turn); the row on SCREEN is the reader's own sentence. */
+      ok(/You skipped: open a pull request\. Nothing ran\./.test(thread),
+        `${id} the refusal is recorded in the transcript, in the reader's words (got "${thread.slice(-160)}")`);
+      ok(!/SKIPPED|open_pull_request/.test(thread), `${id} the model-facing wording is not what the reader is shown`);
       ok(await page.locator(".coder-error").count() === 0, `${id} a Skip is not an error`);
       await designRules(page, id);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);

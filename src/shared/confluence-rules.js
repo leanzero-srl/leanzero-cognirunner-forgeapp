@@ -171,6 +171,24 @@ export const SEMANTIC_MAX_PAGES = 3;
 
 /* ── Plain-text templates (titles, comments) — NOT CQL ────────────────────── */
 
+/**
+ * F-915 — "COGNIRUNNER IS NOT ON CONFLUENCE", IN ONE PLACE.
+ *
+ * This app is installed on Jira; the Confluence rules need it installed on Confluence too,
+ * and that is a Jira admin's action on a different page. The statement and the remedy were
+ * written twice: a runtime refusal in src/premade-rules.js and, in the rule form, a
+ * DISABLED PICKER whose placeholder was the only clue. A disabled control is not an
+ * answer - it reads as "this app is broken" - so the form now renders a card that says the
+ * same thing the runtime says, and both read these two constants.
+ *
+ * The remedy names Apps, Manage apps because that is where a Jira admin adds the app to
+ * Confluence. It deliberately does NOT carry a URL: the path is site-relative, this app
+ * renders inside a sandboxed iframe with no reliable base, and a link that 404s on a
+ * customer's site is worse than a named page they can find.
+ */
+export const CONFLUENCE_NOT_INSTALLED = "CogniRunner is not installed on Confluence on this site.";
+export const CONFLUENCE_INSTALL_REMEDY = "A Jira admin installs it under Apps, Manage apps; it needs the same site, and access to the spaces this rule reads.";
+
 /** A page title, and the comment body a deterministic post-function writes. */
 export const TITLE_MAX_CHARS = 200;
 
@@ -179,8 +197,21 @@ export const TITLE_MAX_CHARS = 200;
  * post-function falls back to it at run time AND the rule form shows it as the default
  * in its placeholder, so a reader of the form sees the title their transition will
  * actually write. A second copy in the form is how the two start disagreeing.
+ *
+ * F-915 - the separator is a COLON, not an em dash. The owner's no-dash rule covers every
+ * character this app shows a human, and a page title is copy on somebody's Confluence
+ * space rather than inside this repo. The escape `\u2014` is why it survived three copy
+ * sweeps: ui-copy-dashes.test.mjs scanned for the literal glyph and could not see it, and
+ * now scans for the escape too.
+ *
+ * WHAT THE CHANGE TOUCHES, stated because a title is an IDENTITY here: the page
+ * post-function finds the page it wrote before by the advisory issue property FIRST and
+ * only falls back to the rendered title, and a rule that saved its own `titleTemplate` is
+ * not affected at all. The case that changes is a DEFAULT-titled page on an issue whose
+ * property was lost: it is now titled with a colon, so the fallback search will not match
+ * the dashed page and a second page can be created. No existing page is renamed.
  */
-export const CONFLUENCE_DEFAULT_TITLE_TEMPLATE = "{issueKey} \u2014 {summary}";
+export const CONFLUENCE_DEFAULT_TITLE_TEMPLATE = "{issueKey}: {summary}";
 export const COMMENT_TEMPLATE_MAX_CHARS = 2000;
 
 /**

@@ -22,6 +22,26 @@
  *   the line is covered by an ALLOW entry that says, in words, why the character is not
  *   copy.
  *
+ * F-915 - AND NO JS ESCAPE OF EITHER CHARACTER, which is the loophole the first
+ * version shipped with. A JS escape renders exactly the same glyph to the reader and is a
+ * completely different byte sequence to a scanner, so seven em dashes sat in the premade
+ * catalogue's rule help, one in the DEFAULT Confluence page title and two in the provider
+ * settings copy for as long as this gate has existed - green the whole time. A rule about
+ * what a human SEES has to be checked on what a human sees, so the scan now reads the two
+ * spellings of the same character. The structural exemptions and the allow-list apply to
+ * both, matched on the same line.
+ *
+ * THE FILES SCANNED, named rather than implied, because "which files does this gate see"
+ * is the first question anyone asks of it and the answer used to be three scattered
+ * constants:
+ *   - every `.js` / `.jsx` under `src/` of the four apps in `APPS`
+ *     (config-ui, admin-panel, config-view, issue-glance) - this is where JSX text lives;
+ *   - every `.js` in `src/shared/` - the ONE home of the premade rule catalogue, the
+ *     sandbox spec, the edition table, the Confluence templates and the registry limits,
+ *     all of which render into a UI they do not import;
+ *   - each file named in `BACKEND_COPY` - a backend module whose string literals reach a
+ *     human, either through a resolver answer or written into somebody's Jira issue.
+ *
  * F-845 - WHY BACKEND FILES ARE IN SCOPE AT ALL. The gate first covered only files a
  * webpack build reads, and the rule promptly grew a loophole: `VaSaveNotes.jsx` ran every
  * save-note sentence through a `noDashes` rewriter on its way to the pane. The rendered
@@ -194,12 +214,30 @@ ok(sources.length > 100,
 /** Pass 2: blank `/* ... *\/` spans that survived the JS comment mask (CSS in a template). */
 const maskCssComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
 
+/**
+ * F-915 - THE ESCAPED SPELLING OF THE SAME CHARACTER.
+ *
+ * `"a — b"` renders the identical glyph to `"a — b"` and is invisible to a byte scan.
+ * Rather than run the whole scan twice, the escape is REWRITTEN to the glyph before the
+ * scan, so every rule below - the structural exemptions, the allow-list, the column index
+ * used for the context either side - applies to it unchanged and one report shape covers
+ * both spellings.
+ *
+ * It is applied to the MASKED text only, so a docblock explaining the escape (this one,
+ * and the two in src/shared/confluence-rules.js) is not its own first offender. The
+ * substitution keeps the byte COUNT the same (six characters become one glyph plus five
+ * spaces) so that the offending column still points into the raw line, and the raw line is
+ * what gets printed: a reader is shown the escape they actually have to find.
+ */
+const unescapeDashes = (s) => s
+  .replace(/\\u201[34]/gi, (m) => (m.toLowerCase() === "\\u2014" ? EM : EN) + "     ");
+
 const offences = [];
 const used = new Set();
 for (const file of sources) {
   const rel = relative(REPO, file).split(sep).join("/");
   const src = readFileSync(file, "utf8");
-  const masked = maskCssComments(maskComments(src));
+  const masked = unescapeDashes(maskCssComments(maskComments(src)));
   const rawLines = src.split("\n");
   masked.split("\n").forEach((mline, i) => {
     if (!mline.includes(EM) && !mline.includes(EN)) return;

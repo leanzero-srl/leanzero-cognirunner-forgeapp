@@ -1922,7 +1922,7 @@ export default function OpenAIConfig({ invoke }) {
                   </div>
                   <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                     {loadFailed
-                      ? `CogniRunner couldn\u2019t read the stored key status for ${providerLabel}. Nothing has changed \u2014 retry, or paste a key below to configure this provider now.`
+                      ? `CogniRunner couldn\u2019t read the stored key status for ${providerLabel}. Nothing has changed: retry, or paste a key below to configure this provider now.`
                       : isLmStudio
                       ? lmStatusBody
                       : isAtlassian

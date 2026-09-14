@@ -41,6 +41,7 @@ import {
 import {
   CQL_MAX_CHARS, TITLE_MAX_CHARS, COMMENT_TEMPLATE_MAX_CHARS,
   CONFLUENCE_DEFAULT_TITLE_TEMPLATE, renderTextTemplate, renderCqlTemplate,
+  CONFLUENCE_NOT_INSTALLED, CONFLUENCE_INSTALL_REMEDY,
 } from "../../../../src/shared/confluence-rules.js";
 import { redosRisk } from "../../../../src/shared/regex-safety.js";
 import { gitProviderKindMeta, normalizeRepoId } from "../../../../src/shared/git-ids.js";
@@ -932,7 +933,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
               value={connectionId}
               onChange={(v) => { setConnectionId(v); setRepo(""); }}
               searchable
-              placeholder={gitConnections.length ? "Choose a git connection…" : "No git connections, an admin adds them in CogniRunner Settings → Code"}
+              placeholder={gitConnections.length ? "Choose a git connection…" : "No git connections, an admin adds them under Apps, CogniRunner, Code"}
               options={gitConnections.map((c) => ({
                 value: c.id,
                 label: c.label || c.id,
@@ -963,7 +964,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
               <div className="pr-git-dead" role="alert">
                 <span className="pr-git-dead-title">This credential is dead</span>
                 <span className="pr-git-dead-text">
-                  {gitConn.authDeadReason || "The provider rejected it."} This rule cannot check anything until an admin replaces the credential in Settings → Code.
+                  {gitConn.authDeadReason || "The provider rejected it."} This rule cannot check anything until an admin replaces the credential under Apps, CogniRunner, Code.
                 </span>
               </div>
             )}
@@ -1087,6 +1088,22 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
                     ? "Couldn't load spaces - Retry below"
                     : (!spaces.length ? "No Confluence spaces - install CogniRunner on Confluence, or check its access" : "Choose a Confluence space\u2026")}
                 />
+                {/* F-915 - A DISABLED PICKER IS NOT AN ANSWER. With no spaces the reader
+                    saw an empty control and a placeholder, which reads as "this app is
+                    broken" rather than "one install is missing". The card says what is
+                    missing and who fixes it, in the SAME words the runtime refusal uses
+                    (src/shared/confluence-rules.js, read by src/premade-rules.js too), so
+                    a designer and an operator are never told two different things.
+                    Solid slate, white text, no rail and no tint; it is a STATEMENT, not a
+                    failure, so it is not the red one errors use. */}
+                {!listsError && !spaces.length && (
+                  <div className="pr-conf-missing" role="note">
+                    <span className="pr-conf-missing-title">{CONFLUENCE_NOT_INSTALLED}</span>
+                    <span className="pr-conf-missing-text">
+                      {CONFLUENCE_INSTALL_REMEDY} This rule cannot be saved until a space can be picked.
+                    </span>
+                  </div>
+                )}
                 {listsError && (
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px", fontSize: "12px", color: "var(--error-color)" }}>
                     <span>Couldn't load the space list.</span>
@@ -1190,7 +1207,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
 
             {confluenceSubEnabled(p, "parentId") && (
               <div className="form-group">
-                <label className="label">Parent page id <span className="pr-opt">optional</span></label>
+                <label className="label">Parent page (id from the page URL) <span className="pr-opt">optional</span></label>
                 <input
                   className="input pr-mono"
                   placeholder="e.g. 393217"
@@ -1200,7 +1217,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
                 <p className="hint">
                   {parentId.trim() && !/^[0-9]{1,32}$/.test(parentId.trim())
                     ? "A parent page id is the number in the page's URL - digits only."
-                    : "New pages are created under this page. Leave it empty to create them at the top of the space."}
+                    : "New pages are created under this page. Open the parent in Confluence and copy the number out of its URL (.../pages/393217/...). Leave it empty to create them at the top of the space."}
                 </p>
               </div>
             )}
@@ -1268,11 +1285,16 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
       {!unavailable && !valid && ruleType && <p className="hint">Fill in the rule's details to finish.</p>}
 
       <p className="hint pr-foot">
+        {/* F-915 - THE FOOTER IS PER RULE, NOT PER MODE. It was keyed on "is this a
+            post-function", so the two CONFLUENCE post-functions were told, in the app's
+            own voice, that "the Coder works in the background for several minutes" - about
+            a rule the Coder has nothing to do with. The sentence now comes from the
+            catalogue row's own foot, which is the same file that already owns the rule's
+            label and its help, and the mode-wide sentence is only the fallback for a row
+            that has not been given one. */}
         {mode === "postfunction"
-          // A premade post-function is not a gate: it runs after the transition and reports
-          // on the issue. The Coder also takes MINUTES, which is the one thing a designer
-          // must know before saving it onto a transition people use.
-          ? "This runs AFTER the transition, so it never blocks anyone. The Coder works in the background for several minutes and posts its plan, its log and its result onto the issue."
+          ? (rule && rule.foot)
+            || "This runs AFTER the transition, so it never blocks anyone."
           : mode === "condition"
           ? "If the rule isn't met, the transition is hidden (no message). If the check can't run, the transition is shown (it never silently hides one). No AI is used."
           : (hasGitGroup(p) || hasConfluenceGroup(p)) && strict

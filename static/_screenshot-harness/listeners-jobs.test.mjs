@@ -1477,8 +1477,9 @@ try {
         const t = (await note.innerText()).replace(/\s+/g, " ").trim();
         ok(/This needs CogniRunner Coder\./.test(t),
           `M6g ${theme} ${label}: the note names the EDITION (got: ${t})`);
-        ok(/Upgrade in Settings to unlock/.test(t), // F-330 wording
-          `M6g ${theme} ${label}: and names the remedy and where to do it`);
+        // F-330 wording; F-915 moved the remedy to the page that actually carries it.
+        ok(/Upgrade CogniRunner under Apps, Manage apps to unlock/.test(t),
+          `M6g ${theme} ${label}: and names the remedy and where to do it (got: ${t})`);
 
         ok(await page.locator(`${root} .load-error`).count() === 0,
           `M6g ${theme} ${label}: an edition denial is NOT rendered as a failed load`);

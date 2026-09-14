@@ -392,19 +392,28 @@ console.log("\nF-273 the upgrade copy");
 
   const known = ADVANCED_FEATURES[0];
   const text = upgradeRequiredText({ success: false, reason: "upgrade-required", featureId: known.id });
-  ok(text === `Upgrade in Settings to unlock ${known.label}.`,
+  ok(text === `Upgrade CogniRunner under Apps, Manage apps to unlock ${known.label}. CogniRunner Settings changes the AI provider, not the edition.`,
     "F-273 a known featureId renders its label from ADVANCED_FEATURES and names the remedy");
   ok(text.includes(known.label),
     "F-273 the label comes from the shared table, not a frontend copy of it");
-  ok(/Upgrade in Settings/.test(text) && !/Retry|Ask a CogniRunner admin/.test(text),
+  ok(/Upgrade CogniRunner under Apps, Manage apps/.test(text) && !/Retry|Ask a CogniRunner admin/.test(text),
     "F-273 the remedy is an upgrade — never a retry and never a role request");
+  /* F-915 — THE PAGE THE REMEDY NAMES HAS TO BE THE PAGE THAT CARRIES IT. "Upgrade in
+     Settings" sent a paying admin to the provider picker over a billing question; the
+     edition is a Marketplace subscription and lives under Apps, Manage apps. Both places
+     are named, each with its own subject, and the gate is on BOTH halves: dropping either
+     one re-creates the defect in the opposite direction. */
+  ok(!/Upgrade in Settings/.test(text),
+    "F-915 the remedy no longer claims the edition is changed in Settings");
+  ok(/Manage apps/.test(text) && /Settings changes the AI provider/.test(text),
+    "F-915 the sentence names Manage apps for the edition AND Settings for the provider");
 
   /* Unknown / absent featureId degrades rather than guessing, the same discipline the
      unnamed-role case follows. A wrong confident claim about what someone must buy is
      worse than a vague true one. */
-  ok(upgradeRequiredText({ featureId: "no-such-feature" }) === "Upgrade in Settings to unlock this feature.",
+  ok(upgradeRequiredText({ featureId: "no-such-feature" }) === "Upgrade CogniRunner under Apps, Manage apps to unlock this feature. CogniRunner Settings changes the AI provider, not the edition.",
     "F-273 an unknown featureId degrades to 'this feature' instead of guessing");
-  ok(upgradeRequiredText({}) === "Upgrade in Settings to unlock this feature.",
+  ok(upgradeRequiredText({}) === "Upgrade CogniRunner under Apps, Manage apps to unlock this feature. CogniRunner Settings changes the AI provider, not the edition.",
     "F-273 a missing featureId degrades the same way");
 
   /* F-330 — the body sentence must read as a sentence for EVERY row of the table, not just
@@ -415,13 +424,103 @@ console.log("\nF-273 the upgrade copy");
   for (const f of ADVANCED_FEATURES) {
     const body = upgradeRequiredText({ featureId: f.id });
     ok(/^[A-Z]/.test(body), `F-330 the body opens with a capital for "${f.id}" (got "${body.slice(0, 24)}…")`);
-    ok(body.endsWith(`${f.label}.`),
+    /* F-915 moved the label off the END of the string (a second clause now names where
+       Settings fits), so the assertion is that the label is used VERBATIM and closes its
+       OWN clause. Re-casing it or rewording it still fails, which is what F-330 was for. */
+    ok(body.includes(`to unlock ${f.label}.`),
       `F-330 the label is used VERBATIM as a noun phrase for "${f.id}", never re-cased or re-worded`);
     ok(!/Coder edition|CogniRunner Coder/.test(body),
       `F-330 the body does not repeat the edition name for "${f.id}" — the headline names it once`);
   }
   ok(!/—/.test(upgradeRequiredText({ featureId: "coder" })),
-    "F-330 the two-clause em-dash sentence is gone; the body is one clause");
+    "F-330 the em-dash sentence is gone");
+}
+
+/* F-915 — THE ACTION VOCABULARY, AND THE ONE PROSE PARSE THIS REPO ALLOWS.
+ *
+ * The Coder panel printed the engine's identifiers to the person authorising a write:
+ * `open_pull_request`, `sourceBranch`, `draft false`, "ended by final". The words now come
+ * from src/shared/agent-actions.js, which is also where the ids live, so a new action
+ * arrives with its own sentence instead of arriving as an identifier on a screen.
+ *
+ * The DECISION ROW is the delicate half. `confirmCoderTicket` writes a model-facing line
+ * into the thread ("DECISION: the user CONFIRMED open_pull_request and it was performed.")
+ * and the panel used to render it verbatim. It is now parsed — the one place in this repo
+ * where matching on prose is allowed, and it is allowed because the sentence has exactly
+ * ONE writer, in code, with a fixed grammar. What makes that safe rather than lucky is
+ * THIS block: the four templates are read out of src/coder-engine.js and pushed through
+ * the parser, so rewording one of them there without teaching the parser fails the build
+ * instead of silently turning a decision row back into engine prose in somebody's panel.
+ */
+console.log("\nF-915 the action vocabulary and the decision grammar");
+{
+  const {
+    agentActionLabel, agentActionPhrase, describeAgentAction, previewKeyLabel,
+    agentEndingText, parseDecisionRow, decisionRowSentence,
+  } = await import("../../src/shared/agent-actions.js");
+
+  // The finding's own sentence, field for field, from the preview the engine really sends.
+  ok(describeAgentAction("open_pull_request", {
+    repo: "acme/web", title: "Retry guard", sourceBranch: "proj-42-retry-guard", targetBranch: "main", draft: false,
+  }) === "Open a pull request on acme/web from proj-42-retry-guard into main (draft: no)",
+    "F-915 a consent preview becomes one sentence naming repo, both branches and the draft flag");
+  // The two blast-radius arguments F-363 put in the preview keep their own words.
+  ok(/visible to everyone/.test(describeAgentAction("create_repo", { name: "acme-internal", org: "acme", private: false })),
+    "F-915 private:false is spelled out as a visibility statement, never dropped");
+  ok(/environment: production/.test(describeAgentAction("trigger_deploy", { repo: "acme/web", workflow: "deploy.yml", ref: "main", inputs: { environment: "production" } })),
+    "F-915 a nested deploy input reaches the sentence");
+  // Degrading: an id this file has never heard of must read as words, never as an id.
+  ok(!/_/.test(describeAgentAction("some_new_action", { issueKey: "PROJ-42" })),
+    "F-915 an unknown action id humanises instead of printing an identifier");
+  ok(describeAgentAction("open_pull_request", null) === "Open a pull request",
+    "F-915 a ticket with no arguments degrades to the action's own name");
+
+  ok(agentActionLabel("open_pull_request") === "Open a pull request"
+    && agentActionPhrase("open_pull_request") === "open a pull request",
+    "F-915 the heading and the mid-sentence form come from the catalogue's own label");
+  ok(previewKeyLabel("sourceBranch") === "Source branch" && previewKeyLabel("inputs.environment") === "Inputs, environment",
+    "F-915 a preview key reads as words and a nested leaf keeps its path");
+
+  /* The endings are `runAgentLoop`'s own `endedBy` values and nothing else. "final" was
+     never one of them — the mock bridge invented it and the panel printed it raw. */
+  ok(agentEndingText("finish") === "finished" && agentEndingText("rounds") === "stopped at the round limit"
+    && agentEndingText("halt") === "waiting for you",
+    "F-915 each real ending has one word");
+  ok(agentEndingText("final") === "" && agentEndingText("") === "",
+    "F-915 an ending with no word is left unsaid, never printed as a token");
+
+  /* THE GRAMMAR GATE. Read the four templates from the engine and run the sentences the
+     engine would really write through the parser. */
+  const engine = readFileSync(join(ROOT, "src", "coder-engine.js"), "utf8");
+  for (const needle of [
+    "DECISION: the user CONFIRMED ${ticket.action}",
+    "DECISION: the user SKIPPED ${ticket.action}",
+    "DECISION: the user asked to CHANGE ${ticket.action}",
+    "was REFUSED at confirmation time and NOT performed",
+  ]) {
+    ok(engine.includes(needle), `F-915 src/coder-engine.js still writes "${needle.slice(0, 44)}…" (reword it and the parser must move with it)`);
+  }
+
+  const rows = [
+    ["DECISION: the user CONFIRMED open_pull_request and it was performed.",
+      "You confirmed: open a pull request. Done."],
+    ["DECISION: the user CONFIRMED open_pull_request but it failed. Reason: the branch is gone",
+      "You confirmed: open a pull request. It failed: the branch is gone"],
+    ["DECISION: the user SKIPPED open_pull_request. It was not performed and must not be retried unless they ask again.",
+      "You skipped: open a pull request. Nothing ran."],
+    ["DECISION: the user asked to CHANGE open_pull_request before it runs. Their words: target develop instead",
+      "You asked for a change to: open a pull request. Your words: target develop instead"],
+    [`DECISION: trigger_deploy was REFUSED at confirmation time and NOT performed ${String.fromCharCode(0x2014)} this site cannot run it.`,
+      "Trigger a deployment could no longer be confirmed: this site cannot run it. Nothing ran."],
+  ];
+  for (const [raw, want] of rows) {
+    ok(decisionRowSentence(raw) === want, `F-915 "${raw.slice(9, 40)}…" reads as "${want}" (got "${decisionRowSentence(raw)}")`);
+    ok(!/[a-z]+_[a-z]+/.test(decisionRowSentence(raw)), "F-915 no action id survives into the decision sentence");
+  }
+  /* A row the parser does not recognise answers "" so the panel prints the row as it
+     stands. Degrading to the engine's own sentence is honest; inventing one is not. */
+  ok(parseDecisionRow("something else entirely") === null && decisionRowSentence("something else entirely") === "",
+    "F-915 an unparseable decision row is handed back untouched, never guessed at");
 }
 
 

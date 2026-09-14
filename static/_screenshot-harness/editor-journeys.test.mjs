@@ -872,12 +872,18 @@ try {
       const txt = (await note.innerText()).replace(/\s+/g, " ").trim();
       ok(/This needs CogniRunner Coder\./.test(txt),
         `F-273 ${theme} the note names the edition — got: ${JSON.stringify(txt)}`);
-      ok(/Upgrade in Settings to unlock /.test(txt),
+      ok(/Upgrade CogniRunner under Apps, Manage apps to unlock /.test(txt),
         `F-273 ${theme} and names the remedy and where to do it — got: ${JSON.stringify(txt)}`);
+      /* F-915 — Settings is where the PROVIDER is chosen; the EDITION is a Marketplace
+         subscription changed under Apps, Manage apps. Sending a paying admin to Settings
+         over a billing question is F-255's defect in the other direction, so the sentence
+         names both places and gives each one its subject. */
+      ok(/CogniRunner Settings changes the AI provider, not the edition/.test(txt),
+        `F-915 ${theme} Settings is named for what it DOES change — got: ${JSON.stringify(txt)}`);
       /* F-330 — the body under that headline is a sentence: it opens with a capital and does
          not say "Coder" a second and third time. Asserted on the LIVE render, not the pure
          function, because the defect was only ever visible as two stacked lines. */
-      ok(/This needs CogniRunner Coder\. Upgrade in Settings to unlock /.test(txt),
+      ok(/This needs CogniRunner Coder\. Upgrade CogniRunner under Apps, Manage apps to unlock /.test(txt),
         `F-330 ${theme} headline then a capitalised one-clause body — got: ${JSON.stringify(txt)}`);
       ok(!/Coder edition/.test(txt),
         `F-330 ${theme} the body does not re-announce the edition the headline just named — got: ${JSON.stringify(txt)}`);
@@ -3366,7 +3372,45 @@ try {
       await page.getByText(/No CogniRunner activity recorded/i).waitFor({ timeout: 8000 });
       ok(await page.getByText(/No CogniRunner activity recorded/i).count() > 0, "E14 empty issue → honest empty state");
       ok(await page.locator(".glance-item").count() === 0, "E14 no activity items rendered");
+      /* F-915 - AN HONEST EMPTY STATE IS NOT ENOUGH IF IT IS ALSO A DEAD END. A cold walk
+         of a real issue found this panel to be the developer's first contact with the app,
+         saying nothing had happened and offering no way to make anything happen. The Coder
+         lives in a SEPARATE issue panel that Jira does not show until the reader adds it
+         from the issue's Apps control, so the sentence has to name both the control and the
+         panel's title. Asserted on the words a reader would look for, not on a class. */
+      const empty = await page.locator(".glance-empty").innerText();
+      ok(/Apps/.test(empty) && /CogniRunner Coder/.test(empty),
+        `E14 the empty state names the Apps button and the Coder panel (got "${empty}")`);
+      ok(/describe what you want done/i.test(empty), "E14 ...and says what to do once it is open");
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, "glance-empty-pointer-light.png") });
     } catch (e) { fail++; console.log("  ✗ E14 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+
+    // The same state in DARK. The sentence carries two <strong> runs, and emphasis is the
+    // one device in this app that has to be legible on both backgrounds.
+    const envDark = await openEditor(browser, "issue-glance", "issue-glance-empty", "dark");
+    try {
+      await envDark.page.locator(".glance-empty").waitFor({ timeout: 8000 });
+      ok(/CogniRunner Coder/.test(await envDark.page.locator(".glance-empty").innerText()), "E14 dark carries the same pointer");
+      if (SHOTS) await envDark.page.locator(".glance").screenshot({ path: path.join(OUT, "glance-empty-pointer-dark.png") });
+    } catch (e) { fail++; console.log("  ✗ E14 dark threw: " + e.message.split("\n")[0]); }
+    await closeEditor(envDark);
+  }
+
+  /* --------- E14b — F-915: the pointer is EDITION-GATED, on the restrictive side --------
+     The Coder panel refuses a Standard install (`coderGate`), so a Standard reader sent to
+     it would arrive at a card that tells them no. The empty state still says what it
+     always said; it just stops offering a door that is locked. */
+  {
+    console.log("E14b issue-glance empty state, Standard edition (F-915)");
+    const env = await openEditor(browser, "issue-glance", "issue-glance-empty", "light", { __STANDARD__: true });
+    const { page } = env;
+    try {
+      await page.locator(".glance-empty").waitFor({ timeout: 8000 });
+      const empty = await page.locator(".glance-empty").innerText();
+      ok(/No CogniRunner activity recorded/i.test(empty), "E14b the empty state itself is unchanged on Standard");
+      ok(!/CogniRunner Coder/.test(empty), `E14b a Standard install is NOT pointed at the Coder panel (got "${empty}")`);
+    } catch (e) { fail++; console.log("  ✗ E14b threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 
@@ -3896,6 +3940,31 @@ try {
       ok(await page.locator("input[placeholder='e.g. 393217']").count() === 1, `J16v (${theme}) the page rule draws the parent page id`);
       ok(await page.locator("textarea[placeholder*='moved on']").count() === 0, `J16v (${theme}) the page rule draws NO comment text`);
       ok(await page.locator(".pr-git-toggle-row").count() === 0, `J16v (${theme}) a post-function draws NO Strict toggle - it cannot block anything`);
+      /* F-915 - THE FOOTER TALKED ABOUT THE CODER ON A CONFLUENCE RULE. It was keyed on
+         "is this a post-function", so a designer configuring a page rule was told, in the
+         app's own voice, that "the Coder works in the background for several minutes".
+         The sentence now comes from the catalogue row's own `foot`, beside its label and
+         its help, and this asserts the WORDS the reader ends up with. */
+      const confFoot = await page.locator(".pr-foot").innerText();
+      ok(!/Coder/.test(confFoot), `J16v (${theme}) a Confluence rule's footer does not mention the Coder (got "${confFoot}")`);
+      /* F-915 - AND NEITHER DOES THE SAVE GATE ABOVE THE FORM. It was keyed on "is this a
+         post-function", so a designer with an unfinished CONFLUENCE rule was told to "pick
+         what the Coder should do" and that "the connection and the repository are required
+         too" - of a rule that has neither. It is keyed on the same `requiresCapability`
+         predicate the capability card uses. The rule is unfinished at this point (no space
+         has been picked yet), which is exactly when the gate renders. */
+      if (await page.locator(".cpf-gate").count() > 0) {
+        const gate = (await page.locator(".cpf-gate").innerText()).replace(/\s+/g, " ");
+        ok(!/Coder/.test(gate) && !/repository/i.test(gate),
+          `J16v (${theme}) the save gate does not describe the Coder on a Confluence rule (got "${gate}")`);
+        ok(/Fill in this rule's details/.test(gate), `J16v (${theme}) it names what it actually wants (got "${gate}")`);
+      }
+      ok(/runs AFTER the transition/.test(confFoot) && /link to it/.test(confFoot),
+        `J16v (${theme}) it says what the PAGE rule does instead (got "${confFoot}")`);
+      /* F-915 - the parent page id says where the number comes from, in the LABEL, because
+         the question a reader has at that box is "which number is that". */
+      const parentLabel = await page.locator(".label", { hasText: "Parent page" }).first().innerText();
+      ok(/id from the page URL/i.test(parentLabel), `J16v (${theme}) the parent control names its source (got "${parentLabel}")`);
       const titleDefault = await page.locator("input[placeholder*='Default:']").first().getAttribute("placeholder");
       ok(/\{issueKey\}/.test(titleDefault) && /\{summary\}/.test(titleDefault), `J16v (${theme}) the default title is the run time's own fallback (got "${titleDefault}")`);
       // A parent that is not a page id is refused in front of the reader.
@@ -3939,6 +4008,11 @@ try {
       const savedComment = await page.evaluate(async () => JSON.parse(await window.__ON_CONFIGURE__()));
       ok(savedComment.ruleType === "postfunction-confluence-comment", `J16v (${theme}) the comment rule saves its catalogue key`);
       ok(savedComment.commentTemplate === "{issueKey} moved: {summary}", `J16v (${theme}) the comment rule saves the comment template`);
+      // F-915 - and the COMMENT rule gets its own footer, not the page rule's and not the Coder's.
+      const cFoot = await page.locator(".pr-foot").innerText();
+      ok(!/Coder/.test(cFoot) && /no AI and no token cost/i.test(cFoot),
+        `J16v (${theme}) the comment rule's footer is its own (got "${cFoot}")`);
+      if (SHOTS) await page.locator(".pr-form").screenshot({ path: path.join(OUT, `conf-pf-comment-${theme}.png`) });
       ok(savedComment.spaceKey === "ENG", `J16v (${theme}) the comment rule saves its space`);
       ok(!("titleTemplate" in savedComment) && !("parentId" in savedComment) && !("cqlTemplate" in savedComment),
         `J16v (${theme}) the page rule's params did NOT survive the rule-type switch`);
@@ -3963,6 +4037,28 @@ try {
       const empty = page.locator(".dropdown-trigger", { hasText: "No Confluence spaces" }).first();
       ok(await empty.count() > 0, "J16w the empty picker says CogniRunner is not installed on Confluence");
       ok(await page.locator("select").count() === 0, "J16w still no native <select>");
+      /* F-915 - A DISABLED PICKER IS NOT AN ANSWER. The placeholder was the whole story,
+         and an empty control reads as "this app is broken" rather than "one install is
+         missing". The card under it says what is missing and who fixes it, in the SAME
+         words the runtime refusal uses - both read src/shared/confluence-rules.js, so an
+         operator reading the execution log and a designer reading this form are never
+         told two different things. */
+      const card = page.locator(".pr-conf-missing");
+      ok(await card.count() === 1, "J16w the missing install is stated as a card, not only as a placeholder");
+      const cardText = (await card.innerText()).replace(/\s+/g, " ");
+      ok(/not installed on Confluence on this site/.test(cardText), "J16w the card says what is missing");
+      ok(/Apps, Manage apps/.test(cardText), "J16w ...and names the page a Jira admin does it on");
+      ok(/cannot be saved/.test(cardText), "J16w ...and says what that means for this rule");
+      /* The owner's rules on the new hue, both themes, at the render: a solid fill with
+         white text, and never a left rail. */
+      const cardStyle = await card.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bg: cs.backgroundColor, fg: cs.color, leftBorder: cs.borderLeftWidth };
+      });
+      ok(cardStyle.bg === "rgb(71, 85, 105)", `J16w the card is the SOLID neutral slate (got ${cardStyle.bg})`);
+      ok(cardStyle.fg === "rgb(255, 255, 255)", `J16w white text on it (got ${cardStyle.fg})`);
+      ok(cardStyle.leftBorder === "0px", `J16w and no left accent rail (got ${cardStyle.leftBorder})`);
+      if (SHOTS) await page.locator(".pr-form").screenshot({ path: path.join(OUT, "conf-not-installed-light.png") });
       await page.locator("textarea.pr-conf-tpl").first().fill("title ~ {issueKey}");
       const saved = await page.evaluate(async () => {
         const raw = await window.__ON_CONFIGURE__();
@@ -3970,6 +4066,28 @@ try {
       });
       ok(saved === null, "J16w a Confluence rule with no space is NOT savable (it would block every transition)");
     } catch (e) { fail++; console.log("  ✗ J16w threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* J16w-dark - F-915: the new hue needs its dark override proven, not assumed. */
+  {
+    console.log("J16w-dark Confluence not installed, dark (F-915)");
+    const env = await openEditor(browser, "config-ui", "cfg-premade-confluence", "dark", { __NO_CONFLUENCE__: true });
+    const { page } = env;
+    try {
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "a page for this issue exists" }).first().click();
+      await page.locator(".pr-conf-missing").waitFor({ timeout: 8000 });
+      const s = await page.locator(".pr-conf-missing").evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bg: cs.backgroundColor, fg: cs.color, leftBorder: cs.borderLeftWidth };
+      });
+      ok(s.bg === "rgb(100, 116, 139)", `J16w-dark the card uses the DARK slate (got ${s.bg})`);
+      ok(s.fg === "rgb(255, 255, 255)", `J16w-dark white text in dark too (got ${s.fg})`);
+      ok(s.leftBorder === "0px", `J16w-dark still no left accent rail (got ${s.leftBorder})`);
+      if (SHOTS) await page.locator(".pr-form").screenshot({ path: path.join(OUT, "conf-not-installed-dark.png") });
+    } catch (e) { fail++; console.log("  ✗ J16w-dark threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 

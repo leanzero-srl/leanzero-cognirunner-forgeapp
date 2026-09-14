@@ -1480,7 +1480,7 @@ const CODER_TURN_TICKET = () => {
   const action = CODER_TICKET_ACTION();
   return {
     success: true, reply: "", actions: [{ name: "create_branch", args: { name: "proj-42-retry-guard" }, ok: true, ms: 640 }],
-    usage: { totalTokens: 8120 }, endedBy: "awaiting_confirmation", rounds: 2,
+    usage: { totalTokens: 8120 }, endedBy: "halt", rounds: 2,
     awaiting: "confirm",
     ticket: { id: CODER_TICKET_ID, action, argsPreview: { ...CODER_TICKET_ARGS[action] } },
   };
@@ -1488,7 +1488,7 @@ const CODER_TURN_TICKET = () => {
 const CODER_TURN_PLAIN = {
   success: true, reply: "The retry guard is in and the branch is pushed.\n\nI did not open a pull request, because you have not asked for one yet.",
   actions: [{ name: "create_branch", args: {}, ok: true, ms: 640 }, { name: "commit_files", args: {}, ok: true, ms: 1210 }, { name: "trigger_build", args: {}, ok: false, ms: 300 }],
-  usage: { totalTokens: 9400 }, endedBy: "final", rounds: 3,
+  usage: { totalTokens: 9400 }, endedBy: "finish", rounds: 3,
 };
 const CODER_TURN_AFTER = (decision) => ({
   success: true,
@@ -1496,7 +1496,7 @@ const CODER_TURN_AFTER = (decision) => ({
     ? "Understood, no pull request. The branch is pushed and waiting for you."
     : "The pull request is open: acme/web #418.",
   actions: decision === "skip" ? [] : [{ name: "open_pull_request", args: {}, ok: true, ms: 980 }],
-  usage: { totalTokens: 5100 }, endedBy: "final", rounds: 1,
+  usage: { totalTokens: 5100 }, endedBy: "finish", rounds: 1,
 });
 let CODER_LAST_DECISION = "confirm";
 let CODER_POLLS = 0;
@@ -1555,7 +1555,15 @@ function coderInvoke(name, payload) {
       if (typeof window !== "undefined" && window.__CODER_NO_RESUME__) {
         return Promise.resolve({ success: true, resume: true, resumed: false, error: "The decision was recorded, but the Coder could not be resumed: the queue refused the push." });
       }
-      return Promise.resolve({ success: true, resume: true, async: true, taskId: "coder_turn_2" });
+      /* F-915 - THE LINKS THE CONFIRM ANSWER CARRIES. `stepLinksFromResult`
+         (src/coder-engine.js) builds them from the provider's own `url` for a CONFIRMED
+         step that actually ran, which is why they are absent on skip and on change: a link
+         under a step that did not happen is a claim about work nobody did. The shape is the
+         engine's, `{kind, url, title}`. */
+      const linked = decision === "confirm" && CODER_TICKET_ACTION() === "open_pull_request"
+        ? { links: [{ kind: "pr", url: "https://example.invalid/acme/web/pull/418", title: "Retry guard for the payment client" }] }
+        : {};
+      return Promise.resolve({ success: true, resume: true, async: true, taskId: "coder_turn_2", ...linked });
     }
     case "getAsyncTaskResult": {
       const slow = typeof window !== "undefined" && window.__CODER_SLOW__;

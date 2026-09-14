@@ -129,7 +129,14 @@ const injectStyles = () => {
     /* -- the consent chip row: the action, its preview, three answers -- */
     .coder-consent { border: 1px solid var(--border-color); border-radius: 8px; background: var(--card-bg); padding: 10px 11px; }
     .coder-consent-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .coder-consent-action { font-size: 12.5px; font-weight: 700; color: var(--text-color); word-break: break-all; }
+    /* F-915 - break-all was right when this held ONE identifier (open_pull_request has no
+       space to break at, and an issue panel is narrow). It now holds a sentence, and
+       break-all cuts words in half mid-line ("environmen / t: production"). break-word
+       keeps whole words and still breaks a long branch name that cannot fit.
+       NOTE: no backticks anywhere in this block - it is inside injectStyles()'s template
+       literal, where a backtick compiles as string concatenation and silently breaks the
+       CSS (the trap css-namespace.test.mjs N3 exists for). */
+    .coder-consent-action { font-size: 12.5px; font-weight: 700; color: var(--text-color); overflow-wrap: anywhere; word-break: break-word; }
     .coder-consent-args { margin: 7px 0 0; font-size: 12px; font-weight: 500; color: var(--text-secondary); word-break: break-word; }
     /* F-374 - the preview is a key/value LIST, so a boolean the user must see (create_repo
        private:false) cannot hide inside a sentence. Key column is bold and dark; the value
@@ -166,6 +173,17 @@ const injectStyles = () => {
     .coder-action-name { font-weight: 700; color: var(--text-color); word-break: break-all; }
     .coder-action-verdict { font-weight: 700; color: var(--text-secondary); text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
     .coder-action-ms { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+    /* F-915 - WHAT THE CONFIRMED STEP PRODUCED, as something you can open. The kind is a
+       SOLID chip with white text (the skills violet, because a pull request the Coder
+       opened is the Coder's own artifact) and the title is the link. No rail, no tint, and
+       a dark override for the one hue this block introduces. */
+    .coder-links { list-style: none; margin: 9px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+    .coder-link-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
+    .coder-link-kind { flex: 0 0 auto; background: #7c3aed; color: #fff; font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 4px; padding: 2px 6px; }
+    html[data-color-mode="dark"] .coder-link-kind { background: #8b5cf6; color: #150429; }
+    .coder-link { font-weight: 600; color: var(--link-color, #2563eb); text-decoration: none; word-break: break-word; }
+    .coder-link:hover { text-decoration: underline; }
+    html[data-color-mode="dark"] .coder-link { color: #3b82f6; }
     .coder-outcome-foot { margin: 9px 0 0; font-size: 11px; font-weight: 600; color: var(--text-muted); }
     /* F-857 - the writes that did not land on the issue. Solid red with white text, the
        same device every other named failure in this app uses, because a turn that answered
@@ -652,8 +670,30 @@ export default function App() {
       )}
       {state === "loading" && <div className="glance-spinner" aria-label="Loading activity" />}
       {state === "error" && <div className="glance-err">Couldn't load activity. Try reloading the issue.</div>}
+      {/* F-915 - AN EMPTY STATE THAT SAYS WHERE TO GO NEXT.
+           A cold walk found the developer's first contact with this app on a real issue to
+           be this panel, saying nothing had happened and offering no way to make anything
+           happen. The Coder is a SEPARATE module on the same issue (`jira:issuePanel
+           coder-panel`, manifest.yml, titled "CogniRunner Coder"), and Jira's new issue
+           view does not render an issue panel until the reader adds it from the issue's
+           Apps control - so somebody who has never opened it has no reason to know it is
+           there. One sentence names the control and the panel's title, which is the whole
+           journey from here to a first turn. It is deliberately not a button: this app
+           cannot open another module's panel from inside its own iframe.
+
+           It is gated on the EDITION, on the restrictive side: the Coder panel refuses a
+           Standard install (`coderGate`), so pointing a Standard reader at it would be
+           sending them to a card that tells them no. `edition` is read from the licence on
+           mount and is always a real id, never blank. */}
       {(state === "ready" || state === "notVisible") && items.length === 0 && (
-        <div className="glance-empty">No CogniRunner activity recorded on this issue yet. Validators, conditions and post-functions that run on this issue's transitions will appear here.</div>
+        <div className="glance-empty">
+          No CogniRunner activity recorded on this issue yet. Validators, conditions and post-functions that run on this issue's transitions will appear here.
+          {edition === EDITION_IDS.ADVANCED && (
+            <>
+              {" "}To give the Coder work on this issue, open the <strong>CogniRunner Coder</strong> panel from the <strong>Apps</strong> button at the top of the issue and describe what you want done.
+            </>
+          )}
+        </div>
       )}
       {(state === "ready" || state === "notVisible") && items.length > 0 && (
         <div className="glance-list">

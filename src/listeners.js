@@ -41,7 +41,7 @@ import {
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { knowledgeBudget, fieldGuideAudience, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
+import { knowledgeBudget, fieldGuideAudience, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText, normalizeGenerationMeta } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
@@ -276,7 +276,14 @@ export const normalizeStep = (fn = {}, i = 0) => {
   if (out.code.length > STEP_CODE_MAX) throw new Error(`step "${out.name}" code exceeds ${STEP_CODE_MAX} characters (${out.code.length}) — split it into smaller steps`);
   if (Array.isArray(s.selectedDocIds)) out.selectedDocIds = uniqStrings(s.selectedDocIds, 10);
   if (Array.isArray(s.selectedSkillIds)) out.selectedSkillIds = uniqStrings(s.selectedSkillIds, 4);
-  if (s.generationMeta && typeof s.generationMeta === "object") out.generationMeta = s.generationMeta;
+  // F-800 — provenance is DISPLAY data, so it gets the same closed list every sibling
+  // field here gets. This used to be a wholesale assignment behind a typeof check, which
+  // let a REST caller store arbitrary nested JSON (a bearer token, a provider key, PII)
+  // under a name no ceiling inspects, inside a row whose review entry claims it is
+  // bounded by this normaliser. The allow-list and its clamps live in ONE home,
+  // src/shared/registry-limits.js, because scheduled jobs reach this same function.
+  const genMeta = normalizeGenerationMeta(s.generationMeta);
+  if (genMeta) out.generationMeta = genMeta;
   if (typeof s.testedFingerprint === "string") out.testedFingerprint = s.testedFingerprint.slice(0, 80);
   return out;
 };

@@ -684,3 +684,150 @@ export const vaRefusalText = (kind, max) => {
   if (kind === "attempts") return `Item parked: this item failed ${max} attempts (nothing staged, or a draft that never passed the voice rules). It stops consuming ticks until somebody looks at it.`;
   return "Virtual Administrator brake tripped.";
 };
+
+/* ------------------------------------------------------------------------
+ * GENERATION META ALLOW-LIST (F-800) — ONE home for the shape of `generationMeta`.
+ *
+ * `generationMeta` is the PROVENANCE stamp on a static-PF step: which docs, skills,
+ * memories and baked field-guide sections a generation was shown, or which recipe a
+ * deterministic step came from. It is written ONLY by the rule editor (`compactMeta`
+ * and the Insert-recipe button in FunctionBlock.jsx) and read ONLY for display
+ * (config-view's GENERATED WITH row, the FunctionBlock provenance chips).
+ *
+ * Why an allow-list and not a typeof check: `normalizeStep` (src/listeners.js) is a
+ * field-by-field normaliser — `endpoint` is a 500-char string, `code` is length-capped,
+ * ids and names are clamped, unknown keys are dropped — and `generationMeta` was the one
+ * field assigned WHOLESALE from caller JSON behind `typeof === "object"`. That is the
+ * hole in the bound that makes a `listener:*` / `job:*` row reviewable: "what can be in
+ * this row is a closed list somebody wrote" was true of every field except this one, and
+ * the Rules REST API lets a caller fill it with arbitrary nested JSON up to the KVS value
+ * cap — including a bearer token or a provider key, under a field name no ceiling
+ * inspects. Provenance is DISPLAY data; it never needs nesting, so it does not get any.
+ *
+ * The shape below is DERIVED from the two writers, not invented, so a real editor-saved
+ * step survives byte-identical (the emit order matches `compactMeta`'s object literal):
+ *   codegen/fix — { appliedDocs[{id,title}], appliedSkills[{id,name,auto}],
+ *                   appliedMemories:number, truncatedDocs[{title}], fieldGuide[ids] }
+ *   recipe      — { source:"recipe", recipeKey, recipeLabel, recipeParams{flat} }
+ * `appliedDocs[].id` is NULLABLE on purpose: the "(inline context)" pseudo-doc the
+ * backend appends carries `id: null`, and dropping it would change a real shape.
+ *
+ * Anything not named here is DROPPED — including every nested object or array, which is
+ * what makes "a credential cannot ride in here" a property of the code rather than a
+ * hope about field names. Callers: `normalizeStep` (listeners + scheduled jobs, one
+ * home). `src/shared/rule-portability.js` does not carry generationMeta at all; keep it
+ * that way rather than adding a second copy of this list.
+ * ---------------------------------------------------------------------- */
+
+/** Every cap the generationMeta allow-list applies. Named so a change is reviewable. */
+export const GENERATION_META_LIMITS = Object.freeze({
+  maxAppliedDocs: 16,      // selectedDocIds caps at 10, +auto-match, +the inline pseudo-doc
+  maxAppliedSkills: 16,    // manual <=4 + auto <=2 today; headroom without being unbounded
+  maxTruncatedDocs: 16,    // a subset of appliedDocs, so the same ceiling
+  maxFieldGuide: 12,       // compactMeta already slices to 12 — same number, one home
+  maxIdChars: 100,         // doc/skill ids are ~30 chars; this is a bound, not a fit
+  maxTitleChars: 200,      // compactMeta slices titles to 40; room for a legacy row
+  maxSourceChars: 40,
+  maxRecipeKeyChars: 120,
+  maxRecipeLabelChars: 200,
+  maxRecipeParams: 20,     // the largest premade recipe's param list, with headroom
+  maxRecipeParamKeyChars: 60,
+  maxRecipeParamValueChars: 500,
+  maxAppliedMemories: 10000, // a count, not an id — clamped so it cannot be Infinity/NaN
+});
+
+const gmStr = (v, max) => (typeof v === "string" ? v.slice(0, max) : undefined);
+
+/** A scalar that may ride in recipeParams. Objects/arrays/null are NOT scalars — dropped. */
+const gmScalar = (v, maxChars) => {
+  if (typeof v === "string") return v.slice(0, maxChars);
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v === "boolean") return v;
+  return undefined;
+};
+
+/**
+ * Clamp a caller-supplied `generationMeta` down to the allow-list above.
+ *
+ * Returns `null` when the input is not a plain object or when NOTHING known survives —
+ * so a step whose meta was pure junk carries no `generationMeta` key at all, rather than
+ * an empty object that reads like real-but-empty provenance. Never throws: a bad
+ * provenance stamp must not fail a save of an otherwise valid rule (the code, the
+ * events and the brakes are the load-bearing parts; this is a display chip).
+ */
+export function normalizeGenerationMeta(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const L = GENERATION_META_LIMITS;
+  const out = {};
+
+  // --- recipe provenance (emit order matches the Insert-recipe writer) ---
+  const source = gmStr(input.source, L.maxSourceChars);
+  if (source !== undefined) out.source = source;
+  const recipeKey = gmStr(input.recipeKey, L.maxRecipeKeyChars);
+  if (recipeKey !== undefined) out.recipeKey = recipeKey;
+  const recipeLabel = gmStr(input.recipeLabel, L.maxRecipeLabelChars);
+  if (recipeLabel !== undefined) out.recipeLabel = recipeLabel;
+  if (input.recipeParams && typeof input.recipeParams === "object" && !Array.isArray(input.recipeParams)) {
+    const params = {};
+    let n = 0;
+    for (const [k, v] of Object.entries(input.recipeParams)) {
+      if (n >= L.maxRecipeParams) break;
+      const val = gmScalar(v, L.maxRecipeParamValueChars);
+      if (val === undefined) continue; // a nested object under a param name never lands
+      params[String(k).slice(0, L.maxRecipeParamKeyChars)] = val;
+      n++;
+    }
+    if (n > 0) out.recipeParams = params;
+  }
+
+  // --- codegen/fix provenance (emit order matches compactMeta's literal) ---
+  if (Array.isArray(input.appliedDocs)) {
+    out.appliedDocs = input.appliedDocs.slice(0, L.maxAppliedDocs).map((d) => {
+      const e = {};
+      if (d && typeof d === "object" && !Array.isArray(d)) {
+        // `id: null` is the "(inline context)" pseudo-doc — a real shape, kept as null.
+        if (typeof d.id === "string") e.id = d.id.slice(0, L.maxIdChars);
+        else if (d.id === null) e.id = null;
+        const t = gmStr(d.title, L.maxTitleChars);
+        if (t !== undefined) e.title = t;
+      }
+      return e;
+    });
+  }
+  if (Array.isArray(input.appliedSkills)) {
+    out.appliedSkills = input.appliedSkills.slice(0, L.maxAppliedSkills).map((s) => {
+      const e = {};
+      if (s && typeof s === "object" && !Array.isArray(s)) {
+        if (typeof s.id === "string") e.id = s.id.slice(0, L.maxIdChars);
+        else if (s.id === null) e.id = null;
+        const n = gmStr(s.name, L.maxTitleChars);
+        if (n !== undefined) e.name = n;
+        // compactMeta always emits a boolean here, so the clamped shape does too.
+        e.auto = s.auto === true;
+      }
+      return e;
+    });
+  }
+  if (typeof input.appliedMemories === "number" && Number.isFinite(input.appliedMemories)) {
+    out.appliedMemories = Math.min(L.maxAppliedMemories, Math.max(0, Math.floor(input.appliedMemories)));
+  }
+  if (Array.isArray(input.truncatedDocs)) {
+    // Title only — compactMeta drops the id here, so carrying one would be inventing a field.
+    out.truncatedDocs = input.truncatedDocs.slice(0, L.maxTruncatedDocs).map((d) => {
+      const e = {};
+      const t = gmStr(d && typeof d === "object" && !Array.isArray(d) ? d.title : undefined, L.maxTitleChars);
+      if (t !== undefined) e.title = t;
+      return e;
+    });
+  }
+  if (Array.isArray(input.fieldGuide)) {
+    const ids = [];
+    for (const id of input.fieldGuide) {
+      if (ids.length >= L.maxFieldGuide) break;
+      if (typeof id === "string" || typeof id === "number") ids.push(String(id).slice(0, L.maxIdChars));
+    }
+    out.fieldGuide = ids;
+  }
+
+  return Object.keys(out).length > 0 ? out : null;
+}

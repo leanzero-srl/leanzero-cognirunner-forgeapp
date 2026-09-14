@@ -66,7 +66,9 @@
  *     enable|disable|test|run          — editor      (preview: viewer)
  *   agents: overview editor; drafts / memory / effects / every write admin
  * A token minted without a role is ADMIN — that is what every token on this surface already was, and
- * narrowing existing tokens on upgrade would break callers silently. The floors on
+ * narrowing existing tokens on upgrade would break callers silently. A token carrying a role that is
+ * NOT in the vocabulary is a different case and reads as the NARROWEST role, never admin (F-878).
+ * The floors on
  * ?resource=agents are the SAME floors the Agents tab's resolvers use, because a
  * REST caller must not be able to do anything the tab cannot: editor for the
  * overview (it carries no draft body, no instructions, no code), admin for every
@@ -83,6 +85,8 @@ import * as J from "./scheduled-jobs.js";
 import * as VA from "./va-admin.js";
 // The recursive `va` patch merge lives with the record's shape, not with the door.
 import { mergeVaPatch } from "./shared/va-config.js";
+// The role VOCABULARY and its narrowest member have ONE home (F-844 / F-853).
+import { VALID_ROLES, DEFAULT_ROSTER_ROLE } from "./shared/roster-roles.js";
 
 const idx = () => import("./index.js");
 
@@ -111,9 +115,36 @@ const publicRow = (t) => ({ id: t.id, name: t.name, prefix: t.prefix, createdAt:
  * them). Defaulting a missing role to anything narrower would revoke capability from
  * live integrations on upgrade, silently, which is the worse failure of the two.
  */
-export const TOKEN_ROLES = ["viewer", "editor", "admin"];
+/*
+ * ONE VOCABULARY, NOT TWO (F-878). A token's stamped role is ranked against the
+ * minter's LIVE ROSTER role by `effectiveTokenPerms`, through this very predicate, so
+ * the two ARE one closed set wherever it matters — the admin panel already settled
+ * that argument (F-863) and imports the shared list. A private copy here could only
+ * stay right by luck: rename or retire an entry in `src/shared/roster-roles.js` and
+ * the copy goes on accepting the dead word.
+ */
+export const TOKEN_ROLES = VALID_ROLES;
 const ROLE_RANK = Object.freeze({ viewer: 1, editor: 2, admin: 3 });
-const tokenRole = (t) => (t && TOKEN_ROLES.includes(String(t.role)) ? String(t.role) : "admin");
+/*
+ * MISSING AND UNRECOGNISED ARE NOT THE SAME ANSWER (F-878). Both used to read ADMIN,
+ * which meant a role that LEFT the vocabulary — renamed, retired — silently PROMOTED
+ * every token stamped with the old word to admin, and `tokenRoleAtLeast` waved it
+ * through every floor on this surface. Only a hand-edited KVS row or a vocabulary
+ * change can reach this arm (`normalizeMintRole` REFUSES unknown roles at mint) — and
+ * a vocabulary change is precisely the day it would fire.
+ *   absent / null / ""  → ADMIN. The documented compatibility default above: that is
+ *                         what every row minted before this field existed already is,
+ *                         and narrowing it on upgrade would revoke live integrations.
+ *   present but unknown → the NARROWEST role (`DEFAULT_ROSTER_ROLE`, which is
+ *                         `VALID_ROLES[0]`), because a word we cannot read is not a
+ *                         grant. It costs such a row one re-mint; the alternative
+ *                         hands it everything.
+ */
+const tokenRole = (t) => {
+  if (!t || t.role === undefined || t.role === null || t.role === "") return "admin";
+  const r = String(t.role);
+  return TOKEN_ROLES.includes(r) ? r : DEFAULT_ROSTER_ROLE;
+};
 /*
  * THE ONE ROLE FLOOR ON THIS SURFACE (F-466). Every resource asks this predicate and
  * nothing else - `?resource=agents` used to be the only gated one, so a viewer token

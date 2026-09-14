@@ -77,6 +77,19 @@ const OPENAI_SHAPED = ["openai", "azure"];
  *   ACTIVE-provider path only: it must not plant a model in a slot nobody asked about.
  * @param {(key:string, value:any)=>Promise<any>} [o.onMigrate]  The writer. Without it
  *   the legacy slot is still READ and honoured, but nothing is written.
+ *
+ *   F-859 — THE MIGRATION WRITE MUST BE CREATE-IF-ABSENT, NEVER AN UNCONDITIONAL SET.
+ *   This chain runs at TRANSITION time in whatever warm container the platform picks.
+ *   An admin saving `gpt-5.4` writes the per-provider slot and clears `_cachedModel` in
+ *   THAT container only; a concurrent transition in another container, whose slot read
+ *   already answered empty, would then set the slot back to the legacy value and every
+ *   later rule would bill the stale model. The binder therefore performs an ATOMIC
+ *   conditional write (`@forge/kvs` keyPolicy FAIL_IF_EXISTS) and, on conflict, returns
+ *   the value that is ACTUALLY in the slot. Whatever `onMigrate` resolves to, when it is
+ *   a non-empty string, is what this chain answers — so a refused migration serves the
+ *   admin's saved model, not the legacy one. A writer that cannot do a conditional write
+ *   must re-read the slot immediately before setting it and skip when populated; that
+ *   only narrows the race, it does not close it.
  * @param {object} [o.log]                `{error, log}`; a faulted read is LOGGED.
  * @returns {Promise<string|null>} the model id, or null for a null/blank provider.
  *
@@ -139,11 +152,14 @@ export const resolveModelForProvider = async ({
       if (byokKey) {
         const legacy = await readSlot("COGNIRUNNER_OPENAI_MODEL");
         if (legacy) {
-          if (onMigrate) {
-            await onMigrate(providerModelSlot(provider), legacy);
-            if (log && log.log) log.log(`Migrated legacy model to ${providerModelSlot(provider)}`);
-          }
           model = String(legacy);
+          if (onMigrate) {
+            // F-859 — the writer owns the create-if-absent semantics and reports back
+            // the value that ended up in the slot. A concurrent admin save wins.
+            const effective = await onMigrate(providerModelSlot(provider), legacy);
+            if (effective && typeof effective === "string") model = effective;
+            if (log && log.log) log.log(`Migrated legacy model to ${providerModelSlot(provider)} (effective: ${model})`);
+          }
         }
       }
     }

@@ -789,6 +789,54 @@ for (const f of liveFiles) {
 ok(emailRuleOffenders.length === 0,
   `F-662: lib/redact.mjs is the ONLY home of the email rule (second homes at: ${emailRuleOffenders.join(", ")})`);
 
+/* ── 4e. F-686 — NO DRIVER ARMS A USER-VISIBLE FAULT WITHOUT THE SHARED-DEV ACK ──
+   F-679 wrote the refusal and put it in ONE file. Four drivers armed the same levers on
+   the same shared tenant; three of them had nothing but `--env=dev`, and one had not even
+   that. The recurrence-proof fix is not "add the guard three times" — it is this rule: if
+   a `*-live.mjs` calls arm{KeyRead,Jira,Dispatch,HookPromote}Fault, it must import
+   `requireEnvAck` from lib/shared-env-guard.mjs. A fifth fault driver written next month
+   with its own inline copy fails `npm run test:offline` before it is ever run.
+
+   The scan ignores docblock prose, or every file that merely EXPLAINS the lever would be
+   dragged in — the discriminator is a call, not a mention. */
+const ARM_CALL = /\barm(?:KeyRead|Jira|Git ?Dispatch|Dispatch|HookPromote)Fault\b/;
+function scanArmCalls(src) {
+  return src.split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => !/^\s*\*/.test(l) && !/^\s*\/\//.test(l))       // prose in a docblock
+    .filter(({ l }) => ARM_CALL.test(l))
+    .map(({ n }) => n);
+}
+/* POSITIVE CONTROLS — the exact arming lines the unguarded drivers carried. */
+ok(scanArmCalls('const arm = (mode, ttl) => hook({ action: "armKeyReadFault", provider: PROVIDER, mode, ttl });').length === 1,
+  "POSITIVE CONTROL: the arming scan FIRES on the armKeyReadFault line key-status-fault-ui-live.mjs carried unguarded");
+ok(scanArmCalls('  const t = await hook({ action: "armJiraFault", path: PATH, status: 429, ttlSeconds: 240 });').length === 1,
+  "POSITIVE CONTROL: …and on the armJiraFault line user-search-fault-live.mjs carried with no --env at all");
+ok(scanArmCalls('        const armed = await hook({ action: "armHookPromoteFault", connectionId: c, repoId: R, count: 1 });').length === 1,
+  "POSITIVE CONTROL: …and on armHookPromoteFault, so the rule is not narrowed to the two key/jira levers");
+/* NEGATIVE CONTROLS — a file may DISCUSS or DISARM a lever without arming one. */
+ok(scanArmCalls(' * `armKeyReadFault("openai", "refuse")` is the door this driver opens.').length === 0,
+  "NEGATIVE CONTROL: a docblock naming the lever is not an arming");
+ok(scanArmCalls('const disarm = () => hook({ action: "disarmKeyReadFault", provider: PROVIDER });').length === 0,
+  "NEGATIVE CONTROL: disarming is not arming — cleanup must never trip the rule");
+ok(scanArmCalls('const readLever = () => hook({ action: "readKeyReadFault", provider: PROVIDER });').length === 0,
+  "NEGATIVE CONTROL: reading the lever row is not arming");
+
+const armingDrivers = liveFiles.filter((f) => scanArmCalls(readFileSync(path.join(here, f), "utf8")).length > 0);
+ok(armingDrivers.length >= 4,
+  `F-686: the rule found the fault-arming drivers to apply to (${armingDrivers.join(", ")})`);
+for (const f of armingDrivers) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  ok(/from "\.\.\/lib\/shared-env-guard\.mjs"/.test(src),
+    `${f}: arms a user-visible fault, so it must import the shared-dev guard from lib/shared-env-guard.mjs`);
+  ok(/requireEnvAck\s*\(/.test(src),
+    `${f}: …and must actually CALL requireEnvAck — an unused import is not a guard`);
+  /* The guard is only worth anything if it runs BEFORE the levers. An inline second copy
+     of the refusal is the drift this rule exists to prevent, so it is an offence too. */
+  ok(!/console\.error\(\[[\s\S]{0,400}?i-know-dev-is-shared/.test(src),
+    `${f}: the refusal TEXT has one home — no driver keeps its own copy of it`);
+}
+
 /* ── 5. the hardened drivers redact in the writers themselves ──────────────────── */
 for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "perm-namesake-ui-live.mjs"]) {
   const src = readFileSync(path.join(here, f), "utf8");

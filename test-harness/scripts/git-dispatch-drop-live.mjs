@@ -44,8 +44,26 @@
  * Neither the trigger URL nor any secret is printed. Cleans up the stand-in unless KEEP=1.
  */
 import crypto from "node:crypto";
-import { testState } from "../lib/rules-api.mjs";
+// F-686 — every driver that arms a harness fault goes through the ONE acknowledgement.
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS } from "../../src/shared/git-ids.js";
+
+/* F-686 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION: `testState` (lib/rules-api.mjs) resolves
+ * `TESTSTATE_URL`, the dev trigger, and there is no staging path to offer. So the `--env`
+ * choice is made FOR it — `dev`, always — and the acknowledgement is therefore mandatory on
+ * every run. `armDispatchFault` drops queued deliveries for the armed connection, which a
+ * developer sharing the tenant reads as "my push did nothing". */
+requireEnvAck([...process.argv.slice(2), "--env=dev"], {
+  faults: ["dispatchDrop"],
+  script: "git-dispatch-drop-live.mjs",   // count-bounded: no TTL to quote
+});
+
+/* `lib/rules-api.mjs` calls `loadEnv()` AT IMPORT TIME, and `loadEnv` THROWS when there is
+ * no `.env`. A static import would therefore run before the refusal above and kill the
+ * process with "Missing .env" — measured — leaving an operator on an unconfigured machine
+ * told nothing about the tenant. So this one import is DEFERRED until the environment is
+ * settled. It is the same reason requireEnvAck checks argv before it touches the env file. */
+const { testState } = await import("../lib/rules-api.mjs");
 
 const CONN = process.env.GIT_CONN_ID || "harness-git-drop";
 const REPO = process.env.GIT_REPO_ID || "leanzero-srl/cognirunner-forge-offshoot";

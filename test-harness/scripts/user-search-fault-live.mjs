@@ -45,16 +45,32 @@
  * CLEANUP IS PART OF THE PROOF. The lever is disarmed in a `finally`, and the last
  * check is a `readJiraFault` that must answer `value:null`.
  *
- *   node scripts/user-search-fault-live.mjs [--nonadmin=<accountId>] [--headed]
+ * SHARED DEV TENANT (F-686). This driver used to be dev-ONLY with no acknowledgement at
+ * all, while arming the same 429 that blanks the Permissions people picker for everyone
+ * else on the site. `--env` now exists and defaults to `staging`; `--env=dev` needs
+ * `--i-know-dev-is-shared` (lib/shared-env-guard.mjs is the one home of that refusal).
+ *
+ *   node scripts/user-search-fault-live.mjs [--env=staging|dev] [--i-know-dev-is-shared]
+ *     [--nonadmin=<accountId>] [--envid=<forge env id>] [--headed]
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
-import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { requireEnv } from "../lib/env.mjs";
+// F-686 — this driver had NO `--env` and NO acknowledgement: dev was its only mode, and it
+// hardcoded `env:"development"` into its own evidence. Both now come from the one home.
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 import { makeShot } from "../lib/roster-ui.mjs";
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
 
-const env = loadEnv();
-const HOOK_URL = env.TESTSTATE_URL;
+/* F-686 — `--env` now EXISTS here and defaults to `staging`, and the dev tenant needs
+ * `--i-know-dev-is-shared`. The longest window this driver arms is step 3's 240s: the UI
+ * half is slower than the hook half and holds the 429 across a Permissions-tab keystroke
+ * sequence, so that — not the 60s of step 1 — is the number the operator is shown. */
+const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), {
+  faults: ["jiraUserSearch"],
+  maxSeconds: 240,
+  script: "user-search-fault-live.mjs",
+});
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -66,14 +82,20 @@ const FAULT_STATUS = 429;
 
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const ENV_ID = "989ecaa0-261b-406e-b444-78c01c0d7772";
+/* F-686 — the Forge environment id FOLLOWS `--env` now. A hardcoded dev id under a
+ * staging default would point the browser half at the tenant the guard just refused. */
+const ENV_ID = arg("envid", ENV_NAME === "dev"
+  ? "989ecaa0-261b-406e-b444-78c01c0d7772"
+  : "1abe9beb-537b-43c1-b94f-e877e251f779");
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/user-search-fault", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
-const ev = { at: new Date().toISOString(), env: "development", path: PATH, status: FAULT_STATUS, query: QUERY, checks: [] };
+/* F-686 — the evidence records the environment it RAN in, not the one the driver used to
+ * be able to reach. `env:"development"` was a literal here while `--env` did not exist. */
+const ev = { at: new Date().toISOString(), env: ENV_NAME, path: PATH, status: FAULT_STATUS, query: QUERY, checks: [] };
 
 /* ── THE WRITERS. Every payload and every sentence through the shared redactor, at the
  *    console AND at the file boundary (F-646/F-652) — never a per-call-site judgement. */

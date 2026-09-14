@@ -88,41 +88,26 @@
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const flag = (n) => process.argv.slice(2).includes(`--${n}`);
-/* The provider slot this driver faults. Declared up here because the F-679 refusal below
- * names it, and that refusal runs before anything else. */
+/* The provider slot this driver faults. Declared up here because the F-679 refusal names
+ * it, and that refusal runs before anything else. */
 const PROVIDER = "openai";
-/* F-679 — STAGING BY DEFAULT. This driver arms user-visible faults (see the blast-radius
- * note above), so the shared tenant is not the one you get by forgetting an argument. */
-const ENV_NAME = arg("env", "staging");
-if (ENV_NAME === "dev" && !flag("i-know-dev-is-shared")) {
-  console.error([
-    "",
-    "REFUSING to point this driver at the SHARED dev tenant without an explicit acknowledgement.",
-    "",
-    "While it runs it arms two REAL faults on that site, each for ~5s per arming:",
-    `  · the ${PROVIDER} key slot REFUSES to be read — an admin on Settings sees`,
-    `    "Couldn't read key status" and may take it for a bad credential and rotate a working key;`,
-    "  · /rest/api/3/user/search answers 429 — the Permissions people picker finds nobody.",
-    "",
-    "Both are disarmed in a finally, but not if this process is KILLED; the only bound then is",
-    "the 300s family ceiling. Schedule the run, or tell whoever is on the tenant.",
-    "",
-    "  node scripts/harness-fault-expiry-live.mjs                 # staging, the default",
-    "  node scripts/harness-fault-expiry-live.mjs --env=dev --i-know-dev-is-shared",
-    "",
-  ].join("\n"));
-  process.exit(2);
-}
-
-/* The environment is settled BEFORE anything is loaded or read: the refusal above must not
- * be reachable only on a machine that already has a .env, or the guard would be a courtesy
- * for the configured and a surprise for everyone else. */
+/* F-679, moved to its one home by F-686 — STAGING BY DEFAULT, and `--env=dev` is a
+ * deliberate act. The refusal text, the harm sentences and the TTL→env→hook-URL mapping
+ * all live in lib/shared-env-guard.mjs now, because this file was the ONLY one of the four
+ * fault drivers that carried them. The environment is still settled BEFORE anything is
+ * loaded or read (requireEnvAck refuses before it touches .env), so the guard is not a
+ * courtesy for the configured and a surprise for everyone else. */
+const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), {
+  faults: [`keyRead:${PROVIDER}`, "jiraUserSearch"],
+  maxSeconds: 5,   // every arming in this driver is the 5s TTL the expiry proof needs
+  script: "harness-fault-expiry-live.mjs",
+});
+/* Settled — only now may the env file speak (requireEnvAck has already loaded it). */
 const env = loadEnv();
-const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const QUERY = arg("query", "mihai");

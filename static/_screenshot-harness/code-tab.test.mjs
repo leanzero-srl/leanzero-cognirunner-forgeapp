@@ -263,19 +263,56 @@ try {
       await page.locator(".evp-row", { hasText: "Pull request opened" }).first().locator("input").check();
       await page.locator(".evp-repos").waitFor({ timeout: 5000 });
       ok(await page.locator(".evp-repos").count() === 1, `C7 ${theme} the repos filter appears for a git event`);
-      // Comma separated, lower-cased on BLUR (never on keystroke), one home for the rule.
-      await page.locator("#evp-repos-input").fill("Acme/Web , ACME/API");
-      await page.locator("#evp-repos-input").blur();
-      ok(await page.locator("#evp-repos-input").inputValue() === "acme/web, acme/api", `C7 ${theme} the list is normalised on blur`);
-      // A malformed entry is shown, not silently dropped.
-      await page.locator("#evp-repos-input").fill("acme/web, notarepo");
-      await page.locator("#evp-repos-input").blur();
-      ok(await page.locator(".evp-repos-bad").count() === 1, `C7 ${theme} a non owner/name entry is named as invalid`);
+      /* F-917 — WITH CONNECTIONS THE REPOSITORY IS PICKED, NOT TYPED. `isRepoAllowed`
+         fails CLOSED against the connection's allow-list, so the old free-text field let a
+         typo save a listener that looked configured and never fired. This arm is the
+         DEFAULT fixture (two connections, three allowed repositories between them). */
+      ok(await page.locator("#evp-repos-input").count() === 0, `C7 ${theme} no free-text repo field when the instance can offer a list`);
+      await page.locator(".evp-repopick").waitFor({ timeout: 5000 });
+      await page.locator(".evp-repopick-add .dropdown-trigger").click();
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+      ok(await page.locator(".evp-repo-chip", { hasText: "acme/web" }).count() === 1, `C7 ${theme} a picked repository becomes a chip`);
+      ok(await page.locator("select").count() === 0, `C7 ${theme} and it is no native <select>`);
       // High-volume badges still ride the git rows that carry them.
       ok(await page.locator(".evp-row", { hasText: "Branch pushed" }).locator(".evp-vol").count() === 1, `C7 ${theme} the high-volume badge rides the git push row`);
       await shot(page, `C7-eventpicker-git-${theme}`);
       ok(env.errors.length === 0, `C7 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C7 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C7b — F-917: the TYPED FALLBACK, and the rule that lives in it -------
+   * The picker can only be offered when a connection allows something. With NO connections
+   * there is nothing to pick from, and an editor who cannot name a repository cannot save
+   * the rule at all — so the free-text field returns, and with it the normalise-on-blur and
+   * malformed-entry rules that C7 used to own. Both halves exist; each has its own arm.
+   * The hint must say WHICH state this is: "nothing to pick from" is an answer about the
+   * instance, and it may only be given when the read actually answered. */
+  {
+    console.log("C7b F-917 typed fallback when no connection allows a repository");
+    const env = await openAdmin(browser, "light", { __CODE_NO_CONNS__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Listeners");
+      await page.locator("button", { hasText: "+ Add Listener" }).first().click();
+      await page.locator(".lst-editor").waitFor({ timeout: 10000 });
+      await page.locator(".evp-group-toggle", { hasText: "Git" }).first().click();
+      await page.locator(".evp-row", { hasText: "Pull request opened" }).first().locator("input").check();
+      await page.locator(".evp-repos").waitFor({ timeout: 5000 });
+      ok(await page.locator(".evp-repopick").count() === 0, "C7b no picker when nothing can be offered");
+      ok(await page.locator("#evp-repos-input").count() === 1, "C7b the typed field returns, so the rule is still saveable");
+      ok(/nothing to pick from/i.test(await page.locator(".evp-repos-hint").innerText()), "C7b and the hint says which state this is");
+      // Comma separated, lower-cased on BLUR (never on keystroke), one home for the rule.
+      await page.locator("#evp-repos-input").fill("Acme/Web , ACME/API");
+      await page.locator("#evp-repos-input").blur();
+      ok(await page.locator("#evp-repos-input").inputValue() === "acme/web, acme/api", "C7b the list is normalised on blur");
+      // A malformed entry is shown, not silently dropped.
+      await page.locator("#evp-repos-input").fill("acme/web, notarepo");
+      await page.locator("#evp-repos-input").blur();
+      ok(await page.locator(".evp-repos-bad").count() === 1, "C7b a non owner/name entry is named as invalid");
+      await shot(page, "C7b-eventpicker-typed-fallback");
+      ok(env.errors.length === 0, "C7b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C7b threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 

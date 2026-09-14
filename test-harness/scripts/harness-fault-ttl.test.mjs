@@ -1536,6 +1536,19 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     ok((await countPrefix(PLANT707)) === 7,
       "F-707: …and the keyspace never pretends to hold nine rows while two of them do not exist");
 
+    /* ── F-745 — A `writes-failed` ANSWER SAID `resume: "start-index"` OVER AN INDEX THAT HAD
+     * NOT MOVED. `resumed` above is the exact shape: `startIndex: 4`, `nextIndex: 4`, and an
+     * instruction to "carry on from `nextIndex`" that is an instruction to POST the identical
+     * body — the spin both live drivers stop on, wearing the name of progress. They each
+     * hand-write `reason === "writes-failed"` → failure to avoid it; that judgement now lives
+     * in the one mapping, as a fourth word. ── */
+    ok(resumed.resume === "stop",
+      `F-745: a \`writes-failed\` answer whose index did not move says STOP, never "carry on from where you already are" (resume ${JSON.stringify(resumed.resume)})`);
+    ok(resumed.nextIndex === resumed.startIndex,
+      "F-745: …and that really is the non-advancing shape, so the old `start-index` was an instruction to spin");
+    ok(call1.resume === "stop" && call1.nextIndex > call1.startIndex,
+      `F-745: …and an ADVANCING \`writes-failed\` stops too — refused writes mean a short population, which is a failure and not a resume, exactly as both live drivers already judge it (resume ${JSON.stringify(call1.resume)})`);
+
     const stuck = await plantAll(9, true);
     ok(stuck.complete === false && stuck.calls <= 3,
       `F-707: the fixture's own drain loop TERMINATES on the stuck plant and reports it unfinished (calls ${stuck.calls}, complete ${stuck.complete})`);
@@ -1668,6 +1681,55 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     }
     ok((await countPrefix(PLANT723)) === 0, "F-723: …and none of those refusals touched the keyspace");
 
+    /* ═════ F-746 — `Number()` IS NOT "IS IT AN INTEGER", AND `""` WAS THE EXPENSIVE ONE ═════
+     *
+     * The judge ran the caller's value through JavaScript's most forgiving coercion, which
+     * admits four shapes nobody meant to send: `""` → 0, `"  3 "` → 3, `"3.0"` → 3,
+     * `"0x2"` → 2. `""` is the one that costs: it is what a form post, a shell
+     * `--start-index=$UNSET` or a JSON body built from a missing variable produces, it read
+     * as index 0, and index 0 is a FRESH plant — which DELETES every row at or past `n`
+     * before writing. A caller that meant to resume at 6 and sent nothing had the tail of
+     * its own population destroyed under `ok: true`.
+     *
+     * Driven over a REAL population, so the refusal is measured by what survives. ── */
+    await purge();
+    const seeded746 = await fault.plantHarnessFaults({ n: 9, expired: true, maxMs: 20_000 });
+    ok(seeded746.planted === 9 && (await countPrefix(PLANT723)) === 9,
+      `(fixture) a 9-row population for the coercions to be judged against (planted ${seeded746.planted})`);
+
+    for (const junk of ["", "  3 ", "3.0", "0x2", "+3", "3e0", " ", "\t"]) {
+      const bad = await fault.plantHarnessFaults({ n: 5, startIndex: junk, expired: true, maxMs: 20_000 });
+      ok(bad.ok === false && bad.reason === "bad-start",
+        `F-746: a supplied \`startIndex\` of ${JSON.stringify(junk)} is \`bad-start\`, never a number \`Number()\` was willing to invent (got ${JSON.stringify({ ok: bad.ok, reason: bad.reason })})`);
+    }
+    ok((await countPrefix(PLANT723)) === 9,
+      `F-746: …and NONE of them ran as a fresh plant of 5, which would have deleted rows 5..8 of a population the caller still wanted (rows ${await countPrefix(PLANT723)})`);
+
+    /* The numbers `Number.isInteger` let through that are not indexes either. */
+    for (const junk of [Infinity, -Infinity, 1e21, Number.MAX_SAFE_INTEGER + 2, -0.5]) {
+      ok(fault.plantStartRefusal(junk, 500) === "bad-start",
+        `F-746: …and a NUMBER that is not a non-negative SAFE integer is refused too (${String(junk)})`);
+    }
+    ok(fault.plantStartRefusal("99999999999999999999", 500) === "bad-start",
+      "F-746: …including a digit string long enough to lose precision, which is not an index anyone can resume at");
+
+    /* ── THE NEGATIVE CONTROL: the two shapes that ARE accepted, and they still are. A digit
+     * string is how a JSON door spells a number, and refusing it would break every resumed
+     * POST this repo makes. ── */
+    ok(fault.plantStartRefusal("3", 5) === null && fault.plantStartRefusal("0", 5) === null
+      && fault.plantStartRefusal("5", 5) === null && fault.plantStartRefusal(3, 5) === null,
+      "F-746 (negative control): a plain digit string and a plain non-negative integer are the two accepted shapes");
+    const resumedStr = await fault.plantHarnessFaults({ n: 9, startIndex: "9", expired: true, maxMs: 20_000 });
+    ok(resumedStr.ok === true && resumedStr.noop === true && resumedStr.startIndex === 9,
+      `F-746 (negative control): …and a digit-string start really does drive the lever (got ${JSON.stringify({ ok: resumedStr.ok, startIndex: resumedStr.startIndex })})`);
+    ok((await countPrefix(PLANT723)) === 9, "F-746 (negative control): …without disturbing the population");
+    await purge();
+
+    ok(/const PLANT_START_DIGITS = \/\^\\d\+\$\/;/.test(faultCode),
+      "F-746.SOURCE: the accepted string grammar is a named constant, not a coercion");
+    ok(!/const parsed = Number\(startIndex\);\n  if \(!Number\.isInteger\(parsed\)/.test(faultCode),
+      "F-746.SOURCE: …and the blanket `Number()` judgement is gone");
+
     /* THE NEGATIVE CONTROL: ABSENT is not junk. A first POST carries no `startIndex` at all
      * and must still be the fresh plant every driver in this repo opens with. */
     for (const absent of [undefined, null]) {
@@ -1727,26 +1789,106 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       "F-724 (unchanged): `clearing` still does NOT advance `nextIndex` — that is the contract, not the defect");
     ok(clearing.resume === "repost",
       `F-724: …and the answer now SAYS so, in a field a driver can switch on (resume ${JSON.stringify(clearing.resume)})`);
-    ok(clearing.clearedSoFar === clearing.cleared && clearing.clearedSoFar > 0,
+
+    /* F-747 — ONE FIELD NAME, ONE MEANING. `failed` carried the CLEAR's failures here and
+     * the WRITES' failures in the `clear-failed` branch four lines away, in the same
+     * function — and `failed > 0` is what `sweepAnswerTail` turns into `writes-failed`, so
+     * a reader (or a future tail) could read refused DELETES as refused WRITES. The clear's
+     * count is `staleFailed` in BOTH branches now, and `failed` is writes, always. */
+    ok(clearing.failed === 0,
+      `F-747: a \`clearing\` answer plants NOTHING, so its \`failed\` — which means WRITES — is 0 (got ${clearing.failed})`);
+    ok(clearing.staleFailed === 0,
+      `F-747: …and the clear's own failure count is \`staleFailed\`, here zero because this clear ran out of BUDGET, not of luck (got ${clearing.staleFailed})`);
+    ok(clearing.clearedSoFar > 0,
       `F-724: …naming the progress it DID make (clearedSoFar ${clearing.clearedSoFar})`);
     ok(Number.isInteger(clearing.remainingStale) && clearing.remainingStale > 0
       && clearing.clearedSoFar + clearing.remainingStale === 28,
       `F-724: …and how much of the condemned 28 is left, so "converging" is measurable without an index (cleared ${clearing.clearedSoFar}, remaining ${clearing.remainingStale})`);
 
+    /* F-744 — `clearedSoFar` IS THE DRAIN'S TOTAL, AND A TRAIL IS THE ONLY THING THAT PROVES
+     * IT. It used to be `clearedSoFar: cleared` — a byte-copy of the per-CALL count — so the
+     * assertion `clearedSoFar === cleared` was a tautology that passed over the defect. The
+     * honest test is the TRAIL: carry the answer's `clearToken` into the identical re-POST
+     * and watch the number RISE, call over call, to the size of the condemned set. ── */
+    ok(typeof clearing.clearToken === "string" && clearing.clearToken.length > 0,
+      `F-744: a \`repost\` answer hands back the token that carries its running count (clearToken ${typeof clearing.clearToken})`);
+    ok(fault.decodeSweepToken(clearing.clearToken).clearedSoFar === clearing.clearedSoFar,
+      "F-744: …and the token's `s` IS the reported total — one number, one home");
+    ok(fault.decodeSweepToken(clearing.clearToken).cursor === null
+      && fault.decodeSweepToken(clearing.clearToken).unresolved === false,
+      "F-744: …carried on the sweep's own grammar with `c`/`f` untouched, so a consumer that ignores `s` reads the token it always did");
+
     /* THE CONTRACT, DRIVEN VERBATIM: the SAME body, again, until it is not `repost`. It must
      * CONVERGE — the rows a clearing call removed are gone for good. */
     let last = clearing, hops = 0, previousRemaining = clearing.remainingStale;
+    let previousCleared = clearing.clearedSoFar;
+    const trail = [clearing.clearedSoFar];
     while (last.resume === "repost" && hops < 40) {
       hops++;
-      last = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1 });
+      last = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1, clearToken: last.clearToken });
+      trail.push(last.clearedSoFar);
+      ok(last.clearedSoFar > previousCleared,
+        `F-744: every re-POST STRICTLY RAISES the running total (${previousCleared} → ${last.clearedSoFar})`);
+      previousCleared = last.clearedSoFar;
       if (last.resume === "repost") {
         ok(last.remainingStale < previousRemaining,
           `F-724: every re-POST strictly SHRINKS the remaining stale set (${previousRemaining} → ${last.remainingStale})`);
         previousRemaining = last.remainingStale;
       }
     }
+    ok(trail.length >= 2 && last.clearedSoFar === 28,
+      `F-744: …and the trail of a 28-row clear at maxMs:1 ends on the WHOLE condemned set, not on one call's share (trail ${JSON.stringify(trail)})`);
     ok(last.resume !== "repost" && last.planted === 2 && (await countPrefix(PLANT724)) === 2,
       `F-724: …and the identical re-POST loop terminates on a real plant of the population it asked for (hops ${hops}, planted ${last.planted}, rows ${await countPrefix(PLANT724)})`);
+
+    /* THE CALLER THAT IGNORES THE FIELD MUST STILL WORK: no `clearToken`, same drain, same
+     * convergence — only an understated total, because the count decides NOTHING. */
+    await purge();
+    await fault.plantHarnessFaults({ n: 30, expired: false, maxMs: 20_000 });
+    let blind = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1 });
+    let blindHops = 0;
+    while (blind.resume === "repost" && blindHops < 40) {
+      blindHops++;
+      blind = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1 });
+    }
+    ok(blind.planted === 2 && (await countPrefix(PLANT724)) === 2 && blind.clearedSoFar < 28,
+      `F-744 (compat): a consumer that drops \`clearToken\` still converges, it just under-counts (hops ${blindHops}, clearedSoFar ${blind.clearedSoFar})`);
+
+    /* F-744 — AND AN ARMED LEVER MAKES `clearing` ANSWERS REPEAT, BOUNDEDLY.
+     *
+     * Under `armDeleteFault({ mode: "refuse" })` the first batch of a clear can land NOTHING,
+     * so the call clears 0, condemns the same set and answers BYTE-IDENTICALLY to the one
+     * before it. That is the lever, not a spin — and the docblock now says so. What makes it
+     * safe is arithmetic, not hope: `DELETE_FAULT_DRAINABLE_MAX` is derived from
+     * `DRAIN_IDENTICAL_ANSWER_LIMIT * KVS_DELETE_BATCH - 1`, so the lever runs out of units
+     * with a call to spare and the identical RUN is always shorter than the limit a drain
+     * helper stops on. Measured, at the lever's maximum arming. ── */
+    await purge();
+    await fault.plantHarnessFaults({ n: 30, expired: false, maxMs: 20_000 });
+    const maxArmed = await fault.armDeleteFault({
+      prefix: PLANT724, mode: "refuse", count: fault.DELETE_FAULT_DRAINABLE_MAX, ttlSeconds: 60,
+    });
+    ok(maxArmed.count === fault.DELETE_FAULT_DRAINABLE_MAX,
+      `(fixture) the delete lever armed to its DRAINABLE_MAX (count ${maxArmed.count})`);
+
+    let armedRun = 0, longestRun = 0, prevAnswer = null, armedHops = 0;
+    let armedLast = null;
+    do {
+      armedHops++;
+      armedLast = await fault.plantHarnessFaults({
+        n: 2, expired: false, maxMs: 20_000, clearToken: armedLast ? armedLast.clearToken : undefined,
+      });
+      const shape = JSON.stringify({ r: armedLast.reason, c: armedLast.clearedSoFar, s: armedLast.remainingStale });
+      armedRun = shape === prevAnswer ? armedRun + 1 : 1;
+      if (armedRun > longestRun) longestRun = armedRun;
+      prevAnswer = shape;
+    } while (armedLast.resume === "repost" && armedHops < 40);
+
+    ok(longestRun < fault.DRAIN_IDENTICAL_ANSWER_LIMIT,
+      `F-744: the identical-answer run an armed lever can produce is SHORTER than the drain's spin limit (run ${longestRun} < ${fault.DRAIN_IDENTICAL_ANSWER_LIMIT})`);
+    ok(armedLast.resume !== "repost" && armedLast.planted === 2 && (await countPrefix(PLANT724)) === 2,
+      `F-744: …and the lever's own cap is what converges it — the drain finishes without ever tripping the limit (hops ${armedHops}, rows ${await countPrefix(PLANT724)})`);
+    await purge();  // purge() removes the lever row too — it lives under `harness_fault:`.
 
     /* THE NEGATIVE CONTROL: a plant that is merely TRUNCATED resumes the other way, and its
      * index really does move. If this also said `repost` the field would say nothing. */
@@ -1759,15 +1901,33 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     ok(fault.plantResumeMode("clearing", false) === "repost"
       && fault.plantResumeMode("budget", false) === "start-index"
       && fault.plantResumeMode("call-max", false) === "start-index"
-      && fault.plantResumeMode("writes-failed", false) === "start-index"
+      && fault.plantResumeMode("writes-failed", false) === "stop"
       && fault.plantResumeMode(null, true) === null,
-      "F-724: `plantResumeMode` is the ONE mapping from a stop reason to how it is resumed");
+      "F-724/F-745: `plantResumeMode` is the ONE mapping from a stop reason to how it is resumed");
     ok(fault.PLANT_REPOST_REASONS.includes("clearing") && !fault.PLANT_REPOST_REASONS.includes("budget")
       && !fault.PLANT_REPOST_REASONS.includes("call-max") && !fault.PLANT_REPOST_REASONS.includes("writes-failed"),
       "F-724: …and the re-POST answers are exactly the clear's, never a resumable truncation");
     ok(fault.HARNESS_UNGATED_EXPORTS.includes("plantResumeMode")
-      && fault.HARNESS_UNGATED_EXPORTS.includes("PLANT_REPOST_REASONS"),
-      "F-724: …both on the UNGATED census, because neither reaches storage");
+      && fault.HARNESS_UNGATED_EXPORTS.includes("PLANT_REPOST_REASONS")
+      && fault.HARNESS_UNGATED_EXPORTS.includes("PLANT_STOP_REASONS"),
+      "F-724/F-745: …all on the UNGATED census, because none of them reaches storage");
+
+    /* F-745: the fourth word, and the two clauses that produce it. The NEGATIVE control is
+     * the whole point — a truncation that really does advance must still say `start-index`,
+     * or `stop` would mean nothing. */
+    ok(fault.PLANT_STOP_REASONS.includes("writes-failed")
+      && !fault.PLANT_STOP_REASONS.includes("budget") && !fault.PLANT_STOP_REASONS.includes("call-max")
+      && !fault.PLANT_STOP_REASONS.includes("clearing"),
+      "F-745: `writes-failed` is the one stop reason, in its one home beside the re-POST vocabulary");
+    ok(fault.plantResumeMode("budget", false, false) === "stop"
+      && fault.plantResumeMode("call-max", false, false) === "stop",
+      "F-745: …and ANY non-complete, non-`repost` answer whose index did not advance is a stop — an instruction to resume where you already are is a spin");
+    ok(fault.plantResumeMode("budget", false, true) === "start-index"
+      && fault.plantResumeMode("budget", false) === "start-index"
+      && fault.plantResumeMode("clearing", false, false) === "repost",
+      "F-745 (negative control): a truncation that DID advance still carries on, the default is `advanced`, and `repost` outranks the clause — `clearing` never advances by design");
+    ok(fault.plantResumeMode("writes-failed", true, false) === null,
+      "F-745 (negative control): …and a COMPLETE answer has nothing to resume, whatever its reason");
     ok((faultCode.match(/resume: plantResumeMode\(/g) || []).length === 4,
       "F-724.SOURCE: every plant answer takes `resume` from the mapping — none of them hand-writes one");
   }
@@ -1803,6 +1963,10 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       `F-725: …and it plants NOTHING over a keyspace it could not make into the one its \`n\` describes (planted ${shrink.planted})`);
     ok(shrink.staleFailed === 1 && shrink.remainingStale === 1,
       `F-725: …naming how many stale rows survived (staleFailed ${shrink.staleFailed}, remainingStale ${shrink.remainingStale})`);
+    ok(shrink.failed === 0,
+      `F-747: …under the SAME two names the \`clearing\` branch uses — \`failed\` is WRITES and this branch wrote nothing (got ${shrink.failed})`);
+    ok(shrink.reason === "clear-failed" && shrink.resume === "repost",
+      "F-747: …and `reason`/`resume` are both taken from the tail that was built from it, never hand-written a second and third time");
     ok(Array.isArray(shrink.staleFailedKeys) && shrink.staleFailedKeys.length === 1
       && shrink.staleFailedKeys[0].startsWith(PLANT725)
       && shrink.staleFailedKeys.length <= fault.CLEAR_FAILED_KEYS_REPORTED,
@@ -1834,6 +1998,12 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
 
     ok(/if \(stale\.failed > 0\) \{/.test(faultCode),
       "F-725.SOURCE: `failed` is judged on the FINISHED path too, not only on `!done`");
+    ok((faultCode.match(/staleFailed: stale\.failed/g) || []).length === 2,
+      "F-747.SOURCE: the clear's failure count has ONE name, and both branches use it");
+    ok(!/failed: stale\.failed/.test(faultCode),
+      "F-747.SOURCE: …and `failed` is never the clear's count — it is WRITE failures everywhere");
+    ok((faultCode.match(/"clear-failed"/g) || []).length === 2,
+      "F-747.SOURCE: `clear-failed` is written where it is DECIDED (the vocabulary, and the tail's input) and read back off the tail after that");
     ok(fault.PLANT_REPOST_REASONS.includes("clear-failed"),
       "F-725: `clear-failed` is in the re-POST vocabulary's one home, beside `clearing`");
   }

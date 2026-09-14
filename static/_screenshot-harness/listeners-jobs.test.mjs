@@ -2224,6 +2224,39 @@ try {
     await close(env);
   }
 
+  /* ---------------- F-653 - the plain search then grant then roster email hop ----------
+   * Breaker 63 noted that the default picker fixture carried no `emailAddress` at all, so
+   * the ordinary journey (a single, non-namesake user) never rendered an email end to end
+   * - only the purpose-built namesake fixture did. With `SettingsTab.jsx` deleted there is
+   * exactly ONE picker left, and this arm walks it on the plain path so the email hop is
+   * covered by the case an admin actually hits every day.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-653 ${theme} the ordinary grant carries its email to the roster`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Permissions");
+      const input = page.locator(".perm-search-input");
+      await input.waitFor({ timeout: 10000 });
+      await input.fill("alex");
+      const row = page.locator(".perm-search-item", { hasText: "Alex Newman" }).first();
+      await row.waitFor({ timeout: 10000 });
+      const seen = (await row.locator(".perm-ident-email").innerText()).trim();
+      ok(seen === "alex.newman@wolfaenpak.example",
+        `F-653 ${theme} the plain search row shows a real email - got ${JSON.stringify(seen)}`);
+
+      await row.click();
+      const card = page.locator(".perm-admin-card", { hasText: "Alex Newman" }).first();
+      await card.waitFor({ timeout: 10000 });
+      ok((await card.locator(".perm-ident-email").innerText()).trim() === seen,
+        `F-653 ${theme} and the roster card repeats the SAME email - the hop renders end to end`);
+      ok(await card.locator(".perm-ident-id").count() === 1,
+        `F-653 ${theme} alongside the id chip that keys the two surfaces together`);
+      ok(env.errors.length === 0, `F-653 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x F-653 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
   /* ---------------- F-648 — a failed user search is NOT an empty directory -------------
    * `searchUsers` reported every Jira-side failure as `{success:true, users:[]}`, so the
    * tab said "No users found" when the truth was "Jira did not answer". That is the

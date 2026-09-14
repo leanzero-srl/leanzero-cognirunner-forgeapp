@@ -117,10 +117,6 @@ ok(CAPS.has(12) && CAPS.get(12).includes("GENERATION_META_LIMITS.maxFieldGuide")
 const ALLOW = [
   { file: "components/CustomSelect.jsx", value: 10, match: "normalized.length >= 10",
     why: "the dropdown grows a search box past ten options - a layout threshold, unrelated to VA_HISTORY_MAX / WEB_SEARCH_MAX_PER_RUN" },
-  { file: "components/DocRepository.jsx", value: 200000, match: "(too large)",
-    why: "the ~200 KB Documentation Library content cap enforced by saveContextDoc (src/index.js), which coincides with REGISTRY_CREATE_MAX_BYTES but is a different rule - it has its own duplication problem, filed separately" },
-  { file: "components/DocRepository.jsx", value: 200000, match: "disabled={saving ||",
-    why: "the same doc-size cap on the Save button's disabled predicate; see the entry above" },
   { file: "components/FunctionBlock.jsx", value: 100, match: "const header = ",
     why: "the first 100 characters of the prompt echoed as a comment at the top of generated code - display text, not GENERATION_META_LIMITS.maxIdChars" },
   { file: "components/FunctionBlock.jsx", value: 60, match: "Step {i + 1}",

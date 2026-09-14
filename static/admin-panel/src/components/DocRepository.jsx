@@ -11,6 +11,7 @@ import { javascriptLanguage } from "@codemirror/lang-javascript";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
+import { DOC_CONTENT_MAX_CHARS, DOC_CONTENT_MAX_LABEL } from "../../../../src/shared/registry-limits.js";
 import { isPermissionRefusal, permissionRefusalText, isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "./refusal";
 
 // CSP-safe JavaScript syntax check: parse with Lezer (no eval / new Function,
@@ -372,12 +373,12 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
           )}
           <div className="doc-add-actions">
             <span className="doc-size-hint">
-              {newContent.length > 0 ? formatSize(newContent.length) : ""}{newContent.length > 200000 ? " (too large)" : ""}
+              {newContent.length > 0 ? formatSize(newContent.length) : ""}{newContent.length > DOC_CONTENT_MAX_CHARS ? ` (too large, max ${DOC_CONTENT_MAX_LABEL})` : ""}
             </span>
             <button
               className={`btn-save-doc${saving ? " is-busy busy-solid" : ""}`}
               onClick={handleSave}
-              disabled={saving || !newTitle.trim() || !newContent.trim() || newContent.length > 200000 || validationMsg?.type === "error"}
+              disabled={saving || !newTitle.trim() || !newContent.trim() || newContent.length > DOC_CONTENT_MAX_CHARS || validationMsg?.type === "error"}
             >
               Save to Library
             </button>

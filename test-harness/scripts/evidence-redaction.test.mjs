@@ -30,7 +30,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const libDir = path.resolve(here, "../lib");
-const { redactSecrets, redactString, REDACTED } =
+const { redactSecrets, redactString, REDACTED, maskEmail, looksLikeCredentialValue } =
   await import(pathToFileURL(path.join(libDir, "redact.mjs")).href);
 
 let pass = 0, fail = 0;
@@ -79,11 +79,54 @@ ok(noCgr(redactSecrets({ note: `minted ${CGR}` })),
   "F-650: a cgr_ token in prose under an innocent key is masked");
 ok(noCgr(redactSecrets({ url: `https://wolfaenpak.atlassian.net/x1/abc?token=${CGR}` })),
   "F-650: a credential in a QUERY PARAMETER is masked even on a non-dev host");
-ok(redactString("https://x/y?secret=hunter2&key=abc&z=keep").includes("z=keep")
-  && !/hunter2|key=abc/.test(redactString("https://x/y?secret=hunter2&key=abc&z=keep")),
-  "F-650: `secret=` and `key=` query VALUES are masked while unrelated parameters survive");
+ok(redactString("https://x/y?secret=hunter2&z=keep").includes("z=keep")
+  && !/hunter2/.test(redactString("https://x/y?secret=hunter2&z=keep")),
+  "F-650: a `secret=` query VALUE is masked while unrelated parameters survive");
 ok(redactString("the key=value pair is documented") === "the key=value pair is documented",
   "NEGATIVE: `key=` in prose (no ? or &) is NOT masked — the query rule is anchored");
+
+/* ── 2b-ii. F-663 — `key=` IS DECIDED BY THE VALUE, NOT BY THE PARAMETER NAME ────
+   `key` used to be an unconditional alternative in SECRET_QUERY, and the harness's own
+   KVS door is `?what=kvs&key=<kvs key>` — so the identifier an evidence line exists to
+   record was the thing that got redacted. Both halves are asserted: the KVS key NAME
+   survives, a credential-shaped value in the same parameter still does not. */
+const kvsUrls = [
+  "https://x.example/x1/hook?what=kvs&key=app_admins",
+  "https://x.example/x1/hook?what=kvs&key=COGNIRUNNER_MEMORY_SETTINGS",
+  "https://x.example/x1/hook?what=kvs&key=validation_logs",
+  "https://x.example/x1/hook?what=kvs&key=job%3A7f3a9c21-0000-4000-8000-abcdefabcdef",
+  "https://x.example/x1/hook?what=kvs&key=pf_code%3Arule-1%3Aa1b2c3",
+  "https://wolfaenpak.atlassian.net/rest/api/3/projectvalidate/key?key=COG",
+];
+for (const u of kvsUrls) ok(redactString(u) === u, `F-663: a KVS/Jira key NAME survives — ${u.slice(u.indexOf("key="))}`);
+ok(!/\[REDACTED\]/.test(redactString(kvsUrls[0])) && redactString(kvsUrls[0]).includes("what=kvs"),
+  "F-663: …and the rest of the hook URL is untouched with it");
+
+const HEX48 = "ab12cd34".repeat(6);
+ok(redactString(`https://x/y?key=${HEX48}`) === "https://x/y?key=[REDACTED]",
+  "F-663: a 48-hex value under `key=` IS still masked");
+ok(redactString("https://x/y?key=sk-live-abcdef0123456789") === "https://x/y?key=[REDACTED]",
+  "F-663: a value with a known credential PREFIX under `key=` is masked whatever its length");
+ok(redactString("https://x/y?key=QUJDREVGR0hJSktMTU5PUFFSUw==&z=keep")
+  === "https://x/y?key=[REDACTED]&z=keep",
+  "F-663: a base64 value under `key=` is masked, and the next parameter survives the cut");
+ok(redactString("https://x/y?key=aB3xY9zQ7mK2pL5nR8tV") === "https://x/y?key=[REDACTED]",
+  "F-663: 20+ chars of mixed case AND digits is a token, not a word");
+/* The judgement calls, stated so a later reader does not 'fix' them back. */
+ok(redactString("https://x/y?key=short_name") === "https://x/y?key=short_name",
+  "F-663 NEGATIVE: a short value is a name — length alone is the first gate");
+ok(redactString("https://x/y?key=doc_repo_seed_meta_and_then_some") === "https://x/y?key=doc_repo_seed_meta_and_then_some",
+  "F-663 NEGATIVE: a long value carrying a separator is a NAME, not a credential");
+ok(looksLikeCredentialValue("cgr_" + HEX48) && !looksLikeCredentialValue("app_admins")
+  && !looksLikeCredentialValue("job:7f3a9c21") && looksLikeCredentialValue(HEX48),
+  "F-663: the shape predicate is exported and agrees with the rule that uses it");
+/* POSITIVE CONTROL — the PRE-FIX behaviour, reconstructed, so the pass above is evidence
+   that something changed rather than that nothing ever fired. */
+const PRE_FIX_QUERY = /([?&](?:token|secret|key|api[_-]?key|apikey|password|auth|access_token)=)[^&\s"'<>\\]+/gi;
+ok(kvsUrls[0].replace(PRE_FIX_QUERY, "$1[REDACTED]") === "https://x.example/x1/hook?what=kvs&key=[REDACTED]",
+  "POSITIVE CONTROL: the pre-fix rule DID clobber the KVS key name — this suite is testing a real change");
+ok(kvsUrls[0].replace(PRE_FIX_QUERY, "$1[REDACTED]") !== redactString(kvsUrls[0]),
+  "…and the shipped rule no longer agrees with it");
 ok(redactSecrets({ harnessSecret: "s3cr3t" }).harnessSecret === REDACTED
   && redactSecrets({ HARNESS_SECRET: "s3cr3t" }).HARNESS_SECRET === REDACTED
   && redactSecrets({ hookSecret: "s3cr3t" }).hookSecret === REDACTED
@@ -133,6 +176,36 @@ ok(redactSecrets({ note: "reach me at mihai@wolfaenpak.com about it" }).note ===
   "an email in PROSE under an innocent key is masked, and the sentence stays readable");
 ok(redactSecrets({ id: "557058:653160a5-6112-470d-baea-333ac760364e" }).id === "557058:653160a5-6112-470d-baea-333ac760364e",
   "NEGATIVE: an account id is NOT an email and is left whole — it is the discriminator under test");
+
+/* ── 2c-ii. F-662 — ONE EMAIL RULE, AND ITS LOCAL PART IS RFC-ISH ───────────────
+   `perm-discriminator-live.mjs` carried a SECOND, narrower `EMAIL_RE` and ran it FIRST,
+   so the shared rule could only fail to match what the local one had already rewritten.
+   The apostrophe local part is the measured divergence. */
+ok(redactString("mail o'brien@tenant.com now") === "mail o***@tenant.com now",
+  "F-662: an apostrophe local part is masked WHOLE (the driver's local rule left `o'b***@`)");
+ok(maskEmail("o'brien@tenant.com") === "o***@tenant.com", "…by the shared mask, to the documented shape");
+for (const addr of [
+  "first.last@tenant.com", "mihai.perdum+contractor2025@tenant.com", "o'brien@tenant.com",
+  "d'angelo.smith@sub.tenant.co.uk", "a!b#c$d%e&f'g*h+i/j=k?l^m_n`o{p|q}r~s@tenant.com",
+  "x-y_z@tenant-two.com",
+]) {
+  const masked = redactString(`contact ${addr} please`);
+  ok(!masked.includes(addr) && /\*\*\*@/.test(masked) && masked.endsWith(" please"),
+    `F-662: the RFC-ish local part covers ${addr.slice(0, 12)}… (got: ${masked})`);
+}
+/* POSITIVE CONTROL — the narrow class the driver used, so "it passes now" is a change. */
+const F662_LOCAL_RE = /([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
+ok("o'brien@tenant.com".replace(F662_LOCAL_RE, (_m, a, d) => `${a}***@${d}`) === "o'b***@tenant.com",
+  "POSITIVE CONTROL: the deleted local rule really did leave `o'` in front of the mask");
+ok(redactString("o'brien@tenant.com") !== "o'b***@tenant.com",
+  "…and the shared rule disagrees with it, which is the whole reason there is now only one");
+/* IDEMPOTENCE survives the wider class: `*` is not atext, so a masked address is stable. */
+ok(redactString(redactString("o'brien@tenant.com")) === redactString("o'brien@tenant.com"),
+  "F-662: the wider class is still idempotent");
+ok(redactString("https://wolfaenpak.atlassian.net/browse/COG-1") === "https://wolfaenpak.atlassian.net/browse/COG-1",
+  "F-662 NEGATIVE: the wider local part does not start eating ordinary URLs");
+ok(redactString("2 + 2 = 4 and a/b?c") === "2 + 2 = 4 and a/b?c",
+  "F-662 NEGATIVE: …nor ordinary prose that happens to contain atext punctuation");
 
 /* THE RESTORE MUST STILL WORK. The byte-identical roster restore compares the RAW
    snapshot held in memory. Redacted comparison is what would break, and it breaks the
@@ -277,6 +350,93 @@ for (const f of liveFiles) {
   ok(bad.length === 0, `${f}: every roster/evidence file write is redacted (raw at: ${bad.map((b) => b.n).join(", ")})`);
 }
 ok(rosterWriters.length >= 2, `the roster-snapshot rule found drivers to apply to (${rosterWriters.join(", ")})`);
+
+/* ── 4c-ii. F-660 — THE PII RULE HAS TO COVER PIXELS ────────────────────────────
+   Everything above is TEXT. The permission drivers also write full-page SCREENSHOTS of
+   the Permissions tab, where the same real addresses render as PIXELS — and none of these
+   scans opens an image, so the suite stayed green while the artefact directory filled
+   with legible addresses. F-651 made it worse on purpose: the email no longer ellipsises,
+   it wraps and owns a line.
+
+   The rule is crude and therefore enforceable: a `*-live.mjs` that mentions `perm-` may
+   not contain a RAW `.screenshot(` call. It calls `shotMasked` from lib/roster-ui.mjs,
+   which masks every `.perm-ident-email`, ASSERTS in the DOM that nothing readable is
+   left, captures, and restores. `roster-ui.test.mjs` proves that helper on a fake DOM. */
+/* A word character before the dot: a real receiver (`page.screenshot(`), never prose that
+   quotes the method name (``a raw `.screenshot(` call``), which the rule's own docblocks do. */
+const PERM_SHOT = /\w\.screenshot\s*\(/;
+function scanRawShots(src) {
+  return src.split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => PERM_SHOT.test(l) && !/^\s*\*/.test(l) && !/^\s*\/\//.test(l) && !/shotMasked/.test(l))
+    .map(({ n }) => n);
+}
+ok(scanRawShots('    await page.screenshot({ path: `${OUT}/01-search-rows.png` }).catch(() => {});').length === 1,
+  "POSITIVE CONTROL: the pixel rule FIRES on the raw capture the drivers used to do");
+ok(scanRawShots('    await shotMasked(page, frame, `${OUT}/01-search-rows.png`, { strict: false });').length === 0,
+  "NEGATIVE CONTROL: a capture routed through the mask helper is not flagged");
+ok(scanRawShots(' * a driver does not call page.screenshot( on the Permissions tab').length === 0,
+  "NEGATIVE CONTROL: the rule written out in a docblock is not an offence");
+
+const permDrivers = liveFiles.filter((f) => /perm-/.test(readFileSync(path.join(here, f), "utf8")));
+ok(permDrivers.length >= 3, `the pixel rule found the Permissions drivers to apply to (${permDrivers.join(", ")})`);
+for (const f of permDrivers) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  const raw = scanRawShots(src);
+  ok(raw.length === 0, `${f}: every capture goes through the email mask (raw page.screenshot at: ${raw.join(", ")})`);
+  ok(/shotMasked/.test(src), `${f}: …and it imports the mask helper rather than rolling its own`);
+}
+
+/* ── 4c-iii. F-657 — NO PERMISSION DRIVER PICKS AN ACCOUNT ITS OWN WAY ──────────
+   F-654 was fixed in one driver; the driver written as the PROOF of that fix carried the
+   same defect verbatim, because it had its own selection code. So the rule is on the
+   directory, not on the file: every `*-live.mjs` that drives the Permissions tab must go
+   through `selectByDiscriminator` (directly, or via `makeRosterUI`, which is the only
+   other caller), and none may use the AMBIGUOUS `.perm-ident` locator as a discriminator
+   — that class is the BASE class on the email span as well as the id chip, so `.first()`
+   is the ADDRESS on any row that carries one. */
+const AMBIGUOUS_IDENT = /\.locator\(\s*["']\.perm-ident["']\s*\)\s*\.first\(\)/;
+ok(AMBIGUOUS_IDENT.test('const ident = (await r.locator(".perm-ident").first().innerText().catch(() => "")).trim();'),
+  "POSITIVE CONTROL: the ambiguous-discriminator rule FIRES on the line the drivers used");
+ok(!AMBIGUOUS_IDENT.test('const idEl = r.locator(".perm-ident-id"); const t = await idEl.first().getAttribute("title");'),
+  "NEGATIVE CONTROL: reading the id chip specifically is not flagged");
+ok(!AMBIGUOUS_IDENT.test('identSpans: await r.locator(".perm-ident").count(),'),
+  "NEGATIVE CONTROL: COUNTING the ident spans is legitimate — it is how the suppression check works");
+for (const f of permDrivers) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  const drivesTab = /perm-search-item|perm-admin-card/.test(src);
+  if (!drivesTab) continue;
+  ok(/selectByDiscriminator|makeRosterUI/.test(src),
+    `${f}: the account is chosen by selectByDiscriminator, not by this driver's own idea of which row`);
+  const amb = src.split("\n").map((l, i) => ({ l, n: i + 1 })).filter(({ l }) => AMBIGUOUS_IDENT.test(l)).map(({ n }) => n);
+  ok(amb.length === 0, `${f}: no ambiguous \`.perm-ident\` discriminator read (at: ${amb.join(", ")})`);
+}
+
+/* ── 4d. F-662 — NO DRIVER MAY KEEP A SECOND EMAIL MASK ─────────────────────────
+   The defect was not a bad regex, it was a SECOND regex. Removing the one copy without
+   this rule schedules its return: the next driver that wants "belt and braces" writes its
+   own `EMAIL_RE` and the two homes drift again. A `@` inside a character class is the
+   discriminator — `lib/redact.mjs` is the only file allowed to define one. */
+function scanLocalEmailRules(src) {
+  return src.split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => /\/[^\/\n]*\[[^\]\n]*\][^\/\n]*@/.test(l) || /\bEMAIL_RE\b/.test(l))
+    .filter(({ l }) => !/^\s*\*/.test(l) && !/^\s*\/\//.test(l))       // prose in a docblock
+    .map(({ n }) => n);
+}
+/* POSITIVE CONTROL — the line this rule exists to have caught, verbatim from the driver. */
+ok(scanLocalEmailRules("const EMAIL_RE = /([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\\.[A-Za-z]{2,})/g;").length === 1,
+  "POSITIVE CONTROL: the second-email-rule scan FIRES on the deleted local regex");
+ok(scanLocalEmailRules(' * `o\'brien@tenant.com` is masked by the shared rule.').length === 0,
+  "NEGATIVE CONTROL: an address discussed in a docblock is not a rule");
+ok(scanLocalEmailRules('  info(`row ${r.i}: email=${r.emailShown}`);').length === 0,
+  "NEGATIVE CONTROL: an ordinary line mentioning email is not a rule");
+const emailRuleOffenders = [];
+for (const f of liveFiles) {
+  for (const n of scanLocalEmailRules(readFileSync(path.join(here, f), "utf8"))) emailRuleOffenders.push(`${f}:${n}`);
+}
+ok(emailRuleOffenders.length === 0,
+  `F-662: lib/redact.mjs is the ONLY home of the email rule (second homes at: ${emailRuleOffenders.join(", ")})`);
 
 /* ── 5. the hardened drivers redact in the writers themselves ──────────────────── */
 for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "perm-namesake-ui-live.mjs"]) {

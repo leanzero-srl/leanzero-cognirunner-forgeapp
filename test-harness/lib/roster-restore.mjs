@@ -52,6 +52,59 @@ export function rosterIdOf(row) {
   return null;
 }
 
+/**
+ * F-658 — THE ROLE A ROSTER ROW ACTUALLY CARRIES, read by the PRODUCT'S OWN RULE.
+ *
+ * `app_admins` still holds legacy rows: bare strings, and objects with no `role`. The
+ * product treats BOTH as ADMIN — `src/index.js:480-481` (getUserPermissions) and
+ * `removeAppAdmin`/`updateUserRole`'s last-admin guards all read
+ * `typeof entry === "object" && entry.role ? entry.role : "admin"`. The restore used to
+ * re-add a lost row with `row.role || "viewer"` (and the `changed` path fell through to
+ * `ROLE_LABEL[role] || ROLE_LABEL.editor`, clicking **Editor** for an undefined role), so
+ * restoring a legacy row DEMOTED a real site admin to viewer or editor and left the run's
+ * own second read telling an operator to repair it by hand.
+ *
+ * THE SCOPE DEFAULT IS THE PRODUCT'S TOO, AND IT IS NOT `addAppAdmin`'s. `addAppAdmin`
+ * clamps a missing scope to "own", but the READ at :481 defaults a role-less object to
+ * "all" (and forces "all" for an admin). The restore must reproduce the EFFECTIVE
+ * permission the row conferred, which is what the read says, so this mirrors the read.
+ *
+ * @returns {{role: "viewer"|"editor"|"admin", scope: "own"|"all"}}
+ */
+export function rosterRowRole(row) {
+  const isObject = row !== null && typeof row === "object";
+  const role = isObject && row.role ? row.role : "admin";
+  const scope = role === "admin" ? "all" : (isObject && row.scope ? row.scope : "all");
+  return { role, scope };
+}
+
+const VALID_ROLES = ["viewer", "editor", "admin"];
+const VALID_SCOPES = ["own", "all"];
+
+/**
+ * The permission-bearing shape of a roster row: a bare string becomes the object the
+ * product reads it as. This is the ONLY shape a restore verdict may compare (F-659),
+ * because `addAppAdmin` always pushes a full object and can therefore never reproduce a
+ * bare-string row byte-for-byte — comparing raw shapes makes a correct restore a
+ * permanent red.
+ */
+export function normaliseRosterRow(row) {
+  return { accountId: rosterIdOf(row), ...rosterRowRole(row) };
+}
+
+/**
+ * Can `addAppAdmin` reproduce the permission this row confers? It cannot express a role
+ * or scope outside the product's own enums, and a caller must REFUSE rather than click a
+ * default — the F-658 defect was exactly a default click.
+ */
+export function isReproducibleRosterRow(row) {
+  const { role, scope } = rosterRowRole(row);
+  if (!rosterIdOf(row)) return { ok: false, reason: "the row carries no account id" };
+  if (!VALID_ROLES.includes(role)) return { ok: false, reason: `role "${role}" is not one of ${VALID_ROLES.join("/")}` };
+  if (!VALID_SCOPES.includes(scope)) return { ok: false, reason: `scope "${scope}" is not one of ${VALID_SCOPES.join("/")}` };
+  return { ok: true, role, scope };
+}
+
 /** The last segment of an account id — what the `.perm-ident-id` chip renders. */
 export function idTail(accountId) {
   const s = String(accountId || "");
@@ -129,23 +182,62 @@ export function planRosterRestore(snapshot, current) {
   const changed = [];
   for (const [id, before] of snapById) {
     const after = nowById.get(id);
-    if (after !== undefined && JSON.stringify(after) !== JSON.stringify(before)) changed.push({ accountId: id, before, after });
+    if (after === undefined) continue;
+    /* F-658/F-659 — compare the PERMISSION, not the stored bytes. `addAppAdmin` always
+       pushes a full object, so a legacy bare-string row can never be reproduced
+       byte-for-byte; a raw compare would call a CORRECT re-add "changed" forever and
+       send the restore loop round again on damage it cannot repair. */
+    if (JSON.stringify(normaliseRosterRow(after)) !== JSON.stringify(normaliseRosterRow(before))) {
+      changed.push({ accountId: id, before, after });
+    }
   }
   const clean = JSON.stringify(now) === JSON.stringify(snap);
-  const sameSet = !clean && strays.length === 0 && missing.length === 0 && changed.length === 0;
-  return { strays, missing, changed, clean, sameSet };
+  const dupes = now.length !== nowById.size || snap.length !== snapById.size || now.length !== snap.length;
+  const sameSet = !clean && !dupes && strays.length === 0 && missing.length === 0 && changed.length === 0;
+  return { strays, missing, changed, clean, sameSet, dupes };
 }
 
 /**
- * The verdict of the SECOND READ. `clean` is the only pass: a roster holding the same
- * rows in a different ORDER is a different stored value and is reported as such, not
- * quietly accepted.
+ * The verdict of the SECOND READ.
+ *
+ * F-659 — IT IS A SET COMPARE, BECAUSE `addAppAdmin` APPENDS (`users.push`,
+ * src/index.js:5006). Any restore that re-adds a row lands it at the TAIL, so an
+ * order-sensitive byte compare made a semantically-correct restore a PERMANENT red:
+ * `strays:0 missing:0 changed:0` and the loudest assertion in the suite still printed
+ * "THE ROSTER IS NOT RESTORED — restore it by hand", dispatching an operator to repair a
+ * tenant that was already correct. The restore loop even conceded it (`if (plan.sameSet)
+ * break; // no click can fix that`) — there is no reorder control in the Permissions tab.
+ *
+ * THE ORDER IS NOT A PERMISSION STATE. Nothing reads the roster index to decide anything;
+ * `getConfigs` and the cards only RENDER in that order. So a roster carrying exactly the
+ * same `{accountId, role, scope}` set, in a different order, is a PASS — reported as such,
+ * with an info line that says what the residue is rather than swallowing it.
+ *
+ * EVERYTHING THAT IS A PERMISSION STATE STAYS A FAIL: any stray, missing, changed or
+ * duplicated row.
  */
 export function rosterRestoreVerdict(snapshot, current) {
   const plan = planRosterRestore(snapshot, current);
   if (plan.clean) return { ok: true, verdict: "byte-identical", plan };
-  if (plan.sameSet) return { ok: false, verdict: "same rows, different order", plan };
-  return { ok: false, verdict: plan.strays.length + " stray, " + plan.missing.length + " missing, " + plan.changed.length + " changed", plan };
+  if (plan.sameSet) {
+    const snapIds = (Array.isArray(snapshot) ? snapshot : []).map(rosterIdOf);
+    const nowIds = (Array.isArray(current) ? current : []).map(rosterIdOf);
+    const reordered = JSON.stringify(snapIds) !== JSON.stringify(nowIds);
+    return {
+      ok: true,
+      verdict: reordered ? "same set, different order" : "same set, different row shape",
+      info: reordered
+        ? "every account carries exactly the role and scope the snapshot held; only the ORDER of the stored array differs, which `addAppAdmin` (users.push) cannot avoid and the Permissions tab cannot repair. No permission decision reads the index."
+        : "every account carries exactly the role and scope the snapshot held; a row's non-permission fields (displayName / emailAddress, or a legacy bare string re-added as the object the product reads it as) differ from the stored bytes.",
+      plan,
+    };
+  }
+  const counts = plan.strays.length + " stray, " + plan.missing.length + " missing, " + plan.changed.length + " changed";
+  const silent = plan.strays.length === 0 && plan.missing.length === 0 && plan.changed.length === 0;
+  /* The only way to reach here with all three at zero is a DUPLICATED row: every account
+     is accounted for, and the array is still longer. Say so, or the verdict reads "0, 0, 0
+     — not restored" and nobody can act on it. */
+  return { ok: false, verdict: silent ? "the row COUNT differs with no stray, missing or changed account — a DUPLICATED row" : counts, plan };
 }
 
 /** A PII-free shape of a plan, safe to print: id TAILS only, no names, no addresses. */

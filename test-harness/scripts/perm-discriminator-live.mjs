@@ -16,8 +16,9 @@
  * row with a KVS read through the hook.
  *
  * PII. Jira may return `emailAddress`. Every email is masked to `<initial>***@<domain>`
- * before it reaches the console or the evidence file — by hand, here, because
- * `lib/redact.mjs` is a SECRET redactor with no notion of PII (F-652).
+ * before it reaches the console or the evidence file, by `lib/redact.mjs` — which learned
+ * PII in F-652 and is now the ONLY home of that rule (F-662: this file used to carry a
+ * second, narrower one and ran it first).
  *
  * RESTORE. The roster is snapshotted in memory, the grant is removed through the same
  * UI, and the restore is proven by a byte compare of the KVS value.
@@ -25,6 +26,16 @@
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
+/* F-660 — the evidence JSON beside these captures is masked; the CAPTURES were not, and a
+   full-page shot of the Permissions tab renders real addresses as PIXELS that no text
+   redactor can see — F-651 made the address fully legible on purpose. Every capture goes
+   through `shotMasked`, which masks every `.perm-ident-email`, asserts nothing readable is
+   left, shoots, and restores. The id chips stay legible: they are the discriminator these
+   screenshots exist to prove. */
+import { makeRosterUI, shotMasked } from "../lib/roster-ui.mjs";
+import {
+  rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
+} from "../lib/roster-restore.mjs";
 
 const env = loadEnv();
 const HOOK_URL = env.TESTSTATE_URL;
@@ -39,27 +50,22 @@ const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/perm-discriminator", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 
-/** PII mask: mihai@wolfaenpak.com -> m***@wolfaenpak.com. Applied to strings AND deeply. */
-const EMAIL_RE = /([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
-const maskEmails = (s) => (typeof s === "string" ? s.replace(EMAIL_RE, (_m, a, d) => `${a}***@${d}`) : s);
-function maskDeep(v, d = 0) {
-  if (v === null || v === undefined || d > 12) return v;
-  if (typeof v === "string") return maskEmails(redactString(v));
-  if (typeof v !== "object") return v;
-  if (Array.isArray(v)) return v.map((x) => maskDeep(x, d + 1));
-  const o = {};
-  for (const [k, val] of Object.entries(v)) o[k] = maskDeep(val, d + 1);
-  return o;
-}
-const J = (d) => JSON.stringify(maskDeep(d));
+/* F-662 — THERE IS NO LOCAL EMAIL MASK HERE ANY MORE.
+ * This driver used to carry its own `EMAIL_RE` (no `'` in the local part, a laxer domain)
+ * and ran it BEFORE `lib/redact.mjs`, so the two homes disagreed about what a mask IS and
+ * the narrow one always won: `o'brien@tenant.com` came out as `o'b***@tenant.com`, which
+ * the shared rule could no longer match because `*` is not a legal local-part character.
+ * `redactString` / `redactSecrets` are now the ONLY answer, here and at the file boundary.
+ */
+const J = (d) => JSON.stringify(redactSecrets(d));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
 const ev = { at: new Date().toISOString(), env: "dev", target: TARGET, checks: [] };
-const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s: maskEmails(s), ...(d ? { d: maskDeep(d) } : {}) }); console.log(`  PASS  ${maskEmails(s)}${d ? " " + J(d) : ""}`); };
-const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s: maskEmails(s), ...(d ? { d: maskDeep(d) } : {}) }); console.log(`  FAIL  ${maskEmails(s)}${d ? " " + J(d) : ""}`); };
-const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s: maskEmails(s), ...(d ? { d: maskDeep(d) } : {}) }); console.log(`  N/V   ${maskEmails(s)}${d ? " " + J(d) : ""}`); };
-const info = (s) => console.log(`        ${maskEmails(redactString(String(s)))}`);
+const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  PASS  ${redactString(s)}${d ? " " + J(d) : ""}`); };
+const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  FAIL  ${redactString(s)}${d ? " " + J(d) : ""}`); };
+const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  N/V   ${redactString(s)}${d ? " " + J(d) : ""}`); };
+const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 const readRes = async (res) => { let t = ""; try { t = await res.text(); } catch { return { status: 0, json: null, text: "" }; } let j = null; try { j = JSON.parse(t); } catch {} return { status: res.status, json: j, text: t }; };
 async function hook(body, method = "POST", qs = "") {
@@ -114,7 +120,7 @@ async function readSearchRows(q, shot) {
     }
     const errBox = frame.locator(".perm-search-error");
     const err = (await errBox.count()) > 0 ? (await errBox.first().innerText()).trim() : null;
-    await page.screenshot({ path: `${OUT}/${shot}` }).catch(() => {});
+    await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
     return { rows: out, err };
   });
 }
@@ -140,52 +146,37 @@ async function readRosterCards(shot) {
         idTitle: (await idEl.count()) > 0 ? await idEl.first().getAttribute("title") : null,
       });
     }
-    await page.screenshot({ path: `${OUT}/${shot}` }).catch(() => {});
+    await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
     return out;
   });
 }
 
-/** Click the search row at index `i` after setting Editor / Own Rules. */
-async function grantRow(i) {
-  return withAdminPanel(async (page, frame) => {
-    await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
-    await frame.locator(".perm-search-input").waitFor({ state: "visible", timeout: 60000 });
-    await frame.locator(".perm-search-wrap .dropdown").nth(0).click();
-    await frame.locator(".dropdown-item-name", { hasText: /^Editor/ }).first().click();
-    await sleep(500);
-    await frame.locator(".perm-search-wrap .dropdown").nth(1).click();
-    await frame.locator(".dropdown-item-name", { hasText: /^Own Rules/ }).first().click();
-    await sleep(400);
-    await frame.locator(".perm-search-input").fill("Mihai");
-    await sleep(5000);
-    const row = frame.locator(".perm-search-item").nth(i);
-    const snap = {
-      email: (await row.locator(".perm-ident-email").count()) > 0 ? (await row.locator(".perm-ident-email").first().innerText()).trim() : null,
-      id: (await row.locator(".perm-ident-id").count()) > 0 ? (await row.locator(".perm-ident-id").first().innerText()).trim() : null,
-      idTitle: (await row.locator(".perm-ident-id").count()) > 0 ? await row.locator(".perm-ident-id").first().getAttribute("title") : null,
-    };
-    await row.click();
-    await sleep(4500);
-    await page.screenshot({ path: `${OUT}/03-granted.png` }).catch(() => {});
-    return snap;
-  });
-}
-
-async function removeRosterIndex(i) {
-  return withAdminPanel(async (page, frame) => {
-    await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
-    await frame.locator(".perm-admin-card").first().waitFor({ state: "visible", timeout: 60000 });
-    await sleep(1500);
-    const card = frame.locator(".perm-admin-card").nth(i);
-    const text = (await card.innerText()).replace(/\s+/g, " ");
-    await card.locator(".perm-remove-btn").click();
-    await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
-    await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
-    await sleep(3500);
-    await page.screenshot({ path: `${OUT}/05-restored.png` }).catch(() => {});
-    return { index: i, card: text };
-  });
-}
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-657 — THIS DRIVER USED TO CARRY THE VERY DEFECT IT WAS WRITTEN TO DISPROVE.
+ *
+ * `readSearchRows` opened a persistent context, read the rows, and CLOSED it. `grantRow(i)`
+ * then opened ANOTHER context, re-typed "Mihai", waited five seconds and clicked
+ * `.perm-search-item` nth(i) — a fresh invocation of Jira's user search, whose order this
+ * file's own sibling docblock says is not stable. Three site accounts read "Mihai Perdum".
+ * A reorder between the two searches put a REAL `{role:"editor", scope:"own"}` on a
+ * stranger's account; `granted` was then false (the target never appeared on the roster),
+ * so the `finally`'s `if (granted)` removed NOTHING and the stray survived the run, with
+ * the operator told only that the byte compare had failed.
+ *
+ * The selection was also a PREFIX match (`seg(TARGET).startsWith(chip)`) that took the
+ * FIRST candidate with no uniqueness guard — and `lib/roster-restore.mjs`'s
+ * `selectByDiscriminator`, landed in the same commit range to forbid exactly this, was
+ * never imported here.
+ *
+ * THE CUT. Both operations come from `lib/roster-ui.mjs` — the same implementation
+ * `knowledge-doors-editor-live.mjs` drives. The read and the click happen in ONE context,
+ * the chosen row's FULL account id is re-read from the live DOM immediately before the
+ * click and any disagreement refuses, an unidentifiable target is N/V rather than a guess,
+ * and the roster is restored by DIFF against the raw snapshot, UNCONDITIONALLY, so a
+ * stray this run never recorded making is still removed.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+const { grantRole, restoreRosterToSnapshot } =
+  makeRosterUI({ withAdminPanel, rosterRows: rosterRaw, out: OUT });
 
 async function main() {
   console.log("\nF-647 / F-648 - the Permissions picker discriminator, live on DEV\n");
@@ -193,8 +184,10 @@ async function main() {
   if (ping.status !== 200) throw new Error(`the hook is not reachable (GET -> ${ping.status})`);
   PASS("hook reachable on dev, secret accepted");
 
+  /* The snapshot is RAW and stays in memory: it is what the restore diffs against, and a
+     redacted copy would call two different addresses equal because they share one mask.
+     It is redacted at the file boundary (F-652). */
   const rosterBefore = await rosterRaw();
-  const rosterBeforeBytes = JSON.stringify(rosterBefore);
   ev.rosterBefore = rosterBefore;               // masked at write time
   info(`roster snapshot held IN MEMORY: ${rosterBefore.length} row(s)`);
 
@@ -206,14 +199,14 @@ async function main() {
   if (pre && pre.role === null) PASS("the probe account holds NO app role - a genuine non-admin principal", { role: pre.role });
   else FAIL("the probe account already holds a role - the non-admin arm is not genuine", { answer: J(pre) });
   const su = await invoke("searchUsers", { query: "Mihai" }, nonAdmin);
-  ev.searchUsersHook = { status: su.status, body: maskEmails(su.text).slice(0, 300) };
-  info(`searchUsers via hook (non-admin) -> ${su.status} ${maskEmails(su.text).slice(0, 200)}`);
+  ev.searchUsersHook = { status: su.status, body: redactString(su.text).slice(0, 300) };
+  info(`searchUsers via hook (non-admin) -> ${su.status} ${redactString(su.text).slice(0, 200)}`);
   if (su.json && su.json.success === false && su.json.reason === "no-permission" && !(su.json.users || []).length) {
     PASS("F-648: the admin gate answers first - success:false, reason:'no-permission', no users", { reason: su.json.reason, needsRole: su.json.needsRole });
   } else if (su.status === 400 && /not allowlisted/.test(su.text)) {
     NV("F-648 admin-gate arm: `searchUsers` is NOT on the dev hook's invokeResolver allow-list, so no live call can choose a non-admin principal. Offline-proven only (scripts/search-users.test.mjs).", { hookAnswer: su.text.slice(0, 120) });
   } else {
-    FAIL("F-648: the non-admin answer is neither the refusal nor the allow-list rejection", { status: su.status, body: maskEmails(su.text).slice(0, 200) });
+    FAIL("F-648: the non-admin answer is neither the refusal nor the allow-list rejection", { status: su.status, body: redactString(su.text).slice(0, 200) });
   }
   NV("F-648 fail-CLOSED (429/5xx) arm: there is no hook lever that makes Jira's /user/search fail, and this run may not deploy one. Offline-proven only (search-users.test.mjs drives 403/429/500 + a thrown fetch through the mock).");
 
@@ -221,7 +214,7 @@ async function main() {
   console.log("\nSTEP B - F-647: what does an admin actually SEE for the three namesakes?");
   const search = await readSearchRows("Mihai", "01-search-rows.png");
   ev.searchRows = search.rows;
-  for (const r of search.rows) info(`row ${r.i}${r.disabled ? " (on roster)" : ""}: name="${r.name}" email=${r.emailShown ? maskEmails(r.emailShown) : "(absent)"} idChip=${r.idShown || "(absent)"} idTitle=${r.idTitle || "(absent)"}`);
+  for (const r of search.rows) info(`row ${r.i}${r.disabled ? " (on roster)" : ""}: name="${r.name}" email=${r.emailShown ? redactString(r.emailShown) : "(absent)"} idChip=${r.idShown || "(absent)"} idTitle=${r.idTitle || "(absent)"}`);
   if (search.err) info(`search error box: "${search.err}"`);
   if (search.rows.length >= 2) PASS(`the picker returned ${search.rows.length} namesake rows for "Mihai" - the F-645 ambiguity is reproducible`, { rows: search.rows.length });
   else FAIL("fewer than two rows came back; the namesake case is not reproduced", { rows: search.rows.length });
@@ -239,44 +232,68 @@ async function main() {
   if (withEmail.length === 0) {
     NV("F-647 EMAIL branch: Jira returned NO emailAddress for any of the namesake rows on this site (GDPR/profile visibility), so the email discriminator cannot be exercised live here. The id-segment fallback is what an admin sees, and it is confirmed above.", { rows: search.rows.length });
   } else {
-    PASS(`Jira DOES return emailAddress: ${withEmail.length}/${search.rows.length} rows render an email`, { rowsWithEmail: withEmail.map((r) => ({ i: r.i, email: maskEmails(r.emailShown) })) });
+    PASS(`Jira DOES return emailAddress: ${withEmail.length}/${search.rows.length} rows render an email`, { rowsWithEmail: withEmail.map((r) => ({ i: r.i, email: redactString(r.emailShown) })) });
     for (const r of withEmail) {
-      if (r.idShown) PASS(`row ${r.i}: email AND id chip are shown together - the F-647 suppression is gone`, { email: maskEmails(r.emailShown), chip: r.idShown });
-      else FAIL(`row ${r.i}: an email row SUPPRESSES the id chip - F-647 is live`, { email: maskEmails(r.emailShown) });
+      if (r.idShown) PASS(`row ${r.i}: email AND id chip are shown together - the F-647 suppression is gone`, { email: redactString(r.emailShown), chip: r.idShown });
+      else FAIL(`row ${r.i}: an email row SUPPRESSES the id chip - F-647 is live`, { email: redactString(r.emailShown) });
     }
   }
 
   /* ── the grant, the roster card, the stored row ─────────────────────────── */
   console.log("\nSTEP C - grant editor/own to the second account through the picker, and read all three surfaces back");
-  let granted = false, clicked = null;
+  let clicked = null;
   try {
     const before = await rosterIds();
-    const candidates = search.rows.filter((r) => !r.disabled);
-    let idx = candidates.find((r) => r.idShown && seg(TARGET).startsWith(r.idShown.replace(/…|\.\.\./g, "")))?.i;
-    if (idx === undefined) idx = candidates.find((r) => r.idTitle === TARGET)?.i;
-    if (idx === undefined) { FAIL("no search row identifies the target account - the picker cannot be used to grant deliberately", { target: seg(TARGET) }); }
-    else {
-      PASS("the ROW FOR THE TARGET ACCOUNT IS IDENTIFIABLE FROM THE UI ALONE (id chip/title), which is exactly what F-645 said was impossible", { rowIndex: idx, chip: seg(TARGET).slice(0, 8) });
-      clicked = await grantRow(idx);
-      info(`clicked row ${idx}: email=${clicked.email ? maskEmails(clicked.email) : "(absent)"} idChip=${clicked.id}`);
+    /* F-657 — THE SELECTION IS `selectByDiscriminator`, IN THE SAME CONTEXT AS THE CLICK.
+       This used to pick an INDEX here, off rows read in a context that was then CLOSED,
+       and hand that index to a second context that re-ran the search. It was also a PREFIX
+       match on the visible chip with no uniqueness guard. The read below is only the
+       PROOF that the target is identifiable from the UI; the grant re-reads and re-selects
+       inside the one context that clicks, and refuses on any disagreement. */
+    const pick = selectByDiscriminator(search.rows, TARGET);
+    if (pick.index < 0) {
+      if (pick.disabledHit) NV("the target account is ALREADY on the roster, so the picker grant cannot be exercised this run", { reason: pick.reason });
+      else FAIL("no search row identifies the target account - the picker cannot be used to grant deliberately", { target: seg(TARGET), reason: pick.reason, ambiguous: !!pick.ambiguous });
+    } else {
+      PASS("the ROW FOR THE TARGET ACCOUNT IS IDENTIFIABLE FROM THE UI ALONE (id chip/title), which is exactly what F-645 said was impossible", { rowIndex: pick.index, how: pick.how, chip: seg(TARGET).slice(0, 8) });
+      const emailAtPick = search.rows[pick.index] ? search.rows[pick.index].emailShown : null;
+
+      const g = await grantRole(TARGET, "editor", "own", ["Mihai"]);
+      ev.grant = { ok: !!g.ok, how: g.how, index: g.index, query: g.query, raced: !!g.raced, reason: g.reason };
+      if (g.raced) {
+        NV("the row carrying the target id had MOVED when it was re-read immediately before the click, so NOTHING was clicked - this is the F-657 window, refused instead of granted to a stranger", { reason: g.reason });
+      } else if (!g.ok && g.notFound) {
+        NV("the target row could not be identified inside the clicking context across any query - no click was made", { reason: g.reason });
+      }
+      clicked = { id: seg(TARGET), email: emailAtPick };
+
       const after = await rosterRaw();
       const added = after.filter((r) => !before.includes(typeof r === "string" ? r : r.accountId));
       ev.added = added;
       const row = after.find((r) => (typeof r === "string" ? r : r.accountId) === TARGET);
-      granted = Boolean(row);
       if (row && row.role === "editor" && row.scope === "own")
         PASS("the grant landed on THE INTENDED ACCOUNT as {editor, own} (KVS read of app_admins)", { accountId: seg(TARGET), role: row.role, scope: row.scope });
-      else FAIL("the grant did not land on the intended account", { added: J(added) });
+      else if (g.ok || added.length) FAIL("the grant did not land on the intended account", { added: J(added) });
+      /* THE NEGATIVE THAT F-657 IS ABOUT: a click that missed must not have landed on
+         SOMEONE ELSE. Proven on the same read that would have shown the target. */
+      const strayNow = added.filter((r) => (typeof r === "string" ? r : r.accountId) !== TARGET);
+      if (strayNow.length === 0) PASS("...and NO account other than the target gained a role from this grant - no namesake was touched", { added: added.length });
+      else FAIL("AN ACCOUNT THIS RUN DID NOT INTEND NOW HOLDS A ROLE - the positional grant is live", { strays: strayNow.map((r) => seg(typeof r === "string" ? r : r.accountId)) });
 
       if (row) {
-        if (row.emailAddress) PASS("app_admins stored `emailAddress` on the roster row - the roster can repeat what the admin clicked", { emailAddress: maskEmails(row.emailAddress) });
-        else if (clicked.email) FAIL("the search row showed an email but app_admins stored NONE - the two namespaces are still split", { clickedEmail: maskEmails(clicked.email) });
+        if (row.emailAddress) PASS("app_admins stored `emailAddress` on the roster row - the roster can repeat what the admin clicked", { emailAddress: redactString(row.emailAddress) });
+        else if (clicked.email) FAIL("the search row showed an email but app_admins stored NONE - the two namespaces are still split", { clickedEmail: redactString(clicked.email) });
         else NV("app_admins stored no `emailAddress` because Jira never returned one for this account - nothing to persist", { accountId: seg(TARGET) });
       }
 
+      /* The roster-card half only has something to read when a grant actually landed. It
+         used to run unconditionally off `clicked`, which was the CLICK's own report. */
+      if (!row) {
+        NV("the roster-card surface could not be checked: no grant landed on the target this run", { reason: g.reason || "no row in app_admins" });
+      } else {
       const cards = await readRosterCards("04-roster-card.png");
       ev.rosterCards = cards;
-      for (const c of cards) info(`card ${c.i}: email=${c.emailShown ? maskEmails(c.emailShown) : "(absent)"} idChip=${c.idShown || "(absent)"}`);
+      for (const c of cards) info(`card ${c.i}: email=${c.emailShown ? redactString(c.emailShown) : "(absent)"} idChip=${c.idShown || "(absent)"}`);
       const card = cards.find((c) => c.idTitle === TARGET || (c.idShown && seg(TARGET).startsWith(c.idShown)));
       if (!card) FAIL("no roster card carries the granted account's id - the roster surface has no discriminator", { cards: cards.length });
       else {
@@ -284,29 +301,46 @@ async function main() {
         if (card.idTitle === TARGET) PASS("...and the card's id title is the FULL account id (no KVS read needed to recover it)", { titleTail: card.idTitle.slice(-12) });
         else FAIL("the card's id title is not the full account id", { title: card.idTitle });
         if (clicked.email) {
-          if (card.emailShown && card.emailShown === clicked.email) PASS("the roster card repeats the SAME email the admin clicked", { email: maskEmails(card.emailShown) });
-          else FAIL("the roster card does not repeat the clicked email - F-647 verbatim", { clicked: maskEmails(clicked.email), card: card.emailShown ? maskEmails(card.emailShown) : null });
+          if (card.emailShown && card.emailShown === clicked.email) PASS("the roster card repeats the SAME email the admin clicked", { email: redactString(card.emailShown) });
+          else FAIL("the roster card does not repeat the clicked email - F-647 verbatim", { clicked: redactString(clicked.email), card: card.emailShown ? redactString(card.emailShown) : null });
         } else {
           NV("the email half of the roster card cannot be checked: no email was available on the search row either", {});
         }
       }
+      }
     }
   } finally {
     console.log("\nRESTORE");
-    if (granted) {
-      const i = (await rosterIds()).indexOf(TARGET);
-      if (i >= 0) { const r = await removeRosterIndex(i); info(`removed roster card #${i} (${maskEmails(r.card)})`); }
-      else info("the granted row is already gone");
-    }
+    /* F-657 — UNCONDITIONAL, AND BY DIFF. This used to be `if (granted)`, which is a
+       statement about what the run BELIEVES it did — and the exact case that needed
+       repairing was the one where `granted` is false because the click landed on a
+       STRANGER. The plan is computed against the raw snapshot, so every row that is not
+       in it is removed whoever put it there, and every row the run lost is re-added. */
+    let restore = null;
+    try {
+      restore = await restoreRosterToSnapshot(rosterBefore);
+      ev.rosterRestore = restore;
+      info(`roster restore: ${JSON.stringify(restore.actions.map((a) => ({ act: a.act, id: a.id, ok: a.removed ?? a.ok })))}`);
+    } catch (e) { FAIL("the roster restore UI failed - the roster may still hold a row this run added", { error: String(e.message).slice(0, 200) }); }
+
     const end = await rosterRaw();
     ev.rosterAfter = end;
-    if (JSON.stringify(end) === rosterBeforeBytes) PASS("SECOND READ: app_admins is BYTE-IDENTICAL to the in-memory snapshot taken before this run", { rows: end.length });
-    else FAIL("THE ROSTER IS NOT RESTORED", { beforeRows: rosterBefore.length, nowRows: end.length, diff: J(end) });
+    /* F-659 — the verdict, not a byte compare: `addAppAdmin` APPENDS, so a re-add can
+       never reproduce the snapshot's row ORDER and a byte compare would be a permanent
+       red. Strays, missing, changed and duplicated rows all stay a FAIL. */
+    const v = rosterRestoreVerdict(rosterBefore, end);
+    if (v.verdict === "byte-identical") PASS("SECOND READ: app_admins is BYTE-IDENTICAL to the in-memory snapshot taken before this run", { rows: end.length });
+    else if (v.ok) { PASS(`SECOND READ: app_admins carries EXACTLY the snapshot's accounts, roles and scopes (${v.verdict})`, { rows: end.length }); info(`roster residue: ${v.info}`); }
+    else FAIL("THE ROSTER IS NOT RESTORED", { verdict: v.verdict, beforeRows: rosterBefore.length, nowRows: end.length, diff: describePlan(v.plan) });
+    /* The negative that F-657 is about, on the same object that would show it. */
+    const strayEnd = planRosterRestore(rosterBefore, end).strays.map(rosterIdOf);
+    if (strayEnd.length === 0) PASS("...and NO account outside the pre-run snapshot holds an app role - no namesake was left with a grant", { rows: end.length });
+    else FAIL("AN ACCOUNT THIS RUN DID NOT START WITH STILL HOLDS AN APP ROLE - remove it by hand", { strays: strayEnd.map(idTail) });
     const endRole = (await invoke("checkIsAdmin", {}, TARGET)).json;
     if (endRole && endRole.role === null) PASS("...and checkIsAdmin reports the second account back to NO role (second read through the product)", { role: endRole.role });
     else FAIL("the second account still holds a role", { answer: J(endRole) });
 
-    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(maskDeep(ev)), null, 2)); // F-656: the shared redactor is the gate, the local mask is belt-and-braces
+    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2)); // F-656/F-662: the shared redactor is the ONLY gate
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
     if (fails > 0) process.exitCode = 1;
   }

@@ -31,6 +31,7 @@
 
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
+  rosterRowRole, normaliseRosterRow, isReproducibleRosterRow,
 } from "../lib/roster-restore.mjs";
 
 let pass = 0, fail = 0;
@@ -163,9 +164,12 @@ const searchRows = (ids, extra = {}) => ids.map((id, i) => row(id, { i, ...(extr
   const p2 = planRosterRestore(snapshot, rebuilt);
   eq([p2.strays.length, p2.missing.length, p2.changed.length], [0, 0, 0], "after apply, no account is stray, missing or changed");
   /* Honest about the residue: the UI appends, so the re-added row lands last. That is a
-     different stored VALUE and the verdict says so rather than calling it a pass. */
+     different stored VALUE, and the verdict NAMES it — but it is not a permission state,
+     so it is a PASS (F-659). It used to be `ok:false`, which made every re-add a
+     permanent red and sent an operator to hand-repair a correct tenant. */
   const v = rosterRestoreVerdict(snapshot, rebuilt);
-  ok(v.ok === false && v.verdict === "same rows, different order", `an order-only residue is reported, not swallowed (got: ${v.verdict})`);
+  ok(v.ok === true && v.verdict === "same set, different order", `an order-only residue is a PASS that still names itself (got: ${v.verdict})`);
+  ok(/ORDER/.test(String(v.info)), "...and the info line explains why no click can fix it");
   const v2 = rosterRestoreVerdict(snapshot, [snapshot[0], plan.missing[0], snapshot[2]]);
   ok(v2.ok === true, "re-inserting at the snapshot position is byte-identical and passes");
 }
@@ -197,6 +201,112 @@ const searchRows = (ids, extra = {}) => ids.map((id, i) => row(id, { i, ...(extr
   ok(!/Perdum/.test(printable), "F-652: ...and no display name");
   ok(printable.includes(idTail(NAMESAKE_A)), "...but it still names the account by its id tail, so the operator can act on it");
   ok(!printable.includes(NAMESAKE_A), "...as the TAIL, not the full account id");
+}
+
+/* ── 8. F-658 — THE ROLE OF A LEGACY ROW IS ADMIN, BECAUSE THE PRODUCT SAYS SO ──
+   `app_admins` still holds bare strings and role-less objects, and every product read
+   (src/index.js:480-481, removeAppAdmin's and updateUserRole's last-admin guards) treats
+   both as ADMIN. The restore used to re-add them with `row.role || "viewer"`, and the
+   `changed` path fell through to `ROLE_LABEL[role] || ROLE_LABEL.editor` — so restoring a
+   legacy row DEMOTED a real site admin. Both legacy shapes are asserted. */
+{
+  const LEGACY_STRING = ADMIN;
+  const LEGACY_OBJECT = { accountId: ADMIN, displayName: "Mihai Perdum" };            // no role, no scope
+  const LEGACY_ROLELESS_WITH_SCOPE = { accountId: ADMIN, scope: "own" };              // scope is ignored for an admin
+
+  eq(rosterRowRole(LEGACY_STRING), { role: "admin", scope: "all" }, "a BARE STRING row is an admin with scope all");
+  eq(rosterRowRole(LEGACY_OBJECT), { role: "admin", scope: "all" }, "a role-less OBJECT row is an admin with scope all");
+  eq(rosterRowRole(LEGACY_ROLELESS_WITH_SCOPE), { role: "admin", scope: "all" },
+    "...and an admin's scope is forced to all, exactly as addAppAdmin/updateUserRole do");
+  eq(rosterRowRole({ accountId: ADMIN, role: "editor" }), { role: "editor", scope: "all" },
+    "a non-admin row with NO scope defaults to `all` — the PRODUCT's read default, not addAppAdmin's `own` clamp");
+  eq(rosterRowRole({ accountId: ADMIN, role: "editor", scope: "own" }), { role: "editor", scope: "own" },
+    "an explicit role/scope pair is carried through untouched");
+  eq(rosterRowRole({ accountId: ADMIN, role: "viewer", scope: "own" }), { role: "viewer", scope: "own" },
+    "...for a viewer too");
+
+  /* POSITIVE CONTROL — the two defaults the restore actually used, so the assertions
+     above are evidence of a change and not of a rule that always agreed. */
+  const OLD_MISSING_DEFAULT = (row) => ({ role: row.role || "viewer", scope: row.scope || "all" });
+  const OLD_CHANGED_DEFAULT = (row) => (["viewer", "editor", "admin"].includes(row.role) ? row.role : "editor");
+  ok(OLD_MISSING_DEFAULT(LEGACY_OBJECT).role === "viewer" && rosterRowRole(LEGACY_OBJECT).role === "admin",
+    "POSITIVE CONTROL: the old re-add default turned a legacy ADMIN into a VIEWER");
+  ok(OLD_CHANGED_DEFAULT(LEGACY_OBJECT) === "editor" && rosterRowRole(LEGACY_OBJECT).role === "admin",
+    "POSITIVE CONTROL: ...and the `changed` path's fallback clicked EDITOR for the same row");
+  ok(typeof LEGACY_STRING === "string" && rosterRowRole(LEGACY_STRING).role === "admin",
+    "POSITIVE CONTROL: the bare-string row cannot even be given to `row.role || …` — it has no `.role`");
+
+  /* The re-add must REFUSE what the UI cannot express, rather than click a neighbour. */
+  eq(isReproducibleRosterRow({ accountId: ADMIN, role: "editor", scope: "own" }), { ok: true, role: "editor", scope: "own" },
+    "a reproducible row reports the exact role/scope to click");
+  eq(isReproducibleRosterRow(LEGACY_STRING), { ok: true, role: "admin", scope: "all" },
+    "a legacy string row IS reproducible — as the admin the product reads it as");
+  ok(isReproducibleRosterRow({ accountId: ADMIN, role: "owner" }).ok === false,
+    "a role outside the product's enum is REFUSED, not rounded to the nearest label");
+  ok(/owner/.test(isReproducibleRosterRow({ accountId: ADMIN, role: "owner" }).reason), "...and the reason names it");
+  ok(isReproducibleRosterRow({ accountId: ADMIN, role: "editor", scope: "project" }).ok === false,
+    "a scope outside the product's enum is REFUSED too");
+  ok(isReproducibleRosterRow({ displayName: "no id" }).ok === false, "a row with no account id is refused");
+
+  /* And the whole point, end to end: a run that loses a legacy admin row plans to put an
+     ADMIN back, not a viewer. */
+  const snapshot = [LEGACY_STRING, { accountId: NAMESAKE_B, role: "editor", scope: "own" }];
+  const plan = planRosterRestore(snapshot, [{ accountId: NAMESAKE_B, role: "editor", scope: "own" }]);
+  eq(plan.missing, [LEGACY_STRING], "the lost legacy row is planned for re-add");
+  eq(isReproducibleRosterRow(plan.missing[0]), { ok: true, role: "admin", scope: "all" },
+    "...and it is re-added as an ADMIN — the demotion is gone");
+}
+
+/* ── 9. F-659 — THE VERDICT IS A SET, BECAUSE `addAppAdmin` APPENDS ─────────────
+   `addAppAdmin` does `users.push`, so ANY restore that re-adds a row lands it at the
+   tail; an order-sensitive byte compare therefore makes a correct restore a PERMANENT
+   red, and the loudest assertion in the suite trains its reader to ignore it. The
+   verdict now compares the permission-bearing SET. Missing/extra/changed stay FAIL. */
+{
+  const snapshot = [
+    { accountId: ADMIN, displayName: "Mihai Perdum", emailAddress: "mihai@wolfaenpak.com", role: "admin", scope: "all" },
+    { accountId: NAMESAKE_A, displayName: "Mihai Perdum", role: "editor", scope: "own" },
+    { accountId: NAMESAKE_B, displayName: "Mihai Perdum", role: "viewer", scope: "own" },
+  ];
+  /* The shape a real restore produces: the re-added row is at the TAIL. */
+  const reordered = [snapshot[0], snapshot[2], snapshot[1]];
+  const v = rosterRestoreVerdict(snapshot, reordered);
+  ok(v.ok === true, `an order-only residue PASSES (got: ${v.verdict})`);
+  ok(/order/i.test(v.verdict), `...and the verdict says so rather than claiming byte-identity (got: ${v.verdict})`);
+  ok(typeof v.info === "string" && v.info.length > 0, "...with an info line the operator can read");
+  ok(v.plan.clean === false, "...while the plan still records honestly that the stored bytes differ");
+  ok(rosterRestoreVerdict(snapshot, snapshot).verdict === "byte-identical",
+    "an untouched roster is still reported as byte-identical, not merely set-identical");
+
+  /* POSITIVE CONTROL — the old verdict on the very same input. */
+  ok(JSON.stringify(reordered) !== JSON.stringify(snapshot),
+    "POSITIVE CONTROL: the old byte compare DID fail on this roster — the pass above is a change");
+
+  /* THE SET IS SHAPE-NORMALISED: addAppAdmin always pushes a full object, so a legacy
+     bare-string row can never be reproduced byte-for-byte. Re-adding it correctly must
+     pass, or the restore is red forever. */
+  const legacySnap = [ADMIN, { accountId: NAMESAKE_A, role: "editor", scope: "own" }];
+  const reAdded = [{ accountId: NAMESAKE_A, role: "editor", scope: "own" }, { accountId: ADMIN, displayName: "Mihai Perdum", role: "admin", scope: "all" }];
+  ok(rosterRestoreVerdict(legacySnap, reAdded).ok === true,
+    "a legacy bare-string row re-added as the object the product reads it as is a PASS");
+  eq(normaliseRosterRow(ADMIN), { accountId: ADMIN, role: "admin", scope: "all" }, "...because the compare normalises the shape first");
+
+  /* …AND IT IS STILL A FAIL FOR EVERYTHING THAT MATTERS. */
+  const demoted = [snapshot[0], { ...snapshot[1], role: "viewer" }, snapshot[2]];
+  ok(rosterRestoreVerdict(snapshot, demoted).ok === false, "a CHANGED role is still a FAIL");
+  ok(rosterRestoreVerdict(snapshot, [snapshot[0], { ...snapshot[1], scope: "all" }, snapshot[2]]).ok === false,
+    "a CHANGED scope is still a FAIL");
+  ok(rosterRestoreVerdict(snapshot, [...snapshot, { accountId: TARGET, role: "editor", scope: "own" }]).ok === false,
+    "a STRAY grant is still a FAIL");
+  ok(rosterRestoreVerdict(snapshot, [snapshot[0], snapshot[1]]).ok === false, "a MISSING row is still a FAIL");
+  ok(rosterRestoreVerdict(snapshot, [snapshot[0], snapshot[1], snapshot[2], snapshot[2]]).ok === false,
+    "a DUPLICATED row is a FAIL — the set compare counts, it does not dedupe");
+  ok(rosterRestoreVerdict(snapshot, []).ok === false, "an emptied roster is a FAIL");
+
+  /* A legacy row that is silently REWRITTEN to a lesser role is the F-658 damage, and the
+     set compare must catch it even though both shapes are "legacy-ish". */
+  ok(rosterRestoreVerdict([ADMIN], [{ accountId: ADMIN, role: "viewer", scope: "own" }]).ok === false,
+    "F-658 + F-659: a legacy admin row demoted to viewer is a FAIL, not a shape difference");
 }
 
 console.log(`roster-restore.test.mjs: ${pass} passed, ${fail} failed`);

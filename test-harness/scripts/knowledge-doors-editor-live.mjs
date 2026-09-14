@@ -46,8 +46,13 @@ import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
 import {
-  rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
+  rosterIdOf, idTail, planRosterRestore, rosterRestoreVerdict, describePlan,
 } from "../lib/roster-restore.mjs";
+/* F-660 — screenshots go through `shotMasked`, never `page.screenshot`: this driver
+   captures the Permissions tab, which renders real addresses as PIXELS that no text
+   redactor will ever see. `evidence-redaction.test.mjs` refuses a raw `.screenshot(` in
+   any `*-live.mjs` that mentions `perm-`. */
+import { makeRosterUI, shotMasked } from "../lib/roster-ui.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -130,7 +135,7 @@ async function createThrowawayDoc(title) {
     );
     await frame.locator("button.btn-small", { hasText: /^\s*Save\s*$/ }).first().click();
     await sleep(5000);
-    await page.screenshot({ path: `${OUT}/01-doc-created.png` }).catch(() => {});
+    await shotMasked(page, frame, `${OUT}/01-doc-created.png`, { strict: false }).catch(() => {});
     return true;
   });
 }
@@ -162,142 +167,25 @@ async function createThrowawayDoc(title) {
  * second read. It runs in the `finally` UNCONDITIONALLY — not behind `if (granted)` —
  * because the state that needs repairing is the state on the tenant, not the state we
  * think we caused.
+ *
+ * AND IT ALL LIVES IN `lib/roster-ui.mjs` NOW (F-657). It used to live HERE, in full, and
+ * `perm-discriminator-live.mjs` — the driver written as the PROOF that F-654 was fixed —
+ * had its own copy that reverted to a stale INDEX across two browser contexts. One home
+ * for the hands, one home for the decisions; a driver that wants this behaviour imports
+ * it and cannot half-implement it.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
-const ROLE_LABEL = { viewer: /^Viewer/, editor: /^Editor/, admin: /^Admin/ };
-const SCOPE_LABEL = { own: /^Own Rules/, all: /^All Rules/ };
 
 /** The app roster, raw rows, straight from KVS. Held in memory; never written unredacted. */
 const rosterRows = async () => (await kvs("app_admins"))?.value || [];
-const rosterIds = async () => (await rosterRows()).map(rosterIdOf);
 
-/** Open the Permissions tab and read every search/roster element's discriminator. */
-async function readRows(frame, sel) {
-  const rows = frame.locator(sel);
-  const n = await rows.count();
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const r = rows.nth(i);
-    const idEl = r.locator(".perm-ident-id");
-    const hasId = (await idEl.count()) > 0;
-    out.push({
-      i,
-      disabled: ((await r.getAttribute("class")) || "").includes("perm-search-disabled"),
-      idShown: hasId ? (await idEl.first().innerText()).trim() : null,
-      idTitle: hasId ? await idEl.first().getAttribute("title") : null,
-    });
-  }
-  return out;
-}
-
-/**
- * Grant `{role, scope}` to `accountId` through the Permissions tab — by DISCRIMINATOR.
- * Returns { ok } on a verified grant, { notFound, reason } when the target row cannot be
- * identified (the caller's N/V), and NEVER clicks a row it has not identified.
- */
-async function grantRole(accountId, role, scope, queries) {
-  const qs = (queries && queries.length ? queries : ["Mihai"]).concat([idTail(accountId)]);
-  for (const q of qs) {
-    const r = await withAdminPanel(async (page, frame) => {
-      await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
-      await frame.locator(".perm-search-input").waitFor({ state: "visible", timeout: 60000 });
-      await frame.locator(".perm-search-wrap .dropdown").nth(0).click();
-      await frame.locator(".dropdown-item-name", { hasText: ROLE_LABEL[role] || ROLE_LABEL.editor }).first().click();
-      await sleep(500);
-      await frame.locator(".perm-search-wrap .dropdown").nth(1).click();
-      await frame.locator(".dropdown-item-name", { hasText: SCOPE_LABEL[scope] || SCOPE_LABEL.all }).first().click();
-      await sleep(400);
-      await frame.locator(".perm-search-input").fill(q);
-      await sleep(4500);
-      const rows = await readRows(frame, ".perm-search-item");
-      const pick = selectByDiscriminator(rows, accountId);
-      if (pick.index < 0) return { clicked: false, rows: rows.length, reason: pick.reason, disabledHit: !!pick.disabledHit };
-      /* THE ONE CLICK. It happens only on a row whose FULL account id was read first. */
-      await frame.locator(".perm-search-item").nth(pick.index).click();
-      await sleep(4500);
-      await page.screenshot({ path: `${OUT}/02-roster-granted.png` }).catch(() => {});
-      return { clicked: true, rows: rows.length, how: pick.how, index: pick.index };
-    });
-    if (r.disabledHit) return { ok: true, alreadyPresent: true, query: q };
-    if (r.clicked) {
-      /* SECOND READ: the product's own storage, not the click's return value. */
-      const row = (await rosterRows()).find((x) => rosterIdOf(x) === accountId);
-      if (row && row.role === role && (row.scope === scope || scope === undefined)) return { ok: true, how: r.how, index: r.index, query: q };
-      return { ok: false, reason: `the click landed but the roster row is ${JSON.stringify(row ? { role: row.role, scope: row.scope } : null)}` };
-    }
-    // Not on this query's result page — try the next query before giving up.
-  }
-  return { ok: false, notFound: true, reason: `the target row was never identified across queries ${JSON.stringify(qs)}` };
-}
-
-/**
- * Remove `accountId` from the roster by its DISCRIMINATOR, never by position.
- * The positional fallback survives only for a build with no `.perm-ident-id` at all, and
- * it refuses to act when more than one card could be the target.
- */
-async function removeAccount(accountId) {
-  const r = await withAdminPanel(async (page, frame) => {
-    await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
-    await frame.locator(".perm-admin-card").first().waitFor({ state: "visible", timeout: 60000 });
-    await sleep(1500);
-    const cards = await readRows(frame, ".perm-admin-card");
-    let pick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
-    if (pick.index < 0 && cards.every((c) => !c.idTitle && !c.idShown)) {
-      /* No discriminator anywhere on this build: fall back to the KVS index, which the
-         list renders in roster order. Recorded explicitly so it is never invisible. */
-      const idx = (await rosterIds()).indexOf(accountId);
-      if (idx >= 0 && idx < cards.length) pick = { index: idx, how: "kvs-position (no chip on this build)" };
-    }
-    if (pick.index < 0) return { removed: false, reason: pick.reason, cards: cards.length };
-    const card = frame.locator(".perm-admin-card").nth(pick.index);
-    await card.locator(".perm-remove-btn").click();
-    await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
-    await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
-    await sleep(3500);
-    await page.screenshot({ path: `${OUT}/03-roster-restore-${idTail(accountId).slice(0, 8)}.png` }).catch(() => {});
-    return { removed: true, how: pick.how, index: pick.index };
-  });
-  if (!r.removed) return r;
-  const gone = !(await rosterIds()).includes(accountId);   // SECOND READ
-  return { removed: gone, how: r.how, index: r.index, ...(gone ? {} : { reason: "the card was clicked but the row is still in app_admins" }) };
-}
-
-/**
- * Make the roster identical to `snapshot` again: remove every stray, re-add every row the
- * run lost, restore every changed row. Driven by the DIFF, so it repairs damage this run
- * never recorded causing. Returns the actions taken and the final verdict.
- */
-async function restoreRosterToSnapshot(snapshot) {
-  const actions = [];
-  for (let pass = 0; pass < 4; pass++) {
-    const plan = planRosterRestore(snapshot, await rosterRows());
-    if (plan.clean) return { ok: true, actions, verdict: "byte-identical" };
-    /* Strays first: a wrong grant is the thing that must not survive this process. */
-    for (const row of plan.strays) {
-      const id = rosterIdOf(row);
-      const r = await removeAccount(id);
-      actions.push({ act: "remove-stray", id: idTail(id), ...r });
-    }
-    /* A changed row is put back by removing it and re-granting the snapshot's role. */
-    for (const c of plan.changed) {
-      const r1 = await removeAccount(c.accountId);
-      actions.push({ act: "remove-changed", id: idTail(c.accountId), ...r1 });
-      if (r1.removed) {
-        const r2 = await grantRole(c.accountId, c.before.role, c.before.scope, [c.before.displayName, c.before.emailAddress].filter(Boolean));
-        actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: !!r2.ok, reason: r2.reason });
-      }
-    }
-    /* Re-add anything the run removed that the snapshot had. */
-    for (const row of plan.missing) {
-      const id = rosterIdOf(row);
-      const r = await grantRole(id, row.role || "viewer", row.scope || "all", [row.displayName, row.emailAddress].filter(Boolean));
-      actions.push({ act: "readd-missing", id: idTail(id), ok: !!r.ok, reason: r.reason });
-    }
-    if (plan.sameSet) break;   // only the ORDER differs; no click can fix that
-  }
-  const v = rosterRestoreVerdict(snapshot, await rosterRows());
-  return { ok: v.ok, actions, verdict: v.verdict, plan: describePlan(v.plan) };
-}
+/* F-657 — THE HANDS LIVE IN `lib/roster-ui.mjs`, NOT HERE. `perm-discriminator-live.mjs`
+ * was written as the PROOF that the F-654 positional grant was fixed, and it carried the
+ * same defect verbatim because it had its own copy of these three functions. Two homes for
+ * "click the right namesake and put the roster back" is how that happens; there is now
+ * one, and both drivers call it. The DECISIONS stay pure in `lib/roster-restore.mjs`. */
+const { grantRole, restoreRosterToSnapshot } =
+  makeRosterUI({ withAdminPanel, rosterRows, out: OUT });
 
 async function main() {
   console.log(`\nF-642 — the knowledge/provider doors as a scope-"own" EDITOR, live on ${ENV_NAME.toUpperCase()}\n`);
@@ -565,12 +453,21 @@ async function main() {
       /* The comparison is RAW on both sides — a redacted diff would pass while two
          different addresses sat behind the same mask. Only the FAIL payload is
          redacted, and it is redacted BEFORE the slice: cutting first can leave a
-         half-address under the 300-char boundary that no email pattern would match. */
-      const same = JSON.stringify(rosterEnd) === rosterBeforeJson;
-      if (same) PASS("SECOND READ: the app roster is byte-identical to the snapshot taken before this run", { rows: rosterEnd.length });
-      else FAIL("THE ROSTER IS NOT RESTORED — restore it by hand from roster-before.json", {
-        verdict: restore ? restore.verdict : "the restore never ran",
-        diff: restore ? restore.plan : describePlan(planRosterRestore(rosterBefore, rosterEnd)),
+         half-address under the 300-char boundary that no email pattern would match.
+
+         F-659 — THE VERDICT, NOT A BYTE COMPARE. `addAppAdmin` APPENDS, so any restore
+         that re-adds a row lands it at the tail: this line used to be a permanent red
+         after every re-add, telling an operator to hand-repair a tenant that was already
+         correct. `rosterRestoreVerdict` compares the {accountId, role, scope} SET and
+         keeps the hand-repair FAIL for strays, missing, changed and duplicated rows. */
+      const v = rosterRestoreVerdict(rosterBefore, rosterEnd);
+      if (v.verdict === "byte-identical") PASS("SECOND READ: the app roster is byte-identical to the snapshot taken before this run", { rows: rosterEnd.length });
+      else if (v.ok) {
+        PASS(`SECOND READ: the app roster carries EXACTLY the snapshot's accounts, roles and scopes (${v.verdict})`, { rows: rosterEnd.length, verdict: v.verdict });
+        info(`roster residue: ${v.info}`);
+      } else FAIL("THE ROSTER IS NOT RESTORED — restore it by hand from roster-before.json", {
+        verdict: v.verdict,
+        diff: restore ? restore.plan : describePlan(v.plan),
         before: redactString(rosterBeforeJson).slice(0, 300),
         now: redactString(JSON.stringify(rosterEnd)).slice(0, 300),
       });

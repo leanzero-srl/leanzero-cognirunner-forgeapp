@@ -2034,6 +2034,28 @@ ok(guardCallSource("const r = await other(1);") === null,
 ok(!/mutates/.test(guardCallSource('requireEnvAck(a, { faults: ["x"] });\nsomethingElse({ mutates: ["roster"] });') || ""),
   "NEGATIVE CONTROL (F-756): the extractor stops at the call's OWN closing paren and does not swallow the next statement");
 
+/* F-771 — A DRIVER THAT ARMS IN ONE MODE MAY SAY SO CONDITIONALLY.
+ *
+ * The predicate was `faults\s*:\s*\[\s*[^\]\s]` — a bracket IMMEDIATELY after the colon —
+ * so `faults: STALE ? ["deleteFault"] : []` read as "names no fault" and the rule failed a
+ * driver that names its lever more precisely than any driver it passes. That shape exists
+ * because `plant-sweep-live.mjs --stale` arms `armDeleteFault` and its default run arms
+ * nothing: declaring the lever unconditionally would make the ordinary run's refusal
+ * describe a lever it never pulls, and a refusal that OVERSTATES is learned to be read past
+ * exactly as fast as one that understates.
+ *
+ * So the rule reads the ternary's arms. What it still refuses is the thing it was written
+ * for: a `faults:` whose every arm is empty names nothing, whatever syntax it uses. This is
+ * F-756's lesson one cohort over — a rule that cannot read a legal call is not a stricter
+ * rule, it is a broken one, and the maintainer's obvious reading ("soften the declaration
+ * until the rule passes") is the damage.
+ */
+const NAMES_A_FAULT = /faults\s*:\s*(?:[^,\n{}]*\?\s*)?\[\s*[^\]\s]/;
+ok(NAMES_A_FAULT.test('faults: ["deleteFault"],'), "POSITIVE CONTROL (F-771): the plain shape every other arming driver uses still passes");
+ok(NAMES_A_FAULT.test('faults: STALE ? ["deleteFault"] : [],'), "POSITIVE CONTROL (F-771): a driver that arms in ONE MODE may name the lever in that arm");
+ok(!NAMES_A_FAULT.test("faults: [],"), "NEGATIVE CONTROL (F-771): an empty literal still names nothing");
+ok(!NAMES_A_FAULT.test("faults: STALE ? [] : [],"), "NEGATIVE CONTROL (F-771): …and so does a ternary whose every arm is empty — the syntax is not the loophole");
+
 for (const f of armingDrivers) {
   /* PROSE IS NOT A CALL — the discriminator every scan in this file uses, and this one
      needs it too: `git-dispatch-drop-live.mjs` QUOTES its old `requireEnvAck([...argv,
@@ -2043,7 +2065,7 @@ for (const f of armingDrivers) {
      never fail the rule that documents it. */
   const src = stripComments(readFileSync(path.join(here, f), "utf8"));
   const call = guardCallSource(src);
-  ok(!!call && /faults\s*:\s*\[\s*[^\]\s]/.test(call),
+  ok(!!call && NAMES_A_FAULT.test(call),
     `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);
 }
 

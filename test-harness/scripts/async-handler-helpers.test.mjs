@@ -1545,6 +1545,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     sweepHarnessFaults:  { args: [{}],                                                  refused: harnessOff },
     plantHarnessFaults:  { args: [{ n: 3 }],                                            refused: harnessOff },
     clearPlantedFaults:  { args: [{}],                                                  refused: harnessOff },
+    sweepHarnessStashes: { args: [{ dryRun: true }],                                    refused: harnessOff },
     armDeleteFault:      { args: [{ prefix: fault.HARNESS_FAULT_PLANT_PREFIX, mode: "refuse", count: 3, ttlSeconds: 60 }], refused: harnessOff },
   };
   /* The inherited-gate pair is driven by its own module list for the same reason: each

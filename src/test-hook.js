@@ -99,7 +99,8 @@ const SECRET_KEY_HINTS = [
  *   COGNIRUNNER_OPENAI_API_KEY          — the legacy single-provider slot index.js still reads
  *   COGNIRUNNER_FORGE_IDENTITY          — carries the identity's token (src/git-connections.js)
  *   COGNIRUNNER_DOC_PROCESSOR_REMOTE    — `{url, bearer}` (index.js)
- *   COGNIRUNNER_WEB_SEARCH_REMOTE       — `{url, bearer}` (index.js)
+ *   COGNIRUNNER_WEB_SEARCH_REMOTE       — `{url, bearer, serperKey?, githubToken?}` (index.js)
+ *   COGNIRUNNER_CONTEXT7_REMOTE         — `{url, apiKey?}` (index.js) — F-778
  *   git_conn_secret:*                   — the connection token (git-connections.js)
  *   git_hook_secret:*                   — the webhook SIGNING secret (shared/git-ids.js)
  *   webtrigger_url:*                    — a CAPABILITY URL with an unguessable path token
@@ -114,6 +115,24 @@ const SECRET_KEY_HINTS = [
  * direction: a false positive costs a driver a fingerprint instead of a value (and every
  * driver found in the F-769 census only ever wanted PRESENT/ABSENT), while a false
  * negative costs a tenant a live credential in a committed evidence file.
+ *
+ * F-778 — WHY BOTH HALVES ARE NOT ENOUGH, AND WHAT NOW POLICES THE CENSUS. The MCP-remote
+ * triple is three sibling rows written by three sibling resolvers, and only two of them
+ * were ever declared: `saveContext7Remote` stores the admin's context7 API key as
+ * `apiKey` in `COGNIRUNNER_CONTEXT7_REMOTE` (index.js), whose flattened name
+ * (`cognirunnercontext7remote`) contains none of `SECRET_KEY_HINTS` — so the catch-all
+ * that exists for exactly this case could not save it either. The catch-all reads the KEY
+ * NAME; a row is a credential because of what is INSIDE it, and those two only coincide
+ * when whoever named the key happened to say so.
+ *
+ * So adding one name here would have been the fix that schedules its own return. The
+ * MECHANISM is a test that reads `src/` the way the leak does: every KVS write site whose
+ * stored object carries a field named like a secret must land on a key this predicate
+ * already covers, or be named in a reviewed exception with its reason. It lives beside
+ * the other F-769 checks in `test-harness/scripts/rules-runtime-regression.test.mjs`
+ * ("every src write site that stores a secret is covered by the census"), and it carries
+ * a positive control — a synthetic write site with an undeclared key — so a green run
+ * means the scanner still SEES a leak rather than that it stopped looking.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
 export const CREDENTIAL_KEY_FAMILIES = [
   "COGNIRUNNER_KEY_",
@@ -121,6 +140,7 @@ export const CREDENTIAL_KEY_FAMILIES = [
   "COGNIRUNNER_FORGE_IDENTITY",
   "COGNIRUNNER_DOC_PROCESSOR_REMOTE",
   "COGNIRUNNER_WEB_SEARCH_REMOTE",
+  "COGNIRUNNER_CONTEXT7_REMOTE",
   "git_conn_secret:",
   "git_hook_secret:",
   "webtrigger_url:",
@@ -142,21 +162,79 @@ export const isCredentialKey = (key) => {
 };
 
 /**
- * What a masked read answers INSTEAD of the value: a sha256, truncated to 16 hex
- * characters, of the row's JSON serialisation.
+ * THE SERIALISATION A FINGERPRINT IS TAKEN OF. ONE RULE, WRITTEN DOWN, BECAUSE TWO DOORS
+ * ANSWER "THE sha256-16 OF THIS SECRET" AND THEY DISAGREED (F-780).
+ *
+ *   · A STRING fingerprints as ITSELF. `JSON.stringify("x")` is `"x"` WITH the quotes, so
+ *     hashing the serialisation of a string hashes two bytes that are not in it. The
+ *     githooks door hashed the raw URL and the `?what=kvs` door hashed its JSON, so a
+ *     driver comparing `urlMasked.fingerprint` against `webtrigger_url:git-webhook`'s
+ *     fingerprint — both documented as "the sha256-16 of this URL", both masked under the
+ *     same doctrine — got a guaranteed mismatch for a byte-identical URL. An equality
+ *     check that always answers "it changed" is worse than none.
+ *   · ANYTHING ELSE fingerprints as CANONICAL JSON: object keys sorted, recursively. A row
+ *     that survives a KVS round trip is the same row whatever order the platform hands its
+ *     keys back in, and the whole use-case is "prove the snapshot came back identical".
+ *
+ * Numbers, booleans and arrays go through the same canonical form, so `"1"` and `1` are
+ * different fingerprints — which is right: they are different values in a KVS row.
+ */
+const canonicalJson = (value) => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  const keys = Object.keys(value).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(value[k])).join(",") + "}";
+};
+export const fingerprintInput = (value) => (typeof value === "string" ? value : canonicalJson(value));
+
+/**
+ * What a masked read answers INSTEAD of the value: an HMAC-SHA256 of the row under
+ * `fingerprintInput` above, keyed per installation, truncated to 16 hex characters.
  *
  * WHY A FINGERPRINT AND NOT JUST `present`. The two things drivers actually do with a
  * credential row are "prove the F-126 planted fault landed" (present/absent) and "prove
  * a snapshot came back byte-identical" (equality). A fingerprint serves the second
- * without serving the value. 16 hex characters is 64 bits — far too little to brute a
- * key back out of, and far more than enough that two different rows will not collide in
- * a test run. `null` and a missing row both fingerprint as `null`, never as a hash of
- * the string "null", so "absent" is one answer and not two.
+ * without serving the value. `null` and a missing row both fingerprint as `null`, never
+ * as a hash of the string "null", so "absent" is one answer and not two.
+ *
+ * F-781 — WHY IT IS KEYED, AND NOT A BARE sha256. The old docblock argued that 64 bits is
+ * "far too little to brute a key back out of". That is true of a PREIMAGE SEARCH and false
+ * of the attack that matters: a GUESS CHECK. An unsalted hash is a verification oracle —
+ * hash your candidate, compare, done — and the values behind these rows are not all
+ * high-entropy. `probe:webhook:secret` is an HMAC secret a TESTER types (`s3cr3t`, the repo
+ * name, today's date); a credential slot a tenant filled with a placeholder is the same
+ * shape. A reader who holds the harness secret could read the fingerprint, run a wordlist
+ * offline, recover the value and then forge a signed request at the UNAUTHENTICATED
+ * `gitWebhookProbe` door — turning "masked" back into "recoverable" for exactly the values
+ * a human chose. So the fingerprint is an HMAC under a key DERIVED FROM `HARNESS_SECRET`,
+ * the env var this whole file is already gated on: no new secret to manage, no new storage
+ * row, and an offline wordlist is useless without it.
+ *
+ * WHAT THIS COSTS, STATED. A fingerprint is comparable ONLY within one installation and
+ * ONLY while `HARNESS_SECRET` is unchanged. Rotate the secret and every previously
+ * recorded fingerprint becomes incomparable — which is correct, because it is no longer
+ * the same oracle. Every use this exists for compares fingerprints FROM THE SAME RUN
+ * (`lib/key-slot-witness.mjs`, the stash/restore round trip, before-vs-after on one slot),
+ * so equality semantics are untouched; what is lost is comparing a fingerprint in an old
+ * evidence file against a fresh read, which was never a check anyone wrote.
+ *
+ * The derivation is one HKDF-ish step rather than the raw secret as the key, so a
+ * fingerprint can never be a distinguisher on `HARNESS_SECRET` itself.
+ *
+ * THIS IS THE ONLY TRUNCATED DIGEST IN THIS FILE. It was not: the githooks URL mask
+ * carried a second one, inline, on a different serialisation (F-780). A rule about what a
+ * masked answer may say is exactly the rule that must not have two homes.
  */
+const fingerprintKey = async () => {
+  const { createHash } = await import("node:crypto");
+  // Domain-separated from any other use of the secret, and a HASH of it rather than the
+  // secret itself, so no answer this file gives is computed directly under the bearer token.
+  return createHash("sha256").update("cognirunner:test-hook:fingerprint:v1\n" + String(process.env.HARNESS_SECRET || "")).digest();
+};
 export const credentialFingerprint = async (value) => {
   if (value === null || value === undefined) return null;
-  const { createHash } = await import("node:crypto");
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+  const { createHmac } = await import("node:crypto");
+  return createHmac("sha256", await fingerprintKey()).update(fingerprintInput(value)).digest("hex").slice(0, 16);
 };
 
 /** Regex-escape a literal so a family prefix can be spliced into `SECRET_VALUE_RE`. */
@@ -221,13 +299,31 @@ const kvWriteAllowList = () => {
  *     deleted on a successful restore anyway.
  *   - `stashId` is opaque and server-minted; a caller cannot name a stash into existence.
  *
+ * F-779 — THE TTL IS A GUARANTEE, SO IT FAILS CLOSED. It used to be best-effort: when the
+ * platform refused the TTL option the catch re-wrote the SAME row with no expiry at all and
+ * the 200 still said `ttlSeconds: 3600` — a permanent plaintext credential under a row that
+ * `?what=kvs` masks, described to the driver's evidence file as expiring in an hour. A
+ * refused TTL is now a REFUSED STASH: any partial row is deleted, the answer is 424
+ * `{ok:false, error:"stash-ttl-unavailable"}`, and the driver must not go on to plant its
+ * fault, because it would have nothing to put back from. `ttlSeconds` is only ever the TTL
+ * that was actually applied — it is reachable only on the path that applied it.
+ *
+ * And a TTL is not a sweeper: nothing ENUMERATED `harness_stash:*`, so a row that outlived
+ * its TTL option (or its driver) was unreachable by any lever and invisible to the read door
+ * that masks it. The `stashSweep` action below is that lever — a DEDICATED one bound to this
+ * prefix, deliberately not a widened `sweepHarnessFaults`, whose reasoning is at
+ * `sweepHarnessStashes` in harness-fault.js (which is also where this prefix now lives, so
+ * the writer and the reaper cannot drift onto two different keyspaces).
+ *
  * A restore of a stash whose row was ABSENT deletes the key rather than writing `null`,
  * because "there was no key here" and "there was a key holding null" are different
  * states and only one of them is what the driver found.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
-const STASH_KEY_PREFIX = "harness_stash:";
-const STASH_TTL_SECONDS = 3600;
-const stashKey = (id) => `${STASH_KEY_PREFIX}${safeKeyPart(id)}`;
+/* F-779 — the PREFIX and the key builder live in harness-fault.js next to the lever that
+ * reaps them (`sweepHarnessStashes`), and are imported dynamically at each use the way every
+ * other harness-fault use in this file is, so production loads none of it. The TTL the stash
+ * asks for is the same hour that lever reaps at — ONE number, read from there, never a second
+ * copy that could quietly drift below it and leave rows the reaper thinks are still live. */
 
 /*
  * F-632 — ONE PREDICATE FOR "THE HARNESS PLANTED THIS ROW", AND ONE REFUSAL FOR WHEN IT
@@ -1484,8 +1580,11 @@ export async function testStateTrigger(req) {
          * note above). Built field by field, never a spread-and-delete, so a new field on
          * a hook object is absent here until someone decides it may be shown. */
         if (functionKey === "listGitWebhooks" && r && Array.isArray(r.hooks)) {
-          const { createHash } = await import("node:crypto");
-          const maskUrl = (u) => {
+          /* F-780 — the fingerprint comes from `credentialFingerprint`, the ONE home, so a
+             driver can compare this URL's fingerprint with the one `?what=kvs` answers for
+             `webtrigger_url:*`. This door used to hash the raw string while that one hashed
+             `JSON.stringify` of it, which made that comparison always report a change. */
+          const maskUrl = async (u) => {
             const raw = String(u || "");
             if (!raw) return null;
             let host = null;
@@ -1504,18 +1603,19 @@ export async function testStateTrigger(req) {
               repo,
               // Stable across calls, so two hooks can be compared for identity; one-way,
               // so it can never be turned back into the trigger token.
-              fingerprint: createHash("sha256").update(raw).digest("hex").slice(0, 16),
+              fingerprint: await credentialFingerprint(raw),
             };
           };
+          const masked = await Promise.all(r.hooks.map((h) => maskUrl(h && h.url)));
           return json(200, {
             ...r,
-            hooks: r.hooks.map((h) => ({
+            hooks: r.hooks.map((h, i) => ({
               hookId: h && h.hookId != null ? String(h.hookId) : null,
               events: h && Array.isArray(h.events) ? h.events.slice() : [],
               active: !(h && h.active === false),
               // `url` is DELIBERATELY ABSENT, not nulled: an absent field cannot be
               // mistaken for "the provider had no url on this hook".
-              urlMasked: maskUrl(h && h.url),
+              urlMasked: masked[i],
             })),
             urlsMasked: true,
           });
@@ -1597,23 +1697,41 @@ export async function testStateTrigger(req) {
         const stored = (await storage.get(body.key)) ?? null;
         const stashId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         const row = { key: body.key, value: stored, present: stored !== null, stashedAt: new Date().toISOString() };
-        // The TTL OPTION SHAPE has one home (`{ttl:{value,unit}}` — the `{ttlSeconds}`
-        // form is silently ignored by @forge/kvs). Imported the way every other
+        // The TTL OPTION SHAPE has one home (`{ttl:{value,unit}}` — the `{ttlSeconds}` form
+        // is silently ignored by @forge/kvs), and so does the NUMBER: the hour this asks for
+        // is the hour `sweepHarnessStashes` reaps at. Imported the way every other
         // harness-fault use in this file does, so production loads none of it.
-        const { faultTtlOption } = await import("./harness-fault.js");
-        try { await storage.set(stashKey(stashId), row, faultTtlOption(STASH_TTL_SECONDS)); }
-        catch { await storage.set(stashKey(stashId), row); } // KVS refused the TTL option; the restore still deletes it.
+        const { faultTtlOption, harnessStashKey, HARNESS_STASH_MAX_AGE_SECONDS } = await import("./harness-fault.js");
+        const stashRowKey = harnessStashKey(stashId);
+        /* F-779 — FAIL CLOSED. A stash with no expiry is a plaintext credential living
+         * forever under a key the read door masks; answering 200 for one and CLAIMING an
+         * hour of TTL is a cause asserted that the write did not contain. So a refused TTL
+         * is a refused STASH: delete whatever landed, say so, and let the driver abort
+         * BEFORE it plants the fault it would no longer be able to undo. `ttlSeconds` below
+         * is the value that was actually applied, reachable only on the path that applied it. */
+        let appliedTtlSeconds;
+        try {
+          await storage.set(stashRowKey, row, faultTtlOption(HARNESS_STASH_MAX_AGE_SECONDS));
+          appliedTtlSeconds = HARNESS_STASH_MAX_AGE_SECONDS;
+        } catch (e) {
+          try { await storage.delete(stashRowKey); } catch { /* nothing landed, or it is already gone */ }
+          return json(424, {
+            ok: false, stashed: false, error: "stash-ttl-unavailable", key: body.key,
+            reason: errorClassOf(e),
+          });
+        }
         return json(200, {
           ok: true, stashed: true, stashId, key: body.key,
           present: row.present, fingerprint: await credentialFingerprint(stored),
-          ttlSeconds: STASH_TTL_SECONDS,
+          ttlSeconds: appliedTtlSeconds,
         });
       }
       // kvRestore — by NAME. The value is never named, sent or returned.
       if (typeof body.stashId !== "string" || body.stashId.length === 0) {
         return json(400, { ok: false, error: "bad-request", field: "stashId", reason: "stashId must be a non-empty string" });
       }
-      const row = (await storage.get(stashKey(body.stashId))) ?? null;
+      const { harnessStashKey } = await import("./harness-fault.js");
+      const row = (await storage.get(harnessStashKey(body.stashId))) ?? null;
       if (!row || typeof row !== "object" || typeof row.key !== "string") {
         // A stash that expired is indistinguishable from one that never existed, and the
         // driver must treat both the same way: it no longer holds the tenant's row.
@@ -1624,7 +1742,7 @@ export async function testStateTrigger(req) {
       if (!kvWriteAllowList().has(row.key)) return json(400, { error: `key not allowlisted: ${row.key}` });
       if (row.present === true) await storage.set(row.key, row.value);
       else await storage.delete(row.key);
-      try { await storage.delete(stashKey(body.stashId)); } catch { /* the restore is the contract, not the sweep */ }
+      try { await storage.delete(harnessStashKey(body.stashId)); } catch { /* the restore is the contract, not the sweep */ }
       const now = (await storage.get(row.key)) ?? null;
       return json(200, {
         ok: true, restored: true, key: row.key,
@@ -1632,6 +1750,49 @@ export async function testStateTrigger(req) {
         // The SAME fingerprint the stash answered, when the round trip was byte-identical.
         fingerprint: await credentialFingerprint(now),
       });
+    }
+    /* ═════════════════════════════════════════════════════════════════════════════
+     * F-779 — `stashSweep`: THE LEVER THAT CAN SEE, AND REAP, A LEAKED STASH ROW.
+     *
+     * A DEDICATED action rather than a widened `sweepHarnessFaults`, and the choice is the
+     * point. The fault sweep deletes rows whose `until` has passed, read off a row shape the
+     * stash does not have, and it is the one lever every driver already drains blind —
+     * pointing it at a second keyspace would widen the reach of an unconditional delete to
+     * rows that hold the tenant's only copy of a credential. `clearPlantedFaults` wrote that
+     * rule down for exactly this case: bind the delete to a prefix nothing else writes, in
+     * its own function. So this one lists and reaps `harness_stash:*` BY AGE and nothing
+     * else; the reasoning and the age predicate live at `sweepHarnessStashes`.
+     *
+     * `dryRun` is the LIST — the thing that did not exist at all before, and the reason a
+     * leaked row was not merely unswept but unseeable: `harness_stash:*` is a credential
+     * family, so `?what=kvs` masks it and no other door enumerates. The rows it answers
+     * carry the key, the stamp and the age, never the value.
+     * ════════════════════════════════════════════════════════════════════════════ */
+    if (body.action === "stashSweep") {
+      const { sweepHarnessStashes, sweepCursorWellFormed, BAD_SWEEP_CURSOR_CODE } = await import("./harness-fault.js");
+      const rawCursor = body.cursor;
+      let cursor = null;
+      if (rawCursor !== undefined && rawCursor !== null) {
+        if (!sweepCursorWellFormed(rawCursor)) return json(400, { ok: false, reason: "bad-cursor" });
+        cursor = rawCursor;
+      }
+      let r;
+      try {
+        r = await sweepHarnessStashes({
+          dryRun: body.dryRun === true,
+          // Clamped in the lever, where the constant it bounds lives.
+          olderThanSeconds: typeof body.olderThanSeconds === "number" ? body.olderThanSeconds : undefined,
+          maxMs: typeof body.maxMs === "number" ? body.maxMs : undefined,
+          cursor,
+        });
+      } catch (e) {
+        const message = String((e && e.message) || e).slice(0, 300);
+        const code = (e && typeof e.code === "string" && e.code) || null;
+        if (code === BAD_SWEEP_CURSOR_CODE) return json(400, { ok: false, reason: "bad-cursor", error: message });
+        return json(500, { ok: false, reason: "stash-sweep-failed", code, error: message });
+      }
+      // Explicit for the same reason as the other two drains (F-692): this is THE finished signal.
+      return json(r.ok === false ? 400 : 200, { ok: true, ...r, complete: r.complete === true });
     }
     /*
      * F-627 — THE PIPELINE-ROW DOOR, and why it had to exist.

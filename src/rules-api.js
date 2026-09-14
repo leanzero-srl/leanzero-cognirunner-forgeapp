@@ -302,10 +302,22 @@ const REST_SAVED_BY_ROLE = "editor";
  * FAILS TO THE RESTRICTIVE SIDE: `agentGateFacts` never throws and omits what it
  * could not read, so an unreadable instance refuses the action instead of granting
  * it — and an incapable instance still refuses this same rename, which is the point.
+ *
+ * FRESH (F-819), under the freshness policy written on `agentGateFacts`: every ANSWER
+ * and every SAVE door reads past the 30 s provider memo, and this file is the REST SKIN
+ * over the SAME save doors the resolvers expose — `saveListener`, `testListener` and
+ * `saveScheduledJob` went `{fresh:true}` in F-811, so a memoised read here re-opens
+ * exactly the split those closed, one door down. The measured shape: the memo still
+ * holds `managed` after the provider row was deleted (it is cleared only in the
+ * container that served `saveProvider`), so this door would ACCEPT a git action on an
+ * instance whose fresh facts are `atlassian` + Haiku and whose own tab refuses the same
+ * save `needs-frontier-model`. The cost is bounded and paid gladly — a REST save is a
+ * RARE capability read, not the per-transition run-time gate that keeps the memo on
+ * purpose and says so in place.
  */
 const restGateContext = async () => {
   const { agentGateFacts } = await idx();
-  const facts = await agentGateFacts(null);
+  const facts = await agentGateFacts(null, { fresh: true });
   return buildAgentGateContext({ ...facts, triggerSource: null, savedByRole: REST_SAVED_BY_ROLE });
 };
 

@@ -192,14 +192,29 @@ if (F811_CASE) {
  * is what this assertion matches, so an unmarked cached call site fails the run.
  */
 {
-  const idxSrc = readFileSync(path.join(fileURLToPath(new URL("../../src/index.js", import.meta.url))), "utf8");
-  const idxCode = idxSrc.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-  const lines = idxCode.split("\n").filter((l) => /agentGateFacts\(/.test(l) && !/const agentGateFacts/.test(l) && !/^\s*agentGateFacts,\s*$/.test(l));
-  ok(lines.length >= 6, `F-811.SHAPE: found ${lines.length} agentGateFacts call sites in src/index.js`);
-  const cached = lines.filter((l) => !/fresh:\s*true/.test(l));
-  ok(cached.length === 1, `F-811.SHAPE: exactly ONE call site is memoised (got ${cached.length}: ${cached.map((l) => l.trim()).join(" | ")})`);
-  ok(cached.every((l) => /F-811 HOT PATH: memoised on purpose/.test(l)),
-    `F-811.SHAPE: …and it is the RUN-TIME one, marked in place (got ${cached.map((l) => l.trim()).join(" | ")})`);
+  /* F-819 — THE POLICY IS PER CALL SITE, NOT PER FILE. `restGateContext` in
+   * src/rules-api.js read the facts MEMOISED while being the REST skin over the very
+   * save doors this policy had just made fresh, so the assertion below reads EVERY
+   * source that calls the fact reader. A new file that calls it inherits the rule the
+   * moment its name goes in this list. */
+  const SOURCES = ["src/index.js", "src/rules-api.js", "src/virtual-admin.js"];
+  const srcOf = (rel) => readFileSync(path.join(fileURLToPath(new URL(`../../${rel}`, import.meta.url))), "utf8")
+    .split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  const callSites = (code) => code.split("\n").filter((l) => /agentGateFacts\(/.test(l)
+    && !/const agentGateFacts/.test(l) && !/^\s*agentGateFacts,\s*$/.test(l) && !/^\s*const \{ agentGateFacts \}/.test(l));
+  const idxCode = srcOf("src/index.js");
+  const idxSites = callSites(idxCode);
+  ok(idxSites.length >= 6, `F-811.SHAPE: found ${idxSites.length} agentGateFacts call sites in src/index.js`);
+  const allCached = [];
+  for (const rel of SOURCES) {
+    const sites = callSites(srcOf(rel));
+    ok(sites.length >= 1, `F-819.SHAPE: ${rel} calls agentGateFacts (found ${sites.length})`);
+    for (const l of sites.filter((l) => !/fresh:\s*true/.test(l))) allCached.push(`${rel}: ${l.trim()}`);
+  }
+  ok(allCached.length === 1,
+    `F-819.SHAPE: across ${SOURCES.join(" + ")}, exactly ONE call site is memoised (got ${allCached.length}: ${allCached.join(" | ")})`);
+  ok(allCached.every((l) => /F-811 HOT PATH: memoised on purpose/.test(l)),
+    `F-811.SHAPE: …and it is the RUN-TIME one, marked in place (got ${allCached.join(" | ")})`);
   const gf = (idxCode.match(/const agentGateFacts = async \(context, \{ fresh = false \} = \{\}\) => \{[\s\S]*?\n\};/) || [, ""])[0] || "";
   ok(gf.length > 0, "F-811.SHAPE: found agentGateFacts");
   ok(/getAgentModelFor\(facts\.provider\)/.test(gf),

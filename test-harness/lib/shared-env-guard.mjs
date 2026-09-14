@@ -33,13 +33,16 @@
  * So there is now exactly ONE table (`ENVS`). It carries the environment's name, its
  * web-trigger URL variable and its Forge environment id, and the directory rules in
  * `scripts/evidence-redaction.test.mjs` are what stop the eleventh home from being
- * written: 4e ("any *-live.mjs that arms a fault must call requireEnvAck") and 4f ("no
- * *-live.mjs may read STAGING_TESTSTATE_URL or retype an environment id literal"). A
- * driver with an inline copy of either fails `npm run test:offline` before it is ever run.
+ * written: 4e ("any *-live.mjs that arms a fault must call requireEnvAck"), 4f ("no file
+ * under lib/ or scripts/ may read STAGING_TESTSTATE_URL or retype an environment id
+ * literal" — live-driver-scope's RULE 3 was absorbed into it by F-718, so that rule has
+ * one home too) and 4g ("a driver's `mutates` is its TRUE set"). A driver with an inline
+ * copy of any of them fails `npm run test:offline` before it is ever run.
  *
  * CONTRACT
  *   const { envName, hookUrl, envId } = requireEnvAck(process.argv.slice(2), {
  *     faults: ["keyRead:openai", "jiraUserSearch"],   // what this driver ARMS
+ *     mutates: ["agents", "jobs"],                    // what it CHANGES and LEAVES changed
  *     maxSeconds: 240,                                // the LONGEST TTL it arms
  *     defaultEnv: "staging",                          // where `--env` lands when omitted
  *   });
@@ -53,12 +56,17 @@
  *     legal environment with no URL configured is a refusal too, not an `undefined` that
  *     turns every hook call into an opaque fetch error.
  *   - `--env=dev` without `--i-know-dev-is-shared` prints the blast radius OF THE FAULTS
- *     THIS DRIVER NAMES, with this driver's own longest window, and exits 2.
- *   - A driver that arms NOTHING passes `faults: []` and gets the mapping only. It is here
- *     for the table, not for the refusal; pass `requireAck: true` to opt into the refusal
- *     anyway. (Six drivers in this directory legitimately DEFAULT to dev — making the ack
- *     unconditional would break every one of them, which is a larger change than either
- *     finding asked for and belongs to whoever files it.)
+ *     AND THE MUTATIONS THIS DRIVER NAMES, with this driver's own longest window, and
+ *     exits 2. F-718: ARMING is not the criterion — MUTATING the shared tenant is, and a
+ *     mutation is the one that OUTLIVES the process.
+ *   - A driver that arms nothing and writes nothing passes `faults: []` AND `mutates: []`
+ *     and gets the mapping only: a read-only driver runs on dev with no ceremony, which is
+ *     exactly what keeps the refusal worth reading when it does fire. Both arrays are
+ *     REQUIRED, so an empty blast radius is a statement rather than an omission.
+ *   - `scripts/evidence-redaction.test.mjs` rule 4g keeps the declaration HONEST: a driver
+ *     that calls a mutator must declare a non-empty `mutates`, and one that declares
+ *     `mutates: []` must call none. `requireAck: true` survives for a driver whose blast
+ *     radius is real but fits no word in either vocabulary.
  *
  * WHY THE REFUSAL RUNS BEFORE `loadEnv()`. `loadEnv` THROWS when there is no `.env`
  * (lib/env.mjs). If the guard ran after it, `--env=dev` on an unconfigured machine would
@@ -151,7 +159,67 @@ const FAULT_HARMS = {
   hookPromote: () =>
     `the repository hook secret ROTATION fails at its promote step — the connection card\n` +
     `    shows "rotation failed" to anyone who opens it, on a connection they did not touch.`,
+  /* F-721 — the ONLY lever in this table whose blast radius is honestly "nothing a user
+     sees": `armDeleteFault` makes KVS deletes refuse, and the only rows a harness driver
+     deletes are the INERT plant ballast `plantHarnessFaults` wrote. It is named anyway,
+     because a lever with no sentence is a lever nobody can reason about, and because the
+     sweep it stalls is the app's own. The MUTATION of planting that ballast is a separate
+     declaration (`mutates: ["kvs"]`); this line is about the lever, not the rows. */
+  deleteFault: () =>
+    `KVS deletes REFUSE for the armed window. Nothing user-visible breaks — the only rows a\n` +
+    `    harness driver deletes are inert plant ballast — but the app's own sweep stops\n` +
+    `    advancing while it is armed, and a KILLED process leaves the ballast planted.`,
 };
+
+/* ── F-718 — THE SECOND TRIGGER: MUTATION ────────────────────────────────────────
+ * The ack was drawn at ARMS-A-FAULT and the criterion was never written down, so the line
+ * fell where nobody would have chosen it: `plant-sweep-live.mjs` — which writes INERT
+ * ballast and arms nothing — demanded `--i-know-dev-is-shared`, while
+ * `va-purge-on-delete-live.mjs` DELETED a virtual agent, `coder-pin-kept-live.mjs`
+ * REWROTE `COGNIRUNNER_AI_PROVIDER` and `knowledge-doors-editor-live.mjs` WROTE SKILLS
+ * into the shared store — all on `--env=dev`, in silence, and all newly reachable on dev
+ * because the F-699 conversion had just given seven of them an `--env` they never had.
+ *
+ * The line is MUTATES SHARED DEV. A fault is loud and short and disarmed in a `finally`;
+ * a mutation is quiet and PERSISTS after the process exits — the deleted agent does not
+ * come back. Both trigger the refusal now, and a driver declares its true set of BOTH:
+ * `faults: []` and `mutates: []` are statements, not omissions, and rule 4g in
+ * `scripts/evidence-redaction.test.mjs` is what keeps the second one honest.
+ *
+ * The vocabulary is CLOSED, for the reason FAULT_HARMS is closed: a driver NAMES what it
+ * touches, it does not get to invent — or to soften — the description of it. `kvs` is the
+ * honest catch-all for an app storage row no other word covers (planted ballast, API
+ * tokens, a coder thread), never a lazier spelling of one that does.
+ */
+const MUTATION_HARMS = Object.freeze({
+  roster: "the app's ADMIN/EDITOR roster — someone's role on this tenant changes",
+  skills: "the shared SKILL store — skills are created, edited or disabled for everyone",
+  docs: "the shared DOCUMENTATION library — docs are created or deleted for everyone",
+  memories: "the instance MEMORY store — learned facts are added or removed for everyone",
+  providerSlot: "the AI PROVIDER/MODEL slots — every AI call on this tenant changes provider mid-flight",
+  agents: "VIRTUAL AGENTS — agents are created, tombstoned or DELETED, and a delete does not come back",
+  jobs: "SCHEDULED JOBS — jobs are created, run-now'd or deleted, and a tick may fire while someone watches",
+  listeners: "LISTENERS — listener rules are saved or deleted, so real Jira events start or stop running rules",
+  rules: "WORKFLOW RULES — rule configs are registered, edited or removed",
+  issues: "JIRA ITSELF — issues, comments, labels or transitions are written on a real project",
+  git: "GIT CONNECTIONS — repository connections, hook secrets or deploys are written",
+  kvs: "raw APP STORAGE rows no other word covers (planted ballast, API tokens, coder threads)",
+});
+const MUTATION_NAMES = Object.freeze(Object.keys(MUTATION_HARMS));
+
+/** `"agents"` -> its sentence. An unknown word THROWS rather than passing quietly: the
+ *  whole point of a closed vocabulary is that a typo cannot become an undeclared
+ *  mutation, which is the F-718 defect in miniature. */
+function mutationLine(kind) {
+  const line = MUTATION_HARMS[kind];
+  if (!line) {
+    throw new Error(
+      `requireEnvAck: unknown mutation "${kind}" — the vocabulary is closed (${MUTATION_NAMES.join(", ")}); ` +
+      "add a word to MUTATION_HARMS with its sentence, do not describe it at the call site"
+    );
+  }
+  return `  - ${line}`;
+}
 
 const flag = (argv, n) => argv.includes(`--${n}`);
 const arg = (argv, n, d) => {
@@ -190,6 +258,12 @@ function die(lines) {
  *                                    mapping-only form — it must still be written out, so
  *                                    an EMPTY blast radius is a statement rather than an
  *                                    omission.
+ * @param {string[]} opts.mutates     what this driver CHANGES on the tenant and LEAVES
+ *                                    changed, as words from the closed MUTATION_HARMS
+ *                                    vocabulary. `[]` means "this driver is read-only" —
+ *                                    also required, also a statement (F-718), and rule 4g
+ *                                    checks it against the mutators the file actually
+ *                                    calls.
  * @param {number}  [opts.maxSeconds] the LONGEST TTL this driver arms. Omit for a
  *                                    count-bounded lever, which has no window of its own.
  * @param {string}  [opts.defaultEnv] where `--env` lands when omitted (default "staging").
@@ -198,12 +272,26 @@ function die(lines) {
  * @returns {{ envName: string, hookUrl: string, envId: string, urlVar: string,
  *            shared: boolean, acknowledged: boolean }}
  */
-export function requireEnvAck(argv, { faults, maxSeconds, defaultEnv = "staging", requireAck = false, script } = {}) {
+export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = "staging", requireAck = false, script } = {}) {
   if (!Array.isArray(faults)) {
     throw new Error(
       "requireEnvAck: name the faults this driver arms (`faults: []` if it arms none) — an unnamed blast radius is the defect F-686 is about"
     );
   }
+  /* F-718 — the same demand for the OTHER half of the blast radius. A driver that does not
+     say what it writes is exactly the driver that deleted an agent on the shared tenant in
+     silence, so an omitted `mutates` is a THROW and not a default of `[]`: a default would
+     let the next driver be written without ever facing the question. */
+  if (!Array.isArray(mutates)) {
+    throw new Error(
+      "requireEnvAck: name what this driver MUTATES on the tenant (`mutates: []` if it is read-only) — " +
+      `the closed vocabulary is ${MUTATION_NAMES.join(", ")} (F-718)`
+    );
+  }
+  /* Validate EVERY word before the environment fork, so a typo is caught on staging too
+     and never waits for the one run that points at dev to be discovered. */
+  for (const m of mutates) mutationLine(m);
+  for (const f of faults) harmLine(f);
   if (!Object.prototype.hasOwnProperty.call(ENVS, defaultEnv)) {
     throw new Error(`requireEnvAck: defaultEnv "${defaultEnv}" is not one of ${ENV_NAMES.join(", ")}`);
   }
@@ -241,7 +329,9 @@ export function requireEnvAck(argv, { faults, maxSeconds, defaultEnv = "staging"
 
   const row = ENVS[envName];
   const acknowledged = flag(argv, "i-know-dev-is-shared");
-  const wantsAck = requireAck || faults.length > 0;
+  /* F-718 — MUTATION IS THE SECOND TRIGGER, AND IT IS THE HEAVIER ONE. A fault ends when
+     the `finally` runs; a write does not. */
+  const wantsAck = requireAck || faults.length > 0 || mutates.length > 0;
 
   if (row.shared && wantsAck && !acknowledged) {
     const windowLine = maxSeconds
@@ -251,16 +341,36 @@ export function requireEnvAck(argv, { faults, maxSeconds, defaultEnv = "staging"
       "REFUSING to point this driver at the SHARED dev tenant without an explicit acknowledgement.",
       "",
       ...(faults.length
-        ? [`While it runs it arms REAL, user-visible faults on that site (${windowLine}):`, ...faults.map(harmLine)]
-        : ["It arms no faults, but it drives the shared dev tenant and other people are on it."]),
-      "",
-      "Every lever is disarmed in a finally — but NOT if this process is KILLED; the only bound",
-      "then is the 300s family ceiling. Nothing in the evidence file or the terminal would ever",
-      "tell the admin who just rotated a good key that a harness lever was live at that moment.",
+        ? [`While it runs it arms REAL, user-visible faults on that site (${windowLine}):`, ...faults.map(harmLine), ""]
+        : []),
+      ...(mutates.length
+        ? ["It CHANGES this shared tenant, and a change OUTLIVES the run — the driver restores what",
+          "it can, but a killed process, a failed restore or a delete does not come back:",
+          ...mutates.map(mutationLine), ""]
+        : []),
+      ...(!faults.length && !mutates.length
+        ? ["It arms no faults and writes nothing it has named, but it drives the shared dev tenant",
+          "and other people are on it.", ""]
+        : []),
+      /* The closing paragraph has to match what was just listed. A mutation-only driver
+         arms nothing, and telling its operator about levers and a 300s ceiling would be
+         the guard talking about a file it is not looking at — which is how a refusal
+         becomes wallpaper. */
+      ...(faults.length
+        ? ["Every lever is disarmed in a finally — but NOT if this process is KILLED; the only bound",
+          "then is the 300s family ceiling. Nothing in the evidence file or the terminal would ever",
+          "tell the admin who just rotated a good key that a harness lever was live at that moment."]
+        : ["The driver restores what it changed on the way out — but NOT if this process is KILLED,",
+          "and not for a delete. Nothing in the evidence file or the terminal would ever tell the",
+          "person whose agent, job or provider slot just moved that a harness run did it."]),
       "Schedule the run, or tell whoever is on the tenant — do not discover it afterwards.",
       "",
-      `  node scripts/${name}`,
-      `      # ${defaultEnv}, the default`,
+      /* A driver whose DEFAULT is dev must not be told "just run it with no --env": that
+         lands right back here. Offer the other environment by name instead. */
+      ...(ENVS[defaultEnv].shared
+        ? [`  node scripts/${name} --env=${ENV_NAMES.find((n) => !ENVS[n].shared)}`,
+          `      # the unshared environment — note this driver DEFAULTS to dev`]
+        : [`  node scripts/${name}`, `      # ${defaultEnv}, the default`]),
       `  node scripts/${name} --env=dev --i-know-dev-is-shared`,
     ]);
   }
@@ -282,4 +392,4 @@ export function requireEnvAck(argv, { faults, maxSeconds, defaultEnv = "staging"
   return { envName, hookUrl, envId: row.forgeEnvId, urlVar: row.urlVar, shared: row.shared, acknowledged };
 }
 
-export { FAULT_HARMS, ENVS, ENV_NAMES };
+export { FAULT_HARMS, MUTATION_HARMS, MUTATION_NAMES, ENVS, ENV_NAMES };

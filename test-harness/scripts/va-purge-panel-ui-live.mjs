@@ -25,7 +25,7 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
-const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs"], defaultEnv: "staging" });
 const env = loadEnv();
 
 const arg = (n, d) => { const p = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return p ? p.slice(n.length + 3) : d; };

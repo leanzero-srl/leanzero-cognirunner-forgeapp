@@ -62,6 +62,7 @@ import { gitHookUrl } from "../lib/git-hook-url.mjs";
  * promote step, and the connection card shows "rotation failed" to anyone who opens it. */
 requireEnvAck([...process.argv.slice(2), "--env=dev"], {
   faults: ["hookPromote"],
+  mutates: ["git", "kvs"],   /* drives a real secret rotation on a real connection row */
   script: "git-rotation-window-live.mjs",   // count-bounded: one unit, no TTL to quote
 });
 

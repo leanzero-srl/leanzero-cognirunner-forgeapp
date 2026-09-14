@@ -359,13 +359,16 @@ export const shape = (j) => ({
 let DOORS = null;
 
 async function run(state) {
-  /* THE GUARD IS THE FIRST THING ON THE PATH THAT TOUCHES A TENANT. `faults: []` is the truth
-     here, not a silencing: the lever can only decline to delete inert ballast, and FAULT_HARMS
-     has no entry to name — naming one it does not know THROWS. See the header. */
+  /* THE GUARD IS THE FIRST THING ON THE PATH THAT TOUCHES A TENANT. It DOES arm a lever —
+     `armDeleteFault` — and F-718 gave that lever its sentence in FAULT_HARMS, so it is
+     named here rather than hidden behind a bare `requireAck`. Its honest harm is "nothing
+     a user sees, but the app's own sweep stops advancing"; the rows it refuses to delete
+     are the inert ballast this driver planted, which is the separate `mutates: ["kvs"]`
+     declaration. Both now earn the refusal on their own. */
   const argv = process.argv.slice(2);
   const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(argv, {
-    faults: [],
-    requireAck: true,
+    faults: ["deleteFault"],
+    mutates: ["kvs"],
     maxSeconds: 120,
     defaultEnv: "staging",
     script: "delete-fault-drain-live.mjs",

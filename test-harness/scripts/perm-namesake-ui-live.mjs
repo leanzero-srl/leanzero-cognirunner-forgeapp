@@ -39,7 +39,7 @@ import { makeShot } from "../lib/roster-ui.mjs";
    address, and the segment comparison could only ever fail. */
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
 
-const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "dev" });
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [], defaultEnv: "dev" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const SECRET = requireEnv("HARNESS_SECRET");

@@ -47,7 +47,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
    so `--env=dev` planted the agent and the model slot through the DEV web trigger and then
    looked for the receipt on the STAGING admin page — a FAIL naming the UI for a fixture
    that was never there, and a `Copyprobe` agent left on the shared dev tenant. */
-const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const flag = (n) => process.argv.slice(2).includes(`--${n}`);

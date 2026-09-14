@@ -104,6 +104,7 @@ const PROVIDER = "openai";
  * courtesy for the configured and a surprise for everyone else. */
 const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), {
   faults: [`keyRead:${PROVIDER}`, "jiraUserSearch"],
+  mutates: ["kvs"],   /* sweepHarnessFaults DELETES planted rows; no other store is touched */
   maxSeconds: 5,   // every arming in this driver is the 5s TTL the expiry proof needs
   script: "harness-fault-expiry-live.mjs",
 });

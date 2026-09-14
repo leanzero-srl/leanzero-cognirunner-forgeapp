@@ -68,6 +68,7 @@ import { selectByDiscriminator } from "../lib/roster-restore.mjs";
  * sequence, so that — not the 60s of step 1 — is the number the operator is shown. */
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), {
   faults: ["jiraUserSearch"],
+  mutates: [],   /* checkIsAdmin and searchUsers are reads; nothing is written */
   maxSeconds: 240,
   script: "user-search-fault-live.mjs",
 });

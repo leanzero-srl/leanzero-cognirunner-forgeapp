@@ -1212,6 +1212,187 @@ for (const id of KNOWN_ENV_IDS) {
 ok(/STAGING_TESTSTATE_URL/.test(guardSrc) && /TESTSTATE_URL/.test(guardSrc),
   "F-699: …and both web-trigger variable names, so nothing was unified by deletion");
 
+/* ── 4f-1. F-715 — THE ENV-ID HALF COVERS lib/ AND scripts/, NOT JUST THE DRIVERS ──
+   ABSORBED FROM `live-driver-scope.test.mjs` RULE 3 by F-718, which is the same medicine
+   this rule prescribes: that rule's own comment said "it belongs in 4f and should be
+   folded there when that file is not held by another pass", and a rule about second homes
+   living in two homes is the joke writing itself. `live-driver-scope.test.mjs` now carries
+   a pointer here and nothing else.
+
+   The cohort above is `scripts/*-live.mjs`, so on the day 4f shipped the dev id had a
+   SECOND home in `lib/workflow.mjs` — exported, and imported by 58 harness scripts, where
+   it builds every extension ARI the workflow-attach path uses — and the staging id a THIRD
+   in `scripts/_probe-shadow-badge.mjs`. A LIBRARY is precisely where "the next driver is
+   written by copying the nearest sibling" bites hardest. The ids are NOT secrets (they are
+   in every Custom UI ARI the browser sees); the defect is DRIFT when an environment is
+   redeployed, which would leave the one edit here and every copy addressing a dead env.
+
+   The ids are read out of the guard's own table, so this rule and the one above cannot
+   disagree about what they are policing. */
+{
+  const ids = [...guardSrc.matchAll(/forgeEnvId:\s*"([0-9a-f-]{36})"/g)].map((m) => m[1]);
+  ok(ids.length === 2, `F-715: the guard's table carries both environment ids (${ids.length})`);
+  ok(ids.every((id) => KNOWN_ENV_IDS.includes(id)),
+    "F-715: …and they are the same two ids rule 4f names, so the wide scan and the driver scan police one set");
+
+  /* `org-workflow-compiler.test.mjs` is a FIXTURE: it asserts a compiled ARI string, so the
+     id is the thing under test rather than a configuration copy. This file is the rule's
+     HOME: it asserts the guard CONTAINS both ids, so the literals here are the subject of a
+     check, not a copy of config. */
+  const EXEMPT = new Set(["shared-env-guard.mjs", "org-workflow-compiler.test.mjs", "evidence-redaction.test.mjs"]);
+  const libDir = path.join(here, "..", "lib");
+  const wideCohort = [
+    ...readdirSync(libDir).filter((f) => f.endsWith(".mjs")).map((f) => ["lib", f, path.join(libDir, f)]),
+    ...readdirSync(here).filter((f) => f.endsWith(".mjs")).map((f) => ["scripts", f, path.join(here, f)]),
+  ].filter(([, f]) => !EXEMPT.has(f));
+  ok(wideCohort.length > 80, `F-715: the env-id cohort covers lib AND scripts (${wideCohort.length} files)`);
+  ok(wideCohort.some(([d]) => d === "lib") && wideCohort.some(([d]) => d === "scripts"),
+    "F-715: …and really does contain files from BOTH, so a green result is not an empty list");
+
+  const wideOffenders = [];
+  for (const [dir, f, full] of wideCohort) {
+    const src = readFileSync(full, "utf8");
+    for (const id of ids) if (src.includes(id)) wideOffenders.push(`${dir}/${f}:${id.slice(0, 8)}…`);
+  }
+  ok(wideOffenders.length === 0,
+    `F-715: no file under lib/ or scripts/ retypes an environment id instead of reading forgeEnvId() (${wideOffenders.join(", ")})`);
+
+  /* POSITIVE CONTROLS: the two pre-fix lines, verbatim, through the same predicate. */
+  const flags = (src) => ids.filter((id) => src.includes(id));
+  ok(flags(`export const ENV_ID = "${ids[0]}";`).length === 1,
+    "POSITIVE CONTROL (F-715): the pre-fix lib/workflow.mjs export of the dev id is caught");
+  ok(flags(`await p.goto("https://wolfaenpak.atlassian.net/jira/apps/x/${ids[1]}")`).length === 1,
+    "POSITIVE CONTROL (F-715): the pre-fix _probe-shadow-badge.mjs staging admin-page URL is caught");
+  ok(flags('const ENV_ID = forgeEnvId("dev");').length === 0,
+    "NEGATIVE CONTROL (F-715): reading the id through forgeEnvId() is clean");
+}
+
+/* ── 4g. F-718 — A DRIVER'S `mutates` IS ITS TRUE SET ───────────────────────────
+   The shared-dev acknowledgement used to be drawn at ARMS-A-FAULT. The result was that
+   `plant-sweep-live.mjs`, which plants INERT ballast, demanded `--i-know-dev-is-shared`,
+   while `va-purge-on-delete-live.mjs` DELETED a virtual agent, `coder-pin-kept-live.mjs`
+   REWROTE `COGNIRUNNER_AI_PROVIDER` and `knowledge-doors-editor-live.mjs` WROTE SKILLS
+   into the shared store — all on `--env=dev`, in silence. The line is now MUTATES SHARED
+   DEV, and `requireEnvAck` takes a `mutates:` array beside `faults:`.
+
+   A declaration nobody checks is a comment. This rule is the check, and it has to go BOTH
+   ways, because each direction fails differently:
+     - a driver that CALLS a mutator and declares `mutates: []` is the F-718 defect exactly
+       — it runs on the shared tenant with no refusal;
+     - a driver that declares a mutation it never performs cries wolf, and a refusal nobody
+       believes is the refusal people learn to pass `--i-know-dev-is-shared` through
+       without reading. That is how F-679's text stops working.
+
+   WHAT THIS RULE DOES NOT DO, stated rather than hidden: it does not check that the WORDS
+   match the mutators found. A token→word map would be a second home of the classification
+   (LAW 1) and would rot the first time a resolver was renamed; the words are a human
+   judgement the driver's author makes and this file cannot audit. The rule polices the
+   EMPTY/NON-EMPTY boundary, which is the one the refusal actually turns on.
+
+   COHORT LIMIT, also stated: only drivers that CALL `requireEnvAck` can declare anything,
+   which is 31 of the 57 `*-live.mjs`. The other 26 are dev-only scripts with no `--env`
+   at all — routing them through the guard would make them demand a `.env` they have no
+   use for (the F-699 reasoning behind `forgeEnvId`), and several of them DO write. That
+   gap is real and is not closed here. */
+const MUTATOR_CALLS = [
+  /* test-hook actions that write the tenant directly */
+  /\bkvSet\b/, /\bvaTombstone\b/, /\bplantHarnessFaults\b/, /\bclearPlantedFaults\b/,
+  /\bsweepHarnessFaults\b/, /\bplantHookSecret\b/, /\bdeleteHarnessConnection\b/, /\bmintApiToken\b/,
+  /* resolvers that write: knowledge, memories, provider slots, agents, jobs, listeners, tokens */
+  /\bsaveSkill\b/, /\bdeleteSkill\b/, /\bsaveContextDoc\b/, /\bdeleteContextDoc\b/,
+  /\baddMemory\b/, /\bupdateMemory\b/, /\bdeleteMemory\b/, /\bsaveMemorySettings\b/,
+  /\bsaveAgentModel\b/, /\bstartCoderTurn\b/,
+  /\bsaveScheduledJob\b/, /\bdeleteScheduledJob\b/, /\brunScheduledJobNow\b/,
+  /\bsaveListener\b/, /\bdeleteListener\b/,
+  /\bcreateApiToken\b/, /\brevokeApiToken\b/, /\bdeleteApiToken\b/,
+  /\bregisterRule\b/, /\bremoveRule\b/, /\btriggerGitDeploy\b/,
+  /* the app's own permission writes */
+  /\baddAppAdmin\b/, /\bgrantRole\b/, /\bremoveAccount\b/,
+];
+/** A Jira write is a TWO-LINE shape (`jira(\`/rest/api/…\`, {` then `method: "POST",`), so
+ *  it is matched on the whole file rather than per line — the only rule here that is. */
+function writesJira(code) {
+  return /\/rest\/(api|servicedeskapi)\//.test(code) && /\bmethod:\s*"(POST|PUT|DELETE)"/.test(code);
+}
+function callsMutator(code) {
+  const hits = MUTATOR_CALLS.filter((re) => re.test(code)).map((re) => String(re).slice(3, -3));
+  if (writesJira(code)) hits.push("jira:POST/PUT/DELETE");
+  return hits;
+}
+/** The declared array, read out of the `mutates:` literal. `null` = no declaration found. */
+function declaredMutations(code) {
+  const m = code.match(/\bmutates:\s*\[([^\]]*)\]/);
+  if (!m) return null;
+  return [...m[1].matchAll(/"([A-Za-z]+)"/g)].map((x) => x[1]);
+}
+/* POSITIVE CONTROLS — the three shapes F-718 found, verbatim from the drivers. */
+ok(callsMutator('const r = await hook({ action: "kvSet", key: AGENT_MODEL_SLOT, value: v });').length === 1,
+  "POSITIVE CONTROL (F-718): the mutator scan FIRES on the kvSet that rewrote a provider slot on dev unguarded");
+ok(callsMutator('await invoke("deleteScheduledJob", { id });').length === 1,
+  "POSITIVE CONTROL (F-718): …and on the job/agent delete va-purge-on-delete-live.mjs runs");
+ok(callsMutator('const s = await invoke("saveSkill", { skill });').length === 1,
+  "POSITIVE CONTROL (F-718): …and on the skill write knowledge-doors-editor-live.mjs makes into the shared store");
+ok(callsMutator('const post = await jira(`/rest/api/3/issue/${k}/comment`, {\n  method: "POST",\n  body,\n});').length === 1,
+  "POSITIVE CONTROL (F-718): …and on a REAL Jira write, whose url and method sit on different lines");
+/* NEGATIVE CONTROLS — reads, and the two-part Jira predicate's halves on their own. */
+ok(callsMutator('const r = await invoke("getScheduledJob", { id });').length === 0,
+  "NEGATIVE CONTROL: a getter is not a mutator");
+ok(callsMutator('const r = await hook(null, "GET", `?what=kvs&key=${k}`);').length === 0,
+  "NEGATIVE CONTROL: READING a kvs row through the GET door is not kvSet");
+ok(callsMutator('const PATH = "/rest/api/3/user/search";').length === 0,
+  "NEGATIVE CONTROL: naming a REST path without a write method is not a Jira write — user-search-fault-live.mjs only reads it");
+ok(callsMutator('const r = await fetch(HOOK, { method: "POST", body });').length === 0,
+  "NEGATIVE CONTROL: POSTing to the harness web trigger is how EVERY driver talks to the app — it is not a Jira write");
+ok(callsMutator('await invoke("disarmKeyReadFault", { provider: P });').length === 0,
+  "NEGATIVE CONTROL: disarming a lever is a fault concern, declared under faults:, not a mutation");
+/* And the declaration reader, which the rule stands on. */
+ok(declaredMutations('requireEnvAck(a, { faults: [], mutates: ["agents", "jobs"], defaultEnv: "dev" })').join(",") === "agents,jobs",
+  "the declaration reader returns the words a driver named");
+ok(declaredMutations('requireEnvAck(a, { faults: [], mutates: [], defaultEnv: "dev" })').length === 0,
+  "…and an EMPTY declaration is an empty array, not a missing one");
+ok(declaredMutations('requireEnvAck(a, { faults: [] })') === null,
+  "…and a call with no `mutates` at all is null — which the guard itself THROWS on, so it can never ship");
+
+const guardedDrivers = liveFiles.filter((f) => /requireEnvAck\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
+ok(guardedDrivers.length >= 30,
+  `F-718: the rule found the drivers that go through the guard and can therefore declare (${guardedDrivers.length})`);
+{
+  let declaredSome = 0, declaredNone = 0;
+  for (const f of guardedDrivers) {
+    const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+    const declared = declaredMutations(code);
+    ok(declared !== null, `${f}: declares a \`mutates:\` array — an undeclared blast radius is the F-718 defect`);
+    if (declared === null) continue;
+    const found = callsMutator(code);
+    if (declared.length) declaredSome++; else declaredNone++;
+    if (found.length) {
+      ok(declared.length > 0,
+        `${f}: calls ${found.length} mutator(s) (${found.slice(0, 4).join(", ")}) so it may NOT declare \`mutates: []\` — it would run on shared dev with no refusal`);
+    } else {
+      ok(declared.length === 0,
+        `${f}: declares ${JSON.stringify(declared)} but this file calls no mutator in the maintained list — a refusal nobody believes is one people learn to flag through`);
+    }
+  }
+  /* BOTH ARMS MUST HAVE SUBJECTS. A rule where every file took the same branch would be
+     green for the wrong reason, and the empty-declaration arm is the one that rots first. */
+  ok(declaredSome >= 15, `F-718: the mutating arm has real subjects (${declaredSome} drivers declare a non-empty mutates)`);
+  ok(declaredNone >= 3, `F-718: …and so does the read-only arm (${declaredNone} drivers declare mutates: [])`);
+}
+/* The guard really is the home of the vocabulary, so a green rule above is not green
+   because the words mean nothing. Every word any driver declares must exist there. */
+{
+  const VOCAB = new Set([...guardSrc.matchAll(/^\s{2}([a-zA-Z]+):\s*"/gm)].map((m) => m[1]));
+  ok(VOCAB.has("agents") && VOCAB.has("providerSlot") && VOCAB.has("kvs"),
+    "F-718: MUTATION_HARMS in the guard is readable from here and carries the words the drivers use");
+  const unknown = [];
+  for (const f of guardedDrivers) {
+    const declared = declaredMutations(stripComments(readFileSync(path.join(here, f), "utf8"))) || [];
+    for (const w of declared) if (!VOCAB.has(w)) unknown.push(`${f}:${w}`);
+  }
+  ok(unknown.length === 0,
+    `F-718: every declared word is in the guard's CLOSED vocabulary (unknown: ${unknown.join(", ")})`);
+}
+
 /* ── 4f-2. F-713 — A DRIVER'S MODULE SCOPE MUST CLOSE, OR THE RULES ABOVE READ A CORPSE ──
    Every directory rule in this file reads `*-live.mjs` as TEXT and never loads one. On the
    day this was written that gate was GREEN — `evidence-redaction: 267 passed, 0 failed`,

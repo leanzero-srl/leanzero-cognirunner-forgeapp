@@ -55,6 +55,7 @@ import { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS }
  * developer sharing the tenant reads as "my push did nothing". */
 requireEnvAck([...process.argv.slice(2), "--env=dev"], {
   faults: ["dispatchDrop"],
+  mutates: ["git"],   /* plants a hook secret and DELETES the harness connection it made */
   script: "git-dispatch-drop-live.mjs",   // count-bounded: no TTL to quote
 });
 

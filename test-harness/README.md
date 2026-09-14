@@ -132,7 +132,7 @@ armed the very same levers on the very same tenant: `key-status-fault-live.mjs` 
 `key-status-fault-ui-live.mjs` had nothing but `--env=dev` (and the UI one held the key-read
 refusal for **240 s** — since cut to 60 s, because its journey reads the card exactly once),
 and `user-search-fault-live.mjs` had no `--env` at all, dev being its only mode. The refusal
-now has one home, `lib/shared-env-guard.mjs`, exporting `requireEnvAck(argv, { faults,
+now has one home, `lib/shared-env-guard.mjs`, exporting `requireEnvAck(argv, { faults, mutates,
 maxSeconds, defaultEnv })`: it refuses `dev` without `--i-know-dev-is-shared` while naming
 the harm of the faults *that driver* arms and its own longest TTL. It checks argv **before**
 it reads `.env`, so the refusal is not a courtesy reserved for machines that are already
@@ -162,22 +162,42 @@ what they need from the one table:
 
 | need | use |
 |---|---|
-| one environment, settled and guarded | `requireEnvAck(argv, { faults: [], defaultEnv })` → `{ envName, hookUrl, envId }` |
+| one environment, settled and guarded | `requireEnvAck(argv, { faults: [], mutates: [], defaultEnv })` → `{ envName, hookUrl, envId }` |
 | the Forge env id alone (dev-only Playwright script, no web trigger, no `.env`) | `forgeEnvId("dev")` |
 | both environments in one run (`probes-1.5-live.mjs`) | `hookUrlFor(name)` / `hookUrlVar(name)` |
 
 `evidence-redaction.test.mjs` §4f fails any `*-live.mjs` whose **code** reads
-`STAGING_TESTSTATE_URL` or retypes an environment id UUID (docblock prose naming the
-variable an operator must set is exempt — the discriminator is a read, not a mention).
+`STAGING_TESTSTATE_URL` or retypes an environment id UUID, and §4f-1 widens the **env-id**
+half to every `lib/*.mjs` and every `scripts/*.mjs` (F-715: the dev id had a second home in
+`lib/workflow.mjs`, imported by 58 scripts; this rule used to live in
+`live-driver-scope.test.mjs` as RULE 3 and was folded here by F-718, because a rule about
+second homes is the last one that should have two). Docblock prose naming the
+variable an operator must set is exempt — the discriminator is a read, not a mention.
 `TESTSTATE_URL` on its own is fine: a dev-only driver naming the only environment it has is
 not deciding a mapping.
 
-A driver that arms **no** fault still goes through the guard for the mapping, with
-`faults: []`; `plant-sweep-live.mjs` adds `requireAck: true` to keep its shared-dev refusal
-without pretending to arm a lever. Six drivers legitimately **default to dev**
-(`knowledge-doors-editor`, `perm-namesake-ui`, `sandbox-confluence`, `va-capability-gate`,
-`va-rest-doors`, `va-shadow`), and the ack is not forced on them — making it unconditional
-would break every one of them, which is a larger change than F-698/F-699 asked for.
+**The acknowledgement is drawn at MUTATES, not at ARMS (F-718).** It used to be drawn at
+arming, and the line fell in a place nobody would have chosen: `plant-sweep-live.mjs`, which
+writes inert ballast and arms nothing, demanded the flag, while `va-purge-on-delete-live.mjs`
+deleted a virtual agent, `coder-pin-kept-live.mjs` rewrote `COGNIRUNNER_AI_PROVIDER` and
+`knowledge-doors-editor-live.mjs` wrote skills into the shared store — all on `--env=dev`, in
+silence. A fault is loud, short and disarmed in a `finally`; a mutation is quiet and
+**outlives the process** — the deleted agent does not come back. So `requireEnvAck` now takes
+`mutates: [...]` beside `faults: [...]`, from a closed vocabulary (`roster`, `skills`, `docs`,
+`memories`, `providerSlot`, `agents`, `jobs`, `listeners`, `rules`, `issues`, `git`, `kvs`);
+**either** array being non-empty makes `--env=dev` require `--i-know-dev-is-shared`, and the
+refusal lists what would be touched, in this driver's own words. Both arrays are required —
+`mutates: []` is a read-only driver's statement, not an omission, and a read-only driver runs
+on dev with no ceremony, which is what keeps the refusal worth reading. `evidence-redaction.
+test.mjs` §4g keeps the declaration honest in both directions: a driver that calls a mutator
+(`kvSet`, `vaTombstone`, `saveScheduledJob`, `saveSkill`, `createApiToken`, a Jira
+`POST`/`PUT`/`DELETE`, …) may not declare `mutates: []`, and one that declares a mutation it
+never performs fails too, because a refusal nobody believes is one people learn to flag
+through. Six drivers legitimately **default to dev** (`knowledge-doors-editor`,
+`perm-namesake-ui`, `sandbox-confluence`, `va-capability-gate`, `va-rest-doors`, `va-shadow`);
+five of those six mutate and now ask for the flag there, and `perm-namesake-ui` is read-only
+and still does not. The 26 `*-live.mjs` that take no `--env` at all cannot declare anything
+and are **not** covered — that gap is named in §4g and is not closed.
 
 ### JSM & Assets prerequisites
 

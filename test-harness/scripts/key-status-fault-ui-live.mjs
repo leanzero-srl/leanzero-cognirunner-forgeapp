@@ -52,6 +52,7 @@ const PROVIDER = arg("provider", "openai");
 const ARM_TTL_SECONDS = 60;
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), {
   faults: [`keyRead:${PROVIDER}`],
+  mutates: [],   /* the lever is the whole blast radius: every store read here is a READ */
   maxSeconds: ARM_TTL_SECONDS,
   script: "key-status-fault-ui-live.mjs",
 });

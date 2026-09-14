@@ -56,6 +56,7 @@ const PROVIDER = arg("provider", "openai");
  * refusing lever for an operator to read the card, which lands at the same place. */
 const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), {
   faults: [`keyRead:${PROVIDER}`],
+  mutates: [],   /* the lever is the whole blast radius: every store read here is a READ */
   maxSeconds: 300,
   script: "key-status-fault-live.mjs",
 });

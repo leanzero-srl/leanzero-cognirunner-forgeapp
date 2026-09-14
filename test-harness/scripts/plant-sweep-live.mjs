@@ -72,13 +72,16 @@ import { drainSweep, answerComplete } from "../lib/sweep-drain.mjs";
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 /* This driver arms NO fault — it plants inert ballast and sweeps EXPIRED rows, never a
- * live lever — so `faults` is empty and the harm sentences do not apply. The shared tenant
- * still deserves a deliberate act, so `requireAck: true` asks the guard for the refusal
- * anyway. It used to be an inline `console.error` here: one sentence of the F-679 text
- * living in a second home, which is the whole shape F-686 was cut for. */
+ * live lever — so `faults` is empty and the harm sentences do not apply. It does WRITE,
+ * though: `plantHarnessFaults` puts rows in the shared app store and the sweep deletes
+ * them again, which is `mutates: ["kvs"]` and is now what earns the refusal on its own
+ * (F-718). It used to ask with `requireAck: true` while drivers that DELETED a virtual
+ * agent asked for nothing — the ack was drawn at arming instead of at mutating, and this
+ * file was the exception that made the rule look wrong. The refusal text has never lived
+ * here: an inline `console.error` was the second home F-686 was cut for. */
 const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(argv, {
   faults: [],
-  requireAck: true,
+  mutates: ["kvs"],
   defaultEnv: "staging",
   script: "plant-sweep-live.mjs",
 });

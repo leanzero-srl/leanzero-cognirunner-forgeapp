@@ -26,6 +26,11 @@
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
+/* F-660 — the evidence JSON beside these captures is masked; the CAPTURES were not, and
+   a full-page shot of the Permissions tab renders real addresses as PIXELS that no text
+   redactor can see. Every capture goes through `shotMasked`, which masks every
+   `.perm-ident-email`, asserts nothing readable is left, shoots, and restores. */
+import { shotMasked } from "../lib/roster-ui.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -109,7 +114,7 @@ async function readSearchRows(shot) {
         cls: (await r.getAttribute("class")) || "",
       });
     }
-    if (shot) await page.screenshot({ path: `${OUT}/${shot}`, fullPage: false }).catch(() => {});
+    if (shot) await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
     return out;
   });
 }
@@ -135,7 +140,7 @@ async function clickRowBySegment(segment, role = "Editor", scope = /^Own Rules/)
       if (((await r.getAttribute("class")) || "").includes("perm-search-disabled")) return { clicked: false, why: "already on roster" };
       await r.click();
       await sleep(5000);
-      await page.screenshot({ path: `${OUT}/02-granted-roster.png` }).catch(() => {});
+      await shotMasked(page, frame, `${OUT}/02-granted-roster.png`, { strict: false }).catch(() => {});
       return { clicked: true, index: i, ident };
     }
     return { clicked: false, why: `no search row carried segment ${segment}`, rows: n };
@@ -162,7 +167,7 @@ async function readRosterCards(shot) {
         identTitle: hasIdent ? await identLoc.first().getAttribute("title") : null,
       });
     }
-    if (shot) await page.screenshot({ path: `${OUT}/${shot}` }).catch(() => {});
+    if (shot) await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
     return out;
   });
 }
@@ -181,7 +186,7 @@ async function removeRosterBySegment(segment) {
       await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
       await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
       await sleep(4000);
-      await page.screenshot({ path: `${OUT}/04-roster-restored.png` }).catch(() => {});
+      await shotMasked(page, frame, `${OUT}/04-roster-restored.png`, { strict: false }).catch(() => {});
       return { removed: true, index: i };
     }
     return { removed: false, cards: n };

@@ -26,6 +26,13 @@
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
+/* F-660 — the evidence JSON beside these captures is masked; the CAPTURES were not, and a
+   full-page shot of the Permissions tab renders real addresses as PIXELS that no text
+   redactor can see — F-651 made the address fully legible on purpose. Every capture goes
+   through `shotMasked`, which masks every `.perm-ident-email`, asserts nothing readable is
+   left, shoots, and restores. The id chips stay legible: they are the discriminator these
+   screenshots exist to prove. */
+import { shotMasked } from "../lib/roster-ui.mjs";
 
 const env = loadEnv();
 const HOOK_URL = env.TESTSTATE_URL;
@@ -110,7 +117,7 @@ async function readSearchRows(q, shot) {
     }
     const errBox = frame.locator(".perm-search-error");
     const err = (await errBox.count()) > 0 ? (await errBox.first().innerText()).trim() : null;
-    await page.screenshot({ path: `${OUT}/${shot}` }).catch(() => {});
+    await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
     return { rows: out, err };
   });
 }
@@ -136,7 +143,7 @@ async function readRosterCards(shot) {
         idTitle: (await idEl.count()) > 0 ? await idEl.first().getAttribute("title") : null,
       });
     }
-    await page.screenshot({ path: `${OUT}/${shot}` }).catch(() => {});
+    await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
     return out;
   });
 }
@@ -162,7 +169,7 @@ async function grantRow(i) {
     };
     await row.click();
     await sleep(4500);
-    await page.screenshot({ path: `${OUT}/03-granted.png` }).catch(() => {});
+    await shotMasked(page, frame, `${OUT}/03-granted.png`, { strict: false }).catch(() => {});
     return snap;
   });
 }
@@ -178,7 +185,7 @@ async function removeRosterIndex(i) {
     await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
     await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
     await sleep(3500);
-    await page.screenshot({ path: `${OUT}/05-restored.png` }).catch(() => {});
+    await shotMasked(page, frame, `${OUT}/05-restored.png`, { strict: false }).catch(() => {});
     return { index: i, card: text };
   });
 }

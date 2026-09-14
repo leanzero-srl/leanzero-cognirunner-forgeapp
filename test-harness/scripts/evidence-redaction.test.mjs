@@ -351,6 +351,42 @@ for (const f of liveFiles) {
 }
 ok(rosterWriters.length >= 2, `the roster-snapshot rule found drivers to apply to (${rosterWriters.join(", ")})`);
 
+/* ── 4c-ii. F-660 — THE PII RULE HAS TO COVER PIXELS ────────────────────────────
+   Everything above is TEXT. The permission drivers also write full-page SCREENSHOTS of
+   the Permissions tab, where the same real addresses render as PIXELS — and none of these
+   scans opens an image, so the suite stayed green while the artefact directory filled
+   with legible addresses. F-651 made it worse on purpose: the email no longer ellipsises,
+   it wraps and owns a line.
+
+   The rule is crude and therefore enforceable: a `*-live.mjs` that mentions `perm-` may
+   not contain a RAW `.screenshot(` call. It calls `shotMasked` from lib/roster-ui.mjs,
+   which masks every `.perm-ident-email`, ASSERTS in the DOM that nothing readable is
+   left, captures, and restores. `roster-ui.test.mjs` proves that helper on a fake DOM. */
+/* A word character before the dot: a real receiver (`page.screenshot(`), never prose that
+   quotes the method name (``a raw `.screenshot(` call``), which the rule's own docblocks do. */
+const PERM_SHOT = /\w\.screenshot\s*\(/;
+function scanRawShots(src) {
+  return src.split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => PERM_SHOT.test(l) && !/^\s*\*/.test(l) && !/^\s*\/\//.test(l) && !/shotMasked/.test(l))
+    .map(({ n }) => n);
+}
+ok(scanRawShots('    await page.screenshot({ path: `${OUT}/01-search-rows.png` }).catch(() => {});').length === 1,
+  "POSITIVE CONTROL: the pixel rule FIRES on the raw capture the drivers used to do");
+ok(scanRawShots('    await shotMasked(page, frame, `${OUT}/01-search-rows.png`, { strict: false });').length === 0,
+  "NEGATIVE CONTROL: a capture routed through the mask helper is not flagged");
+ok(scanRawShots(' * a driver does not call page.screenshot( on the Permissions tab').length === 0,
+  "NEGATIVE CONTROL: the rule written out in a docblock is not an offence");
+
+const permDrivers = liveFiles.filter((f) => /perm-/.test(readFileSync(path.join(here, f), "utf8")));
+ok(permDrivers.length >= 3, `the pixel rule found the Permissions drivers to apply to (${permDrivers.join(", ")})`);
+for (const f of permDrivers) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  const raw = scanRawShots(src);
+  ok(raw.length === 0, `${f}: every capture goes through the email mask (raw page.screenshot at: ${raw.join(", ")})`);
+  ok(/shotMasked/.test(src), `${f}: …and it imports the mask helper rather than rolling its own`);
+}
+
 /* ── 4d. F-662 — NO DRIVER MAY KEEP A SECOND EMAIL MASK ─────────────────────────
    The defect was not a bad regex, it was a SECOND regex. Removing the one copy without
    this rule schedules its return: the next driver that wants "belt and braces" writes its

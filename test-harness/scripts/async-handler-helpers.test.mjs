@@ -1618,12 +1618,22 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
    * text terms for the exports they read), so only EXECUTION can see it. A doctored COPY of
    * the module — one query moved ahead of `clearPlantedFaults`' gate, its one relative import
    * rewritten to an absolute URL so the copy can live outside the repo — is driven through
-   * the SAME table, and the query counter must catch it. */
+   * the SAME table, and the query counter must catch it.
+   *
+   * The import rewrite is a RULE over every `./shared/*.js` specifier, not a list of the ones
+   * the module happened to have: it was a single hard-coded `kvs-keys.js` replacement, and the
+   * day harness-fault.js took a second shared import (F-876, text-clamp.js) this suite failed
+   * with ERR_MODULE_NOT_FOUND from a temp directory — a red suite naming neither the change
+   * nor the cause. */
   {
-    const kvsKeysUrl = pathToFileURL(path.join(here, "../../src/shared/kvs-keys.js")).href;
+    const sharedUrl = (spec) => pathToFileURL(path.join(here, "../../src/shared", spec)).href;
     const pristine = readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8");
-    const doctored = pristine
-      .replace('from "./shared/kvs-keys.js"', `from ${JSON.stringify(kvsKeysUrl)}`)
+    const rebased = pristine.replace(
+      /from "\.\/shared\/([A-Za-z0-9._-]+)"/g,
+      (_m, file) => `from ${JSON.stringify(sharedUrl(file))}`);
+    ok(!/from "\.\/shared\//.test(rebased) && /\/src\/shared\/kvs-keys\.js/.test(rebased),
+      "F-720 (fixture): every ./shared/* import is rebased absolute, so the copy runs outside the repo");
+    const doctored = rebased
       .replace(
         "export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } = {}) => {\n  if (!harnessEnabled())",
         "export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } = {}) => {\n  storage.query();\n  if (!harnessEnabled())");

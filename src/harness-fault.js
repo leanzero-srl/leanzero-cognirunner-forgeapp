@@ -52,6 +52,7 @@
  */
 import { kvs as storage } from "@forge/kvs";
 import { safeKeyPart, assertKvsKey } from "./shared/kvs-keys.js";
+import { utf8ByteLength } from "./shared/text-clamp.js";
 
 /** Never let a test arm more failures than the delivery could survive. */
 export const HARNESS_FAULT_MAX_COUNT = 5;
@@ -864,11 +865,20 @@ export const encodeSweepCursor = (kvsCursor, failedResume = undefined, clearedSo
  * The 2 KB ceiling stays (an unbounded string is a body no door has reason to accept) and so
  * does the doubled-dot refusal: `.` and `/` are both in base64's neighbourhood, our tokens
  * never contain `..`, and defence-in-depth on a value bound for a storage API is free.
+ *
+ * F-876 - THE CEILING IS NAMED IN BYTES, SO IT IS MEASURED IN BYTES. It was compared against
+ * `String.length`, which counts UTF-16 code units, and a budget measured in a unit it is not
+ * named in is the F-836/F-855/F-869 defect. `utf8ByteLength` (src/shared/text-clamp.js) is
+ * the ONE measure. Today nothing gets through either way - the base64 grammar below is
+ * ASCII-only, so every over-budget-in-bytes string is also refused by the pattern - which is
+ * exactly why this was worth correcting rather than arguing about: the only thing holding the
+ * ceiling to its stated meaning was a second, unrelated rule, and the day the grammar widens
+ * (a token carrying a non-ASCII label, say) the ceiling would silently become 3 x 2 KB.
  */
 export const SWEEP_CURSOR_MAX_BYTES = 2048;
 const SWEEP_CURSOR_PATTERN = /^[A-Za-z0-9+/=_-]+$/;
 export const sweepCursorWellFormed = (value) =>
-  typeof value === "string" && value.length > 0 && value.length <= SWEEP_CURSOR_MAX_BYTES
+  typeof value === "string" && value.length > 0 && utf8ByteLength(value) <= SWEEP_CURSOR_MAX_BYTES
   && SWEEP_CURSOR_PATTERN.test(value) && !value.includes("..");
 
 /*

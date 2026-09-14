@@ -272,7 +272,8 @@ ok(stale.length === 0, stale.length === 0
   : `stale allow-list entries (the code moved on; re-read the reason before deleting):\n    ` + stale.join("\n    "));
 
 /* ===========================================================================
- * 6. F-853 - NO UI FILE MAY TYPE A ROSTER ROLE/SCOPE **DEFAULT** LITERAL
+ * 6. F-853 / F-864 - NO UI **OR BACKEND** FILE MAY TYPE A ROSTER ROLE/SCOPE **DEFAULT**
+ *    LITERAL
  *
  * THE DEFECT THIS ARM EXISTS TO KILL. F-840 found the product's READ of an `app_admins`
  * row defaulting a scope-less editor to `"all"` - site-wide reach - while both WRITE
@@ -287,7 +288,8 @@ ok(stale.length === 0, stale.length === 0
  * granted, that nobody ever gave.
  *
  * THE RULE
- *   No file under `static/{config-ui,admin-panel,config-view,issue-glance}/src` may write
+ *   No file under `static/{config-ui,admin-panel,config-view,issue-glance}/src`, and no
+ *   backend file under `src/` or `src/shared/`, may write
  *   a roster-vocabulary literal ("own"/"all"/"viewer"/"editor"/"admin") as the DEFAULT of
  *   a binding whose name is about a role or a scope. The three shapes that count:
  *     A. `<something>.scope || "all"` / `role ?? "viewer"` - the F-843 shape exactly;
@@ -363,6 +365,18 @@ const PRE_F843 = `            const scope = typeof user === "object" ? (user.sco
 ok(scanRosterDefaults(PRE_F843).length > 0,
   "positive control: the pre-F-843 `user.scope || \"all\"` line is flagged");
 
+/* POSITIVE CONTROL (F-864): the pre-fix `addAppAdmin` line, verbatim. This is the offence
+   the arm found the moment it was pointed at the backend - a re-typed grant default sitting
+   one line above an imported DEFAULT_ROSTER_SCOPE. If this stops firing, the backend half
+   of the rule is dead. */
+const PRE_F864 = `  const assignRole = VALID_ROLES.includes(role) ? role : "viewer";\n`;
+ok(scanRosterDefaults(PRE_F864).length > 0,
+  "positive control: the pre-F-864 `assignRole = ... : \"viewer\"` grant default is flagged");
+
+/* NEGATIVE CONTROL: the same line taking its default from the shared home. */
+ok(scanRosterDefaults(`  const assignRole = VALID_ROLES.includes(role) ? role : DEFAULT_ROSTER_ROLE;\n`).length === 0,
+  "negative control: `... : DEFAULT_ROSTER_ROLE` - the imported default - raises nothing");
+
 /* NEGATIVE CONTROL: the admin-forcing branch, in both live shapes. A RULE, not a default. */
 const ADMIN_FORCING = `
 const effectiveScope = addRole === "admin" ? "all" : addScope;
@@ -386,12 +400,46 @@ const ROSTER_ALLOW = [
     why: "an API-TOKEN role, not a roster row: this panel keeps its own ROLES list for token scopes and falls back to \"admin\" for a token whose role is unrecognised. Shares the words, not the vocabulary - see the finding filed against this fallback being the WIDEST value" },
   { file: "components/ApiAccessPanel.jsx", match: 'useState("admin")',
     why: "the token-creation form's initial selection (same API-TOKEN vocabulary as the entry above), not the scope a roster row confers" },
+
+  /* F-864 - the BACKEND entries. Each is the same LEGACY-ROW rule the PermissionsTab entry
+     above mirrors, or a different vocabulary that merely shares the words. The one real
+     offence this arm found when it was pointed at src/ - `addAppAdmin`'s re-typed grant
+     default - was FIXED, not allow-listed. */
+  { file: "src/index.js", match: 'const role = (typeof entry === "object" && entry.role) ? entry.role : "admin"',
+    why: "rosterRowRole itself: the LEGACY-ROW rule the whole product reads by, and the line the PermissionsTab entry above exists to mirror. A bare account-id string, or an object with no role at all, IS an admin row - F-840 settled that deliberately and did not narrow it" },
+  { file: "src/index.js", match: '.role || "admin"',
+    why: "the same LEGACY-ROW rule, applied where the roster is COUNTED and where a demotion target is read (the last-admin guard). Reading a role-less row as anything narrower here would let the last admin demote themselves off the instance" },
+  { file: "src/rules-api.js", match: 'const tokenRole = (t) =>',
+    why: "an API-TOKEN role (TOKEN_ROLES), not a roster row - the backend twin of the allow-listed ApiAccessPanel fallback, and carrying the same filed concern that the fallback is the WIDEST value. Shares the words, not the vocabulary" },
+  { file: "src/async-handler.js", match: 'p.savedByRole || "editor"',
+    why: "the ARMING STAMP vocabulary (savedByRole: admin|editor), not a roster grant - editor is its RESTRICTIVE value, so this default narrows rather than widens. Its home is listeners.js normalizeSavedByRole; that the literal is re-typed here, in rules-api.js (REST_SAVED_BY_ROLE) and in index.js stampSavedByRole is a SEPARATE finding, filed, and not this arm's rule" },
 ];
+
+/* F-864 - THE BACKEND IS SCANNED BY THE SAME SCANNER, NOT A SECOND COPY OF IT.
+ * F-853 fenced the four UI apps and left the product itself unfenced, so `addAppAdmin`
+ * kept `VALID_ROLES.includes(role) ? role : "viewer"` - a re-typed grant default sitting
+ * one line above an imported `DEFAULT_ROSTER_SCOPE` - and no suite noticed. The default
+ * the BACKEND stores is the permission the product actually confers, so if either side
+ * of the wire is fenced it must be this one. Same rule, same scanner, same allow-list;
+ * only the file list grows. `src/shared/roster-roles.js` is excluded because it IS the
+ * home - the declarations there are the defaults, not copies of them. */
+const backendSources = [];
+for (const dir of [join(REPO, "src"), join(REPO, "src", "shared")]) {
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) continue;
+    if (!/\.js$/.test(name)) continue;
+    if (full === join(REPO, "src", "shared", "roster-roles.js")) continue;  // the home itself
+    backendSources.push(full);
+  }
+}
+ok(backendSources.length > 15 && backendSources.some((f) => f.endsWith(join("src", "index.js"))),
+  `roster scan also covers ${backendSources.length} backend module(s), including src/index.js`);
 
 const rosterUsed = new Set();
 const rosterOffences = [];
-for (const file of sources) {
-  const rel = relative(join(REPO, "static"), file).split(sep).join("/");
+for (const file of [...sources, ...backendSources]) {
+  const rel = relative(REPO, file).split(sep).join("/");
   for (const hit of scanRosterDefaults(readFileSync(file, "utf8"))) {
     const idx = ROSTER_ALLOW.findIndex((a) => rel.endsWith(a.file) && hit.text.includes(a.match));
     if (idx >= 0) { rosterUsed.add(idx); continue; }
@@ -399,7 +447,7 @@ for (const file of sources) {
   }
 }
 ok(rosterOffences.length === 0, rosterOffences.length === 0
-  ? "no UI file types a roster role/scope DEFAULT literal - they come from src/shared/roster-roles.js"
+  ? "no UI or backend file types a roster role/scope DEFAULT literal - they come from src/shared/roster-roles.js"
   : `${rosterOffences.length} roster default literal(s) outside roster-roles.js:\n    ` + rosterOffences.join("\n    "));
 
 const rosterStale = ROSTER_ALLOW.map((a, i) => (rosterUsed.has(i) ? null : `${a.file} "${a.match}"`)).filter(Boolean);

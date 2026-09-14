@@ -14,6 +14,9 @@
 import { kvs as storage } from "@forge/kvs";
 import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 import { readBearerToken } from "./shared/http-headers.js";
+// F-803: "what does a credential VALUE look like" has ONE home, shared with the harness
+// evidence redactor — the two used to disagree about this app's own Rules-API bearer.
+import { SECRET_VALUE_SHAPES, SECRET_FIELD_NAME_HINTS } from "./shared/secret-shapes.js";
 // F-770: "is this a legal KVS key" has ONE home, and it is not this file. Same module the
 // key BUILDERS assert against, so this door and the builders cannot drift apart again.
 import { isKvsKey, safeKeyPart, KVS_KEY_PATTERN, KVS_KEY_MAX_CHARS } from "./shared/kvs-keys.js";
@@ -84,10 +87,11 @@ const jsonOf = async (res) => { try { return JSON.parse(String(await res.text())
  *
  * Returns `null` when the body is clean, or `{ error, harnessRefusal, field }`.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
-const SECRET_KEY_HINTS = [
-  "token", "secret", "password", "credential", "apikey", "privatekey", "bearer",
-  "authorization", "cookie", "webtrigger", "webhookurl", "cognirunnerkey", "gitconnection",
-];
+/* F-803 — the hints are NOT this file's list. They are one half of the one answer to
+ * "what does a credential look like" (src/shared/secret-shapes.js); the other half is the
+ * VALUE shapes spliced into `SECRET_VALUE_RE` below. `test-harness/lib/redact.mjs` reads
+ * the same module, because the two used to disagree about this app's own bearer. */
+const SECRET_KEY_HINTS = SECRET_FIELD_NAME_HINTS;
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
  * F-769 — THE CREDENTIAL KEY FAMILIES, AND THE READ CEILING THEY CARRY. ONE HOME.
@@ -311,12 +315,19 @@ const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * A plant body that MENTIONS a credential key family, plus the token/URL SHAPES that no
- * key family can describe (GitHub/Bitbucket/OpenAI/Slack tokens, Forge web-trigger URLs).
- * The family half is DERIVED from `CREDENTIAL_KEY_FAMILIES` above — never retyped.
+ * key family can describe (GitHub/GitLab/OpenAI/Atlassian/Slack/AWS tokens, JWTs, Forge
+ * web-trigger URLs).
+ *
+ * BOTH halves are DERIVED — neither is retyped here:
+ *   · the FAMILY half from `CREDENTIAL_KEY_FAMILIES` above, since F-769;
+ *   · the SHAPE half from `src/shared/secret-shapes.js`, since F-803. It used to be an
+ *     inline alternation that knew `gh[pousr]_`, `github_pat_`, `sk-`, `xoxb-` and the dev
+ *     web-trigger host — and NOT `cgr_`, this app's own Rules-API bearer, nor `ATATT`,
+ *     `glpat-`, `AKIA`, `xoxp-` or a JWT, all of which the evidence redactor at the file
+ *     boundary already knew. Two lists, one question, and the door was the weaker of them.
  */
 const SECRET_VALUE_RE = new RegExp(
-  "(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|")
-  + "|\\bgh[pousr]_[A-Za-z0-9]{8}|\\bgithub_pat_|\\bsk-[A-Za-z0-9_-]{12}|\\bxoxb-|\\.atlassian-dev\\.net/)",
+  "(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|") + "|" + SECRET_VALUE_SHAPES.join("|") + ")",
 );
 
 export const SECRET_PLANT_REFUSAL = "harnessRefusal: a plant body may never carry a credential — this door plants state, never secrets";

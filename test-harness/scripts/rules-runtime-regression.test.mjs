@@ -1522,12 +1522,13 @@ try {
         sources.set(dir + f, readFileSync(new URL(dir + f, SRC), "utf8"));
       }
     }
-    /* The field words are the hook's OWN list, read from its one home — the same words the
-       write door refuses a FIELD for. Retyping them here would be the second home this
-       whole rule exists to prevent. */
-    const hookSrc = readFileSync(new URL("test-hook.js", SRC), "utf8");
-    const hints = [...(hookSrc.match(/const SECRET_KEY_HINTS\s*=\s*\[([\s\S]*?)\]/)?.[1] || "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-    assert.ok(hints.length >= 10, `SECRET_KEY_HINTS must be READ from src/test-hook.js (got ${hints.length})`);
+    /* The field words come from their one home — the same words the write door refuses a
+       FIELD for. Retyping them here would be the second home this whole rule exists to
+       prevent. F-803: that home moved out of test-hook.js (where it was SCRAPED out of the
+       source with a regex) into src/shared/secret-shapes.js, which both the door and the
+       harness's evidence redactor import — so this reads the binding rather than the text. */
+    const { SECRET_FIELD_NAME_HINTS: hints } = await import("../../src/shared/secret-shapes.js");
+    assert.ok(hints.length >= 10, `SECRET_FIELD_NAME_HINTS must come from src/shared/secret-shapes.js (got ${hints.length})`);
 
     const sites = scanSecretWriteSites(sources, hints);
     assert.ok(sites.length >= 20, `the scanner must still SEE the write sites (found ${sites.length})`);

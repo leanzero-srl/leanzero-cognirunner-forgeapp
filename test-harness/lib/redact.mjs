@@ -71,6 +71,7 @@
  * decided by the VALUE's shape, never by the parameter's name.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import { createHash } from "node:crypto";
+import { credentialValueRegex, credentialPrefixRegex } from "../../src/shared/secret-shapes.js";
 
 export const REDACTED = "[REDACTED]";
 
@@ -86,12 +87,21 @@ const SECRET_KEY_PART = /(token|secret|apikey|api_key|password|authorization)/i;
 
 /**
  * Credential shapes that are secrets wherever they appear, key or no key.
- * `cgr_` is the app's OWN Rules-API token: `randomBytes(24).toString("hex")` = exactly
- * 48 lowercase hex. `{48,}` (not `{16,}`) is deliberate — a mint answer also carries a
- * `row.prefix` of `cgr_` + 6 hex, which is the non-secret HANDLE the UI lists tokens
- * by, and masking that would blind the evidence to which token a check was about.
+ *
+ * F-803 — THIS FILE NO LONGER OWNS THE LIST. It used to, and `src/test-hook.js` owned a
+ * SECOND one, and the two disagreed about the app's own bearer in BOTH directions: F-650
+ * taught this file `cgr_` and `ATATT` after a measured leak and nobody taught the door,
+ * while the door knew `gh[ousr]_` and the dev web-trigger host and this file did not. The
+ * shapes are now `src/shared/secret-shapes.js`, imported by both, and a parity check in
+ * `scripts/evidence-redaction.test.mjs` refuses either file a private copy.
+ *
+ * The `cgr_` reasoning survives the move and is written down there: `{48,}` not `{16,}`,
+ * because a mint answer also carries a `row.prefix` of `cgr_` + 6 hex, the non-secret
+ * HANDLE the UI lists tokens by, and masking that would blind the evidence to which token
+ * a check was about. Built here with `g` — the factory exists so no two callers share one
+ * regex object's `lastIndex`.
  */
-const SECRET_VALUE = /(sk-[A-Za-z0-9_\-]{8,}|ghp_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|ATATT[A-Za-z0-9_\-+=/]{8,}|xoxb-[A-Za-z0-9-]{8,}|cgr_[0-9a-f]{48,})/g;
+const SECRET_VALUE = credentialValueRegex("g");
 
 /**
  * F-650 — a credential carried as a QUERY PARAMETER. The obvious next FAIL arm is
@@ -122,7 +132,10 @@ const SECRET_QUERY = /([?&](?:token|secret|api[_-]?key|apikey|password|auth|acce
  * caught by their prefix here, and by `SECRET_VALUE`, which runs BEFORE this rule.
  */
 const KEY_QUERY = /([?&]key=)([^&\s"'<>\\]+)/gi;
-const CREDENTIAL_PREFIX = /^(?:sk-|ghp_|github_pat_|ATATT|xoxb-|cgr_)/;
+/* F-803 — the same census as `SECRET_VALUE`, anchored, and from the same one home. It
+ * gained `gho_`/`ghu_`/`ghs_`/`ghr_`, `glpat-`, `xoxp-` and `AKIA` by being derived rather
+ * than retyped, which is the whole point of deriving it. */
+const CREDENTIAL_PREFIX = credentialPrefixRegex();
 
 export function looksLikeCredentialValue(v) {
   const s = String(v == null ? "" : v);

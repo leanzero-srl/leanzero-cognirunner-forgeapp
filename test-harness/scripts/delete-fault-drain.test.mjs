@@ -30,6 +30,8 @@
 import {
   KVS_DELETE_BATCH_EXPECTED, drainableArmCount, tokenFacts, tokenNote,
   carryVerdict, replayPausedMs, judgeRefuseDrain, armFacts, leverFacts, shape,
+  judgePlantVisibility, HARNESS_FAULT_SWEEP_MAX_ROWS_EXPECTED,
+  HARNESS_FAULT_SWEEP_SCAN_CEILING_EXPECTED,
 } from "./delete-fault-drain-live.mjs";
 import { IDENTICAL_ANSWER_LIMIT, DELETES_FAILING_BACKOFF_MS } from "../lib/sweep-drain.mjs";
 
@@ -320,6 +322,80 @@ console.log("\n7 · THE SWEEP SHAPE — COUNTERS AND FLAGS, NEVER ROWS");
     "…and not one key reaches the shape: a fault key carries the faulted path or provider, which is the whole reason this rule is a directory rule");
   ok(s.carriesFailedResume === true && s.hasCursor === true && s.complete === false,
     "the three fields an operator acts on survive: is there more, is there a mess, where do I resume");
+}
+
+console.log("\n8 · F-766 — THE PLANT IS GRADED ON THE COUNTERS, NOT ON THE CAPPED ROW LIST");
+{
+  /* THE RECORDED 400-ROW DRY RUN — the exact shape the live run produced and the old
+     `plantedExpired >= N` assertion failed on: `scanned: 400`, and a row list stopped dead
+     at HARNESS_FAULT_SWEEP_MAX_ROWS with `rowsTruncated: true`. Built through `shape()`, so
+     the fixture exercises the same derivation the driver uses live. */
+  const CAP = HARNESS_FAULT_SWEEP_MAX_ROWS_EXPECTED;
+  const plantRows = (count, from = 0) =>
+    Array.from({ length: count }, (_, i) => ({ key: `harness_fault:plant:${from + i}`, expired: true }));
+
+  const baseline = shape({ ok: true, scanned: 0, deleted: 0, failed: 0, rowsTruncated: false, rows: [] });
+  const recorded400 = shape({
+    ok: true, dryRun: true, scanned: 400, deleted: 0, failed: 0,
+    budgetMs: 15000, rowsTruncated: true, complete: true, cursor: null,
+    rows: plantRows(CAP),
+  });
+  ok(recorded400.scanned === 400 && recorded400.rowsListed === CAP && recorded400.rowsTruncated === true
+      && recorded400.plantedExpired === CAP,
+    `the recorded answer IS the defect's shape: scanned=400, rowsListed=${CAP}, rowsTruncated=true, plantedExpired=${CAP} — the old \`plantedExpired >= N\` read ${CAP} against N=400`);
+
+  const rows400 = judgePlantVisibility({ baseline, before: recorded400, n: 400 });
+  ok(rows400.every((r) => r.verdict !== "FAIL"),
+    "…and the grader returns NO FAIL on it — the run that was red on every pass is green on the counters (F-766)");
+  ok(rows400.some((r) => r.verdict === "PASS" && /plant added 400 >= 400/.test(r.what)),
+    "the delta is asserted against the BASELINE scan, so a tenant that merely holds 400 foreign rows cannot satisfy it");
+  ok(rows400.some((r) => r.verdict === "PASS" && /truncated at 200/.test(r.what)),
+    "…and the truncation is CHECKED rather than tolerated: above the cap the list must declare itself");
+
+  /* THE PLANT THAT GENUINELY DID NOT LAND — the red this assertion exists to produce. */
+  const short = shape({ ok: true, scanned: 150, deleted: 0, failed: 0, rowsTruncated: false, rows: plantRows(150) });
+  const rowsShort = judgePlantVisibility({ baseline, before: short, n: 400 });
+  ok(rowsShort.some((r) => r.verdict === "FAIL" && /plant added only 150/.test(r.what)),
+    "a plant that really fell short of N still FAILS — the fix removed the structural red, not the assertion");
+
+  /* A FOREIGN-BALLAST TENANT: 400 rows scanned, but 400 of them were there before. */
+  const busyBase = shape({ ok: true, scanned: 400, rowsTruncated: true, rows: plantRows(CAP) });
+  const busyAfter = shape({ ok: true, scanned: 420, rowsTruncated: true, rows: plantRows(CAP) });
+  ok(judgePlantVisibility({ baseline: busyBase, before: busyAfter, n: 400 })
+      .some((r) => r.verdict === "FAIL" && /plant added only 20/.test(r.what)),
+    "…and the delta — not the absolute — is what decides, so a busy tenant's own ballast cannot manufacture the pass");
+
+  /* UNDER THE CAP: the stronger per-row claim is available and IS made. */
+  const under = shape({ ok: true, scanned: 60, rowsTruncated: false, rows: plantRows(60) });
+  const rowsUnder = judgePlantVisibility({ baseline, before: under, n: 60 });
+  ok(rowsUnder.every((r) => r.verdict !== "FAIL")
+      && rowsUnder.some((r) => /EXPIRED PLANTED rows/.test(r.what)),
+    "at or under the cap the whole list is there, so the run still asserts the rows are MINE and expired — the strength the counters alone cannot give");
+  ok(judgePlantVisibility({
+    baseline,
+    before: shape({ ok: true, scanned: 60, rowsTruncated: false, rows: [...plantRows(10), ...Array.from({ length: 50 }, (_, i) => ({ key: `harness_fault:jira:/p/${i}`, expired: true }))] }),
+    n: 60,
+  }).some((r) => r.verdict === "FAIL" && /only 10 expired planted row/.test(r.what)),
+    "…and 60 scanned rows of which only 10 are mine is a FAIL, which `scanned` alone would have passed");
+
+  /* THE CAP AND THE CEILING ARE EXPECTATIONS, AND A DISAGREEING TENANT SAYS SO. */
+  ok(judgePlantVisibility({
+    baseline, n: 400,
+    before: shape({ ok: true, scanned: 400, rowsTruncated: true, rows: plantRows(150) }),
+  }).some((r) => r.verdict === "N/V" && /list cap is 150 where this driver expected/.test(r.what)),
+    `a tenant whose list cap is not ${CAP} is recorded as a FINDING, never trusted and never a second home for the constant`);
+  ok(judgePlantVisibility({
+    baseline, n: 400,
+    before: shape({ ok: true, scanned: HARNESS_FAULT_SWEEP_SCAN_CEILING_EXPECTED, rowsTruncated: true, rows: plantRows(CAP) }),
+  }).some((r) => r.verdict === "N/V" && /scan ceiling/.test(r.what)),
+    `\`scanned\` at the ${HARNESS_FAULT_SWEEP_SCAN_CEILING_EXPECTED}-row scan ceiling is a FLOOR, so the delta is N/V rather than a pass`);
+
+  /* A CAPPED LIST THAT DOES NOT DECLARE ITSELF is the defect one level down. */
+  ok(judgePlantVisibility({
+    baseline, n: 400,
+    before: shape({ ok: true, scanned: 400, rowsTruncated: false, rows: plantRows(CAP) }),
+  }).some((r) => r.verdict === "FAIL" && /does not declare itself/.test(r.what)),
+    "…and a list truncated WITHOUT `rowsTruncated:true` is the FAIL, because that is what makes every row-derived count silently wrong");
 }
 
 console.log(`\ndelete-fault-drain: ${pass} passed, ${fail} failed`);

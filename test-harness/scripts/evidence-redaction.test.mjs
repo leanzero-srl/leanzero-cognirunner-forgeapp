@@ -2113,7 +2113,15 @@ for (const f of sweepDrivers) {
   /* (a) FINISHEDNESS IS READ, NEVER RE-DERIVED. `complete` is the library's single source;
      the two agree on every answer the current library can emit, which is exactly what makes
      a private copy dangerous — it keeps agreeing right up until the answer is reshaped. */
-  ok(!/truncated\s*(?:!==|===)\s*true/.test(code),
+  /* F-766 — THE BOUNDARY, because `rowsTruncated` IS NOT `truncated`. Without the lookbehind
+     this pattern also matched `rowsTruncated === true`, which is a different field answering
+     a different question: `truncated` says the SWEEP stopped early (finishedness, F-692's
+     subject), `rowsTruncated` says the answer's courtesy row LIST hit
+     HARNESS_FAULT_SWEEP_MAX_ROWS while the counters kept counting. A driver that checks the
+     list cap — which F-766 requires it to, since that cap is what made a row-derived
+     assertion wrong — was refused by a rule with no opinion about it. `a.truncated === true`
+     is still caught: `.` is not a letter. */
+  ok(!/(?<![A-Za-z])truncated\s*(?:!==|===)\s*true/.test(code),
     `${f}: no \`truncated !== true\` / \`truncated === true\` finishedness test — read \`complete\` (or \`answerComplete\`), the one source F-692 deprecates the derivation for`);
 
   /* (b) THE LOOP IS THE LIBRARY'S. A sweeping driver imports the drain and does not write

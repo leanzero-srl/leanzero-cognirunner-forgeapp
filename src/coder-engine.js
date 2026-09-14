@@ -66,7 +66,7 @@ import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue, buildKnowledgeMessages, logKnowledgeInjection, reportCrossTurnCacheDefect } from "./agent-runner.js";
 import { createGitActionExecutor } from "./git-actions.js";
-import { createCoderWorkspace, workspaceEntry, renderWorkspaceSummaryLine } from "./coder-workspace.js";
+import { createCoderWorkspace, workspaceEntry, renderWorkspaceSummaryLine, classifyThrow } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
 import { clampChars } from "./shared/text-clamp.js";
 
@@ -1238,7 +1238,27 @@ const runCoderTurnClaimed = async ({
   // the turn record carries the count.
   const summaryLine = renderWorkspaceSummaryLine([...workspaceResults.values()]);
   if (summaryLine) log(summaryLine);
-  try { await onRound(); } catch (e) { log(`log flush failed: ${(e && e.message) || e}`); }
+  /*
+   * THE FLUSH'S OWN FAILURE IS A WORKSPACE ENTRY (F-866).
+   *
+   * The writer promises never to throw - every call answers `{ok:false,...}` - and this
+   * `catch` exists because that promise is not enforceable from here. But the arm used to
+   * end at `log(...)`, and `log` appends to the buffer that ONLY this flush drains: a
+   * throwing log writer wrote its own obituary into the one place nobody would ever read
+   * it, `noteWorkspace("log", ...)` never ran, and the turn reported `workspaceFailures:0`
+   * with no `workspaceSummary` - indistinguishable from a clean turn. So the throw is
+   * turned into the same failed `log` entry the answered path produces, classified by the
+   * SAME ladder the writer uses (`classifyThrow`, src/coder-workspace.js), and the receipt,
+   * the summary sentence and the `console.warn` below all see it.
+   */
+  try {
+    await onRound();
+  } catch (e) {
+    const errorClass = classifyThrow(e);
+    const detail = String((e && e.message) || e || "").slice(0, 300);
+    log(`log flush failed (${errorClass}): ${detail}`);
+    noteWorkspace("log", { ok: false, errorClass, error: `updateCoderLog threw (${errorClass}): ${detail}` });
+  }
 
   const workspaceEntries = [...workspaceResults.values()];
   /*

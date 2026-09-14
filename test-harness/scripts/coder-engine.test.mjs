@@ -1968,5 +1968,43 @@ await check("F-857: the issue panel prints the record's sentence in solid red", 
   assert.match(app, /html\[data-color-mode="dark"\] \.coder-workspace-bad/, "and a dark-mode override");
 });
 
+/* ═════════ F-866. a log writer that THROWS is still a counted failure ═════════
+ *
+ * Every workspace call promises to ANSWER `{ok:false}` rather than throw, and F-857 made
+ * the answered path reach the record. The engine's final flush nevertheless keeps a
+ * `catch` arm, and that arm used to end at `log(...)`: a throwing log writer appended its
+ * own obituary to the buffer only the log writer drains, `noteWorkspace("log", ...)` never
+ * ran, and the turn reported `workspaceFailures: 0` with no `workspaceSummary` - a dead
+ * write group wearing a clean turn's receipt. The handler for the one failure that cannot
+ * report itself was the one surface that could not work.
+ */
+await check("F-866: a log writer that THROWS is counted, named and summarised", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const thrower = Object.assign(new Error("Field 'key' must match pattern"), { name: "ForgeKvsError", code: "INVALID_KEY" });
+  const workspace = {
+    ...createCoderWorkspace({}),
+    // NOT `{ok:false}`: this writer breaks the promise and throws, which is the whole case.
+    updateCoderLog: async () => { throw thrower; },
+  };
+
+  const { out: r, warned } = await catchWarn(() => startTurn(world, {
+    userMessage: "log it", deps: { store, gitExecutor: recordingGit(world), workspace },
+  }));
+
+  assert.equal(r.success, true, "still degrading, never killing");
+  assert.equal(r.workspaceFailures, 1, "the throw is a failure on the receipt, not a silent zero");
+  const logEntry = r.workspace.find((e) => e.group === "log");
+  assert.ok(logEntry, "the record NAMES the group that threw");
+  assert.equal(logEntry.ok, false);
+  assert.equal(logEntry.errorClass, "storage", "classified by the same ladder the writer uses (F-833)");
+  assert.match(logEntry.detail, /threw/, "…and the detail says it threw rather than answered");
+  assert.ok(r.workspaceSummary, "the summary sentence is present, which is what a reader branches on");
+  assert.match(r.workspaceSummary, /log: storage/);
+  assert.equal(/—/.test(r.workspaceSummary), false, "no em dash, by owner rule");
+  assert.ok(warned.some((l) => /Workspace: .*log: storage/.test(l)),
+    `and the operator with no panel open is warned too: ${JSON.stringify(warned)}`);
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

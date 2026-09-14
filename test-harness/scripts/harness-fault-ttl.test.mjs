@@ -1224,6 +1224,184 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     await purge();
   }
 
+  /* ═════ 7h. F-706 — THE FAILING-DELETE HALF OF THE CONTRACT GETS A DOOR ═════
+   *
+   * F-682 (`deletes-failing`), F-683 (`deletes-failed` + `failedResume`), F-690 (the drain's
+   * back-off) and F-691 (the unresolved failure riding the token) are all about what the
+   * sweep does when a KVS delete REFUSES — and nothing a tester can do on a live tenant makes
+   * one refuse (plant-sweep-live 2026-09-14: `failed: 0`, zero RATE_LIMIT, throughout). So
+   * `armDeleteFault` is the seventh member of the family, and what is asserted here is the
+   * whole of it: the gate, the EXACT prefix, the mode allow-list, both clamps, the counted
+   * decrement through the one consumption home, the `until` bound, and a real drain that goes
+   * `deletes-failing` → `deletes-failed` (the token dropping `f` because the retry lands on
+   * the failure) → `complete: true`. With a stash as the negative control, because a drain
+   * that fails the same way with the lever REMOVED proves nothing about the lever. ── */
+  {
+    await purge();
+    const PLANT = fault.HARNESS_FAULT_PLANT_PREFIX;
+    const leverKey = fault.harnessFaultKey(fault.HARNESS_FAULT_DELETE, PLANT);
+    const readLever = () => fault.readHarnessFault(fault.HARNESS_FAULT_DELETE, [PLANT]);
+
+    /* ── GATED, like the other six, on its FIRST statement — production arms nothing. ── */
+    delete process.env.HARNESS_SECRET;
+    const offArm = await fault.armDeleteFault({ prefix: PLANT, mode: "refuse", count: 3, ttlSeconds: 60 });
+    ok(offArm.ok === false && offArm.reason === "harness-off",
+      `F-706: armDeleteFault refuses harness-off with no HARNESS_SECRET (got ${JSON.stringify(offArm)})`);
+    ok((await storage.get(leverKey)) === undefined, "…and the refused arm wrote NOTHING to the keyspace");
+    process.env.HARNESS_SECRET = SECRET;
+    ok(fault.HARNESS_GATED_EXPORTS.includes("armDeleteFault"),
+      "SOURCE: armDeleteFault is ON the gated-export list (F-694/F-704), which is where the gate-line count comes from");
+
+    /* ── THE PREFIX IS EXACT, AND IT IS THE PLANT'S. A lever that can fail an arbitrary
+     * delete can strand app data; this one can only refuse to remove inert ballast. ── */
+    for (const bad of ["harness_fault:", "", "doc_repo:", `${PLANT}x`, undefined]) {
+      const r = await fault.armDeleteFault({ prefix: bad, mode: "refuse", count: 2, ttlSeconds: 30 });
+      ok(r.ok === false && r.reason === "bad-prefix" && r.prefix === PLANT,
+        `F-706: prefix ${JSON.stringify(bad)} is refused — only ${PLANT}, by equality (got ${JSON.stringify(r)})`);
+    }
+    ok((await storage.get(leverKey)) === undefined, "…and none of those refusals wrote a row either");
+    const badMode = await fault.armDeleteFault({ prefix: PLANT, mode: "explode", count: 2, ttlSeconds: 30 });
+    ok(badMode.ok === false && badMode.reason === "bad-mode" && badMode.modes.join(",") === "refuse,throttle",
+      `F-706: the mode allow-list is the lever's, and it is the two modes (got ${JSON.stringify(badMode)})`);
+
+    /* ── BOTH CLAMPS LIVE WITH THE LEVER, never at the web trigger. ── */
+    const clamped = await fault.armDeleteFault({ prefix: PLANT, mode: "refuse", count: 10_000, ttlSeconds: 9_999 });
+    ok(clamped.count === fault.HARNESS_DELETE_FAULT_MAX_COUNT && fault.HARNESS_DELETE_FAULT_MAX_COUNT === 50,
+      `F-706: count clamps to 50 (got ${clamped.count})`);
+    ok(clamped.ttlSeconds === fault.HARNESS_DELETE_FAULT_MAX_TTL_SECONDS && fault.HARNESS_DELETE_FAULT_MAX_TTL_SECONDS === 120,
+      `F-706: ttlSeconds clamps to 120 (got ${clamped.ttlSeconds})`);
+    ok(secondsUntil(clamped.until) <= 120 && secondsUntil(clamped.until) > 100,
+      `…and the row carries its own \`until\`, like every lever in this family (got ${clamped.until})`);
+    const floored = await fault.armDeleteFault({ prefix: PLANT, mode: "throttle", count: 0, ttlSeconds: -5 });
+    ok(floored.count === 1 && floored.ttlSeconds === 1 && floored.mode === "throttle",
+      `F-706: zero and negative clamp UP to the floor of one, never to zero — a lever armed for nothing is a lever that silently does nothing (got ${JSON.stringify(floored)})`);
+    await fault.disarmHarnessFault(fault.HARNESS_FAULT_DELETE, [PLANT]);
+
+    /* ── A ROW PAST ITS `until` IS NOT ARMED. Same read-time bound as F-664: the sweep reads
+     * the lever THROUGH `readHarnessFault`, so an expired lever is absent and deleted. ── */
+    await storage.set(leverKey, { mode: "refuse", count: 9, armedAt: new Date(Date.now() - 300_000).toISOString(), until: new Date(Date.now() - 1_000).toISOString() });
+    const expiredLever = await readLever();
+    ok(expiredLever.value === null && expiredLever.expired === true,
+      `F-706: a delete fault past its \`until\` reads as ABSENT (got ${JSON.stringify(expiredLever)})`);
+    await storage.set(leverKey, { mode: "refuse", count: 9, armedAt: new Date(Date.now() - 300_000).toISOString(), until: new Date(Date.now() - 1_000).toISOString() });
+    await plantAll(4, true);
+    const afterExpiry = await fault.sweepHarnessFaults({ maxMs: 5_000 });
+    ok(afterExpiry.failed === 0 && afterExpiry.complete === true,
+      `F-706: …so a sweep run under an EXPIRED lever deletes for real and completes (got failed ${afterExpiry.failed}, complete ${afterExpiry.complete})`);
+    ok((await countPrefix(PLANT)) === 0, "…and the ballast is gone");
+
+    /* ── THE COUNT IS SPENT THROUGH THE EXISTING CONSUMPTION HOME, one unit per faulted
+     * delete, and `harnessFaultArmed` carries the window through rather than re-arming it. ── */
+    await purge();
+    await plantAll(4, true);
+    const armed2 = await fault.armDeleteFault({ prefix: PLANT, mode: "refuse", count: 2, ttlSeconds: 60 });
+    const untilAtArm = armed2.until;
+    ok((await readLever()).value.count === 2, "(fixture) the lever says two");
+    const partialFault = await fault.sweepHarnessFaults({ maxMs: 5_000 });
+    ok(partialFault.failed === 2 && partialFault.deleted === 2,
+      `F-706: exactly TWO deletes were refused — the count, not the batch (failed ${partialFault.failed}, deleted ${partialFault.deleted})`);
+    ok((await readLever()) === null || (await readLever()).value === null,
+      "…and a lever spent to zero removes itself, like every counted lever (F-517)");
+    ok(untilAtArm === armed2.until, "…the decrement never re-armed the window (F-667): same `until` throughout");
+    await purge();
+
+    /* ── THE MODE IS THE CODE, and `throttle` is the real one F-677/F-682 were written
+     * about, so a drain can be driven down the exact path the pacing exists for. ── */
+    ok(fault.deleteFaultCode("throttle") === "RATE_LIMIT_EXCEEDED" && fault.deleteFaultCode("throttle") === fault.DELETE_FAULT_THROTTLE_CODE,
+      "F-706: `throttle` rejects with the platform's own RATE_LIMIT_EXCEEDED");
+    ok(fault.deleteFaultCode("refuse") === "HARNESS_DELETE_FAULT" && fault.deleteFaultCode("refuse") === fault.HARNESS_DELETE_FAULT_CODE,
+      "F-706: `refuse` rejects with a code NO platform emits — a planted failure is never mistaken for a real one");
+
+    /* ── THE DRAIN. Five expired rows, a three-deep `refuse`: batch 0 lands NOTHING, which is
+     * F-682's `deletes-failing`; the count is then spent, so the retry deletes for real and
+     * the drain converges. The token's `f` is the thing being watched. ── */
+    for (const mode of ["refuse", "throttle"]) {
+      await purge();
+      await plantAll(5, true);
+      await fault.armDeleteFault({ prefix: PLANT, mode, count: fault.KVS_DELETE_BATCH, ttlSeconds: 60 });
+
+      const call1 = await fault.sweepHarnessFaults({ maxMs: 5_000 });
+      ok(call1.ok === true && call1.deleted === 0 && call1.failed === fault.KVS_DELETE_BATCH,
+        `F-706/${mode}: a whole batch refused — deleted 0, failed ${call1.failed}`);
+      ok(call1.reason === "deletes-failing" && call1.truncated === true && call1.complete === false,
+        `F-682 through the live lever: the answer says outright that this is NOT converging (got ${JSON.stringify({ reason: call1.reason, complete: call1.complete })})`);
+      ok(typeof call1.failedResume === "string",
+        "F-691 through the live lever: the unresolved failure is reported as its own TOKEN field, so a caller never reconstructs where the mess was");
+      /* `f` is deliberately ABSENT from THIS token, and that is `sweepAnswerTail`'s rule, not
+       * an omission: the break is mid-page with the page's OWN cursor, so the answer's cursor
+       * IS the failing page and `carry` is false — "resuming AT the failure IS the retry".
+       * `f` rides the token only when the answer resumes somewhere AHEAD of the failure, which
+       * is the multi-page budget break section 7c already drives. */
+      ok(typeof call1.cursor === "string"
+        && !("f" in JSON.parse(Buffer.from(call1.cursor, "base64").toString("utf8")))
+        && call1.cursor === call1.failedResume,
+        `F-691: the resume token IS the failing page, so it carries no separate \`f\` (cursor ${call1.cursor}, failedResume ${call1.failedResume})`);
+      ok((await countPrefix(PLANT)) === 5, "…and not one planted row was actually deleted");
+
+      // The lever is spent. The retry lands on the failure and deletes for real.
+      const call2 = await fault.sweepHarnessFaults({ maxMs: 5_000, cursor: call1.cursor });
+      ok(call2.failed === 0 && call2.deleted === 5,
+        `F-706/${mode}: with the count spent the deletes land — deleted ${call2.deleted}, failed ${call2.failed}`);
+      ok(call2.complete === true && call2.cursor === null && call2.failedResume === null,
+        `F-706/${mode}: and the drain converges — complete:true, cursor:null, nothing unresolved (got ${JSON.stringify({ complete: call2.complete, cursor: call2.cursor, failedResume: call2.failedResume })})`);
+      ok((await countPrefix(PLANT)) === 0, "…over an empty plant keyspace");
+
+      /* ── AND THE OTHER HALF OF F-683: a batch that fails PARTIALLY lands its survivors, so
+       * the call keeps going and ends `deletes-failed` rather than `deletes-failing`. Same
+       * lever, one unit shallower than the batch. ── */
+      await purge();
+      await plantAll(5, true);
+      await fault.armDeleteFault({ prefix: PLANT, mode, count: fault.KVS_DELETE_BATCH - 1, ttlSeconds: 60 });
+      const partial = await fault.sweepHarnessFaults({ maxMs: 5_000 });
+      ok(partial.failed === fault.KVS_DELETE_BATCH - 1 && partial.deleted === 5 - (fault.KVS_DELETE_BATCH - 1),
+        `F-706/${mode}: a PARTIAL batch failure does not stop the call (failed ${partial.failed}, deleted ${partial.deleted})`);
+      ok(partial.reason === "deletes-failed" && partial.complete === false && typeof partial.failedResume === "string",
+        `F-683 through the live lever: it walked to the end and is STILL not complete, because it left rows it condemned (got ${JSON.stringify({ reason: partial.reason, complete: partial.complete })})`);
+      const partial2 = await fault.sweepHarnessFaults({ maxMs: 5_000, cursor: partial.cursor });
+      ok(partial2.complete === true && partial2.failed === 0 && (await countPrefix(PLANT)) === 0,
+        `F-706/${mode}: …and the retry finishes the job (got ${JSON.stringify({ complete: partial2.complete, deleted: partial2.deleted })})`);
+    }
+
+    /* ── NEGATIVE CONTROL BY STASH. The same five rows, the same three calls, with the lever
+     * REMOVED: if this also produced `deletes-failing` the section above would be measuring
+     * the mock, not the lever. ── */
+    await purge();
+    await plantAll(5, true);
+    await fault.armDeleteFault({ prefix: PLANT, mode: "refuse", count: fault.KVS_DELETE_BATCH, ttlSeconds: 60 });
+    const stashed = await storage.get(leverKey);
+    ok(stashed && stashed.mode === "refuse", "(fixture) the lever row is really there before the stash");
+    await storage.delete(leverKey);
+    const noLever = await fault.sweepHarnessFaults({ maxMs: 5_000 });
+    ok(noLever.failed === 0 && noLever.deleted === 5 && noLever.complete === true && noLever.reason === null,
+      `F-706 (negative control): with the lever stashed the IDENTICAL fixture sweeps clean in one call (got ${JSON.stringify({ failed: noLever.failed, deleted: noLever.deleted, complete: noLever.complete })})`);
+
+    /* ── THE CLEAR OBEYS THE SAME LEVER, because both now share ONE delete batch. ── */
+    await purge();
+    await plantAll(5, false);
+    await fault.armDeleteFault({ prefix: PLANT, mode: "throttle", count: fault.KVS_DELETE_BATCH, ttlSeconds: 60 });
+    const clear1 = await fault.clearPlantedFaults({ maxMs: 5_000 });
+    ok(clear1.reason === "deletes-failing" && clear1.failed === fault.KVS_DELETE_BATCH && clear1.complete === false,
+      `F-706: clearPlantedFaults answers the same contract under the same lever (got ${JSON.stringify({ reason: clear1.reason, failed: clear1.failed })})`);
+    let ct = clear1.cursor, lastClear = clear1, guard = 0;
+    while (ct && guard++ < 10) { lastClear = await fault.clearPlantedFaults({ maxMs: 5_000, cursor: ct }); ct = lastClear.cursor; }
+    ok(lastClear.complete === true && (await countPrefix(PLANT)) === 0,
+      "…and drains to complete once the count is spent, exactly like the sweep");
+    await purge();
+
+    /* ── SOURCE: ONE CONSULT SITE. The sweep and the clear ran two byte-identical copies of
+     * the delete batch; a lever consulted in two places is a lever with two behaviours. ── */
+    ok((faultCode.match(/await settleDeletes\(batch, deleteFault\)/g) || []).length === 2,
+      "F-706.SOURCE: both drains go through the ONE shared delete batch");
+    ok(!/Promise\.allSettled\(batch\.map\(\(key\) => storage\.delete\(key\)\)\)/.test(faultCode),
+      "F-706.SOURCE: …and neither keeps its own copy of it any more");
+    ok((faultCode.match(/await loadDeleteFault\(\)/g) || []).length === 2,
+      "F-706.SOURCE: the lever is read ONCE PER CALL, not once per batch");
+    ok((faultCode.match(/harnessFaultArmed\(HARNESS_FAULT_DELETE/g) || []).length === 1,
+      "F-706.SOURCE: and spent through the ONE counted-consumption home, in one place");
+    ok(/if \(prefix !== HARNESS_FAULT_PLANT_PREFIX\)/.test(faultCode),
+      "F-706.SOURCE: the prefix is tested by EQUALITY against the plant's — never by `startsWith` at the arming side");
+  }
+
   globalThis.setTimeout = realTimeout;
 }
 

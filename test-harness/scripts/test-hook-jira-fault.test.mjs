@@ -870,5 +870,64 @@ process.env.HARNESS_SECRET = SECRET;
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-706 — THE DOOR ONTO THE FAILING-DELETE HALF OF THE SWEEP CONTRACT.
+ *
+ * F-682/F-683/F-690/F-691 all describe what a drain does when a KVS delete REFUSES, and
+ * nothing a tester can do on a live tenant makes one refuse — plant-sweep-live saw `failed: 0`
+ * throughout, so all four were proven against the offline mock only. `armDeleteFault` is the
+ * seventh member of the family and this is its door. What is asserted here is the DOOR's own
+ * behaviour — the Bearer, the 404 in production, the refusals the lever hands up and the
+ * prefix the door never retypes; the lever's own semantics are harness-fault-ttl.test.mjs's.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+{
+  const PLANT = fault.HARNESS_FAULT_PLANT_PREFIX;
+  const armDel = (extra) => post({ action: "armDeleteFault", mode: "refuse", count: 3, ttlSeconds: 60, ...extra });
+
+  ok((await armDel({}, )).status === 200, "armDeleteFault is a door, and it opens for the harness Bearer");
+  ok((await post({ action: "armDeleteFault", mode: "refuse" }, { bearer: null })).status === 404,
+    "…and is 404 with no Bearer — the hook never confirms an action exists to an unauthenticated caller");
+  ok((await post({ action: "armDeleteFault", mode: "refuse" }, { bearer: "not-the-secret" })).status === 404,
+    "…and with the wrong one");
+
+  const armedBody = (await armDel({ count: 2, ttlSeconds: 45 })).body;
+  ok(armedBody.ok === true && armedBody.prefix === PLANT && armedBody.mode === "refuse" && armedBody.count === 2,
+    `F-706: the arm answers the prefix, the mode and the clamped count (got ${JSON.stringify(armedBody)})`);
+  ok(armedBody.modes.join(",") === "refuse,throttle"
+    && armedBody.maxCount === fault.HARNESS_DELETE_FAULT_MAX_COUNT
+    && armedBody.maxTtlSeconds === fault.HARNESS_DELETE_FAULT_MAX_TTL_SECONDS,
+    "…and publishes the lever's OWN allow-list and caps, never a literal retyped at the door");
+  ok(typeof armedBody.until === "string" && armedBody.key.includes(PLANT),
+    `…and the row carries an \`until\` like every lever in this family (got ${armedBody.until})`);
+
+  const readBack = (await post({ action: "readDeleteFault", prefix: PLANT })).body;
+  ok(readBack.ok === true && readBack.value && readBack.value.count === 2 && readBack.value.mode === "refuse",
+    `F-706: readDeleteFault answers what is LEFT on the lever (got ${JSON.stringify(readBack.value)})`);
+  const disarmed = (await post({ action: "disarmDeleteFault" })).body;
+  ok(disarmed.ok === true && disarmed.disarmed === true, "F-706: …and disarmDeleteFault removes it");
+  ok((await post({ action: "readDeleteFault" })).body.value === null, "…idempotently, to nothing");
+
+  /* THE PREFIX IS EXACT AND IT IS THE PLANT'S — refused by the LEVER, surfaced by the door as
+   * a 400. A lever that could fail an arbitrary delete could strand app data; this one can
+   * only refuse to remove inert ballast that expires on its own. */
+  for (const bad of ["harness_fault:", "doc_repo:", `${PLANT}x`, "*", ""]) {
+    const r = await armDel({ prefix: bad });
+    ok(r.status === 400 && r.body.reason === "bad-prefix" && r.body.prefix === PLANT,
+      `F-706: prefix ${JSON.stringify(bad)} is 400 bad-prefix (got ${r.status} ${JSON.stringify(r.body && r.body.reason)})`);
+  }
+  ok((await armDel({ mode: "explode" })).status === 400, "a mode outside the allow-list is 400");
+  ok((await armDel({ mode: undefined })).status === 400, "…and a missing mode is 400 — the door plants no default failure");
+  // The door OMITS the prefix on purpose: the one value this family may touch has one home.
+  const defaulted = await post({ action: "armDeleteFault", mode: "throttle", count: 1, ttlSeconds: 30 });
+  ok(defaulted.status === 200 && defaulted.body.prefix === PLANT,
+    "F-706: a body with no prefix gets the lever's own — the door names HARNESS_FAULT_PLANT_PREFIX, never a literal");
+  await post({ action: "disarmDeleteFault" });
+
+  process.env.HARNESS_SECRET = "";
+  ok((await post({ action: "armDeleteFault", mode: "refuse" })).status === 404,
+    "with no HARNESS_SECRET configured the delete-fault door is 404, like the rest of the hook");
+  process.env.HARNESS_SECRET = SECRET;
+}
+
 console.log(`test-hook-jira-fault (F-655/F-661/F-667/F-669): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

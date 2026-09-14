@@ -21,8 +21,11 @@
  *      "Memory compacted A to B bytes" line.
  *   3. BREAK THE SUMMARISER. F-506's motivating scenario is a REVOKED BYOK KEY, so that is
  *      what is planted: the instance provider is pointed at a BYOK provider whose key slot
- *      holds a dead value. Both slots are `kvSet`-allow-listed and both are recorded and
- *      REPLAYED at the end.
+ *      holds a dead value. Both slots are `kvSet`-allow-listed and both come back at the
+ *      end, by DIFFERENT routes (F-769): the provider slot is an ordinary row, so it is
+ *      snapshot and replayed; the KEY slot's value is behind the read ceiling, so it is
+ *      moved server-side with `kvStash` before the plant and `kvRestore` in the `finally`,
+ *      and the round trip is proven by fingerprint without this script ever seeing it.
  *
  *      WHY NOT A BOGUS AGENT-MODEL ID, which is the obvious lever. Because on a Forge-LLM
  *      instance it does not reach compaction at all: `agentCapability`
@@ -54,6 +57,10 @@
 
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+/* F-769 — the ONE home of "reduce a credential slot to a witness, through the read
+ * ceiling". This driver REPLACES a BYOK key, so it is the one the stash door was cut for;
+ * see the STEP 3 / `finally` comments below. */
+import { readKeySlotWitness, describeKeySlot, sameKeySlot } from "../lib/key-slot-witness.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "memories", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -82,6 +89,23 @@ const BROKEN_KEY_SLOT = `COGNIRUNNER_KEY_${BROKEN_PROVIDER}`;
 
 /** `undefined` = never touched, so the finally must not write. */
 const slotsBefore = {};
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-769 — WHY THE KEY SLOT IS NOT IN `slotsBefore`.
+ *
+ * `slotsBefore` is snapshot-and-replay: read the value, keep it in this process, write it
+ * back. That works for `COGNIRUNNER_AI_PROVIDER`, which is an ordinary row. It CANNOT work
+ * for `COGNIRUNNER_KEY_*`, because the read ceiling no longer answers that row's value —
+ * and the failure mode is not "the restore is skipped", it is "the restore DESTROYS the
+ * key": `kvs()` normalises a missing `value` to `null`, `null` is this door's spelling of
+ * DELETE, and the `finally` would have deleted the tenant's live OpenAI key on every run.
+ *
+ * So the key slot moves SERVER-SIDE instead: `kvStash` before the plant, `kvRestore` in the
+ * `finally`. The value never enters this process in either direction, and the fingerprints
+ * on both ends are what PROVE the round trip — which is strictly more than the old replay
+ * proved, because it compares the stored rows rather than what this script remembered.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+let keyStash = null;          // { stashId, present, fingerprint } once the stash is taken
+let keySlotBefore = null;     // the witness read BEFORE the stash — the identity to come back to
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
@@ -120,6 +144,13 @@ async function kvs(key) {
   return { ok: true, value: r.body.value === undefined ? null : r.body.value };
 }
 async function kvSet(key, value) { return hook({ action: "kvSet", key, value }); }
+/* F-769 — the stash door. The value is addressed by NAME and never named, sent or
+ * returned; `kvRestore` takes only the opaque, server-minted id. */
+async function kvStash(key) { return hook({ action: "kvStash", key }); }
+async function kvRestore(stashId) { return hook({ action: "kvRestore", stashId }); }
+/** The credential slot as PRESENT/EMPTY + a sha256-16 identity. Never the value. */
+const keySlotWitness = (key) =>
+  readKeySlotWitness(async (qs) => { const r = await hook(null, "GET", qs); return { status: r.status, json: r.body }; }, key);
 async function invoke(functionKey, payload = {}, accountId = ADMIN) {
   const r = await hook({ action: "invokeResolver", functionKey, payload, accountId });
   return { status: r.status, body: r.body, raw: r.raw };
@@ -329,15 +360,50 @@ async function main() {
 
   /* ── STEP 3 — break the summariser the way a customer breaks it ──────────── */
   console.log("\nSTEP 3 — plant a DEAD BYOK credential (F-506's own scenario) and re-seed the notes");
-  for (const k of [PROVIDER_SLOT, BROKEN_KEY_SLOT]) {
-    const s = await kvs(k);
-    slotsBefore[k] = s.value;
-    info(`${k} before: ${s.value === null ? "EMPTY" : "(a value is present — not printed)"}`);
+  /* The PROVIDER slot is an ordinary row: snapshot it and replay it, exactly as before. */
+  {
+    const s = await kvs(PROVIDER_SLOT);
+    slotsBefore[PROVIDER_SLOT] = s.value;
+    info(`${PROVIDER_SLOT} before: ${s.value === null ? "EMPTY" : "(a value is present — not printed)"}`);
   }
+
+  /* ── F-769 — THE KEY SLOT GOES SERVER-SIDE, AND THE PLANT IS GATED ON THE STASH ──
+     Nothing below may replace the tenant's key until the door has confirmed it is holding
+     it. A plant with no stash is a key this script cannot put back, so it is a FAIL and a
+     return — not a warning followed by the write. */
+  keySlotBefore = await keySlotWitness(BROKEN_KEY_SLOT);
+  info(`${BROKEN_KEY_SLOT} before: ${describeKeySlot(keySlotBefore)} (present + fingerprint only — the value is never read into this script)`);
+  if (keySlotBefore.state === "UNREADABLE") {
+    FAIL(`the ${BROKEN_KEY_SLOT} slot cannot be read through the F-769 ceiling, so a restore could not be PROVEN — refusing to plant a dead key: ${keySlotBefore.why}`);
+    return;
+  }
+  const stash = await kvStash(BROKEN_KEY_SLOT);
+  if (stash.status === 200 && stash.body && stash.body.stashed === true && typeof stash.body.stashId === "string") {
+    keyStash = stash.body;
+    PASS(`the tenant's ${BROKEN_KEY_SLOT} row is STASHED server-side (present:${keyStash.present}) — the value never crossed the wire, and the finally restores it by id`);
+  } else {
+    FAIL(`kvStash refused ${BROKEN_KEY_SLOT} (status ${stash.status}) — refusing to plant a dead key this script could not put back`);
+    return;
+  }
+  if (keyStash.present !== (keySlotBefore.state === "PRESENT")
+      || (keyStash.fingerprint || null) !== (keySlotBefore.fingerprint || null)) {
+    FAIL(`the stash and the read disagree about the slot (read ${describeKeySlot(keySlotBefore)}, stash present:${keyStash.present} fp:${keyStash.fingerprint}) — the two ends of the round trip are not looking at the same row`);
+    return;
+  }
+
   await kvSet(PROVIDER_SLOT, BROKEN_PROVIDER);
   await kvSet(BROKEN_KEY_SLOT, "sk-harness-deliberately-dead-key-000000000000000000");
+  /* THE POSITIVE CONTROL for the restore check in the `finally`. If the planted key
+     fingerprinted the SAME as what was there, the restore assertion below could pass
+     without anything having moved, and this whole step would be theatre. */
+  const planted = await keySlotWitness(BROKEN_KEY_SLOT);
+  if (planted.state === "PRESENT" && !sameKeySlot(keySlotBefore, planted).same) {
+    PASS(`the dead key really landed: ${describeKeySlot(keySlotBefore)} -> ${describeKeySlot(planted)} — so the restore check in the finally has something to undo`);
+  } else {
+    FAIL(`the planted key is indistinguishable from what was there (${describeKeySlot(keySlotBefore)} -> ${describeKeySlot(planted)}) — the restore proof below would be vacuous`);
+  }
   const prov = await kvs(PROVIDER_SLOT);
-  if (prov.ok && prov.value === BROKEN_PROVIDER) PASS(`the instance provider is now "${BROKEN_PROVIDER}" with a dead key — every model call on this instance will fail until the finally replays both slots`);
+  if (prov.ok && prov.value === BROKEN_PROVIDER) PASS(`the instance provider is now "${BROKEN_PROVIDER}" with a dead key — every model call on this instance will fail until the finally replays the provider slot and restores the stashed key`);
   else FAIL(`the provider slot did not take: ${JSON.stringify(prov.value)}`);
   // The provider/key config is TTL-cached ~30s in index.js; the consumer does not cache.
   await sleep(35000);
@@ -445,6 +511,29 @@ main()
   .catch((e) => { console.error("\nDRIVER ERROR:", e && e.stack); process.exitCode = 1; })
   .finally(async () => {
     const left = [];
+    /* ── F-769 — THE CREDENTIAL COMES BACK FIRST, BY NAME ────────────────────────
+       This runs WHENEVER a stash was taken, including when the stash answered
+       `present:false`: restoring an ABSENT stash DELETES the planted key, which is what
+       leaves the slot empty exactly as this run found it. "There was nothing here" and
+       "there was a null here" are different states and the door knows which one it saw.
+
+       The proof is the fingerprint round trip: the row that is there afterwards must
+       fingerprint as the row that was there before the stash. That is an IDENTITY check —
+       a slot holding some other key would fail it — and the STEP 3 control above showed
+       the planted key fingerprinting differently, so it is not a comparison of nothing
+       against nothing. */
+    if (keyStash) {
+      const r = await kvRestore(keyStash.stashId);
+      const ok200 = r.status === 200 && r.body && r.body.restored === true;
+      const after = await keySlotWitness(BROKEN_KEY_SLOT);
+      const verdict = sameKeySlot(keySlotBefore, after);
+      console.log(`        ${ok200 && verdict.same ? "RESTORED" : "NOT RESTORED"}: ${BROKEN_KEY_SLOT} ${describeKeySlot(keySlotBefore)} -> ${describeKeySlot(after)} (value not printed)`);
+      if (!ok200) left.push(`${BROKEN_KEY_SLOT}: kvRestore answered ${r.status} — the tenant's key may still be the planted dead one`);
+      else if (!verdict.same) left.push(`${BROKEN_KEY_SLOT} did not come back to the row this run found: ${verdict.why}`);
+    } else if (keySlotBefore) {
+      /* The plant is gated on the stash, so reaching here means nothing was planted. */
+      console.log(`        ${BROKEN_KEY_SLOT}: never stashed and never planted — nothing to restore`);
+    }
     /* THE SLOTS COME BACK FIRST — an instance left pointing at a dead provider is the
        worst thing this script can leave behind, worse than a stray agent. */
     for (const [k, v] of Object.entries(slotsBefore)) {

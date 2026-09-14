@@ -71,10 +71,35 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * "Remove" click, before the restore screenshot — both are against a real admin-panel
  * iframe re-render. Lower them only where there is no render to miss; `roster-ui.test.mjs`
  * keeps one arm on the untouched default precisely so the live numbers stay proven.
- * (F-671's separate "1.2s settle and a second read" measurement lives in `grantRole` and
- * is untouched by this.)
+ *
+ * F-740 — AND `grantRole` ONE FUNCTION UP HAD FIVE MORE OF THEM, which is where the offline
+ * suite's time actually went: 94.6 s of `roster-ui.test.mjs`'s 95 s was `grantRole` sleeping
+ * in fake-DOM fixtures that have no browser to settle and no render to wait for. Not one
+ * assertion in that file depends on their real values. The two `4500`s dominate — a grant
+ * case pays nine seconds — and the suite runs several. Same treatment, same reason, same
+ * guarantee: the DEFAULTS BELOW ARE THE LIVE VALUES AND DO NOT CHANGE, and one arm of the
+ * test holds them numerically so lowering a fixture can never quietly lower the live wait.
+ *
+ *   roleSelect     after the ROLE is chosen from the first dropdown, before the scope
+ *                  control is read — for Admin, the scope control UNMOUNTS in this window
+ *                  and `grantRole` asserts that it has;
+ *   scopeSelect    after the SCOPE is chosen, before the search box is filled;
+ *   searchResults  after the query is typed — the people-picker's own debounce plus a
+ *                  round trip to `/rest/api/3/user/search`, which is why it is the long one;
+ *   grantApply     after the row is CLICKED — the roster re-renders and the new card must
+ *                  exist before `readCard` below looks for it;
+ *   cardRetry      F-671's "1.2s settle and a second read" when the card was not readable on
+ *                  the first attempt, so a slow render does not read as a regression.
  */
-export const SETTLE_MS = Object.freeze({ rosterList: 1500, removeConfirm: 3500 });
+export const SETTLE_MS = Object.freeze({
+  rosterList: 1500,
+  removeConfirm: 3500,
+  roleSelect: 500,
+  scopeSelect: 400,
+  searchResults: 4500,
+  grantApply: 4500,
+  cardRetry: 1200,
+});
 
 /**
  * The mask `lib/redact.mjs#maskEmail` produces, re-expressed for the BROWSER context.
@@ -397,18 +422,20 @@ export function makeShot(record) {
  *   fold one array into its evidence than read N call sites.
  *   Omitted entirely, the answer still rides out on the returned `shot` field, which
  *   `restoreRosterToSnapshot` folds into `actions`.
- * @param deps.settleMs        (F-731, TEST HOOK — omit it in every live driver) a partial
- *   override of `SETTLE_MS`, e.g. `{ rosterList: 50, removeConfirm: 50 }`. It exists so the
- *   offline fake-DOM fixtures, which have no browser render to wait for, stop paying five
- *   real seconds per repair pass. Supplying it live would be waiting less than the measured
- *   settle for a render that genuinely takes that long.
+ * @param deps.settleMs        (F-731/F-740, TEST HOOK — omit it in every live driver) a
+ *   partial override of `SETTLE_MS`, e.g. `{ rosterList: 50, searchResults: 50 }`. It exists
+ *   so the offline fake-DOM fixtures, which have no browser render to wait for, stop paying
+ *   real seconds per repair pass and per grant. It covers BOTH functions' settles — the two
+ *   `removeAccount`/restore waits (F-731) and `grantRole`'s five (F-740) — because they are
+ *   one table. Only the keys given are overridden. Supplying it live would be waiting less
+ *   than the measured settle for a render that genuinely takes that long.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs }) {
-  /* F-731 — the ONE test hook for the two `removeAccount` settles. Omitted (every live
-     driver), the measured defaults in `SETTLE_MS` apply unchanged; supplied, only the keys
-     given are overridden, so a fixture that lowers `removeConfirm` still pays the real
-     `rosterList`. Per-instance and not a module mutator: two `makeRosterUI`s in one
-     process cannot silently change each other's timing. */
+  /* F-731/F-740 — the ONE test hook for every settle in this module: `removeAccount`'s two
+     and `grantRole`'s five. Omitted (every live driver), the measured defaults in `SETTLE_MS`
+     apply unchanged; supplied, only the keys given are overridden, so a fixture that lowers
+     `searchResults` still pays the real `rosterList`. Per-instance and not a module mutator:
+     two `makeRosterUI`s in one process cannot silently change each other's timing. */
   const settle = { ...SETTLE_MS, ...(settleMs || {}) };
   const rosterIds = async () => (await rosterRows()).map(rosterIdOf);
   const shot = makeShot(record);
@@ -476,7 +503,7 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
         await frame.locator(".perm-search-input").waitFor({ state: "visible", timeout: 60000 });
         await frame.locator(".perm-search-wrap .dropdown").nth(0).click();
         await frame.locator(".dropdown-item-name", { hasText: ROLE_LABEL[role] }).first().click();
-        await sleep(500);
+        await sleep(settle.roleSelect);
         if (adminGrant) {
           /* F-666 — the scope select is GONE now that Admin is selected. Prove that, rather
              than assume it: a second `.dropdown` here would mean the product changed and
@@ -489,9 +516,9 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
           await frame.locator(".perm-search-wrap .dropdown").nth(1).click();
           await frame.locator(".dropdown-item-name", { hasText: SCOPE_LABEL[scope] }).first().click();
         }
-        await sleep(400);
+        await sleep(settle.scopeSelect);
         await frame.locator(".perm-search-input").fill(q);
-        await sleep(4500);
+        await sleep(settle.searchResults);
         const rows = await readRows(frame, ".perm-search-item");
         const pick = selectByDiscriminator(rows, accountId);
         if (pick.index < 0) return { clicked: false, rows: rows.length, reason: pick.reason, disabledHit: !!pick.disabledHit };
@@ -509,7 +536,7 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
           return { clicked: false, rows: rows.length, raced: true, reason: "the row at index " + pick.index + " no longer carries the target id when re-read immediately before the click (chip: " + (confirmShown || "absent") + ") - refusing to click" };
         }
         await target.click();
-        await sleep(4500);
+        await sleep(settle.grantApply);
         const grantShot = await shot(page, frame, out + "/02-roster-granted.png");
 
         /* F-666 — READ THE CARD THE GRANT PRODUCED, by the same discriminator. The storage
@@ -534,10 +561,10 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
         };
         let cardRead = await readCard();
         if (cardRead.card === null) {
-          await sleep(1200);
+          await sleep(settle.cardRetry);
           const again = await readCard();
           cardRead = again.card === null
-            ? { card: null, how: again.how + " (still, after a 1.2s settle and a second read)" }
+            ? { card: null, how: again.how + " (still, after a " + (settle.cardRetry / 1000) + "s settle and a second read)" }
             : { card: again.card, how: (again.how || "") + " (read only on the second attempt, after a settle)" };
         }
         return { clicked: true, rows: rows.length, how: pick.how, index: pick.index, shot: grantShot, card: cardRead.card, cardHow: cardRead.how };

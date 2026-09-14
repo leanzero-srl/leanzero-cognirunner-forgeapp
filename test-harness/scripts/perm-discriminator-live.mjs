@@ -32,7 +32,7 @@ import { redactString, redactSecrets } from "../lib/redact.mjs";
    through `shotMasked`, which masks every `.perm-ident-email`, asserts nothing readable is
    left, shoots, and restores. The id chips stay legible: they are the discriminator these
    screenshots exist to prove. */
-import { makeRosterUI, makeShot } from "../lib/roster-ui.mjs";
+import { makeRosterUI, makeShot, maskPositiveControl } from "../lib/roster-ui.mjs";
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
 } from "../lib/roster-restore.mjs";
@@ -378,7 +378,18 @@ async function main() {
     }
     if (restore && restore.leaked) FAIL("the roster restore reports leaked:true - a capture taken during a repair was refused for a readable address", { paths: (restore.leaks || []).map((l) => l.path), leakInfo: restore.leakInfo });
     if (restore && restore.ok === false) FAIL("the roster restore reports ok:false - the repair did not complete cleanly", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
-    ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length };
+    /* F-693 — THE POSITIVE CONTROL FOR THE MASK ITSELF, ONCE PER RUN, OVER BOTH SOURCES.
+       Every per-shot verdict above is "nothing readable was left", which a mask matching ZERO
+       elements satisfies unconditionally — so a rename of `.perm-ident-email` makes this
+       driver report MORE passes while every PNG renders real addresses. This driver opens the
+       user-search dropdown, a view that must carry at least one address, so seeing no span at
+       all means the passes proved nothing. `allShots` is used rather than `shot_.shots`
+       because the roster-UI helper is the second recorder and its captures count too. */
+    const mask = maskPositiveControl(allShots);
+    ev.maskPositiveControl = mask;
+    if (mask.ok) PASS(mask.sentence, { spans: mask.spanTotal, masked: mask.maskedTotal, captures: mask.captures });
+    else FAIL(mask.sentence, { spans: mask.spanTotal, captures: mask.captures, expected: "the user-search dropdown renders at least one `.perm-ident-email`" });
+    ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length, maskSpans: mask.spanTotal };
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2)); // F-656/F-662: the shared redactor is the ONLY gate
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
     if (fails > 0) process.exitCode = 1;

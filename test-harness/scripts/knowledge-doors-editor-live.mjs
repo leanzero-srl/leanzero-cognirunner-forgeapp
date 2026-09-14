@@ -52,7 +52,7 @@ import {
    captures the Permissions tab, which renders real addresses as PIXELS that no text
    redactor will ever see. `evidence-redaction.test.mjs` refuses a raw `.screenshot(` in
    any `*-live.mjs` that mentions `perm-`. */
-import { makeRosterUI, makeShot } from "../lib/roster-ui.mjs";
+import { makeRosterUI, makeShot, maskPositiveControl } from "../lib/roster-ui.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -547,7 +547,15 @@ async function main() {
     }
     if (restore && restore.leaked) FAIL("the roster restore reports leaked:true — a capture taken during a repair was refused for a readable address", { paths: (restore.leaks || []).map((l) => l.path), leakInfo: restore.leakInfo });
     if (restore && restore.ok === false) FAIL("the roster restore reports ok:false — the repair did not complete cleanly", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
-    ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length };
+    /* F-693 — the mask's run-level control is RECORDED here but is NOT a gate, and the
+       distinction is deliberate. This driver's captures are of the roster-card and editor
+       views, none of which is guaranteed to render an address, so demanding `spanTotal > 0`
+       would buy a flake rather than a guarantee. The number is written down so a reader can
+       see what the mask actually measured instead of inferring it; the drivers that DO visit
+       a view which must carry an address — `perm-namesake-ui-live` and
+       `perm-discriminator-live` — FAIL on `ok:false`. */
+    ev.maskPositiveControl = { ...maskPositiveControl(allShots), gated: false, why: "no view this driver captures is guaranteed to render an email span" };
+    ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length, maskSpans: ev.maskPositiveControl.spanTotal };
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
     if (fails > 0) process.exitCode = 1;

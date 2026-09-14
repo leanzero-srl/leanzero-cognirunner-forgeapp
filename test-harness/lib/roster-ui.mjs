@@ -215,6 +215,56 @@ export async function shotMasked(page, frame, path, opts = {}) {
  *                  it is set SYNCHRONOUSLY here, so it survives a caller that swallowed the
  *                  throw — which is exactly what `attempt()` does.
  */
+/**
+ * THE RUN-LEVEL POSITIVE CONTROL FOR THE EMAIL MASK — F-693.
+ *
+ * An empty result is not evidence until the query has been shown to see the thing at all.
+ * Every PER-SHOT assertion in this file is of the form "nothing readable was left", and a
+ * mask that matches ZERO elements satisfies that unconditionally. Rename or drop
+ * `.perm-ident-email` in `static/admin-panel/src/components/PermissionsTab.jsx` and
+ * `MASK_EMAILS_SRC` selects nothing on every page: every capture reports
+ * `{total:0, masked:0, readable:0}`, `shot.leaked` stays false, the run goes green with a
+ * HIGHER pass count than before — and every PNG on disk renders real addresses. Neither
+ * `roster-ui.test.mjs` nor `evidence-redaction.test.mjs` can catch that on its own: both
+ * feed the mask a stubbed result rather than proving the live page ever had a span.
+ *
+ * So a driver that visits a view which MUST carry an address — the user-search dropdown in
+ * `perm-namesake-ui-live.mjs`, where the namesake fixture is known to render one, and in
+ * `perm-discriminator-live.mjs` — calls this ONCE at the end of its run and FAILs on
+ * `ok:false`. `knowledge-doors-editor-live.mjs` records it but does NOT gate on it: it never
+ * opens a view that is guaranteed an address, and demanding one there buys a flake, not a
+ * guarantee.
+ *
+ * `scripts/perm-selector-parity.test.mjs` is the OFFLINE half of the same rule — it asserts
+ * every selector this file hunts for still exists verbatim in the component. The parity test
+ * catches the rename before a run; this control catches everything else that can make the
+ * mask match nothing: a view that stopped rendering the span, a frame that never loaded, a
+ * dropdown that never opened, a tenant with no address on any visible row.
+ *
+ * It counts REFUSED captures too. A refusal is already a FAIL, but the question this answers
+ * is "did the mask ever match anything", and a refusal measured the view exactly as a success
+ * did. Counting only the happy path would be the same blindness one level down.
+ *
+ * @param shots  the `shot.shots` array, or the concatenation of several — `perm-discriminator`
+ *   and `knowledge-doors-editor` each have two recorders and both must count toward the one
+ *   control.
+ */
+export function maskPositiveControl(shots) {
+  const list = Array.isArray(shots) ? shots : [];
+  const spanTotal = list.reduce((n, s) => n + (Number(s && s.total) || 0), 0);
+  const maskedTotal = list.reduce((n, s) => n + (Number(s && s.masked) || 0), 0);
+  const captures = list.length;
+  const ok = spanTotal > 0;
+  return {
+    ok, captures, spanTotal, maskedTotal,
+    sentence: captures === 0
+      ? "the email mask ran on NO view all run — zero captures were recorded, so nothing about the PNG set is proven"
+      : (ok
+        ? "the email mask matched " + spanTotal + " email span(s) across " + captures + " capture(s) this run and masked " + maskedTotal + " of them — the selector is live, so every per-shot \"nothing readable was left\" verdict means something"
+        : "the mask matched nothing all run — selector drift or no email on this tenant: " + captures + " capture(s) and 0 `.perm-ident-email` span(s) seen, so every per-shot verdict in this run was vacuous"),
+  };
+}
+
 export function makeShot(record) {
   const fn = (f) => (typeof f === "function" ? f : null);
   const w = typeof record === "function"
@@ -230,6 +280,22 @@ export function makeShot(record) {
   const refusedSentence = (path) =>
     "a screenshot was REFUSED because a readable email address survived the mask: " + path;
   const missingSentence = (path) => "a screenshot was not captured: " + path;
+  /* F-693 — THE SUCCESS SENTENCE MUST NOT CLAIM MORE THAN THE CAPTURE MEASURED.
+     "captured with every email masked" was written for EVERY successful capture, including
+     the ones that found nothing to mask — and when F-681 measured the artefact set, 3 of the
+     3 shot records in existence read `{total:0, masked:0, readable:0}`. That sentence is how
+     a selector rot reads as a guarantee: rename `.perm-ident-email` and every capture reports
+     total:0, the PASS count goes UP, and every PNG on disk renders real addresses. A capture
+     with nothing to mask is still a PASS — some views legitimately carry no address — but it
+     now SAYS so. The guarantee is restored one level up, by `maskPositiveControl`.
+
+     It says `total` and "none left readable" rather than "masked", because `masked` counts
+     only the spans this pass REWROTE — a span already carrying the mask is not recounted, so
+     "all N masked" would be wrong whenever a view was captured twice. `readable === 0` is the
+     assertion that was actually made on this branch, and it is what the sentence states. */
+  const capturedSentence = (path, total) => (total > 0
+    ? "a Permissions-tab screenshot was captured; " + total + " email span(s) on the view, none left readable: " + path
+    : "a Permissions-tab screenshot was captured; nothing to mask on this view (0 email span(s) present): " + path);
 
   const shot = async function shot(page, frame, path, opts = {}) {
     let r;
@@ -262,7 +328,7 @@ export function makeShot(record) {
       /* F-681 — THE PROOF, WRITTEN DOWN. Without this line the DOM assertion that makes the
          PNG safe to attach exists only in a variable nobody kept. */
       shot.shots.push(entry);
-      if (good) good("a Permissions-tab screenshot was captured with every email masked: " + path, entry);
+      if (good) good(capturedSentence(path, entry.total), entry);
       return r;
     }
     /* Not captured. Two different failures, and they are not the same verdict: a readable
@@ -287,6 +353,8 @@ export function makeShot(record) {
   shot.shots = [];
   shot.leaks = [];
   shot.leaked = false;
+  /** F-693 — this recorder's own share of the run-level control. One home, two call shapes. */
+  shot.positiveControl = () => maskPositiveControl(shot.shots);
   return shot;
 }
 

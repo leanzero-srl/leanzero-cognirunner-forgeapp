@@ -2003,8 +2003,49 @@ ok(guardedDrivers.length === liveFiles.length,
      Coder edition…"). Every F-741/F-752 positive is one of those four; the domain sense is
      none of them, except "staging of the …", which the subject rule excludes explicitly.
      `DEV` stays exactly as it was: shouted only, since lowercase `dev` was never matched. */
-  const TENANT_IN_STRING = /["'`][^"'`\n]*(?<![A-Za-z_])(STAGING|staging|DEV)(?![A-Za-z_])[^"'`\n]*["'`]/;
-  const STRING_LITERAL = /(["'`])([^"'`\n]*)\1/g;
+  const TENANT_WORD = /(?<![A-Za-z_])(?:STAGING|staging|DEV)(?![A-Za-z_])/;
+  /* F-871 — A LITERAL ENDS AT ITS OWN CLOSING QUOTE, NOT AT THE FIRST APOSTROPHE. The
+     extraction was a character class, so `"we didn't run on staging"` was read as the
+     fragments `we didn` and `t run on staging`. The environment sense is a SHAPE — a
+     preposition in front of the word, a tenant noun behind it — so a claim cut at the wrong
+     place loses its marker and the rule UNDER-reports: `PASS("the staging tenant's hook
+     answered")` yielded `the staging tenant` + `s hook answered`, and survived only because
+     the noun phrase happened to fall left of the apostrophe. Move the apostrophe one word
+     earlier and a real tenant claim walks straight through.
+
+     A quote-aware scanner instead: the opening quote fixes the delimiter, a backslash escapes
+     the next character, and only the matching UNESCAPED quote closes the literal. A template
+     literal's `${...}` belongs to that one literal, brace-counted, so a quote inside an
+     interpolation cannot end it early. An UNTERMINATED literal is skipped, exactly as the
+     character class did by requiring a closing quote on the same line — the scan is per-line
+     and a multi-line template's tail is not a sentence this rule can read. */
+  function scanLiterals(line) {
+    const out = [];
+    for (let i = 0; i < line.length; i++) {
+      const q = line[i];
+      if (q !== '"' && q !== "'" && q !== "`") continue;
+      let j = i + 1, closed = false;
+      while (j < line.length) {
+        const c = line[j];
+        if (c === "\\") { j += 2; continue; }             // an escape consumes what follows
+        if (q === "`" && c === "$" && line[j + 1] === "{") {
+          let depth = 1; j += 2;
+          while (j < line.length && depth > 0) {
+            if (line[j] === "{") depth++;
+            else if (line[j] === "}") depth--;
+            j++;
+          }
+          continue;                                        // `${...}` is inside the literal
+        }
+        if (c === q) { closed = true; break; }
+        j++;
+      }
+      if (!closed) continue;              // unterminated on this line: not a sentence to read
+      out.push(line.slice(i + 1, j));
+      i = j;                              // resume AFTER the closing quote
+    }
+    return out;
+  }
   const ENV_SENSE = [
     /* the shouted tenant name — the banner form F-741 was cut for */
     /(?<![A-Za-z_])(?:STAGING|DEV)(?![A-Za-z_])/,
@@ -2039,8 +2080,8 @@ ok(guardedDrivers.length === liveFiles.length,
     .replace(/--[a-z-]*\b(?:staging|dev)\b[a-z-]*/g, "");
   function tenantLiterals(code) {
     return code.split("\n").map((l, i) => ({ l: stripLegitimate(l), n: i + 1 }))
-      .filter(({ l }) => TENANT_IN_STRING.test(l))          // cheap prefilter: the word is here at all
-      .filter(({ l }) => [...l.matchAll(STRING_LITERAL)].some(([, , inner]) => tenantSense(inner)))
+      .filter(({ l }) => TENANT_WORD.test(l))               // cheap prefilter: the word is here at all
+      .filter(({ l }) => scanLiterals(l).some((inner) => tenantSense(inner)))
       .map(({ n }) => n);
   }
   /* POSITIVE CONTROLS — verbatim from the five files, before they were fixed. */
@@ -2090,6 +2131,17 @@ ok(guardedDrivers.length === liveFiles.length,
     "NEGATIVE CONTROL (F-861): …the genitive at the head of a literal is the feature, not a tenant");
   ok(tenantLiterals('  PASS("the reply was staged, not sent");').length === 0,
     "NEGATIVE CONTROL (F-861): `staged` was never the tenant name and is not one now");
+  /* F-871 — AN APOSTROPHE IS NOT A LITERAL BOUNDARY. Each of these three carries a tenant
+     claim whose marker sits on the FAR side of the apostrophe from the word `staging`, so
+     the character-class extraction lost it at the cut and the rule stayed silent. */
+  ok(tenantLiterals(`  console.log("we didn't run on staging");`).length === 1,
+    "POSITIVE CONTROL (F-871): the preposition marker survives an apostrophe earlier in the sentence");
+  ok(tenantLiterals(`  PASS("the staging tenant's hook answered");`).length === 1,
+    "POSITIVE CONTROL (F-871): …and so does the tenant NOUN PHRASE when the apostrophe follows it");
+  ok(tenantLiterals('  info(`the staging tenant\'s hook answered for ${NAME} on staging`);').length === 1,
+    "POSITIVE CONTROL (F-871): …and a template literal is ONE literal — the apostrophe and the `${}` interpolation both stay inside it");
+  ok(tenantLiterals(`  PASS("the draft's staging left the item untouched");`).length === 0,
+    "NEGATIVE CONTROL (F-871): joining the fragments does not invent a tenant — the domain sense with an apostrophe is still allowed");
 
   const offenders = [];
   let scanned = 0;

@@ -60,6 +60,24 @@ const PATH = fault.JIRA_FAULT_USER_SEARCH_PATH;
 const faultSrc = readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8");
 const faultCode = faultSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
+/* F-779 — THE DRAIN CENSUS, DERIVED FROM THE SOURCE AND SHARED BY EVERY RULE BELOW THAT USED
+ * TO CARRY A LITERAL COUNT OF DRAINS. `=== 2` tails and `=== 3` delete sites were the F-694
+ * defect in a test file: adding `sweepHarnessStashes` turned them red for being correct, and
+ * the "fix" is to edit the number rather than to read the rule. A DRAIN is a paged walk that
+ * also takes a RESUME TOKEN — that pair is what makes it a thing a caller drains across calls
+ * and therefore what makes it owe the shared answer tail. `clearStalePlantedRows` pages but
+ * takes no token (its caller owns the answer), so it is correctly not one. */
+const topLevelBodies = (() => {
+  const marks = [...faultCode.matchAll(/\n(?:export )?(?:const|function) ([A-Za-z_$][\w$]*)/g)];
+  return marks.map((m, i) => ({
+    name: m[1],
+    body: faultCode.slice(m.index, i + 1 < marks.length ? marks[i + 1].index : faultCode.length),
+  }));
+})();
+const drainBodies = topLevelBodies.filter((e) =>
+  /for \(let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES/.test(e.body) && /decodeSweepToken\(/.test(e.body));
+const DRAINS = drainBodies.length;
+
 /* The spy: every `set` on the fault keyspace, with the OPTIONS OBJECT it was given. The
  * finding is the option, so the option is what is recorded — not a source-code regex. */
 const realSet = kvs.set;
@@ -795,8 +813,14 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   ok(/complete: !stopped && !unresolved/.test(faultCode)
     && completeSites.filter((site) => !/tail\.complete/.test(site)).length === 1,
     `F-691.SOURCE: \`complete\` is COMPUTED in exactly one place — the drain-wide definition — and every other mention is a pass-through of it (sites ${JSON.stringify(completeSites)})`);
-  ok((faultCode.match(/\.\.\.sweepAnswerTail\(/g) || []).length === 2,
-    "F-691.SOURCE: …and both the sweep and the clear finish their answer through it");
+  /* F-779 — DERIVED, NOT COUNTED. This was `=== 2` and a third drain (`sweepHarnessStashes`)
+     turned it red for being correct — the F-694 defect, a magic number in a test file that is
+     "fixed" by editing the number rather than by reading the rule. A DRAIN is a function with
+     the paged walk, so the expectation is the number of paged walks: every one of them must
+     finish its answer through the one tail. */
+  ok(DRAINS >= 3, `F-691.SOURCE: the paged drains are still recognisable in the source (found ${DRAINS}: ${drainBodies.map((d) => d.name).join(", ")})`);
+  ok(drainBodies.every((d) => /sweepAnswerTail\(/.test(d.body)),
+    `F-691.SOURCE: …and EVERY drain finishes its answer through it (${drainBodies.filter((d) => !/sweepAnswerTail\(/.test(d.body)).map((d) => d.name).join(", ") || "all do"})`);
 
   // Leave the keyspace — and the write spy — as this block found them.
   kvs.delete = okDelete; kvs.query = okQuery;
@@ -1482,12 +1506,17 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
 
     /* ── SOURCE: ONE CONSULT SITE. The sweep and the clear ran two byte-identical copies of
      * the delete batch; a lever consulted in two places is a lever with two behaviours. ── */
-    ok((faultCode.match(/await settleDeletes\(batch, deleteFault\)/g) || []).length === 3,
-      "F-706.SOURCE: all THREE drains go through the ONE shared delete batch (the sweep, the clear, and F-708's stale-tail removal)");
+    /* F-779 — derived for the same reason as F-691's tail count above. The delete sites are
+       the paged drains PLUS F-708's stale-tail removal, which is not a paged walk — so the
+       rule asserted here is "at least one per drain, and not a single hand-rolled copy",
+       never a literal that a new lever breaks by existing. */
+    const deleteSites = (faultCode.match(/await settleDeletes\(batch, deleteFault\)/g) || []).length;
+    ok(deleteSites > DRAINS,
+      `F-706.SOURCE: every drain goes through the ONE shared delete batch, and so does F-708's stale-tail removal (${deleteSites} sites, ${DRAINS} drains)`);
     ok(!/Promise\.allSettled\(batch\.map\(\(key\) => storage\.delete\(key\)\)\)/.test(faultCode),
       "F-706.SOURCE: …and neither keeps its own copy of it any more");
-    ok((faultCode.match(/await loadDeleteFault\(\)/g) || []).length === 3,
-      "F-706.SOURCE: the lever is read ONCE PER CALL, not once per batch — three call sites, one per drain");
+    ok((faultCode.match(/await loadDeleteFault\(\)/g) || []).length === deleteSites,
+      `F-706.SOURCE: the lever is read ONCE PER CALL, not once per batch — one read per delete site (${deleteSites})`);
     ok((faultCode.match(/harnessFaultArmed\(HARNESS_FAULT_DELETE/g) || []).length === 1,
       "F-706.SOURCE: and spent through the ONE counted-consumption home, in one place");
     ok(/if \(prefix !== HARNESS_FAULT_PLANT_PREFIX\)/.test(faultCode),

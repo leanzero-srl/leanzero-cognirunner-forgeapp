@@ -232,6 +232,7 @@ export const HARNESS_GATED_EXPORTS = Object.freeze([
   "plantHarnessFaults",  // F-688
   "clearPlantedFaults",  // F-688
   "armDeleteFault",      // F-706
+  "sweepHarnessStashes", // F-779 — reaps the F-769 credential stash rows
 ]);
 
 /*
@@ -294,6 +295,11 @@ export const HARNESS_UNGATED_EXPORTS = Object.freeze([
   "HARNESS_FAULT_KEY_READ",
   "HARNESS_FAULT_JIRA",
   "HARNESS_FAULT_KEY_PREFIX",
+  "HARNESS_STASH_KEY_PREFIX",
+  "harnessStashKey",
+  "HARNESS_STASH_MAX_AGE_SECONDS",
+  "harnessStashAgeSeconds",
+  "harnessStashReapable",
   "KEY_READ_FAULT_MODES",
   "HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS",
   "JIRA_FAULT_USER_SEARCH_PATH",
@@ -685,6 +691,25 @@ export const jiraFaultStatus = async (path) => {
  * fact as if it were a per-DRAIN one.
  */
 export const HARNESS_FAULT_KEY_PREFIX = "harness_fault:";
+
+/*
+ * F-779 — THE F-769 STASH KEYSPACE, AND WHY ITS NAME LIVES HERE.
+ *
+ * `kvStash` (src/test-hook.js) moves a tenant's OWN credential server-side so a driver can
+ * plant a fault over it and put it back without ever reading it. The row therefore HOLDS a
+ * plaintext credential, under `harness_stash:{id}`, with a best-effort TTL — and nothing
+ * enumerated that keyspace: `sweepHarnessFaults` is bound to `HARNESS_FAULT_KEY_PREFIX`, a
+ * different prefix. A driver killed between stash and restore left the row behind with no
+ * lever able to even LIST it (it is a credential family, so `?what=kvs` masks it too).
+ *
+ * The prefix moved here, next to the sweep machinery, because `sweepHarnessStashes` below
+ * must bind it as a CONSTANT rather than take it as a parameter — the same rule
+ * `clearPlantedFaults` states: no caller gets to say which keyspace is cleared. `test-hook.js`
+ * imports both of these instead of keeping its own copy, so the door that writes the row and
+ * the lever that reaps it cannot drift onto two different prefixes.
+ */
+export const HARNESS_STASH_KEY_PREFIX = "harness_stash:";
+export const harnessStashKey = (id) => `${HARNESS_STASH_KEY_PREFIX}${safeKeyPart(id)}`;
 
 /*
  * F-673 — THE STATED BOUND IS NOW THE ENFORCED ONE.
@@ -2065,6 +2090,126 @@ export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } =
   // F-683 + F-691: the same tail as the sweep, because it is the same answer contract.
   return {
     ok: true, prefix: HARNESS_FAULT_PLANT_PREFIX, scanned, deleted, failed, budgetMs,
+    ...sweepAnswerTail({ truncated, reason, cursor, unresolved, failedResume }),
+  };
+};
+
+/**
+ * F-779 — REAP THE F-769 STASH ROWS THAT OUTLIVED THEIR DRIVER, AND ONLY THOSE.
+ *
+ * WHY A DEDICATED LEVER AND NOT A WIDER `sweepHarnessFaults`. The sweep's predicate is
+ * "this fault row's `until` has passed", read by `faultRowExpired` off a row shape the
+ * stash does not have; widening its prefix set would point the SAME delete loop at a
+ * second keyspace under a predicate that means nothing there, and would widen the reach of
+ * the one lever a driver already drains blind. `clearPlantedFaults` set the precedent and
+ * wrote down the reason: bind an unconditional delete to a prefix nothing else writes into,
+ * in its own function, rather than parameterise the existing one.
+ *
+ * WHAT IT DELETES: a stash row whose `stashedAt` is OLDER than `olderThanSeconds` (default
+ * `HARNESS_STASH_MAX_AGE_SECONDS`, the same hour the TTL asks for). AGE, not existence —
+ * a driver that is mid-run between its stash and its restore is holding the tenant's only
+ * copy of that credential, and a lever that deleted it unconditionally would destroy the
+ * key it exists to protect. A row whose `stashedAt` is missing or unparseable IS reaped:
+ * only this door writes these rows and it always stamps one, so a row without it is
+ * malformed, and leaving a malformed row is leaving a plaintext credential forever.
+ *
+ * WHAT IT ANSWERS: `rows[]` of `{key, stashedAt, ageSeconds, expired}` — the LIST that did
+ * not exist, so an operator can see a leak is there — and never `value`, never `key` (the
+ * KVS key the row restores to is itself named in `kvWriteAllowList`, but this lever's job
+ * is reaping, not disclosure). `dryRun` lists without deleting.
+ *
+ * Everything else is the sweep's own vocabulary in its one home — `sweepBudgetMs`,
+ * `KVS_DELETE_BATCH`/`KVS_DELETE_PAUSE_MS`, `encodeSweepCursor`/`decodeSweepToken`, the
+ * F-682 progress gate and `sweepAnswerTail` — so a caller drains this exactly as it drains
+ * the other two.
+ */
+export const HARNESS_STASH_MAX_AGE_SECONDS = 3600;
+/** Age of a stash row in seconds, or `null` when it has no usable `stashedAt`. */
+export const harnessStashAgeSeconds = (row, now) => {
+  const at = row && typeof row === "object" ? row.stashedAt : null;
+  if (typeof at !== "string" || at.length === 0) return null;
+  const t = Date.parse(at);
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.floor((now - t) / 1000));
+};
+/** A stash row is reapable when it is older than the age, or has no readable age at all. */
+export const harnessStashReapable = (row, now, olderThanSeconds) => {
+  const age = harnessStashAgeSeconds(row, now);
+  return age === null || age >= olderThanSeconds;
+};
+
+export const sweepHarnessStashes = async ({ dryRun = false, olderThanSeconds, maxMs, cursor: startCursor = null } = {}) => {
+  if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
+  const dry = dryRun === true;
+  // Clamped where the constant lives, like every other lever: a caller may reap SOONER than
+  // the hour but never below zero, and a non-number is the default rather than a NaN
+  // comparison that silently reaps nothing.
+  const maxAge = typeof olderThanSeconds === "number" && Number.isFinite(olderThanSeconds)
+    ? Math.max(0, Math.floor(olderThanSeconds))
+    : HARNESS_STASH_MAX_AGE_SECONDS;
+  const budgetMs = sweepBudgetMs(maxMs);
+  const t0 = Date.now();
+  const overBudget = () => Date.now() - t0 >= budgetMs;
+  const now = t0;
+  const rows = [];
+  let scanned = 0, deleted = 0, failed = 0, rowsTruncated = false;
+  let truncated = false, reason = null;
+  // Validated synchronously, before any KVS call (F-684).
+  const startToken = decodeSweepToken(startCursor === undefined ? null : startCursor);
+  let cursor = startToken.cursor;
+  let progressed = false;
+  let unresolved = startToken.unresolved;
+  let failedResume = startToken.failedResume;
+  const deleteFault = dry ? null : await loadDeleteFault();
+  for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
+    const resume = cursor;
+    if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+    let query = storage.query()
+      .where("key", { condition: "BEGINS_WITH", values: [HARNESS_STASH_KEY_PREFIX] })
+      .limit(HARNESS_FAULT_SWEEP_PAGE_SIZE);
+    if (cursor) query = query.cursor(cursor);
+    const result = await query.getMany();
+    const doomed = [];
+    for (const entry of (result && result.results) || []) {
+      const key = String(entry && entry.key);
+      const row = (entry && entry.value) || null;
+      const ageSeconds = harnessStashAgeSeconds(row, now);
+      const expired = harnessStashReapable(row, now, maxAge);
+      scanned++;
+      if (rows.length < HARNESS_FAULT_SWEEP_MAX_ROWS) {
+        // The KEY, the AGE and the verdict. Never `value`, and never `row.key` — the answer
+        // is a census of leaks, not a second read door onto what leaked.
+        rows.push({ key, stashedAt: (row && typeof row.stashedAt === "string" && row.stashedAt) || null, ageSeconds, expired });
+      } else {
+        rowsTruncated = true;
+      }
+      if (expired) doomed.push(key);
+    }
+    if (!dry) {
+      for (let i = 0; i < doomed.length; i += KVS_DELETE_BATCH) {
+        if (i > 0) {
+          if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+          await sweepPause(KVS_DELETE_PAUSE_MS);
+        }
+        if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+        const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
+        const settled = await settleDeletes(batch, deleteFault);
+        let landed = 0;
+        for (const outcome of settled) { if (outcome.status === "fulfilled") { deleted++; landed++; } else failed++; }
+        if (landed < settled.length && !unresolved) { unresolved = true; failedResume = resume; }
+        if (landed > 0) progressed = true;
+        else if (settled.length > 0) { truncated = true; reason = "deletes-failing"; cursor = resume; break; }
+      }
+      if (truncated) break;
+    }
+    cursor = (result && result.nextCursor) || null;
+    progressed = true;
+    if (!cursor) break;
+    if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) { truncated = true; reason = "pages"; }
+  }
+  return {
+    ok: true, dryRun: dry, prefix: HARNESS_STASH_KEY_PREFIX, olderThanSeconds: maxAge,
+    scanned, deleted, failed, budgetMs, rows, rowsTruncated,
     ...sweepAnswerTail({ truncated, reason, cursor, unresolved, failedResume }),
   };
 };

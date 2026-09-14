@@ -241,13 +241,31 @@ const kvWriteAllowList = () => {
  *     deleted on a successful restore anyway.
  *   - `stashId` is opaque and server-minted; a caller cannot name a stash into existence.
  *
+ * F-779 — THE TTL IS A GUARANTEE, SO IT FAILS CLOSED. It used to be best-effort: when the
+ * platform refused the TTL option the catch re-wrote the SAME row with no expiry at all and
+ * the 200 still said `ttlSeconds: 3600` — a permanent plaintext credential under a row that
+ * `?what=kvs` masks, described to the driver's evidence file as expiring in an hour. A
+ * refused TTL is now a REFUSED STASH: any partial row is deleted, the answer is 424
+ * `{ok:false, error:"stash-ttl-unavailable"}`, and the driver must not go on to plant its
+ * fault, because it would have nothing to put back from. `ttlSeconds` is only ever the TTL
+ * that was actually applied — it is reachable only on the path that applied it.
+ *
+ * And a TTL is not a sweeper: nothing ENUMERATED `harness_stash:*`, so a row that outlived
+ * its TTL option (or its driver) was unreachable by any lever and invisible to the read door
+ * that masks it. The `stashSweep` action below is that lever — a DEDICATED one bound to this
+ * prefix, deliberately not a widened `sweepHarnessFaults`, whose reasoning is at
+ * `sweepHarnessStashes` in harness-fault.js (which is also where this prefix now lives, so
+ * the writer and the reaper cannot drift onto two different keyspaces).
+ *
  * A restore of a stash whose row was ABSENT deletes the key rather than writing `null`,
  * because "there was no key here" and "there was a key holding null" are different
  * states and only one of them is what the driver found.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
-const STASH_KEY_PREFIX = "harness_stash:";
-const STASH_TTL_SECONDS = 3600;
-const stashKey = (id) => `${STASH_KEY_PREFIX}${safeKeyPart(id)}`;
+/* F-779 — the PREFIX and the key builder live in harness-fault.js next to the lever that
+ * reaps them (`sweepHarnessStashes`), and are imported dynamically at each use the way every
+ * other harness-fault use in this file is, so production loads none of it. The TTL the stash
+ * asks for is the same hour that lever reaps at — ONE number, read from there, never a second
+ * copy that could quietly drift below it and leave rows the reaper thinks are still live. */
 
 /*
  * F-632 — ONE PREDICATE FOR "THE HARNESS PLANTED THIS ROW", AND ONE REFUSAL FOR WHEN IT
@@ -1617,23 +1635,41 @@ export async function testStateTrigger(req) {
         const stored = (await storage.get(body.key)) ?? null;
         const stashId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         const row = { key: body.key, value: stored, present: stored !== null, stashedAt: new Date().toISOString() };
-        // The TTL OPTION SHAPE has one home (`{ttl:{value,unit}}` — the `{ttlSeconds}`
-        // form is silently ignored by @forge/kvs). Imported the way every other
+        // The TTL OPTION SHAPE has one home (`{ttl:{value,unit}}` — the `{ttlSeconds}` form
+        // is silently ignored by @forge/kvs), and so does the NUMBER: the hour this asks for
+        // is the hour `sweepHarnessStashes` reaps at. Imported the way every other
         // harness-fault use in this file does, so production loads none of it.
-        const { faultTtlOption } = await import("./harness-fault.js");
-        try { await storage.set(stashKey(stashId), row, faultTtlOption(STASH_TTL_SECONDS)); }
-        catch { await storage.set(stashKey(stashId), row); } // KVS refused the TTL option; the restore still deletes it.
+        const { faultTtlOption, harnessStashKey, HARNESS_STASH_MAX_AGE_SECONDS } = await import("./harness-fault.js");
+        const stashRowKey = harnessStashKey(stashId);
+        /* F-779 — FAIL CLOSED. A stash with no expiry is a plaintext credential living
+         * forever under a key the read door masks; answering 200 for one and CLAIMING an
+         * hour of TTL is a cause asserted that the write did not contain. So a refused TTL
+         * is a refused STASH: delete whatever landed, say so, and let the driver abort
+         * BEFORE it plants the fault it would no longer be able to undo. `ttlSeconds` below
+         * is the value that was actually applied, reachable only on the path that applied it. */
+        let appliedTtlSeconds;
+        try {
+          await storage.set(stashRowKey, row, faultTtlOption(HARNESS_STASH_MAX_AGE_SECONDS));
+          appliedTtlSeconds = HARNESS_STASH_MAX_AGE_SECONDS;
+        } catch (e) {
+          try { await storage.delete(stashRowKey); } catch { /* nothing landed, or it is already gone */ }
+          return json(424, {
+            ok: false, stashed: false, error: "stash-ttl-unavailable", key: body.key,
+            reason: errorClassOf(e),
+          });
+        }
         return json(200, {
           ok: true, stashed: true, stashId, key: body.key,
           present: row.present, fingerprint: await credentialFingerprint(stored),
-          ttlSeconds: STASH_TTL_SECONDS,
+          ttlSeconds: appliedTtlSeconds,
         });
       }
       // kvRestore — by NAME. The value is never named, sent or returned.
       if (typeof body.stashId !== "string" || body.stashId.length === 0) {
         return json(400, { ok: false, error: "bad-request", field: "stashId", reason: "stashId must be a non-empty string" });
       }
-      const row = (await storage.get(stashKey(body.stashId))) ?? null;
+      const { harnessStashKey } = await import("./harness-fault.js");
+      const row = (await storage.get(harnessStashKey(body.stashId))) ?? null;
       if (!row || typeof row !== "object" || typeof row.key !== "string") {
         // A stash that expired is indistinguishable from one that never existed, and the
         // driver must treat both the same way: it no longer holds the tenant's row.
@@ -1644,7 +1680,7 @@ export async function testStateTrigger(req) {
       if (!kvWriteAllowList().has(row.key)) return json(400, { error: `key not allowlisted: ${row.key}` });
       if (row.present === true) await storage.set(row.key, row.value);
       else await storage.delete(row.key);
-      try { await storage.delete(stashKey(body.stashId)); } catch { /* the restore is the contract, not the sweep */ }
+      try { await storage.delete(harnessStashKey(body.stashId)); } catch { /* the restore is the contract, not the sweep */ }
       const now = (await storage.get(row.key)) ?? null;
       return json(200, {
         ok: true, restored: true, key: row.key,
@@ -1652,6 +1688,49 @@ export async function testStateTrigger(req) {
         // The SAME fingerprint the stash answered, when the round trip was byte-identical.
         fingerprint: await credentialFingerprint(now),
       });
+    }
+    /* ═════════════════════════════════════════════════════════════════════════════
+     * F-779 — `stashSweep`: THE LEVER THAT CAN SEE, AND REAP, A LEAKED STASH ROW.
+     *
+     * A DEDICATED action rather than a widened `sweepHarnessFaults`, and the choice is the
+     * point. The fault sweep deletes rows whose `until` has passed, read off a row shape the
+     * stash does not have, and it is the one lever every driver already drains blind —
+     * pointing it at a second keyspace would widen the reach of an unconditional delete to
+     * rows that hold the tenant's only copy of a credential. `clearPlantedFaults` wrote that
+     * rule down for exactly this case: bind the delete to a prefix nothing else writes, in
+     * its own function. So this one lists and reaps `harness_stash:*` BY AGE and nothing
+     * else; the reasoning and the age predicate live at `sweepHarnessStashes`.
+     *
+     * `dryRun` is the LIST — the thing that did not exist at all before, and the reason a
+     * leaked row was not merely unswept but unseeable: `harness_stash:*` is a credential
+     * family, so `?what=kvs` masks it and no other door enumerates. The rows it answers
+     * carry the key, the stamp and the age, never the value.
+     * ════════════════════════════════════════════════════════════════════════════ */
+    if (body.action === "stashSweep") {
+      const { sweepHarnessStashes, sweepCursorWellFormed, BAD_SWEEP_CURSOR_CODE } = await import("./harness-fault.js");
+      const rawCursor = body.cursor;
+      let cursor = null;
+      if (rawCursor !== undefined && rawCursor !== null) {
+        if (!sweepCursorWellFormed(rawCursor)) return json(400, { ok: false, reason: "bad-cursor" });
+        cursor = rawCursor;
+      }
+      let r;
+      try {
+        r = await sweepHarnessStashes({
+          dryRun: body.dryRun === true,
+          // Clamped in the lever, where the constant it bounds lives.
+          olderThanSeconds: typeof body.olderThanSeconds === "number" ? body.olderThanSeconds : undefined,
+          maxMs: typeof body.maxMs === "number" ? body.maxMs : undefined,
+          cursor,
+        });
+      } catch (e) {
+        const message = String((e && e.message) || e).slice(0, 300);
+        const code = (e && typeof e.code === "string" && e.code) || null;
+        if (code === BAD_SWEEP_CURSOR_CODE) return json(400, { ok: false, reason: "bad-cursor", error: message });
+        return json(500, { ok: false, reason: "stash-sweep-failed", code, error: message });
+      }
+      // Explicit for the same reason as the other two drains (F-692): this is THE finished signal.
+      return json(r.ok === false ? 400 : 200, { ok: true, ...r, complete: r.complete === true });
     }
     /*
      * F-627 — THE PIPELINE-ROW DOOR, and why it had to exist.

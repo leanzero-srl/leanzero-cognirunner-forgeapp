@@ -747,6 +747,106 @@ try {
     });
     assert.equal(read.statusCode, 404);
   });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-779 — THE STASH TTL IS A GUARANTEE, AND SOMETHING FINALLY ENUMERATES THE KEYSPACE.
+   *
+   * The TTL was best-effort with a PERMANENT fallback: when `storage.set(..., ttl)` threw,
+   * the catch re-wrote the same row with no expiry and the 200 still said `ttlSeconds: 3600`.
+   * A driver that stashed the tenant's live BYOK key, got a refused TTL, and was then killed
+   * before its restore left that key in plaintext under `harness_stash:{id}` FOREVER — masked
+   * to `?what=kvs` (it is a credential family), unreachable by `sweepHarnessFaults` (a
+   * different prefix), and recorded in the driver's evidence as expiring in an hour.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  const listStashes = async () => JSON.parse((await POST({ action: "stashSweep", dryRun: true })).body).rows;
+  await check("a refused TTL is a REFUSED stash, and plants nothing (F-779)", async () => {
+    const SLOT = "COGNIRUNNER_KEY_openai";
+    const REAL = "zz-the-tenants-own-key-zz";
+    storage.__seed(SLOT, REAL);
+    // The platform refuses the TTL OPTION — the exact fault the old catch arm swallowed.
+    storage.__failSetWhen((key) => String(key).startsWith("harness_stash:"), Object.assign(new Error("ttl option rejected"), { name: "ForgeKvsError", code: "INVALID_TTL" }));
+    const res = await POST({ action: "kvStash", key: SLOT });
+    assert.equal(res.statusCode, 424, "a stash that cannot be given a TTL is REFUSED, not silently made permanent");
+    const body = JSON.parse(res.body);
+    assert.equal(body.ok, false);
+    assert.equal(body.stashed, false, "…and says so, so the driver does not go on to plant a fault it cannot undo");
+    assert.equal(body.error, "stash-ttl-unavailable");
+    assert.equal("ttlSeconds" in body, false, "no TTL was applied, so none is claimed");
+    assert.equal(body.reason, "INVALID_TTL", "the error CLASS, never its message");
+    assert.equal(JSON.stringify(body).includes(REAL), false, "the refusal carries no value either");
+    // AND NOTHING WAS LEFT BEHIND. This is the finding: the old code's fallback write.
+    const stashes = await listStashes();
+    assert.deepEqual(stashes, [], "no partial stash row survives the refusal");
+    assert.equal(storage.__raw(SLOT), REAL, "the tenant's own key is untouched — the stash never got as far as replacing anything");
+  });
+  await check("a stash that IS given a TTL reports the TTL it actually got (F-779)", async () => {
+    const SLOT = "COGNIRUNNER_KEY_openai";
+    storage.__seed(SLOT, "zz-key-zz");
+    const body = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    assert.equal(body.ok, true);
+    const { HARNESS_STASH_MAX_AGE_SECONDS } = await import("../../src/harness-fault.js");
+    assert.equal(body.ttlSeconds, HARNESS_STASH_MAX_AGE_SECONDS,
+      "the TTL claimed is the constant the reaper reaps at — one number, not two that can drift");
+    // Put it back so this check leaves no stash behind for the sweep checks below.
+    await POST({ action: "kvRestore", stashId: body.stashId });
+  });
+  await check("stashSweep LISTS harness_stash:* — the door that did not exist (F-779)", async () => {
+    storage.__seed("COGNIRUNNER_KEY_openai", "zz-key-zz");
+    const fresh = JSON.parse((await POST({ action: "kvStash", key: "COGNIRUNNER_KEY_openai" })).body);
+    // A row from a driver that died an hour ago: same shape, older stamp.
+    storage.__seed("harness_stash:abandoned", {
+      key: "COGNIRUNNER_KEY_azure", value: "zz-abandoned-tenant-key-zz", present: true,
+      stashedAt: new Date(Date.now() - 7200 * 1000).toISOString(),
+    });
+    const listed = JSON.parse((await POST({ action: "stashSweep", dryRun: true })).body);
+    assert.equal(listed.ok, true);
+    assert.equal(listed.dryRun, true);
+    assert.equal(listed.deleted, 0, "a dry run deletes nothing");
+    assert.equal(listed.prefix, "harness_stash:", "the prefix is the lever's, never the caller's");
+    const byKey = Object.fromEntries(listed.rows.map((r) => [r.key, r]));
+    assert.equal(byKey["harness_stash:abandoned"].expired, true, "the hour-old row is reapable");
+    assert.equal(byKey[`harness_stash:${fresh.stashId}`].expired, false, "a LIVE driver's stash is not — reaping it would destroy the key it protects");
+    assert.equal(listed.body === undefined && JSON.stringify(listed).includes("zz-abandoned-tenant-key-zz"), false,
+      "the census carries the key and the age, never the value");
+    assert.equal(typeof byKey["harness_stash:abandoned"].ageSeconds, "number");
+  });
+  await check("stashSweep reaps ONLY what is older than the age (F-779)", async () => {
+    const r = JSON.parse((await POST({ action: "stashSweep" })).body);
+    assert.equal(r.ok, true);
+    assert.equal(r.complete, true, "one page of a tiny keyspace drains in one call");
+    assert.equal(r.deleted, 1, "the abandoned row is gone");
+    assert.equal(storage.__raw("harness_stash:abandoned"), undefined);
+    const after = await listStashes();
+    assert.equal(after.length, 1, "…and the live driver's stash is still there");
+    // Its restore still works, which is the property the age rule exists to protect.
+    const live = after[0].key.slice("harness_stash:".length);
+    assert.equal(JSON.parse((await POST({ action: "kvRestore", stashId: live })).body).restored, true);
+  });
+  await check("stashSweep stays behind HARNESS_SECRET, and refuses a bad cursor (F-779)", async () => {
+    const res = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "stashSweep" }) });
+    assert.equal(res.statusCode, 404, "invisible without the secret, like every other lever here");
+    const bad = await POST({ action: "stashSweep", cursor: "x".repeat(5000) });
+    assert.equal(bad.statusCode, 400);
+    assert.equal(JSON.parse(bad.body).reason, "bad-cursor");
+  });
+  await check("the stash keyspace has ONE home, and the reaper is bound to it (F-779)", async () => {
+    // The door that WRITES the row and the lever that REAPS it read the same constant —
+    // a second copy is how a keyspace ends up unswept in the first place.
+    const hook = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    assert.equal(/harness_stash:/.test(hook.replace(/CREDENTIAL_KEY_FAMILIES[\s\S]*?\];/, "")), false,
+      "test-hook.js keeps no second copy of the stash prefix outside the credential census");
+    const { HARNESS_STASH_KEY_PREFIX, harnessStashKey } = await import("../../src/harness-fault.js");
+    assert.equal(HARNESS_STASH_KEY_PREFIX, "harness_stash:");
+    assert.equal(harnessStashKey("a/b"), "harness_stash:a-b", "the id is key-safed, not trusted");
+    // …and the census entry IS that prefix, so the row the sweeper reaps is the row the
+    // read ceiling masks. Two literals, one meaning — asserted rather than hoped.
+    assert.equal(isCredentialKey(HARNESS_STASH_KEY_PREFIX + "anything"), true);
+    // The reaper does not take the keyspace as a parameter (the clearPlantedFaults rule).
+    const faultCode779 = stripJsComments(readFileSync(new URL("../../src/harness-fault.js", import.meta.url), "utf8"));
+    const sweeper = faultCode779.slice(faultCode779.indexOf("export const sweepHarnessStashes"));
+    assert.match(sweeper, /values: \[HARNESS_STASH_KEY_PREFIX\]/, "the prefix is bound, not passed in");
+    assert.equal(/prefix\s*[:=]\s*(?!HARNESS_STASH_KEY_PREFIX)[a-z]/.test(sweeper.slice(0, sweeper.indexOf("return {"))), false,
+      "no caller gets to say which keyspace an unconditional delete walks");
+  });
   await check("the credential census has ONE home (F-769)", async () => {
     // The families list is asked by the READ ceiling and by the WRITE refusal
     // (`SECRET_VALUE_RE`). The write door used to keep its own retyped copy of

@@ -1570,8 +1570,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const faultCode = faultSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   ok((faultCode.match(/process\.env\.HARNESS_SECRET/g) || []).length === 1,
     "F-522.SOURCE: the env var is still read in exactly ONE place — harnessEnabled()");
-  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 7,
-    `F-522.SOURCE: …and asked by all SEVEN storage-touching exports (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
+  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 9,
+    `F-522.SOURCE: …and asked by all NINE storage-touching exports — F-688 added plantHarnessFaults and clearPlantedFaults (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
   for (const fn of ["harnessFaultArmed", "armHarnessFault", "disarmHarnessFault", "readHarnessFault", "armKeyReadFault", "armJiraFault", "sweepHarnessFaults"]) {
     const body = faultSrc.split(`${fn} = async`)[1] || "";
     ok(/^\s*\([^)]*\)\s*=>\s*\{\s*if \(!harnessEnabled\(\)\)/.test(body),

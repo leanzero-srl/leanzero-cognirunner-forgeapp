@@ -105,8 +105,8 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     `SOURCE: there is exactly ONE storage.set in the module — the single write home (got ${(faultCode.match(/storage\.set\(/g) || []).length})`);
   ok((faultCode.match(/storage\.get\(/g) || []).length === 1,
     `SOURCE: …and exactly ONE storage.get — the single read home (got ${(faultCode.match(/storage\.get\(/g) || []).length})`);
-  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 7,
-    "SOURCE: the helpers are NOT exports — the gated-export count is exactly the seven exports, no more");
+  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 9,
+    "SOURCE: the helpers are NOT exports — the gated-export count is exactly the nine storage-touching exports, no more (F-688 added two)");
 }
 
 /* ═════ 2. A ROW PAST `until` READS AS ABSENT, AND IS DELETED ═════ */
@@ -607,6 +607,254 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   ok(free.success === true && free.users.length === 1,
     `…and the SAME search runs for real once the row's deadline has passed — the crashed driver stops punishing the tenant (got ${JSON.stringify(free).slice(0, 140)})`);
   ok((await storage.get(k)) === undefined, "…with the stale row cleaned up by the read that refused it");
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════════
+ * 7. F-688 — THE BALLAST, AND WHY IT IS SAFE TO WRITE FIVE HUNDRED OF IT
+ *
+ * The sweep's multi-page path — the resume token, the KVS cursor round-trip, the paced
+ * deletes, the F-682 progress guarantee, the F-683 `complete` — engages only once the
+ * `harness_fault:` keyspace is bigger than one page of 100. Nothing in this app could put
+ * it there: the arming levers write ONE row per exact path, ONE per provider, a handful per
+ * connection. So every resume assertion above ran against a keyspace a tester on a real
+ * tenant cannot reproduce, and `plantHarnessFaults` is the door that closes that.
+ *
+ * A lever that writes five hundred rows into the fault keyspace is only acceptable if those
+ * rows cannot DO anything, so the inertness is asserted here BEHAVIOURALLY — every reader in
+ * the module is called while 250 planted rows sit in the store — and not by reading the
+ * source. What makes it true is that `harnessFaultKey` puts the KIND in the second segment
+ * and every consumer exact-matches its own kind constant; `plant` is nobody's.
+ *
+ * TIME IS COMPRESSED HERE, NOT REMOVED. `setFaultRow` and the deletes are paced at the app's
+ * own published KVS rate (batches of 3, 200 ms between rounds), which is ~17 s of real
+ * waiting for 250 rows — unacceptable in an offline suite. `setTimeout` is therefore
+ * shimmed to fire immediately while RECORDING every delay asked for, and the pacing is
+ * asserted from those recorded delays. The pagination, the tokens and the termination are
+ * all real; only the wall clock is not.
+ * ═════════════════════════════════════════════════════════════════════════════════ */
+{
+  const realTimeout = globalThis.setTimeout;
+  const delays = [];
+  globalThis.setTimeout = function compressed(fn, ms, ...rest) {
+    if (typeof ms === "number") delays.push(ms);
+    return realTimeout(fn, 0, ...rest);
+  };
+  const pauseCount = () => delays.filter((d) => d === fault.KVS_DELETE_PAUSE_MS).length;
+
+  // Everything left behind by sections 1-6, gone, so a `complete` drain below means THIS
+  // fixture and not somebody else's leftovers.
+  const purge = async () => {
+    for (let i = 0; i < 20; i++) {
+      const page = await storage.query().where("key", { condition: "BEGINS_WITH", values: ["harness_fault:"] }).limit(100).getMany();
+      const rows = (page && page.results) || [];
+      if (!rows.length) return;
+      for (const row of rows) await storage.delete(String(row.key));
+    }
+  };
+  const countPrefix = async (prefix) => {
+    let n = 0, cursor = null;
+    for (let i = 0; i < 20; i++) {
+      let q = storage.query().where("key", { condition: "BEGINS_WITH", values: [prefix] }).limit(100);
+      if (cursor) q = q.cursor(cursor);
+      const page = await q.getMany();
+      n += ((page && page.results) || []).length;
+      cursor = (page && page.nextCursor) || null;
+      if (!cursor) break;
+    }
+    return n;
+  };
+
+  /* ── 7a. REFUSED IN PRODUCTION. `HARNESS_SECRET` is absent there, and the gate is the
+   * lever's FIRST statement, so the refusal is not the web trigger's alone. ── */
+  await purge();
+  delete process.env.HARNESS_SECRET;
+  const offPlant = await fault.plantHarnessFaults({ n: 250, expired: true });
+  ok(offPlant.ok === false && offPlant.reason === "harness-off",
+    `plantHarnessFaults refuses harness-off with no HARNESS_SECRET — production plants nothing (got ${JSON.stringify(offPlant)})`);
+  const offClear = await fault.clearPlantedFaults({});
+  ok(offClear.ok === false && offClear.reason === "harness-off",
+    `…and so does clearPlantedFaults (got ${JSON.stringify(offClear)})`);
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 0, "…and neither refused call touched the keyspace");
+  process.env.HARNESS_SECRET = SECRET;
+  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 9,
+    `SOURCE: the two new storage-touching exports each carry the gate — nine, not seven (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
+
+  /* ── 7b. `n` IS CLAMPED, and the clamp lives with the constant it bounds ── */
+  ok(fault.HARNESS_FAULT_PLANT_MAX === 500, "the ceiling is five hundred rows — five pages of the sweep's page size");
+  ok(fault.plantCountClamped(0) === 1 && fault.plantCountClamped(-40) === 1, "zero and negative clamp UP to one");
+  ok(fault.plantCountClamped(10_000) === 500 && fault.plantCountClamped(501) === 500, "anything above the ceiling IS the ceiling");
+  ok(fault.plantCountClamped(undefined) === 1 && fault.plantCountClamped("banana") === 1 && fault.plantCountClamped(NaN) === 1,
+    "a missing or junk `n` is ONE — the smallest population, never the largest");
+  ok(fault.plantCountClamped(7.9) === 7, "…and a fraction floors rather than rounding up");
+  const overCap = await fault.plantHarnessFaults({ n: 10_000, expired: true });
+  ok(overCap.n === 500 && overCap.planted === 500,
+    `…and the clamp is enforced END TO END, not just in the helper (asked 10000, planted ${overCap.planted})`);
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 500, "…exactly five hundred rows reached the store");
+  await purge();
+
+  /* ── 7c. THE ROW SHAPE: the SECONDS ttl option, and `until` on both sides of now ── */
+  clear();
+  const live = await fault.plantHarnessFaults({ n: 2, expired: false });
+  const lw = lastWrite();
+  ok(JSON.stringify(lw.options) === JSON.stringify({ ttl: { value: 60, unit: "SECONDS" } }),
+    `a planted row passes exactly { ttl: { value: 60, unit: "SECONDS" } } — forgotten ballast leaves on its own (got ${JSON.stringify(lw.options)})`);
+  ok(lw.value.count === 1 && lw.value.plantedBy === "harness" && typeof lw.value.armedAt === "string",
+    `…with the documented row shape (got ${JSON.stringify(lw.value)})`);
+  ok(Date.parse(lw.value.until) - Date.parse(lw.value.armedAt) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+    `…and a live row's \`until\` is exactly armedAt + 60 s (got until=${lw.value.until} armedAt=${lw.value.armedAt})`);
+  ok(fault.faultRowExpired(lw.value) === false && live.expired === false, "…so the sweep must LIST it and leave it alone");
+
+  clear();
+  const dead = await fault.plantHarnessFaults({ n: 2, expired: true });
+  const dw = lastWrite();
+  ok(JSON.stringify(dw.options) === JSON.stringify({ ttl: { value: 60, unit: "SECONDS" } }),
+    "an expired row passes the SAME SECONDS shape — the platform TTL is not what makes it expired");
+  ok(Date.parse(dw.value.until) < Date.now(), `…but its \`until\` is in the PAST (got ${dw.value.until})`);
+  ok(fault.faultRowExpired(dw.value) === true && dead.expired === true,
+    "…which is the only shape the sweep will actually delete");
+  await purge();
+
+  /* ── 7d. THE ROWS ARE INERT. Not a source claim: 250 of them are in the store while every
+   * reader in the module is called. `harnessFaultKey` puts the KIND in the second segment and
+   * each consumer exact-matches its own constant, so `plant` matches nothing. ── */
+  const inert = await fault.plantHarnessFaults({ n: 250, expired: true });
+  ok(inert.planted === 250, `(fixture) 250 planted rows sitting in the fault keyspace (planted ${inert.planted})`);
+  ok((await fault.jiraFaultStatus(PATH)) === null,
+    "`jiraFaultStatus` sees NO fault — the `jira` kind is exact-matched and `plant` is not it");
+  ok((await fault.keyReadFaultMode("openai")) === null && (await fault.keyReadFaultMode("plant")) === null,
+    "…`keyReadFaultMode` sees none either, not even for a provider literally named `plant`");
+  ok((await fault.harnessFaultArmed(fault.HARNESS_FAULT_GIT_DISPATCH, "000", "d-1")) === false,
+    "…the git-dispatch consumer is not armed by ballast");
+  ok((await fault.harnessFaultArmed(fault.HARNESS_FAULT_HOOK_PROMOTE, "000", "acme/app")) === false,
+    "…nor the hook-promote one");
+  for (const kind of [fault.HARNESS_FAULT_JIRA, fault.HARNESS_FAULT_KEY_READ, fault.HARNESS_FAULT_GIT_DISPATCH, fault.HARNESS_FAULT_HOOK_PROMOTE]) {
+    const r = await fault.readHarnessFault(kind, ["000"]);
+    ok(r && r.value === null, `…and the generic read of kind ${JSON.stringify(kind)} on part "000" answers null, though \`plant:000\` exists`);
+    ok(fault.harnessFaultKey(kind, "000") !== fault.plantedFaultKey(0),
+      `…because the key of kind ${JSON.stringify(kind)} cannot collide with a planted one`);
+  }
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 250,
+    "…and every one of those reads left all 250 rows exactly where they were");
+
+  /* ── 7e. THE DRAIN. 250 expired rows, the paced deletes, `maxMs: 1`: the budget may only
+   * stop the call AFTER it has moved (F-682), the token is never null while work remains
+   * (F-674), and the loop terminates on `complete: true` (F-683). ── */
+  const pausesBeforeSweep = pauseCount();
+  ok(pausesBeforeSweep >= 80,
+    `(fixture) planting paced at the app's published rate — ${pausesBeforeSweep} rounds of ${fault.KVS_DELETE_PAUSE_MS} ms for 250 rows in batches of ${fault.KVS_DELETE_BATCH}`);
+
+  const first = await fault.sweepHarnessFaults({ maxMs: 1 });
+  ok(first.truncated === true && first.reason === "budget",
+    `a sweep over 250 planted rows runs out of budget and says so (got ${JSON.stringify({ truncated: first.truncated, reason: first.reason })})`);
+  ok(first.deleted > 0 && first.complete === false,
+    `…having MOVED first — the budget cannot stop a call that deleted nothing (deleted ${first.deleted}, complete ${first.complete})`);
+  ok(typeof first.cursor === "string" && first.cursor.length > 0 && fault.sweepCursorWellFormed(first.cursor),
+    `…and it hands back a RESUMABLE token, never null while rows remain (got ${JSON.stringify(first.cursor)})`);
+
+  let token = first.cursor, calls = 1, drained = first.deleted, last = first;
+  while (token && calls < 400) {
+    last = await fault.sweepHarnessFaults({ maxMs: 1, cursor: token });
+    drained += last.deleted;
+    token = last.cursor;
+    calls++;
+  }
+  ok(token === null && last.complete === true && last.truncated === false,
+    `…and POSTing it back until the token is null TERMINATES with complete:true (${calls} calls, last ${JSON.stringify({ truncated: last.truncated, complete: last.complete })})`);
+  ok(calls > 10, `…after genuinely many resumed calls, which is the path no single-row keyspace can reach (${calls})`);
+  ok(drained === 250 && (await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 0,
+    `…with every one of the 250 rows deleted and none left behind (deleted ${drained})`);
+  ok(pauseCount() > pausesBeforeSweep, "…and the deletes were paced too, at the same one published rate");
+
+  /* ── 7f. A REAL KVS CURSOR ROUND-TRIPS. With the keyspace ALL expired the sweep never
+   * leaves page 0 (the page shrinks under it), so the token always carries a null cursor —
+   * which is exactly why F-674 had to invent a token that can express "the beginning". Put
+   * LIVE rows in front of the expired ones and page 0 has nothing to delete: it ADVANCES, and
+   * the next token carries the platform's own cursor string. ── */
+  await fault.plantHarnessFaults({ n: 250, expired: true });
+  await fault.plantHarnessFaults({ n: 120, expired: false });   // overwrites plant:000..119
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 250, "(fixture) 120 live rows in front of 130 expired ones");
+  const advanced = await fault.sweepHarnessFaults({ maxMs: 1 });
+  ok(advanced.truncated === true && typeof advanced.cursor === "string",
+    `a sweep whose first page is all-live still stops on budget with a token (got ${JSON.stringify({ truncated: advanced.truncated, reason: advanced.reason })})`);
+  const innerCursor = JSON.parse(Buffer.from(advanced.cursor, "base64").toString("utf8")).c;
+  ok(typeof innerCursor === "string" && innerCursor.startsWith(fault.HARNESS_FAULT_PLANT_PREFIX),
+    `…and the token carries a REAL KVS cursor, not "the beginning" — the multi-page path F-688 exists to reach (got ${JSON.stringify(innerCursor)})`);
+
+  let t2 = advanced.cursor, c2 = 0, last2 = advanced;
+  while (t2 && c2 < 400) { last2 = await fault.sweepHarnessFaults({ maxMs: 1, cursor: t2 }); t2 = last2.cursor; c2++; }
+  ok(t2 === null && last2.complete === true, `…and that drain terminates too (${c2} resumed calls)`);
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 120,
+    "…having deleted the 130 expired rows and LEFT every live one — a sweep never cancels a lever somebody is using");
+
+  /* ── 7g. THE CLEAR TAKES THE BALLAST AND NOTHING ELSE. It must delete LIVE planted rows
+   * (which the sweep may not), so the only thing keeping it safe is that its prefix is bound
+   * to `harness_fault:plant:` and is not a parameter. ── */
+  const bystanderArm = await fault.armJiraFault(PATH, 503, 120);
+  ok(bystanderArm.ok !== false, "(fixture) a real, LIVE Jira lever armed beside the ballast");
+  const bystanderKey = fault.harnessFaultKey(fault.HARNESS_FAULT_JIRA, PATH);
+
+  let ct = null, cc = 0, cleared = 0, lastClear = null;
+  do {
+    lastClear = await fault.clearPlantedFaults({ maxMs: 1, cursor: ct });
+    cleared += lastClear.deleted;
+    ct = lastClear.cursor;
+    cc++;
+  } while (ct && cc < 400);
+  ok(ct === null && lastClear.complete === true && cleared === 120,
+    `clearPlantedFaults drains the live ballast the sweep will not touch (${cleared} deleted in ${cc} calls, complete ${lastClear.complete})`);
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 0, "…the plant sub-prefix is empty");
+  ok(lastClear.prefix === fault.HARNESS_FAULT_PLANT_PREFIX && lastClear.prefix === "harness_fault:plant:",
+    `…and it reports the ONE prefix it is bound to, which no caller can choose (got ${JSON.stringify(lastClear.prefix)})`);
+  ok((await storage.get(bystanderKey)) !== undefined && (await fault.jiraFaultStatus(PATH)) === 503,
+    "…while the live Jira lever beside it is untouched — an unconditional delete that could reach it would be a different lever");
+  await fault.disarmHarnessFault(fault.HARNESS_FAULT_JIRA, [PATH]);
+  await purge();
+
+  /* ── 7h. THE CLEAR CARRIES F-682 AND F-683 TOO, not just their vocabulary. It borrowed the
+   * sweep's progress gate and finished-signal; borrowed code with no fixture behind it is a
+   * comment. A batch in which EVERY delete is refused must END the call as `deletes-failing`
+   * — not arm the progress gate and hand back the page's own cursor forever — and a clear
+   * that reached the end of the keyspace with failures is `deletes-failed`, never complete. ── */
+  const okDelete688 = kvs.delete;
+  {
+    await fault.plantHarnessFaults({ n: 20, expired: false });
+    kvs.delete = async function refusingDelete(key) {
+      if (String(key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX)) {
+        const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e;
+      }
+      return okDelete688.call(this, key);
+    };
+    let ft = null, fc = 0, lastF = null, landedTotal = 0;
+    do {
+      lastF = await fault.clearPlantedFaults({ maxMs: 5_000, cursor: ft });
+      landedTotal += lastF.deleted;
+      ft = lastF.cursor;
+      fc++;
+      if (lastF.reason === "deletes-failing") break;
+    } while (ft && fc < 20);
+    ok(fc === 1 && lastF.reason === "deletes-failing",
+      `a clear whose whole first batch is refused ENDS as "deletes-failing" rather than spinning on its own cursor (calls ${fc}, reason ${JSON.stringify(lastF.reason)})`);
+    ok(lastF.truncated === true && lastF.complete === false && lastF.failed > 0 && landedTotal === 0,
+      `…never complete, and honest that nothing landed (got ${JSON.stringify({ truncated: lastF.truncated, complete: lastF.complete, failed: lastF.failed, deleted: landedTotal })})`);
+    ok(typeof lastF.cursor === "string" && lastF.cursor.length > 0, "…still carrying the cursor of the page that failed");
+    ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 20, "…and every refused row is still there");
+
+    // THE PARTIAL CASE: some land, some do not, and the walk reaches the end of the keyspace.
+    const stubborn = new Set([fault.plantedFaultKey(0), fault.plantedFaultKey(1)]);
+    kvs.delete = async function partlyRefusingDelete(key) {
+      if (stubborn.has(key)) { const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e; }
+      return okDelete688.call(this, key);
+    };
+    const partial = await fault.clearPlantedFaults({ maxMs: 20_000 });
+    ok(partial.deleted > 0 && partial.failed > 0, `(fixture) some deletes land and some are refused (deleted ${partial.deleted}, failed ${partial.failed})`);
+    ok(partial.truncated === true && partial.reason === "deletes-failed" && partial.complete === false,
+      `a clear that could not delete what it named is NOT finished (got ${JSON.stringify({ reason: partial.reason, complete: partial.complete })})`);
+    ok(typeof partial.cursor === "string" && partial.cursor.length > 0, "…and hands back the page the failures started on");
+    kvs.delete = okDelete688;
+    await purge();
+  }
+
+  globalThis.setTimeout = realTimeout;
 }
 
 kvs.set = realSet;

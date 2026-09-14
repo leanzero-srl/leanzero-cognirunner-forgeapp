@@ -51,10 +51,13 @@
  * NOTHING secret is printed — not the trigger URLs, not the bearer token.
  */
 
-import { requireEnvAck, forgeEnvId } from "../lib/shared-env-guard.mjs";
+import { requireEnvAck, forgeEnvId, ENV_NAMES } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 
-const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot", "kvs"], defaultEnv: "staging" });
+/* F-752 — `envId` is NOT destructured: this driver's browser half is pinned to staging by
+   construction (see STAGING_ENV below), so the settled row's id has no reader here, and a
+   bound-but-unused environment id is the shape RULE 2b polices for good reason. */
+const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const flag = (n) => process.argv.slice(2).includes(`--${n}`);
@@ -72,11 +75,62 @@ const SHADOW_TICKS = 3;
 /* The staging admin panel, for the one question only a browser can answer. */
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-/* F-732 — NOT `--envid`. This driver is deliberately TWO-environment, so its browser half
-   is staging while `requireEnvAck` settles the hook half; `--envid` now means "confirm the
-   settled row" everywhere and may not name another environment, so the override that is
-   legitimate HERE gets its own name. */
-const STAGING_ENV = arg("staging-envid", forgeEnvId("staging"));
+/* ── WHY THIS DRIVER IS TWO-ENVIRONMENT, AND WHY THE BROWSER HALF IS STAGING ──────────
+   F-732 — NOT `--envid`. `--envid` now means "confirm the settled row" everywhere and may
+   not name another environment, so the override that is legitimate HERE gets its own name.
+   It is legitimate here because the split is DELIBERATE and fixed, not operator-chosen: the
+   hook half follows `--env` (it arms and restores whatever tenant the run settled on), while
+   the browser half can only ever be STAGING, because the one question a browser answers —
+   does the Agents tab render the shadow badge — is asked of the admin panel that the
+   persistent Playwright profile at PROFILE is signed into, and that profile is a staging
+   session. Pointing it at another environment does not test another environment; it tests a
+   login screen.
+
+   F-752 — SO THE FLAG MAY ONLY EVER SAY WHAT THE TABLE ALREADY SAYS. F-732 renamed this
+   override instead of validating it: `--staging-envid` took ANY raw string and went straight
+   into the admin-page URL, so the hook-half/browser-half split the guard refuses under
+   `--envid` was still reachable here under the new name. MEASURED:
+   `--env=staging --staging-envid=<the DEV id, from the guard's own table>` settled staging,
+   ran the hook half on staging, and drove Playwright at the DEV admin page — F-714/F-698
+   exactly, with `ev.env` recording "staging" for a run whose UI half was dev. An EMPTY
+   `--staging-envid=` additionally dropped the env id from the URL altogether.
+
+   The flag survives for the identity it already has, which is the same shape the guard gave
+   `--envid`: passing the staging id is what passing nothing means, and anything else is
+   refused BY NAME rather than silently obeyed. */
+const STAGING_ENV = forgeEnvId("staging");
+{
+  const raw = arg("staging-envid", null);
+  if (raw !== null && raw !== STAGING_ENV) {
+    /* The env NAMES come out of the guard's table too — retyping them here would be the
+       second home rule 4f exists to forbid, in the very block that enforces it. */
+    const named = ENV_NAMES.find((n) => forgeEnvId(n) === raw);
+    /* Rule 4h — the sentences below name NO tenant of their own. The environment is either
+       interpolated from the guard's table (`named`, `STAGING_ENV`) or not mentioned, so this
+       refusal cannot tell an operator the wrong environment the way F-741's banners did. */
+    console.error([
+      "REFUSING to run: --staging-envid does not name the environment this driver's browser",
+      "half is pinned to.",
+      "",
+      "That half is pinned BY CONSTRUCTION — the persistent Playwright profile it drives is",
+      "signed into one environment's admin panel, so another environment id does not point",
+      "the browser at another environment, it points it at a login screen. The flag exists",
+      "to CONFIRM the row, never to re-decide it (F-732, F-752).",
+      "",
+      raw === ""
+        ? "An empty --staging-envid= drops the environment id from the admin-page URL entirely."
+        : named
+          ? `The id given is ${named}'s. Running the hook half on one tenant and the admin page of`
+            + " another is the split the guard refuses under --envid (F-698, F-714)."
+          : "The id given is not one this harness knows at all. Environment ids are not typed;"
+            + " they come out of the one table.",
+      "",
+      `\`--staging-envid\` survives only for the identity it already has: --staging-envid=${STAGING_ENV}`,
+      "is what passing nothing means, and passing it changes nothing.",
+    ].join("\n"));
+    process.exit(2);
+  }
+}
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 
 /* The slot, and the rule the restore follows — see va-rest-doors-live.mjs's note. */
@@ -189,7 +243,10 @@ async function readShadowBadge(personaName) {
   const ctx = await chromium.launchPersistentContext(PROFILE, { headless: true, viewport: { width: 1500, height: 1200 } });
   try {
     const page = ctx.pages()[0] || (await ctx.newPage());
-    await page.goto(`${BASE}/jira/apps/${APP}${STAGING_ENV ? "/" + STAGING_ENV : ""}`, { waitUntil: "domcontentloaded" });
+    /* STAGING_ENV comes from the guard's table and is validated at module top, so it is
+       always a real id — the old `STAGING_ENV ? "/" + STAGING_ENV : ""` ternary existed only
+       to survive the empty `--staging-envid=` that is now refused (F-752). */
+    await page.goto(`${BASE}/jira/apps/${APP}/${STAGING_ENV}`, { waitUntil: "domcontentloaded" });
     let frame = null;
     for (let i = 0; i < 90; i++) {
       frame = page.frames().find((f) => f.url().includes("cdn.prod.atlassian-dev.net"));

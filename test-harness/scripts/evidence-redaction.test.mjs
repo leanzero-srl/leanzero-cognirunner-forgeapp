@@ -1918,7 +1918,14 @@ ok(guardedDrivers.length === liveFiles.length,
        `arg("staging-envid", …)`, an override F-732 deliberately gave its own name so that
        `--envid` could keep the single meaning "confirm the settled row". The literal names
        an OPTION, not the tenant the run is on, and no operator reads it as output. */
-    .replace(/\barg\(\s*["'][^"']*["']/g, "arg(");
+    .replace(/\barg\(\s*["'][^"']*["']/g, "arg(")
+    /* …and that holds wherever the flag is NAMED, not only where it is READ. The exemption
+       above covered the `arg()` call site alone, so a usage line or a refusal that mentions
+       `--staging-envid` tripped the rule on the flag's own name — which is the one thing
+       this paragraph already says is not a claim. A long flag carrying a tenant word is an
+       option name in both places, and `--env=dev|staging` directly below has always been
+       stripped on exactly that reasoning. */
+    .replace(/--[a-z-]*\b(?:staging|dev)\b[a-z-]*/g, "");
   function tenantLiterals(code) {
     return code.split("\n").map((l, i) => ({ l, n: i + 1 }))
       .filter(({ l }) => TENANT_IN_STRING.test(stripLegitimate(l)))
@@ -1946,6 +1953,17 @@ ok(guardedDrivers.length === liveFiles.length,
     "NEGATIVE CONTROL (F-741): a FLAG NAME is an option, not a claim about this run — F-732 gave va-shadow-door-live.mjs's two-environment override its own name on purpose");
   ok(tenantLiterals('const DEVICE = "development";').length === 0,
     "NEGATIVE CONTROL (F-741): `dev` inside a longer word is not the environment — the boundary is checked on both sides");
+  /* F-752 — the flag-name exemption covered the `arg()` CALL SITE only, so va-shadow-door's
+     own refusal tripped 4h on the name of the flag it was refusing. A flag is an option
+     wherever it is written. */
+  ok(tenantLiterals('      "An empty --staging-envid= drops the environment id from the URL entirely.",').length === 0,
+    "NEGATIVE CONTROL (F-752): a refusal that NAMES the flag it is refusing is not a tenant claim — the exemption follows the flag, not the call site that reads it");
+  ok(tenantLiterals('  console.log("  node scripts/x.mjs --staging-envid=<id>");').length === 0,
+    "NEGATIVE CONTROL (F-752): …and so is a usage line");
+  ok(tenantLiterals('  console.log("the shadow badge never appeared on STAGING");').length === 1,
+    "POSITIVE CONTROL (F-752): widening the FLAG exemption did not excuse a real tenant CLAIM — the sentence F-741 was cut for still fires");
+  ok(tenantLiterals('  console.log("hook reachable on staging");').length === 1,
+    "POSITIVE CONTROL (F-752): …in either case");
 
   const offenders = [];
   let scanned = 0;

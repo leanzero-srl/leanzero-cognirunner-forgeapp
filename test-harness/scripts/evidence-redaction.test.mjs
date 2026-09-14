@@ -1987,7 +1987,99 @@ ok(guardedDrivers.length === liveFiles.length,
    PROSE IS EXEMPT, as everywhere else here: a docblock explaining that a flow only exists on
    one environment is documentation, not output. The scan reads code. */
 {
-  const TENANT_IN_STRING = /["'`][^"'`\n]*(?<![A-Za-z_])(STAGING|staging|DEV)(?![A-Za-z_])[^"'`\n]*["'`]/;
+  /* F-861 — `staging` HAS TWO SENSES AND ONLY ONE OF THEM IS A TENANT. The rule matched the
+     bare word anywhere inside any literal, so the VA drivers — whose product domain is the
+     STAGING OF DRAFTS — could not write an ordinary sentence about their own feature:
+     `"…so nothing about staging was read at all"` carries no tenant claim and failed anyway.
+     The F-854 surgeon reworded the sentence rather than reporting the rule, which is the
+     move the next author makes too, so the rule teaches a lie about English.
+
+     NARROWED TO THE ENVIRONMENT SENSE rather than exempting the domain sense. The exemption
+     route ("staging within 3 words of draft/item/reply/post") cannot pass the sentence that
+     started this — "nothing about staging was read" has no domain noun near it — so it would
+     have left the same author stuck. The environment sense, by contrast, is small and
+     syntactically marked: a PREPOSITION or `-e`/`--env` in front of it, a tenant NOUN behind
+     it, the SHOUTED form, or the literal opening on it as a subject ("staging starts on the
+     Coder edition…"). Every F-741/F-752 positive is one of those four; the domain sense is
+     none of them, except "staging of the …", which the subject rule excludes explicitly.
+     `DEV` stays exactly as it was: shouted only, since lowercase `dev` was never matched. */
+  const TENANT_WORD = /(?<![A-Za-z_])(?:STAGING|staging|DEV)(?![A-Za-z_])/;
+  /* F-871 — A LITERAL ENDS AT ITS OWN CLOSING QUOTE, NOT AT THE FIRST APOSTROPHE. The
+     extraction was a character class, so `"we didn't run on staging"` was read as the
+     fragments `we didn` and `t run on staging`. The environment sense is a SHAPE — a
+     preposition in front of the word, a tenant noun behind it — so a claim cut at the wrong
+     place loses its marker and the rule UNDER-reports: `PASS("the staging tenant's hook
+     answered")` yielded `the staging tenant` + `s hook answered`, and survived only because
+     the noun phrase happened to fall left of the apostrophe. Move the apostrophe one word
+     earlier and a real tenant claim walks straight through.
+
+     A quote-aware scanner instead: the opening quote fixes the delimiter, a backslash escapes
+     the next character, and only the matching UNESCAPED quote closes the literal. A template
+     literal's `${...}` belongs to that one literal, brace-counted, so a quote inside an
+     interpolation cannot end it early. An UNTERMINATED literal is skipped. */
+  /* F-880 — …AND A TEMPLATE LITERAL IS ONE LITERAL EVEN WHEN IT SPANS LINES. F-871 made the
+     scan quote-aware and left it PER-LINE, which is the same defect at a second boundary: a
+     banner opened with a backtick, wrapped, and closed two lines later opens a literal that
+     is UNTERMINATED on its first line — skipped by the line above — while the continuation
+     carrying `on staging` has no opening quote at all, so neither line is ever read. A
+     wrapped banner is the very SHAPE this rule was cut for (F-741's was one long line only
+     by accident), and it walked straight through; unwrap it and the claim reappears, which
+     teaches the next author to keep the wrap.
+
+     So the scan reads the file's code as ONE text — after the same comment stripping and the
+     same per-line `stripLegitimate`, rejoined so line numbers still line up — and reports the
+     line of the literal's OPENING QUOTE, which is where a reader must go to fix it. A `"` or
+     `'` literal still ends at a newline because in JS it must: an unescaped line break is a
+     syntax error there, so letting one through would allow a single stray quote to swallow
+     the rest of the file. Only a backtick may cross a line. */
+  function scanLiterals(code) {
+    const out = [];
+    let cursor = 0, line = 1;                              // i is non-decreasing: count as we go
+    for (let i = 0; i < code.length; i++) {
+      const q = code[i];
+      if (q !== '"' && q !== "'" && q !== "`") continue;
+      let j = i + 1, closed = false;
+      while (j < code.length) {
+        const c = code[j];
+        if (c === "\\") { j += 2; continue; }             // an escape consumes what follows
+        if (c === "\n" && q !== "`") break;               // only a template may cross a line
+        if (q === "`" && c === "$" && code[j + 1] === "{") {
+          let depth = 1; j += 2;
+          while (j < code.length && depth > 0) {
+            if (code[j] === "{") depth++;
+            else if (code[j] === "}") depth--;
+            j++;
+          }
+          continue;                                        // `${...}` is inside the literal
+        }
+        if (c === q) { closed = true; break; }
+        j++;
+      }
+      if (!closed) continue;              // unterminated: not a sentence this rule can read
+      while (cursor < i) { if (code[cursor] === "\n") line++; cursor++; }
+      out.push({ inner: code.slice(i + 1, j), line });     // the OPENING quote's line
+      i = j;                              // resume AFTER the closing quote
+    }
+    return out;
+  }
+  const ENV_SENSE = [
+    /* the shouted tenant name — the banner form F-741 was cut for.
+       F-881 — AN ISSUE KEY IS NOT A TENANT. The boundary is "not a letter or underscore" on
+       both sides, and a HYPHEN is neither, so `"DEV-123 was created"` read as the shouted
+       tenant name and BLOCKED — the first sentence a seeding driver prints when its project
+       key happens to be `DEV`, refused by a rule that has no opinion about issue keys. The
+       issue-key SHAPE is excluded by lookahead (a hyphen then a digit); `on DEV`, `-e DEV`
+       and a bare shouted `DEV` are untouched, which is everything F-741 was cut for. */
+    /(?<![A-Za-z_])(?:STAGING|DEV)(?![A-Za-z_])(?!-\d)/,
+    /* pointed AT an environment: "on staging", "to staging", "-e staging", "--env staging" */
+    /(?:\bon|\bto|\binto|\bfrom|\bagainst|\bin|\bat|\bvia|\benvironment|\benv|-e|--env[= ])\s+staging(?![A-Za-z_])/i,
+    /* used AS an environment noun phrase: "staging tenant", "staging site", "staging run" */
+    /(?<![A-Za-z_])staging\s+(?:tenant|site|env|environment|instance|run|runs|trigger|logs|default|half|copy|only)(?![A-Za-z_])/i,
+    /* the literal's SUBJECT — "staging starts on the Coder edition…" — but never the
+       domain's own genitive, "staging of the draft", which is the feature, not a tenant. */
+    /^\s*staging(?![A-Za-z_])\s+(?!of(?![A-Za-z_]))\w/i,
+  ];
+  const tenantSense = (inner) => ENV_SENSE.some((re) => re.test(inner));
   /** The legitimate homes, removed before the scan: the guard's own options, the one-off
    *  env-id/url readers that take an environment BY NAME on purpose, the `.env` variable
    *  name, and `--env=` in a usage line. Each is the mapping being READ, not retyped. */
@@ -2009,9 +2101,15 @@ ok(guardedDrivers.length === liveFiles.length,
        stripped on exactly that reasoning. */
     .replace(/--[a-z-]*\b(?:staging|dev)\b[a-z-]*/g, "");
   function tenantLiterals(code) {
-    return code.split("\n").map((l, i) => ({ l, n: i + 1 }))
-      .filter(({ l }) => TENANT_IN_STRING.test(stripLegitimate(l)))
-      .map(({ n }) => n);
+    /* `stripLegitimate` is line-oriented (its patterns are written against one statement),
+       so it still runs per line — and the lines are rejoined, because the LITERALS are
+       read from the whole text (F-880). Neither step adds or drops a newline, so the line
+       a literal is reported at is its line in the file. */
+    const scrubbed = code.split("\n").map(stripLegitimate).join("\n");
+    if (!TENANT_WORD.test(scrubbed)) return [];            // cheap prefilter: the word is here at all
+    return scanLiterals(scrubbed)
+      .filter(({ inner }) => tenantSense(inner))
+      .map(({ line }) => line);
   }
   /* POSITIVE CONTROLS — verbatim from the five files, before they were fixed. */
   ok(tenantLiterals('  console.log(`\\nF-577 — THE RECEIPT COPY, on STAGING, agent ${NAME}\\n`);').length === 1,
@@ -2046,6 +2144,53 @@ ok(guardedDrivers.length === liveFiles.length,
     "POSITIVE CONTROL (F-752): widening the FLAG exemption did not excuse a real tenant CLAIM — the sentence F-741 was cut for still fires");
   ok(tenantLiterals('  console.log("hook reachable on staging");').length === 1,
     "POSITIVE CONTROL (F-752): …in either case");
+  /* F-861 — the two senses, side by side. The BLOCK half is the whole reason the rule
+     exists; the ALLOW half is the sentence the F-854 surgeon had to reword. */
+  ok(tenantLiterals('  PASS("ran on staging");').length === 1,
+    "POSITIVE CONTROL (F-861): a claim about where the run went is still caught after the narrowing");
+  ok(tenantLiterals('  info("re-run with -e staging to see it");').length === 1,
+    "POSITIVE CONTROL (F-861): …and so is the flag form that sends an operator to a tenant");
+  ok(tenantLiterals('  info("read the staging tenant logs");').length === 1,
+    "POSITIVE CONTROL (F-861): …and the noun phrase, where the word is the environment itself");
+  ok(tenantLiterals('  FAIL("so nothing about staging was read at all");').length === 0,
+    "NEGATIVE CONTROL (F-861): the VA domain verb — a sentence ABOUT the staging of drafts claims no tenant, and this is the sentence F-854 reworded instead of reporting the rule");
+  ok(tenantLiterals('  PASS("staging of the draft left the item untouched");').length === 0,
+    "NEGATIVE CONTROL (F-861): …the genitive at the head of a literal is the feature, not a tenant");
+  ok(tenantLiterals('  PASS("the reply was staged, not sent");').length === 0,
+    "NEGATIVE CONTROL (F-861): `staged` was never the tenant name and is not one now");
+  /* F-871 — AN APOSTROPHE IS NOT A LITERAL BOUNDARY. Each of these three carries a tenant
+     claim whose marker sits on the FAR side of the apostrophe from the word `staging`, so
+     the character-class extraction lost it at the cut and the rule stayed silent. */
+  ok(tenantLiterals(`  console.log("we didn't run on staging");`).length === 1,
+    "POSITIVE CONTROL (F-871): the preposition marker survives an apostrophe earlier in the sentence");
+  ok(tenantLiterals(`  PASS("the staging tenant's hook answered");`).length === 1,
+    "POSITIVE CONTROL (F-871): …and so does the tenant NOUN PHRASE when the apostrophe follows it");
+  ok(tenantLiterals('  info(`the staging tenant\'s hook answered for ${NAME} on staging`);').length === 1,
+    "POSITIVE CONTROL (F-871): …and a template literal is ONE literal — the apostrophe and the `${}` interpolation both stay inside it");
+  ok(tenantLiterals(`  PASS("the draft's staging left the item untouched");`).length === 0,
+    "NEGATIVE CONTROL (F-871): joining the fragments does not invent a tenant — the domain sense with an apostrophe is still allowed");
+  /* F-881 — THE ISSUE KEY AND THE TENANT, side by side. The BLOCK half is the claim the
+     shouted branch exists for; the ALLOW half is the sentence a seeding driver prints. */
+  ok(tenantLiterals('  PASS("DEV-123 was created");').length === 0,
+    "NEGATIVE CONTROL (F-881): an issue KEY whose project prefix is DEV is not a tenant claim — the hyphen is not a letter, so the old boundary let the key through as the shouted name");
+  ok(tenantLiterals('  info(`seeded ${n} issues, first DEV-4012`);').length === 0,
+    "NEGATIVE CONTROL (F-881): …and the same key inside a template literal");
+  ok(tenantLiterals('  PASS("deployed to DEV");').length === 1,
+    "POSITIVE CONTROL (F-881): the shouted tenant name with nothing behind it still BLOCKS — the exclusion is the key SHAPE, not the word");
+  ok(tenantLiterals('  info("re-run with -e DEV");').length === 1,
+    "POSITIVE CONTROL (F-881): …and so does the flag form that sends an operator to a tenant");
+  /* F-880 — A WRAPPED BANNER. The claim sits on a CONTINUATION line: per-line, the opening
+     line is unterminated (skipped) and the continuation has no opening quote, so the whole
+     thing was invisible. The offender is reported at the OPENING quote's line, 1. */
+  {
+    const wrappedClaim = ["  console.log(`", "    the receipt copy ran on staging", "  `);"].join("\n");
+    const found = tenantLiterals(wrappedClaim);
+    ok(found.length === 1 && found[0] === 1,
+      `POSITIVE CONTROL (F-880): a two-line template whose tenant claim is on the CONTINUATION line is ONE literal, reported at its opening quote (got: ${JSON.stringify(found)})`);
+    const wrappedDomain = ["  PASS(`", "    the draft was staged and its staging changed nothing", "  `);"].join("\n");
+    ok(tenantLiterals(wrappedDomain).length === 0,
+      "NEGATIVE CONTROL (F-880): …and reading the whole template did not turn the VA domain sense into a tenant claim just because it wraps");
+  }
 
   const offenders = [];
   let scanned = 0;

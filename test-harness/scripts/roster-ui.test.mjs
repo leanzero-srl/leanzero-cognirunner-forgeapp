@@ -219,6 +219,10 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       clicks: [], scopeDropdownClicks: 0, shots: 0, pendingRemove: null,
       forceScopeControl: opts.forceScopeControl === true,
       throwFor: opts.throwFor || null,
+      /* F-671 — the product moved or renamed `scopeLabel`'s wrapper, so the card still
+         renders but `.perm-admin-role` no longer matches anything on it. */
+      noRoleClass: opts.noRoleClass === true,
+      roleClassReads: 0,
     };
     /* THE PRODUCT FACT THE DEFECT TURNED ON. */
     const dropdownCount = () => (st.forceScopeControl ? 2 : (st.role === "admin" ? 1 : 2));
@@ -253,7 +257,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       attrs: { class: "perm-admin-card" },
       locator: (sel) => {
         if (sel === ".perm-ident-id") return node({ count: 1, text: chip(r.accountId), attrs: { title: r.accountId } });
-        if (sel === ".perm-admin-role") return node({ count: 1, text: scopeLabel(r.role, r.scope) });
+        if (sel === ".perm-admin-role") { st.roleClassReads++; return node({ count: st.noRoleClass ? 0 : 1, text: st.noRoleClass ? "" : scopeLabel(r.role, r.scope) }); }
         if (sel === ".perm-remove-btn") return node({ onClick: async () => { st.pendingRemove = r.accountId; } });
         return node({ count: 0 });
       },
@@ -337,6 +341,40 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     const r = await makeRosterUI(deps).grantRole(DIR[0].accountId, "admin", "all", ["Ann"]);
     ok(r.ok === false && /guard has changed/.test(String(r.reason)),
       "a scope control that REAPPEARS for Admin is reported as product drift, not skipped in silence");
+  }
+
+  /* 7e. F-671 — AN UNREADABLE CARD IS A FAILED READ-BACK, NEVER AGREEMENT.
+     The F-666 assertion read `cardAgrees = r.card === null || r.card === wantCard`, so
+     every way the read could FAIL — readRows throwing, no card matching, the class being
+     absent — arrived as `true`. Move `.perm-admin-role` in PermissionsTab and the check
+     disarms itself at every call site, in silence, forever: F-668's shape exactly. The
+     fake DOM here renders the card and withholds only the class. */
+  {
+    const { st, deps } = makeFakeUI({ noRoleClass: true });
+    const r = await makeRosterUI(deps).grantRole(DIR[0].accountId, "admin", "all", ["Ann"]);
+    ok(r.ok === true, "the GRANT itself still succeeds — the storage read is the authority and it is unaffected");
+    ok(r.card === null, "…the card could not be read");
+    ok(r.cardAgrees === false, "…and that is a FAILURE of the read-back, not agreement");
+    ok(/could not be read back/.test(String(r.cardMismatch)) && /perm-admin-role/.test(String(r.cardMismatch)),
+      `…and the mismatch carries cardHow as the reason, naming the class that moved (got ${JSON.stringify(r.cardMismatch)})`);
+    ok(r.cardUnreadable === true, "…flagged distinctly from a card that read a WRONG label");
+    ok(st.roleClassReads >= 2, `…and the read was RETRIED once after a settle before it was called a failure (attempts: ${st.roleClassReads})`);
+
+    /* NEGATIVE CONTROL BY REVERT: the predicate this finding removed, run on this very
+       answer. It says the card agrees — which is the defect, and the proof this case
+       could not have passed before the fix. */
+    const revertedPredicate = (card, wantCard) => card === null || card === wantCard;
+    ok(revertedPredicate(r.card, "All rules (always)") === true,
+      "NEGATIVE CONTROL: the old `card === null || …` predicate calls this same unreadable card AGREEING");
+  }
+
+  /* 7f. F-671's RETRY MUST NOT BECOME A SECOND READ FOR EVERYONE. A readable card is
+     answered on the first attempt, so the 1.2s settle is paid only by the failure path. */
+  {
+    const { st, deps } = makeFakeUI();
+    const r = await makeRosterUI(deps).grantRole(DIR[1].accountId, "editor", "own", ["Bob"]);
+    ok(r.cardAgrees === true && r.card === "Own rules only", "a card that reads cleanly still agrees");
+    ok(st.roleClassReads === 1, `…on ONE read, with no retry (attempts: ${st.roleClassReads})`);
   }
 
   /* 7e. THE RESTORE FINISHES. Ann is `changed`, Bob is `missing`, Cid is `missing`, and

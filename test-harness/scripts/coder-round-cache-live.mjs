@@ -22,6 +22,7 @@
  */
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };

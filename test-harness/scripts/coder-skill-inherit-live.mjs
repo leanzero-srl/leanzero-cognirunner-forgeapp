@@ -48,6 +48,7 @@
  */
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 
 const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();

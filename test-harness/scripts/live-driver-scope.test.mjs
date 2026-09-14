@@ -44,6 +44,19 @@
  *   convention, so an unbound one is always the F-712 defect and never a false positive
  *   from an inner scope.
  *
+ *   RULE 2b (F-729). The guard's OWN RESULT FIELDS - `envName`, `hookUrl`, `envId`, parsed
+ *   out of the CONTRACT docblock that publishes them - are policed WHATEVER their case.
+ *   RULE 2 is a convention test and these names are lowercase BY CONTRACT, so they were the
+ *   one family convention could not reach: a driver that copies the docblock's own
+ *   `const { envName, hookUrl, envId } = requireEnvAck(...)` and drops a field dies at module
+ *   evaluation, and both gates used to answer "clean" on it, measured.
+ *
+ * THIS FILE IS THE ONE HOME (F-728). `evidence-redaction.test.mjs` carried a second copy of
+ * RULES 1 and 2 as its section 4f-2, and that copy RETYPED the guard's export list while its
+ * own docblock promised the vocabulary was never hand-listed - so adding an export to the
+ * guard turned one rule red and left the other green, about the same file. The copy is gone
+ * and that file points here. Do not write a third.
+ *
  * Both rules run over source with comments and string and template literals stripped, so
  * a name that only appears inside prose or a URL is not a use.
  *
@@ -56,6 +69,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { maskNonCode } from "../lib/js-source-scan.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const libDir = path.join(here, "..", "lib");
@@ -63,90 +77,19 @@ const libDir = path.join(here, "..", "lib");
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
 
-/* Comments and string/template literals are not code. They are replaced with spaces
- * rather than deleted so line offsets stay honest for anyone debugging a hit. */
-export function stripNonCode(input) {
-  let src = input;
-  let out = "";
-  let i = 0;
-  const blank = (s) => s.replace(/[^\n]/g, " ");
-  /* A `/` starts a REGEX LITERAL only where a value is expected. Every false positive in
-     the first run of this test came from one: `/WRITE BRAKE/`, `/cache|DEFECT/i`,
-     `/ROTATION NOT/` - prose inside a pattern, read as three module-scope constants. */
-  const regexCanStart = () => {
-    for (let k = out.length - 1; k >= 0; k--) {
-      const ch = out[k];
-      if (ch === " " || ch === "\n" || ch === "\t" || ch === "\r") continue;
-      if ("(,=:[!&|?{};+-*%~^<>".includes(ch)) return true;
-      if (/[\w$)\]]/.test(ch)) {
-        /* `return /x/`, `typeof /x/` - a keyword, not a value */
-        const tail = out.slice(Math.max(0, k - 12), k + 1);
-        return /\b(return|typeof|case|in|of|new|delete|void|do|else|yield|await)$/.test(tail);
-      }
-      return false;
-    }
-    return true;
-  };
-  while (i < src.length) {
-    const c = src[i];
-    const two = src.slice(i, i + 2);
-    if (c === "/" && two !== "//" && two !== "/*" && regexCanStart()) {
-      let j = i + 1, cls = false, closed = false;
-      while (j < src.length) {
-        const d = src[j];
-        if (d === "\\") { j += 2; continue; }
-        if (d === "\n") break;                 /* not a regex after all */
-        if (d === "[") cls = true;
-        else if (d === "]") cls = false;
-        else if (d === "/" && !cls) { j++; closed = true; break; }
-        j++;
-      }
-      if (closed) {
-        while (j < src.length && /[dgimsuvy]/.test(src[j])) j++;
-        out += blank(src.slice(i, j)); i = j; continue;
-      }
-    }
-    if (two === "//") {
-      const end = src.indexOf("\n", i);
-      const stop = end === -1 ? src.length : end;
-      out += blank(src.slice(i, stop)); i = stop; continue;
-    }
-    if (two === "/*") {
-      const end = src.indexOf("*/", i + 2);
-      const stop = end === -1 ? src.length : end + 2;
-      out += blank(src.slice(i, stop)); i = stop; continue;
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      let j = i + 1;
-      let hole = -1;
-      while (j < src.length) {
-        if (src[j] === "\\") { j += 2; continue; }
-        if (src[j] === c) { j++; break; }
-        if (c === "`" && src[j] === "$" && src[j + 1] === "{") { hole = j; break; }
-        j++;
-      }
-      if (hole !== -1) {
-        /* A substitution hole in a template literal IS code - keep it, then re-enter the
-         * rest of the template as if a fresh backtick started at the closing brace. */
-        out += blank(src.slice(i, hole));
-        let depth = 1, k = hole + 2;
-        while (k < src.length && depth > 0) {
-          if (src[k] === "{") depth++;
-          else if (src[k] === "}") depth--;
-          k++;
-        }
-        out += "  " + stripNonCode(src.slice(hole + 2, k - 1)) + " ";
-        src = "`" + src.slice(k);
-        i = 0;
-        continue;
-      }
-      out += blank(src.slice(i, j)); i = j;
-      continue;
-    }
-    out += c; i++;
-  }
-  return out;
-}
+/* Comments and string/template literals are not code. The answer lives in
+ * `lib/js-source-scan.mjs` (F-730), because `evidence-redaction.test.mjs` needed the same
+ * question answered and had grown its OWN, weaker version — comments only — and then walked
+ * parentheses over the result, so a `)` in a FAIL message truncated a call's arguments. Two
+ * suites, one question, two answers is the exact defect these rules police. The library
+ * MASKS to spaces of the same length, which is what lets that file slice the original by the
+ * indices it balanced on; here, only the identifier scan reads it, and a mask reads
+ * identically to a strip. The `regexCanStart` heuristic moved WITH it, verbatim, because it
+ * was paid for in this suite's first-run false positives.
+ *
+ * Re-exported under its old name so the rest of this file, and anything that imported it,
+ * still reads the same. */
+export const stripNonCode = maskNonCode;
 
 /** Identifiers actually READ: not a `.prop`, not an object-literal key or label `prop:`. */
 export function usedIdentifiers(code) {
@@ -223,6 +166,46 @@ for (const m of guardSrc.matchAll(/\bexport\s*\{([^}]*)\}/g)) {
 ok(GUARD_EXPORTS.has("requireEnvAck") && GUARD_EXPORTS.has("forgeEnvId"),
   "the guard's export list parsed from the library (got: " + [...GUARD_EXPORTS].join(", ") + ")");
 
+/* ── RULE 2b (F-729) · THE GUARD'S OWN RESULT FIELDS, WHATEVER THEIR CASE ──────────
+ *
+ * RULE 2 judges SCREAMING_SNAKE by convention, and 4f-2 in `evidence-redaction.test.mjs`
+ * derived its vocabulary from what drivers ALREADY BIND — so neither could ever see the
+ * lowercase form, because not one driver binds a bare lowercase name today. MEASURED before
+ * this rule:
+ *
+ *   scopeViolations('import { requireEnvAck } from "../lib/shared-env-guard.mjs";\n' +
+ *                   'const { envName: ENV_NAME } = requireEnvAck(…);\n' +
+ *                   'const res = await fetch(hookUrl, …)')
+ *   → { missingGuardImport: [], unbound: [] }
+ *
+ * That source is ONE COPY-PASTE from the guard's own CONTRACT docblock —
+ * `const { envName, hookUrl, envId } = requireEnvAck(…)` — with one field dropped, which is
+ * the F-712 edit in the shape the library TELLS authors to write. The driver dies at module
+ * evaluation with no evidence file, and `npm run test:offline` calls the directory sound.
+ *
+ * The policed names are PARSED OUT OF THAT DOCBLOCK, never listed here: the contract the
+ * library publishes is the contract this rule holds authors to, and a field added to the
+ * documented destructuring is policed the day it is documented. The set is then checked
+ * against `requireEnvAck`'s return literal, so the docblock cannot quietly drift from the
+ * function it describes — which is the same one-home demand every rule in this pair makes. */
+const GUARD_RESULT_FIELDS = (() => {
+  const m = guardSrc.match(/const\s*\{([^}]*)\}\s*=\s*requireEnvAck\s*\(/);
+  if (!m) return [];
+  return [...m[1].matchAll(/([A-Za-z_$][\w$]*)/g)].map((x) => x[1]);
+})();
+ok(GUARD_RESULT_FIELDS.length >= 3 && GUARD_RESULT_FIELDS.includes("envName") && GUARD_RESULT_FIELDS.includes("hookUrl"),
+  "the guard's documented destructuring is READ from its CONTRACT docblock, not listed here (got: " + GUARD_RESULT_FIELDS.join(", ") + ")");
+{
+  /* …and the docblock describes the function. A `@returns` row or a docblock is prose until
+     something checks it against the code, and prose that is wrong reads authoritative. */
+  const ret = guardSrc.match(/return\s*\{\s*envName[\s\S]*?\};/);
+  ok(!!ret, "requireEnvAck's return literal is readable from here");
+  for (const f of GUARD_RESULT_FIELDS) {
+    ok(!!ret && new RegExp(`\\b${f}\\b`).test(ret[0]),
+      `F-729: the CONTRACT docblock destructures \`${f}\`, and requireEnvAck really returns it — the documented shape and the real one are the same shape`);
+  }
+}
+
 export function scopeViolations(src) {
   const code = stripNonCode(src);
   const used = usedIdentifiers(code);
@@ -237,8 +220,13 @@ export function scopeViolations(src) {
   for (const name of used) {
     if (GUARD_EXPORTS.has(name) && !imported.has(name) && !bound.has(name)) missingGuardImport.push(name);
     if (isScreaming(name) && !SCREAMING_GLOBALS.has(name) && !bound.has(name)) unbound.push(name);
+    /* RULE 2b (F-729) — the guard's own result-field names are policed WHATEVER their case.
+       `isScreaming` is a convention test and these names are lowercase by contract, so this
+       is the one family that convention cannot reach. A name the file BINDS — for any
+       reason, including as a function parameter — is not reported, exactly as above. */
+    if (!isScreaming(name) && GUARD_RESULT_FIELDS.includes(name) && !bound.has(name)) unbound.push(name);
   }
-  return { missingGuardImport: missingGuardImport.sort(), unbound: unbound.sort() };
+  return { missingGuardImport: missingGuardImport.sort(), unbound: [...new Set(unbound)].sort() };
 }
 
 /* THE COHORT. Every live driver, plus the `_probe-*` scripts that open an admin page:
@@ -297,6 +285,29 @@ for (const f of drivers) {
   const v712fixed = scopeViolations(f712.replace("hookUrl: HOOK_URL }", "hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT }"));
   ok(v712fixed.unbound.length === 0,
     "NEGATIVE CONTROL (F-712): with envId destructured, the same source is clean");
+
+  /* ── RULE 2b (F-729) — THE BREAKER'S MEASURED SHAPE, VERBATIM ──────────────────
+     `{ envName: ENV_NAME }` plus a BARE `hookUrl`: one copy-paste from the guard's CONTRACT
+     docblock with one field dropped. Both gates used to answer `{ missingGuardImport: [],
+     unbound: [] }` on it, and the driver dies at module evaluation. */
+  const f729 = [
+    'import { requireEnvAck } from "../lib/shared-env-guard.mjs";',
+    'const { envName: ENV_NAME } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [] });',
+    "const res = await fetch(hookUrl, { method: \"POST\" });",
+  ].join("\n");
+  const v729 = scopeViolations(f729);
+  ok(v729.unbound.includes("hookUrl"),
+    "POSITIVE CONTROL (F-729): the guard's LOWERCASE result field, used bare and never destructured, is caught — the measured pre-fix answer was an empty violation list");
+  ok(!v729.unbound.includes("ENV_NAME"),
+    "...and the name the SAME destructuring binds is still not reported");
+  ok(scopeViolations(f729.replace("{ envName: ENV_NAME }", "{ envName: ENV_NAME, hookUrl }")).unbound.length === 0,
+    "NEGATIVE CONTROL (F-729): with `hookUrl` destructured — the docblock's own form — the same source is CLEAN");
+  ok(scopeViolations('const r = { envName: "dev" };\nconst u = row.hookUrl;\nconst v = "envId";').unbound.length === 0,
+    "NEGATIVE CONTROL (F-729): an object KEY, a PROPERTY read and a STRING spelling a result field are none of them reads of a local");
+  ok(scopeViolations('const pick = (envName, hookUrl) => envName + hookUrl;').unbound.length === 0,
+    "NEGATIVE CONTROL (F-729): a parameter of the same name BINDS it — the rule reports an unbound use, not a forbidden word");
+  ok(scopeViolations('import { hookUrlFor } from "../lib/shared-env-guard.mjs";\nconst u = hookUrlFor("dev");').unbound.length === 0,
+    "NEGATIVE CONTROL (F-729): `hookUrlFor` is an EXPORT, not a result field — the two families do not bleed into each other");
 }
 
 /* The stripper itself, because both rules stand on it. */

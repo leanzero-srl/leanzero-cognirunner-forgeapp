@@ -2779,7 +2779,8 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
- * ── 4m. F-803 — ONE HOME FOR "WHAT DOES A CREDENTIAL LOOK LIKE" ───────────────────
+ * ── 4m. F-803 / F-830 / F-849 — ONE HOME FOR WHAT A CREDENTIAL LOOKS LIKE, AND FOR
+ * ── WHAT A FIELD IS CALLED ───────────────────────────────────────────────────────
  *
  * There were two, and they disagreed about this app's OWN bearer. `src/test-hook.js`
  * (`SECRET_VALUE_RE` — the dev hook's write refusal AND its read ceiling) knew
@@ -2825,6 +2826,108 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     "4m (F-803) POSITIVE CONTROL: the pre-fix `SECRET_VALUE` literal IS seen as a private copy");
   ok(privateCopy("// cgr_ is the app's own bearer — see secret-shapes.js").length === 0,
     "4m (F-803) NEGATIVE CONTROL: a COMMENT naming a prefix is not a private copy");
+
+  /* ── 1b. F-830 — THE SAME PARITY, FOR THE OTHER HALF OF THE QUESTION ────────────
+   *
+   * F-803 unified what a credential LOOKS like and left what it is CALLED with two owners.
+   * `src/test-hook.js` asked `SECRET_FIELD_NAME_HINTS` (`credential`, `privatekey`,
+   * `cookie`, `webtrigger`, `webhookurl`, `cognirunnerkey`, `gitconnection`, …);
+   * `redact.mjs` asked `SECRET_KEY`/`SECRET_KEY_PART`, which knew NONE of those. MEASURED
+   * on the pre-fix file: all four of the names below came back VERBATIM from
+   * `redactSecrets` — masked at the door, printed at the file boundary. The hints are one
+   * list now, and this gate refuses either file a private copy of it. */
+  const HINTS = shapes.SECRET_FIELD_NAME_HINTS;
+  ok(Array.isArray(HINTS) && HINTS.length >= 12 && HINTS.every((h) => /^[a-z0-9]+$/.test(h)),
+    "4m (F-830): the NAME hints are a flat lowercase-alphanumeric list in the one home — both sides flatten a key before asking");
+  ok(/SECRET_FIELD_NAME_HINTS/.test(hookSrc) && /import[\s\S]{0,200}SECRET_FIELD_NAME_HINTS/.test(hookSrc),
+    "4m (F-830): src/test-hook.js imports the NAME hints rather than declaring them");
+  ok(/import[\s\S]{0,200}SECRET_FIELD_NAME_HINTS[\s\S]{0,200}secret-shapes\.js/.test(redactSrc),
+    "4m (F-830): lib/redact.mjs imports the SAME name hints from the SAME one home");
+  /* A private NAME list is a regex literal carrying three or more of the hints — enough to
+     be a list rather than one rule that happens to mention a word. `isDevUrlKey`'s URL-key
+     names and `CREDENTIAL_KEY_FAMILIES`'s KVS key PREFIXES are different questions and
+     carry at most one hint each, which is what keeps this gate honest. */
+  const nameListCopy = (code) => [...code.matchAll(/\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\]|\\.)*\])+\/[gimsuy]*/g)]
+    .map((m) => m[0])
+    .filter((lit) => HINTS.filter((h) => lit.toLowerCase().includes(h)).length >= 3);
+  ok(nameListCopy(hookCode).length === 0,
+    `4m (F-830): src/test-hook.js may not carry its own credential-NAME list (found ${nameListCopy(hookCode).join(" ")})`);
+  ok(nameListCopy(redactCode).length === 0,
+    `4m (F-830): lib/redact.mjs may not carry its own credential-NAME list (found ${nameListCopy(redactCode).join(" ")})`);
+  ok(nameListCopy("const SECRET_KEY = /^(token|apitoken|apikey|secret|password|authorization|bearer)$/i;").length === 1,
+    "4m (F-830) POSITIVE CONTROL: the pre-fix `SECRET_KEY` literal IS seen as a private name list");
+  ok(nameListCopy("const isDevUrlKey = /^(url|baseurl|href|endpoint|hookurl|webtrigger)$/i;").length === 0,
+    "4m (F-830) NEGATIVE CONTROL: a URL-KEY rule that happens to mention one hint is not a second name list");
+
+  /* ── 1c. F-849 — AND THE URL-KEY NAMES, WHICH WERE THE LAST PRIVATE LIST IN THIS FILE ──
+   *
+   * The NEGATIVE CONTROL directly above is the tell: `isDevUrlKey` was a hand-written
+   * alternation of FIELD NAMES sitting one function below a credential-NAME rule that
+   * F-830 had already moved to the one home, and it stayed private only because it carries
+   * too few credential hints to trip `nameListCopy`. It is the same KIND of question —
+   * "what is this field called" — so it is answered from the same module now, and this
+   * block is the parity: the list is a flat lowercase-alphanumeric list, `redact.mjs`
+   * IMPORTS it, and `redact.mjs` no longer carries a URL-name alternation of its own.
+   *
+   * The BEHAVIOUR half runs the four spellings the old regex knew plus the two it could
+   * not know (`baseURL`, `base-url`), because flattening the key is what the one-home form
+   * buys: a name is one entry, not three. And the value test is asserted to still be the
+   * other half — a `url` field that is not the dev web trigger comes back whole, which is
+   * what keeps this from becoming a rule that eats every URL in an evidence file. */
+  const URL_HINTS = shapes.URL_FIELD_NAME_HINTS;
+  ok(Array.isArray(URL_HINTS) && URL_HINTS.length >= 6 && URL_HINTS.every((h) => /^[a-z0-9]+$/.test(h)),
+    "4m (F-849): the URL-key names are a flat lowercase-alphanumeric list in the one home");
+  ok(/import[\s\S]{0,300}URL_FIELD_NAME_HINTS[\s\S]{0,300}secret-shapes\.js/.test(redactSrc),
+    "4m (F-849): lib/redact.mjs imports the URL-key names rather than declaring them");
+  const urlListCopy = (code) => [...code.matchAll(/\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\]|\\.)*\])+\/[gimsuy]*/g)]
+    .map((m) => m[0])
+    .filter((lit) => URL_HINTS.filter((h) => lit.toLowerCase().includes(h)).length >= 3);
+  ok(urlListCopy(redactCode).length === 0,
+    `4m (F-849): lib/redact.mjs may not carry its own URL-NAME list (found ${urlListCopy(redactCode).join(" ")})`);
+  ok(urlListCopy("const isDevUrlKey = /^(url|baseurl|base_url|href|endpoint|hookurl)$/i;").length === 1,
+    "4m (F-849) POSITIVE CONTROL: the pre-fix `isDevUrlKey` literal IS seen as a private URL-name list");
+  const DEV_URL = "https://abc123.atlassian-dev.net/x1/deadbeefcafebabe";
+  for (const k of ["url", "baseUrl", "base_url", "hookUrl", "hook_url", "webTriggerUrl", "baseURL", "base-url"])
+    ok(redactSecrets({ [k]: DEV_URL })[k] === REDACTED,
+      `4m (F-849): a dev web-trigger URL under \`${k}\` is masked by NAME — the last two spellings the private regex could not see`);
+  ok(redactSecrets({ url: "https://example.invalid/docs" }).url === "https://example.invalid/docs",
+    "4m (F-849): …and the VALUE test is still the other half — an ordinary URL under `url` is not touched");
+  // …and the behaviour the parity exists for, at BOTH layers.
+  const FOUR = { privateKey: "-----BEGIN RSA PRIVATE KEY-----abcdefgh", cookie: "sessionid=abc123def456",
+    credential: "hunter2hunter2hunter2", webhookUrl: "https://example.invalid/y/zz" };
+  const atFile = redactSecrets(FOUR);
+  for (const k of Object.keys(FOUR))
+    ok(atFile[k] === REDACTED,
+      `4m (F-830): the FILE boundary now redacts \`${k}\` — it came back verbatim before, while the door had always masked it`);
+  const atFileString = redactString(JSON.stringify(FOUR));
+  for (const v of Object.values(FOUR))
+    ok(!atFileString.includes(v),
+      "4m (F-830): …and so does the STRINGIFIED form, whose own retyped name alternation was a THIRD home");
+  const { maskSecretFields } = await import(pathToFileURL(path.resolve(here, "../../src/test-hook.js")).href);
+  const atDoor = await maskSecretFields(FOUR);
+  ok(atDoor && Object.keys(FOUR).every((k) => atDoor.maskedFields.includes(k)),
+    "4m (F-830): …and the DOOR still masks all four, which is the side that was already right");
+  /* THE COUNTS SURVIVE — F-650's reason for a string-only tier, kept by the plural. */
+  const counts = redactSecrets({ maxTokens: 4000, promptTokens: 812, tokens: [1, 2], usage: { tokens: 12 } });
+  ok(counts.maxTokens === 4000 && counts.promptTokens === 812 && counts.tokens[0] === 1 && counts.usage.tokens === 12,
+    "4m (F-830): a token COUNT is still readable — `maxtokens` ends with `tokens`, not with `token`, so it is never the any-type tier");
+  ok(redactSecrets({ tokens: "ghp_abcdefghijklmnopqrstuvwxyz0123456789" }).tokens === REDACTED,
+    "4m (F-830): …but the plural holding a STRING is still masked, so the exemption cannot be used to smuggle one");
+  for (const [k, v] of [["apiToken", "plain"], ["api_key", "plain"], ["API-KEY", "plain"], ["harnessSecret", "plain"], ["xAuthorization", "plain"]])
+    ok(redactSecrets({ [k]: v })[k] === REDACTED,
+      `4m (F-830): every spelling of a hinted name is one name — \`${k}\` is flattened before it is asked`);
+  ok(redactSecrets({ accessToken: { v: "deep" } }).accessToken === REDACTED,
+    "4m (F-830): the any-type tier still swallows a SUBTREE under a credential name — the value's shape is not consulted");
+  /* THE QUERY-PARAMETER NAMES, which were a FOURTH list. */
+  for (const name of ["token", "cookie", "credential", "privateKey", "bearer", "api_key", "auth", "access_token"])
+    ok(redactString(`https://x/y?${name}=plainvalue&z=1`) === `https://x/y?${name}=${REDACTED}&z=1`,
+      `4m (F-830): \`?${name}=\` is masked by the SAME name rule, and the parameter name survives so the evidence says which credential was in play`);
+  ok(redactString("https://x/y?what=kvs&key=COGNIRUNNER_MEMORY_SETTINGS") === "https://x/y?what=kvs&key=COGNIRUNNER_MEMORY_SETTINGS",
+    "4m (F-830): F-663 survives the merge — `key=` is still decided by the VALUE's shape, and a KVS key NAME stays readable");
+  ok(redactString(`https://x/y?key=${"a1b2c3d4e5f60718293a4b5c6d7e8f90"}`).includes(REDACTED),
+    "4m (F-830): …and a credential-SHAPED `key=` value is still masked");
+  ok(redactSecrets({ author: "Mihai", oauthClientId: "public-id-1234" }).author === "Mihai",
+    "4m (F-830): `auth` is NOT a shared hint — the door asks the hints with `includes`, and `author` is a Jira field a driver reads");
 
   // ── 2. CONTROLS, one specimen per declared prefix ───────────────────────────────
   const SPECIMENS = {
@@ -3057,6 +3160,122 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
   const scrubbed = redactString(mixed);
   ok(!scrubbed.includes("sk-abc123def456") && !scrubbed.includes(JWT3) && scrubbed.startsWith("key ") && scrubbed.endsWith(" end"),
     `4o (F-815): …and both are replaced while the text between them survives — got ${JSON.stringify(scrubbed)}`);
+}
+
+
+/* ── 4p. F-828 — A CAPABILITY URL IS MASKED WHOLE, BECAUSE THE SECRET IS THE PATH ──
+ *
+ * F-814 taught the read ceiling to rewrite a credential IN PLACE, which is right for every
+ * PREFIX shape — the matched span IS the token. `\.atlassian-dev\.net/` is not a prefix
+ * shape, it is a FIXED LITERAL, and the secret in a Forge web-trigger URL is the unguessable
+ * PATH with the app-identifying subdomain in front of it: neither is inside the span.
+ * MEASURED on the pre-fix door — a web-trigger URL inside a mixed row (`functions[].code`,
+ * `pf_code:*`, `job:*`, a prompt) came back as
+ * `https://abc123def<masked:35af568f67c9cdcc>x1/9f3ab7c1secretpath`. Host and path plain, a
+ * `maskedWhy` of `value-redacted-in-text` asserting it had been dealt with, and — because
+ * the fingerprint is taken of the MATCHED TEXT, and the matched text is a constant — the
+ * same 16 hex characters on every tenant for every trigger.
+ *
+ * The cut is a SCANNER (`findCapabilityUrlSpans`): a URL read from its scheme to the first
+ * whitespace/quote/`<`/`>`/`)`, and if it carries a capability host family the WHOLE URL is
+ * the span. `redact.mjs`'s `DEV_URL` — the same rule, the same family, a different width,
+ * one layer up — is deleted in its favour, which is the F-803 property applied to the one
+ * shape that had escaped it.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+{
+  const shapes = await import(pathToFileURL(path.resolve(here, "../../src/shared/secret-shapes.js")).href);
+  const { readCeiling, findSecretFields } = await import(pathToFileURL(path.resolve(here, "../../src/test-hook.js")).href);
+  const redactSrc = readFileSync(path.join(libDir, "redact.mjs"), "utf8");
+
+  const HOOK = "https://abc123def.atlassian-dev.net/x1/9f3ab7c1secretpath";
+  const OTHER = "https://zzz999xyz.atlassian-dev.net/x1/0011223344ffeedd";
+
+  // ── 1. THE BREAKER'S MIXED ROW: no host, no path, no residue ───────────────────
+  const row = await readCeiling("pf_code:r1:h1", { functions: [{ code: `await api.fetch("${HOOK}");` }] });
+  const code = row.value.functions[0].code;
+  ok(typeof code === "string" && code.startsWith('await api.fetch("') && code.endsWith('");'),
+    `4p (F-828): the step body around the URL is still readable — got ${JSON.stringify(code)}`);
+  for (const residue of ["abc123def", "9f3ab7c1secretpath", "atlassian-dev", "https://"])
+    ok(!code.includes(residue),
+      `4p (F-828): …and \`${residue}\` is NOT in the answer — the whole URL is the credential, not the literal in the middle of it`);
+  ok(/^await api\.fetch\("<masked:[0-9a-f]{16}>"\);$/.test(code),
+    `4p (F-828): …the entire URL is ONE <masked:fingerprint> — got ${JSON.stringify(code)}`);
+
+  // ── 2. THE FINGERPRINT IS OF THE URL, NOT OF A CONSTANT LITERAL ────────────────
+  const two = await readCeiling("pf_code:r1:h1", { a: `x ${HOOK} y`, b: `x ${OTHER} y` });
+  const fp = (s) => /<masked:([0-9a-f]{16})>/.exec(s)[1];
+  ok(fp(two.value.a) !== fp(two.value.b),
+    "4p (F-828): two DIFFERENT web triggers no longer share one digest — the pre-fix mask hashed the fixed literal, so every trigger everywhere fingerprinted the same");
+  const again = await readCeiling("pf_code:r1:h1", { a: `x ${HOOK} y` });
+  ok(fp(again.value.a) === fp(two.value.a),
+    "4p (F-828): …and the SAME trigger still fingerprints the same, which is what makes the handle worth printing");
+
+  // ── 3. A BARE URL VALUE IS WHOLE-NODE MASKED ───────────────────────────────────
+  const bare = await readCeiling("COGNIRUNNER_AI_PROVIDER", HOOK);
+  ok(bare.value.masked === true && bare.value.why === "value-looks-like-a-credential",
+    "4p (F-828): a value that IS a capability URL trips isBareCredential — there is nothing else in it to read");
+  const hits = findSecretFields(HOOK, { maxDepth: 12 });
+  ok(hits.length === 1 && hits[0].why === "value-looks-like-a-credential",
+    `4p (F-828): …the door says so by the value-shape why, not the in-text one (got ${hits[0] && hits[0].why})`);
+
+  // ── 4. THE FILE BOUNDARY: same width as the deleted DEV_URL, one home ──────────
+  ok(!/DEV_URL/.test(maskComments(redactSrc)),
+    "4p (F-828): lib/redact.mjs no longer carries its own dev web-trigger regex — the scanner in secret-shapes.js is the one home");
+  /* The family is still named ONCE in this file's code, inside `isDevUrlKey` — a different
+     rule (it masks a whole value because of its KEY, before the value is ever scanned). What
+     may not come back is a second URL MATCHER: a `https?://` run around the family. */
+  const redactCode2 = maskComments(redactSrc);
+  ok((redactCode2.match(/atlassian-dev/g) || []).length === 1,
+    "4p (F-828): the host family is named exactly once in this file's code — the key-name rule `isDevUrlKey`, which is not the same rule");
+  ok(!/https\?:\\\/\\\//.test(redactCode2),
+    "4p (F-828): …and no URL MATCHER is left here; spanning a URL is the one home's job");
+  for (const [what, line] of [["prose", `see ${HOOK} now`], ["quoted", `"${HOOK}"`],
+    ["parenthesised", `(${HOOK})`], ["json", `{"url":"${HOOK}"}`], ["angle", `<${HOOK}>`]]) {
+    const out = redactString(line);
+    ok(out.includes(REDACTED) && !out.includes("9f3ab7c1secretpath") && !out.includes("abc123def"),
+      `4p (F-828): the file boundary still removes the WHOLE URL from the ${what} form — got ${JSON.stringify(out)}`);
+  }
+  ok(redactString(`(${HOOK})`).endsWith(")"),
+    "4p (F-828): …and the `)` terminator ends the span rather than eating the bracket — a terminator can only ever end a span sooner");
+  ok(redactString(`see ${HOOK} now`) === `see ${REDACTED} now`,
+    "4p (F-828): …the text around it is untouched, which is the same answer DEV_URL gave");
+  /* The family is matched anywhere in the URL TEXT, not just in the host: that is what
+     DEV_URL did, and narrowing the last line before disk is not a trade this move is
+     allowed to make. */
+  const inPath = "https://evil.example.com/atlassian-dev.net/x1/abc";
+  ok(redactString(inPath).includes(REDACTED) && !redactString(inPath).includes("evil.example.com"),
+    "4p (F-828): a family in the PATH is still redacted at the file boundary — the move must not narrow it");
+
+  // ── 5. THE SCHEME-LESS FORM, which the scanner cannot see, still has its shape ──
+  ok(shapes.hasCredentialShape("host abc123.atlassian-dev.net/x1/tok here") === true,
+    "4p (F-828): the `\\.atlassian-dev\\.net/` literal STAYS in the census — the scanner starts at a scheme and a scheme-less mention in prose must still be seen");
+
+  // ── 6. THE FAMILY LIST, named rather than guessed ──────────────────────────────
+  ok(shapes.CAPABILITY_URL_HOST_FAMILIES.includes("atlassian-dev.net"),
+    "4p (F-828): the Forge dev/staging web-trigger host is a declared capability family");
+  ok(!shapes.CAPABILITY_URL_HOST_FAMILIES.some((f) => f.includes("ts.net")),
+    "4p (F-828) NEGATIVE CONTROL: `*.ts.net` is NOT one — an LM Studio / MCP remote is an address guarded by a separate bearer, and the bearer is what the shapes catch");
+  ok(shapes.findCapabilityUrlSpans("https://example.com/a and http://x.ts.net/b").length === 0,
+    "4p (F-828) NEGATIVE CONTROL: …so an ordinary URL is not a credential span, or every evidence file would lose its links");
+  const urls = shapes.findUrlSpans("a https://x.example/1 b http://y.example/2) c");
+  ok(urls.length === 2 && urls[0].end - urls[0].start === "https://x.example/1".length
+      && urls[1].end - urls[1].start === "http://y.example/2".length,
+    "4p (F-828): the URL scanner spans both schemes and stops at the terminator, not at the end of the line");
+
+  // ── 7. LINEAR, on the 240 KiB inputs F-815 pinned ──────────────────────────────
+  const CAP = 245760;
+  const timed = (s) => { const t0 = performance.now(); shapes.findCredentialSpans(s); return performance.now() - t0; };
+  const cases = [
+    ["http-dense", "http".repeat(CAP / 4)],                                   // every position starts a scheme candidate
+    ["scheme-dense", "https://a ".repeat(CAP / 10).slice(0, CAP)],            // 24k real URLs, none of them a capability
+    ["one unterminated URL", "https://a.atlassian-dev.net/" + "a".repeat(CAP - 28)],
+    ["capability-dense", `${HOOK} `.repeat(Math.ceil(CAP / (HOOK.length + 1))).slice(0, CAP)],
+  ];
+  for (const [what, s] of cases) {
+    const ms = timed(s);
+    ok(ms < 500,
+      `4p (F-828): the URL scanner stays inside a door's budget on 240 KiB of ${what} — took ${ms.toFixed(1)}ms`);
+  }
 }
 
 

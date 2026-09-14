@@ -71,19 +71,47 @@
  * decided by the VALUE's shape, never by the parameter's name.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import { createHash } from "node:crypto";
-import { replaceCredentialSpans, credentialPrefixRegex } from "../../src/shared/secret-shapes.js";
+import { replaceCredentialSpans, credentialPrefixRegex, SECRET_FIELD_NAME_HINTS, URL_FIELD_NAME_HINTS } from "../../src/shared/secret-shapes.js";
 
 export const REDACTED = "[REDACTED]";
 
-/** Keys whose VALUE is a secret regardless of what it looks like OR what type it is. */
-const SECRET_KEY = /^(token|apitoken|api_token|apikey|api_key|secret|accesstoken|access_token|refreshtoken|refresh_token|password|authorization|bearer)$/i;
-
-/**
- * F-650 — a key merely SHAPED like a credential, anywhere in the name, any case:
- * `harnessSecret`, `HARNESS_SECRET`, `hookSecret`, `editorApiKey`, `xAuthorization`.
- * String values only — see the header for why the token COUNTS must survive.
- */
-const SECRET_KEY_PART = /(token|secret|apikey|api_key|password|authorization)/i;
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-830 — AND THE NAMES HAVE ONE HOME TOO.
+ *
+ * F-803 unified what a credential LOOKS like and left the other half of the same
+ * question — what a credential is CALLED — with two owners that had never been
+ * compared. `src/test-hook.js` asks `SECRET_FIELD_NAME_HINTS` (`credential`,
+ * `privatekey`, `cookie`, `webtrigger`, `webhookurl`, `cognirunnerkey`,
+ * `gitconnection`, …); this file asked `SECRET_KEY`/`SECRET_KEY_PART`, which knew
+ * none of those. MEASURED on the pre-fix file:
+ * `redactSecrets({privateKey:"-----BEGIN…", cookie:"sessionid=…",
+ * credential:"hunter2…", webhookUrl:"https://x/y/zz"})` returned ALL FOUR VERBATIM —
+ * masked at the door, printed at the file boundary, which is the exact inversion F-803
+ * found in the other direction for values.
+ *
+ * The hints are now `SECRET_FIELD_NAME_HINTS` in `src/shared/secret-shapes.js` and both
+ * files import them; the 4m parity gate refuses either file a private list.
+ *
+ * TWO TIERS, DERIVED FROM THE ONE LIST, and the tiers are the thing this file keeps:
+ *   · TIER A — the flattened name ENDS WITH a hint (`token`, `apiToken`, `api_token`,
+ *     `accessToken`, `xAuthorization`, `harnessSecret`, `privateKey`, `webhookUrl`).
+ *     The value is masked WHATEVER ITS TYPE, which is the contract the old anchored
+ *     `SECRET_KEY` had, now reachable by every hint rather than by thirteen of them.
+ *   · TIER B — the flattened name CONTAINS a hint anywhere (`tokens`, `cookieJar`,
+ *     `secretsFound`). NON-EMPTY STRINGS ONLY, which is F-650's rule and the reason
+ *     `maxTokens: 4000` and `promptTokens: 812` survive into readable evidence.
+ * The plural is what separates them: `maxTokens` flattens to `maxtokens`, which ends
+ * with `tokens` and not with `token`, so a COUNT is never tier A. That is the same
+ * judgement F-825 made at the door by asking the value's TYPE.
+ *
+ * FLATTENED, not raw: `API_KEY`, `api-key` and `apiKey` are one name, and a rule that
+ * only knew one spelling of it is how a list drifts in the first place.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+const flattenKey = (k) => String(k).toLowerCase().replace(/[^a-z0-9]/g, "");
+/** TIER A — any type. */
+const secretKeyExact = (k) => { const f = flattenKey(k); return SECRET_FIELD_NAME_HINTS.some((h) => f.endsWith(h)); };
+/** TIER B — non-empty strings only. */
+const secretKeyPart = (k) => { const f = flattenKey(k); return SECRET_FIELD_NAME_HINTS.some((h) => f.includes(h)); };
 
 /**
  * Credential shapes that are secrets wherever they appear, key or no key.
@@ -121,12 +149,34 @@ const redactCredentialShapes = (s) => replaceCredentialSpans(s, () => REDACTED);
  * IDENTIFIER the evidence exists to record — `app_admins`, `job:<id>`,
  * `COGNIRUNNER_MEMORY_SETTINGS` — came out as `key=[REDACTED]` and a reader could not tell
  * which rule, job or slot a FAIL was about. Generic `?key=<api key>` parameters are real
- * too, so `key=` is still masked — but by the VALUE's SHAPE, below, not by its name.
+ * too, so `key=` is still masked — but by the VALUE's SHAPE, not by its name.
+ *
+ * F-830 — AND THE PARAMETER NAMES COME FROM THE ONE HOME TOO. This was a FOURTH retyped
+ * name list (`token|secret|api[_-]?key|apikey|password|auth|access_token`), so `?cookie=`,
+ * `?credential=`, `?privateKey=` and `?bearer=` were readable here while the door masked
+ * the same names as fields. The name half is now `secretKeyExact`, the tier-A predicate
+ * above, asked about the flattened parameter name — which also folds the F-663 `key=` rule
+ * into the SAME pass, so there is one place that decides what a query parameter is.
+ *
+ * THE ONE NAME THAT IS NOT A HINT: `auth`. As a QUERY parameter it is a credential; as a
+ * FIELD name it is a substring of `author`, and `SECRET_FIELD_NAME_HINTS` is asked with
+ * `includes` at the door — adding it there would mask every Jira `author` in every
+ * evidence file. It is therefore scoped to this rule and written down rather than smuggled
+ * into the shared list.
  */
-const SECRET_QUERY = /([?&](?:token|secret|api[_-]?key|apikey|password|auth|access_token)=)[^&\s"'<>\\]+/gi;
+const QUERY_PARAM = /([?&])([A-Za-z0-9_.\-]+)=([^&\s"'<>\\]+)/g;
+const queryNameIsSecret = (name) => secretKeyExact(name) || flattenKey(name) === "auth";
+const redactQueryParams = (s) => s.replace(QUERY_PARAM, (m, sep, name, val) => {
+  if (queryNameIsSecret(name)) return `${sep}${name}=${REDACTED}`;
+  // F-663 — `key=` is decided by the VALUE's shape, never by the parameter's NAME.
+  if (flattenKey(name) === "key" && looksLikeCredentialValue(val)) return `${sep}${name}=${REDACTED}`;
+  return m;
+});
 
 /**
- * F-663 — `?key=` / `&key=`, masked ONLY when the VALUE looks like a credential.
+ * F-663 — WHAT `looksLikeCredentialValue` IS FOR: `?key=` / `&key=`, masked ONLY when the
+ * VALUE looks like a credential. The rule itself now lives in `redactQueryParams` above,
+ * one pass with the name rule; this is the discriminator it asks.
  *
  * The discriminator is the value's shape:
  *   - a known credential PREFIX (`sk-`, `ghp_`, `github_pat_`, `ATATT`, `xoxb-`, `cgr_`), or
@@ -137,7 +187,6 @@ const SECRET_QUERY = /([?&](?:token|secret|api[_-]?key|apikey|password|auth|acce
  * Credentials on the base64URL alphabet (`-`/`_`) are not lost by that exclusion: they are
  * caught by their prefix here, and by `SECRET_VALUE`, which runs BEFORE this rule.
  */
-const KEY_QUERY = /([?&]key=)([^&\s"'<>\\]+)/gi;
 /* F-803 — the same census as `SECRET_VALUE`, anchored, and from the same one home. It
  * gained `gho_`/`ghu_`/`ghs_`/`ghr_`, `glpat-`, `xoxp-` and `AKIA` by being derived rather
  * than retyped, which is the whole point of deriving it. */
@@ -313,18 +362,68 @@ export function maskFaultKey(key) {
   return `${m[1]}${m[2]}:${digest}`;
 }
 
-/** The dev/staging web-trigger host: a bearer-less URL that is itself a capability. */
-const DEV_URL = /https?:\/\/[^\s"'<>]*atlassian-dev\.net[^\s"'<>]*/gi;
+/*
+ * F-828 — `DEV_URL` IS GONE, AND THE ONE HOME OWNS THE WHOLE URL.
+ *
+ * This file used to carry a `DEV_URL` regex — `https?://` then a run of non-space,
+ * non-quote, non-angle-bracket characters around `atlassian-dev.net` — matching the
+ * dev/staging web-trigger host, a bearer-less URL that is itself a capability. The SAME
+ * question was answered one layer down by the `\.atlassian-dev\.net/` literal in
+ * `src/shared/secret-shapes.js`, and the two had different WIDTHS: this one swallowed the
+ * URL, that one matched only the fixed literal in the middle of it. That did not matter
+ * while the shape was only ever asked yes/no — and then F-814 made the read ceiling replace
+ * the matched SPAN in place, so the door answered a web-trigger URL with its subdomain and
+ * its path token still in plain text around a `<masked:…>` of the literal.
+ *
+ * `findCapabilityUrlSpans` in the one home is now the URL scanner, and
+ * `replaceCredentialSpans` applies it here in exactly the position this regex occupied:
+ * same family, matched anywhere in the URL text as before, same `[REDACTED]` replacement,
+ * and the span now ends at `)` as well — which can only ever end it sooner.
+ *
+ * `isDevUrlKey` below is NOT the same rule and stays: it masks a whole VALUE because of its
+ * KEY, before the value is ever scanned, and it is the name half of this file's contract.
+ */
 
-/** `"token": "…"` inside an ALREADY-STRINGIFIED body — how F-646 actually escaped. */
-const EMBEDDED_PAIR = new RegExp(
-  '("(?:token|apiToken|api_token|apiKey|api_key|secret|accessToken|access_token|refreshToken|refresh_token|password|authorization)"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"',
-  "gi",
-);
+/**
+ * `"token": "…"` inside an ALREADY-STRINGIFIED body — how F-646 actually escaped.
+ *
+ * F-830 — THE THIRD NAME LIST, also deleted. This regex carried its own retyped
+ * alternation of credential field names, so a body stringified before it reached a writer
+ * was judged by a list that knew nothing of `privateKey`, `cookie` or `credential` even
+ * after the object walk above learned them. It now matches ANY quoted `"name": "value"`
+ * pair and asks `secretKeyExact` — the SAME tier-A predicate the object walk uses — about
+ * the name, so this file carries no name alternation at all and `api_key`, `API-KEY` and
+ * `apiKey` cannot be spelled differently here than they are one function up.
+ * It stays a STRING-VALUE rule by construction: `"maxTokens": 4000` has no quoted value
+ * and is not touched, which is the same reason tier B is strings-only.
+ */
+const EMBEDDED_PAIR = /("([A-Za-z0-9_.\-]+)"\s*:\s*)"(?:[^"\\]|\\.)*"/g;
+const redactEmbeddedPairs = (s) => s.replace(EMBEDDED_PAIR, (m, pre, name) => (secretKeyExact(name) ? `${pre}"${REDACTED}"` : m));
 
-/** True when this key/value pair is a URL that leaks the dev web-trigger. */
+/**
+ * True when this key/value pair is a URL that leaks the dev web-trigger.
+ *
+ * F-849 — THE URL-KEY NAMES CAME FROM THEIR ONE HOME. This rule used to carry a
+ * hand-written alternation (`url|baseurl|base_url|href|endpoint|hookurl|hook_url|
+ * webtrigger|webtriggerurl`) sitting one function below a credential-NAME rule that F-830
+ * had already moved into `src/shared/secret-shapes.js`. Two lists of field names, one of
+ * them shared and one of them private, is the shape F-830 was cut to remove — so the URL
+ * names live beside the credential names now and the door and this file cannot disagree
+ * about what a URL field is called.
+ *
+ * Asked the same way the credential hints are: the key is flattened (lowercased,
+ * non-alphanumerics dropped) before the lookup, so `base_url`, `baseURL` and `base-url`
+ * are one entry rather than three spellings somebody has to remember to add. EXACT match,
+ * not substring — a URL key is masked WHOLE, and a substring rule would claim every field
+ * whose name merely ends in `url`.
+ *
+ * The VALUE test is unchanged and is still the other half: a field named `url` is masked
+ * only when what it holds is this installation's dev web trigger.
+ */
+const URL_KEY_NAMES = new Set(URL_FIELD_NAME_HINTS);
+const flatKey = (k) => String(k).toLowerCase().replace(/[^a-z0-9]/g, "");
 const isDevUrlKey = (key, value) =>
-  /^(url|baseurl|base_url|href|endpoint|hookurl|hook_url|webtrigger|webtriggerurl)$/i.test(String(key)) &&
+  URL_KEY_NAMES.has(flatKey(key)) &&
   typeof value === "string" && /atlassian-dev\.net/i.test(value);
 
 /**
@@ -332,22 +431,21 @@ const isDevUrlKey = (key, value) =>
  * URLs, and credential query parameters (F-650).
  *
  * Order is load-bearing: EMBEDDED_PAIR first so a `"token":"…"` pair keeps its readable
- * shape instead of being eaten value-first, and DEV_URL before SECRET_QUERY so a dev
- * web-trigger URL is swallowed whole rather than surviving with masked parameters.
- * The EMAIL scanner runs last, on whatever text is left (F-652, linear since F-822).
+ * shape instead of being eaten value-first, and the credential-SHAPE pass (which since
+ * F-828 carries the dev web-trigger URL scanner that used to be `DEV_URL` here) before
+ * the query-parameter pass, so such a URL is swallowed whole rather than surviving with
+ * masked parameters. The EMAIL scanner runs last, on whatever text is left (F-652,
+ * linear since F-822).
  */
 export function redactString(s) {
   if (typeof s !== "string") return s;
   // F-815 — the credential-SHAPE pass is a SCANNER, not a `.replace(regex)`, and it sits in
   // exactly the position the regex did. Same input, same output, linear worst case.
-  const masked = redactCredentialShapes(s
-    .replace(EMBEDDED_PAIR, `$1"${REDACTED}"`)
-    .replace(DEV_URL, REDACTED))
-    .replace(SECRET_QUERY, `$1${REDACTED}`)
-    .replace(KEY_QUERY, (m, pre, val) => (looksLikeCredentialValue(val) ? `${pre}${REDACTED}` : m));
+  // F-828 — that scanner now also spans a whole capability URL, which is why there is no
+  // `.replace(DEV_URL, …)` left in this chain.
   // F-822 — the EMAIL pass is a SCANNER too, in exactly the position the regex held (last,
   // on whatever text the credential rules left). Same input, same output, linear worst case.
-  return maskEmailSpans(masked);
+  return maskEmailSpans(redactQueryParams(redactCredentialShapes(redactEmbeddedPairs(s))));
 }
 
 /**
@@ -365,11 +463,11 @@ export function redactSecrets(value, _seen = new WeakSet(), _depth = 0) {
   if (Array.isArray(value)) return value.map((v) => redactSecrets(v, _seen, _depth + 1));
   const out = {};
   for (const [k, v] of Object.entries(value)) {
-    if (SECRET_KEY.test(k)) { out[k] = v === null || v === undefined ? v : REDACTED; continue; }
+    if (secretKeyExact(k)) { out[k] = v === null || v === undefined ? v : REDACTED; continue; }
     // F-652 — PII, masked domain-first so namesake evidence survives.
     if (PII_KEY.test(k) && typeof v === "string" && v) { out[k] = v.includes("@") ? maskEmail(v) : REDACTED; continue; }
     // F-650 — a key SHAPED like a credential. String values only, so token COUNTS stay.
-    if (SECRET_KEY_PART.test(k) && typeof v === "string" && v) { out[k] = REDACTED; continue; }
+    if (secretKeyPart(k) && typeof v === "string" && v) { out[k] = REDACTED; continue; }
     if (isDevUrlKey(k, v)) { out[k] = REDACTED; continue; }
     out[k] = redactSecrets(v, _seen, _depth + 1);
   }

@@ -53,7 +53,9 @@
  *
  * NOTHING HERE THROWS AT THE ENGINE. Every function answers `{ok:true, ...ids}` or
  * `{ok:false, error, errorClass}` where the class is one of
- * "permission" | "not-found" | "invalid" | "network" | "busy" | "unknown", logged ONCE.
+ * "permission" | "not-found" | "invalid" | "network" | "storage" | "busy" | "unknown",
+ * logged ONCE. "storage" is OUR store failing (KVS API error, a broken storage handle);
+ * "network" is the remote product being unreachable — F-833, they are never merged.
  * A workspace write that failed must degrade the turn's record, never kill the turn: the
  * user's repository work already happened.
  *
@@ -64,6 +66,7 @@ import storage from "@forge/kvs";
 import { safeKeyPart, assertKvsKey } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { clampChars } from "./shared/text-clamp.js";
+import { errorClassOf, isStorageFault } from "./shared/error-class.js";
 
 const idx = () => import("./index.js");
 
@@ -264,12 +267,35 @@ export const classifyStatus = (status) => {
   return "unknown";
 };
 
+/**
+ * A THROW, classified — and the reason "storage" exists (F-833).
+ *
+ * This function used to end `return "network"`, so EVERY throw that was not obviously a
+ * permission or a 404 was reported as "Jira was unreachable". The offline suite then ran
+ * the workspace against a storage handle with no `set`, the resulting TypeError was
+ * labelled "network", and three write groups per turn were silently written off while the
+ * suite stayed green. A fault in OUR OWN bookkeeping and a fault in the REMOTE product
+ * point at different repairs, so they do not share a name: `isStorageFault` (ONE home,
+ * src/shared/error-class.js) decides, and the concrete class goes in the detail so the log
+ * says WHICH storage fault it was.
+ */
 const classifyThrow = (e) => {
+  if (isStorageFault(e)) return "storage";
   const msg = String((e && e.message) || e || "").toLowerCase();
   if (msg.includes("permission") || msg.includes("forbidden") || msg.includes("unauthor")) return "permission";
   if (msg.includes("not found")) return "not-found";
   return "network";
 };
+
+/**
+ * A throw out of a KVS call. The CALL SITE knows the operation was storage, so the answer
+ * is "storage" whatever the error looks like — a socket error inside the KVS client is
+ * still the store failing us, and reporting it as a Jira network fault sends the reader to
+ * the wrong place. The class (`ForgeKvsError`, `TypeError`, `STORAGE_LIMIT_EXCEEDED`, …)
+ * is carried alongside so the one log line names the fault precisely.
+ */
+const storageFailure = (what, issueKey, detail, e) =>
+  failure(what, issueKey, "storage", `${detail} [${errorClassOf(e)}] ${(e && e.message) || e}`);
 
 /** ONE line of log per failure, and exactly one. */
 const failure = (what, issueKey, errorClass, detail) => {
@@ -314,7 +340,8 @@ export const withWorkspaceLock = async (issueKey, what, fn, { store = storage } 
   try {
     claimed = await claimRuleExecution(store, key, WORKSPACE_LOCK_TTL, "coder-workspace", { failClosed: true });
   } catch (e) {
-    return failure(what, issueKey, "network", `the per-issue lock could not be taken: ${(e && e.message) || e}`);
+    // A throw HERE is the STORE, not Jira: the only thing that ran was a KVS write.
+    return storageFailure(what, issueKey, "the per-issue lock could not be taken:", e);
   }
   if (!claimed) {
     return { ok: false, errorClass: "busy", error: `${what} skipped: another Coder write is in flight on ${issueKey}.` };
@@ -324,7 +351,7 @@ export const withWorkspaceLock = async (issueKey, what, fn, { store = storage } 
   } catch (e) {
     return failure(what, issueKey, classifyThrow(e), (e && e.message) || e);
   } finally {
-    try { await store.delete(key); } catch (e) { console.warn(`[coder-workspace] ${issueKey}: lock release failed: ${e && e.message}`); }
+    try { await store.delete(key); } catch (e) { console.warn(`[coder-workspace] ${issueKey}: lock release failed (storage/${errorClassOf(e)}): ${e && e.message}`); }
   }
 };
 
@@ -462,7 +489,7 @@ export const updateCoderLog = async ({ issueKey, threadId, lines, simulation = f
   const store = deps.store || storage;
   return withWorkspaceLock(key, "Updating the Coder log", async () => {
     let row = null;
-    try { row = await store.get(coderLogKey(key, thread)); } catch (e) { console.warn(`[coder-workspace] ${key}: log row read failed: ${e && e.message}`); }
+    try { row = await store.get(coderLogKey(key, thread)); } catch (e) { console.warn(`[coder-workspace] ${key}: log row read failed (storage/${errorClassOf(e)}): ${e && e.message}`); }
     const sameThread = row && typeof row === "object" && row.threadId === thread;
     const kept = clampLogLines([...(sameThread && Array.isArray(row.lines) ? row.lines : []), ...incoming]);
     const body = plainTextAdf([`${CODER_LOG_TITLE} — thread ${thread || "(none)"}`, "", ...kept].join("\n"),
@@ -488,7 +515,7 @@ export const updateCoderLog = async ({ issueKey, threadId, lines, simulation = f
     } catch (e) {
       // The comment is already correct; losing the pointer only costs us a second comment
       // next round. Never re-post because the bookkeeping failed.
-      console.warn(`[coder-workspace] ${key}: log pointer not stored: ${e && e.message}`);
+      console.warn(`[coder-workspace] ${key}: log pointer not stored (storage/${errorClassOf(e)}): ${e && e.message}`);
     }
     return { ok: true, issueKey: key, commentId, created, lines: kept.length };
   }, deps);

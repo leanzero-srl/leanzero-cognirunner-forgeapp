@@ -21,6 +21,24 @@
 import { register } from "node:module";
 import assert from "node:assert/strict";
 
+/*
+ * F-833 — THE WORKSPACE NEEDS A REAL STORE AND A REAL JIRA MOCK, OR IT MEASURES NOTHING.
+ *
+ * src/coder-workspace.js imports `storage` from "@forge/kvs" and `api` from "@forge/api"
+ * at module level and defaults to them (`{ store = storage }`). This suite used to leave
+ * both UNMAPPED, so outside the Forge runtime the kvs default export has no `set`: every
+ * per-issue lock take threw `TypeError: storage.set is not a function`, the workspace
+ * classified that as a NETWORK fault and swallowed it, and three write groups per coder
+ * turn (plan, Coder log, session artifact) never ran while the suite reported green. The
+ * two stderr lines were the only evidence and nothing asserted on them.
+ *
+ * So the shared offline mocks are registered here: `@forge/kvs` → lib/mock-kvs.mjs (the
+ * SAME instance this file imports as `store`, because node caches by resolved URL) and
+ * `@forge/api` → lib/mock-forge-api.mjs, whose scripted responder setupWorld drives. The
+ * workspace's writes are now real writes into the mock and can be asserted on.
+ */
+register(new URL("../lib/forge-kvs-loader.mjs", import.meta.url));
+
 // The engine and the runner both reach src/index.js lazily; stub it before either loads.
 register("data:text/javascript," + encodeURIComponent(`
 export async function resolve(spec, ctx, next) {
@@ -49,6 +67,7 @@ export async function load(url, ctx, next) {
 }`));
 
 const store = (await import("../lib/mock-kvs.mjs")).default;
+const forgeApi = (await import("../lib/mock-forge-api.mjs")).default;
 const {
   runCoderTurn, confirmCoderTicket, compactThread, buildCoderSystemPrompt, buildArgsPreview,
   coderThreadKey, coderPinKey, coderTicketKey, coderExecClaimKey, coderTicketExecClaimKey, coderThreadWriteClaimKey,
@@ -69,9 +88,32 @@ const reply = (tool_calls, content = null) => ({
   data: { choices: [{ message: { role: "assistant", content, tool_calls } }], usage: { total_tokens: 7 } },
 });
 
+/*
+ * F-833 — THE JIRA SIDE OF THE WORKSPACE, SCRIPTED.
+ *
+ * With @forge/api mocked, src/coder-workspace.js's writes are real recorded calls instead
+ * of a TypeError. The default responder answers the four routes the workspace uses so a
+ * turn's writes SUCCEED and land in `world.jiraCalls`; a test that wants a failure scripts
+ * its own with `forgeApi.__respond(...)`. Without this the workspace would simply fail
+ * 404 everywhere — green for the wrong reason again, and 140 lines of stderr noise.
+ */
+const workspaceResponder = (world) => (path, opts) => {
+  const p = String(path);
+  world.jiraCalls.push({ path: p, method: (opts && opts.method) || "GET" });
+  if (/\/comment(\/\d+)?$/.test(p)) return forgeApi.__response(200, { id: "cmt-1" });
+  if (/\/attachments$/.test(p)) return forgeApi.__response(200, [{ id: "att-1", filename: "coder-session-1.md" }]);
+  if (/\/remotelink$/.test(p)) return forgeApi.__response(200, { id: 9 });
+  if (/\/issue\/[^/]+(\?|$)/.test(p)) {
+    return (opts && opts.method) === "PUT"
+      ? forgeApi.__response(204, "")
+      : forgeApi.__response(200, { key: "LZPT-7", fields: { description: { type: "doc", version: 1, content: [] } } });
+  }
+  return forgeApi.__response(200, {});
+};
+
 const setupWorld = ({ rounds = [], provider = "anthropic" } = {}) => {
   const world = {
-    provider, requests: [], writes: [], gitCalls: [], round: 0,
+    provider, requests: [], writes: [], gitCalls: [], jiraCalls: [], round: 0,
     session({ issueKey, config }) {
       const api = (key) => new Proxy({}, {
         get(_t, method) {
@@ -104,6 +146,8 @@ const setupWorld = ({ rounds = [], provider = "anthropic" } = {}) => {
     },
   };
   globalThis.__coder = world;
+  forgeApi.__reset();
+  forgeApi.__respond(workspaceResponder(world));
   return world;
 };
 
@@ -1678,6 +1722,75 @@ await check("F-617: a stable turn whose cache HELD logs nothing at all", async (
   assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 0, "…and warns about nothing");
   assert.equal((r.logs || []).filter((l) => /cached tokens/.test(l)).length, 0,
     "…and does not narrate a cache that worked");
+});
+
+/* ═════════ F-833. a storage fault is not a network fault ═════════
+ *
+ * The defect this closes had TWO halves and both are held here.
+ *
+ * The CLASSIFICATION half: src/coder-workspace.js ended its throw classifier with
+ * `return "network"`, so a KVS fault — including the TypeError a wrong storage handle
+ * raises — was reported to the Coder log and the task row as "Jira was unreachable". The
+ * reader is then sent to check egress while the actual fault is in the store.
+ *
+ * The MEASUREMENT half: because this suite left @forge/kvs unmapped, EVERY lock take in
+ * it threw that TypeError, so three write groups per turn never ran and the suite passed
+ * anyway. The last check below is the standing guard: a full turn must not emit a
+ * swallowed "is not a function" line, and its writes must actually reach Jira.
+ */
+const { withWorkspaceLock } = await import("../../src/coder-workspace.js");
+
+/** A store with a `set` that is not a function — exactly how F-833 presented. */
+const brokenStore = { get: async () => undefined, delete: async () => {} };
+
+await check("F-833: a storage throw on the lock take is STORAGE, never network", async () => {
+  const { out: r, warned } = await catchWarn(() =>
+    withWorkspaceLock("LZPT-7", "Writing the plan", async () => ({ ok: true }), { store: brokenStore }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.errorClass, "storage", "a broken storage handle is a STORAGE fault");
+  assert.notEqual(r.errorClass, "network", "…and must never be filed under 'Jira was unreachable'");
+  assert.match(r.error, /\[TypeError\]/, "…and the one log line names WHICH storage fault it was");
+  assert.equal(warned.length, 1, "…logged exactly once, as every workspace failure is");
+  assert.match(warned[0], /failed \(storage\)/);
+});
+
+await check("F-833: a ForgeKvsAPIError on the lock take is STORAGE with its platform code", async () => {
+  const kvsFault = new Error("Field 'key' must match pattern");
+  kvsFault.name = "ForgeKvsError";
+  kvsFault.code = "INVALID_KEY";
+  const faultingStore = { set: async () => { throw kvsFault; }, get: async () => undefined, delete: async () => {} };
+
+  const { out: r } = await catchWarn(() =>
+    withWorkspaceLock("LZPT-7", "Updating the Coder log", async () => ({ ok: true }), { store: faultingStore }));
+
+  assert.equal(r.errorClass, "storage");
+  assert.match(r.error, /\[INVALID_KEY\]/, "the class is the platform's code, not the message");
+});
+
+await check("F-833: a real fetch failure inside the write group is STILL network", async () => {
+  resetStore();
+  const okStore = store;
+  const { out: r } = await catchWarn(() => withWorkspaceLock("LZPT-7", "Writing the plan", async () => {
+    throw new Error("fetch failed");           // what an unreachable product throws
+  }, { store: okStore }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.errorClass, "network", "the remote product being unreachable keeps its own name");
+  assert.equal(await okStore.get("coder_ws:LZPT-7"), undefined, "…and the lock is released either way");
+});
+
+await check("F-833: a full turn swallows no storage fault and its writes reach Jira", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const { warned } = await catchWarn(() => startTurn(world, { userMessage: "write the log" }));
+
+  assert.equal(warned.filter((l) => /is not a function/.test(l)).length, 0,
+    "the two swallowed TypeErrors F-833 was reported for must be gone");
+  assert.equal(warned.filter((l) => /\[coder-workspace\].*failed \(network\)/.test(l)).length, 0,
+    "…and nothing in the turn is mislabelled a network fault");
+  assert.ok(world.jiraCalls.some((c) => /\/comment$/.test(c.path) && c.method === "POST"),
+    "the Coder log comment is a REAL measured write now, not a swallowed failure");
 });
 
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);

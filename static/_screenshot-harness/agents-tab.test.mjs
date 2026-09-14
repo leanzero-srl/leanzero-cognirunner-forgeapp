@@ -641,8 +641,8 @@ try {
     /* F-535 - and a health arm grows an id too, so the WIDENED scope is proven to bite the
        same way the compaction scope is. */
     const probeSrc2 = probeSrc.replace(
-      "await recordTickHealth(deps.store, agentId, true, { now });",
-      'await recordTickHealth(deps.store, agentId, true, { now, reason: "tick:harness_probe_health" });',
+      "await recordTickHealth(deps.store, agentId, stoppedBy ? null : true, { now });",
+      'await recordTickHealth(deps.store, agentId, stoppedBy ? null : true, { now, reason: "tick:harness_probe_health" });',
     );
     const probed = extractIds(probeSrc2);
     for (const id of ["harness_probe_ternary", "harness_probe_other", "tick:harness_probe_health"]) {

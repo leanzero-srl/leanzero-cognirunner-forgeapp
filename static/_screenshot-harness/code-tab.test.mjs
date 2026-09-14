@@ -183,7 +183,7 @@ try {
       ok(await page.locator(".access-note").count() === 0, "C4 an edition denial is NOT rendered as a permission refusal");
       ok(await page.locator(".btn-retry").count() === 0, "C4 no Retry: a retry does not buy a licence");
       const note = await page.locator(".upgrade-note").first().innerText();
-      ok(/Coder/.test(note) && /Upgrade in Settings/.test(note), "C4 the note names the edition and the remedy");
+      ok(/Coder/.test(note) && /Manage apps/.test(note), "C4 the note names the edition and the remedy (Manage apps, since F-915)");
       await shot(page, "C4-upgrade-arm");
       ok(env.errors.length === 0, "C4 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C4 threw: " + e.message.split("\n")[0]); }

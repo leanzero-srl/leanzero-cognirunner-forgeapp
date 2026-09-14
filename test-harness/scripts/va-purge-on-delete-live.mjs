@@ -40,7 +40,9 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
 import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import fs from "node:fs";
+import { redactSecrets } from "../lib/redact.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -58,10 +60,53 @@ const KEEP = flag("keep");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
-const PASS = (s) => { passes++; console.log(`  PASS  ${s}`); };
-const FAIL = (s) => { fails++; console.log(`  FAIL  ${s}`); };
-const NV = (s) => { unproven++; console.log(`  N/V   ${s}`); };
+/* F-799 — recorded for the EVIDENCE FILE. The RESULT line of this driver prints as the
+   last statement of main(), which a throw never reaches, so there is no line for it to
+   correct — but an evidence file that does not say the run died is the same lie in a
+   quieter place. */
+let crashed = null;
+/*
+ * F-799 — THIS RUN LEAVES A MACHINE-READABLE ARTEFACT, AND IT NAMES ITS COMMIT.
+ *
+ * This driver's verdicts lived only in the terminal it was run from. A findings row that
+ * says "it passed on 2d7b8204" then rests on scrollback nobody kept, and the assertions
+ * here are not cheap to re-take: the run creates an agent on a live tenant, rewrites an
+ * instance-wide model slot and waits out real windows.
+ *
+ * WHAT GOES IN: every PASS/FAIL/N/V sentence in the order it was decided, the summary
+ * counters, the crash if there was one, and `provenance` from `lib/driver-report.mjs` —
+ * the SAME three fields (`commit`, `dirty`, `at`) every other evidence file carries, from
+ * the same home, because a second spelling of "which commit" is how they come to mean
+ * different things. `dirty` is reported rather than hidden: evidence produced from
+ * uncommitted edits is still evidence, but it is not reproducible from the commit it names.
+ *
+ * IT IS REDACTED ON THE WAY OUT, through `lib/redact.mjs`, on the same terms as every
+ * other writer in this harness — a driver that mints API tokens must not be one query away
+ * from writing one to disk, and `results/` being gitignored is not a reason to relax that.
+ */
+const OUT = new URL("../results/va-purge-on-delete", import.meta.url).pathname;
+const ev = { driver: "va-purge-on-delete-live.mjs", env: ENV_NAME, startedAt: new Date().toISOString(), checks: [] };
+const PASS = (s) => { passes++; ev.checks.push({ v: "PASS", s }); console.log(`  PASS  ${s}`); };
+const FAIL = (s) => { fails++; ev.checks.push({ v: "FAIL", s }); console.log(`  FAIL  ${s}`); };
+const NV = (s) => { unproven++; ev.checks.push({ v: "N/V", s }); console.log(`  N/V   ${s}`); };
 const info = (s) => console.log(`        ${s}`);
+/* F-799 — ONE writer, called from the `finally` so a crashed run still leaves its file. */
+const writeEvidence = () => {
+  try {
+    ev.summary = { passes, fails, unproven, crashed: crashed ? String((crashed && crashed.message) || crashed).slice(0, 300) : null };
+    ev.finishedAt = new Date().toISOString();
+    ev.provenance = runProvenance();
+    fs.mkdirSync(OUT, { recursive: true });
+    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
+    return `${OUT}/evidence.json`;
+  } catch (e) {
+    // An evidence write must never be the thing that fails a run, and a SILENT failure
+    // to write is worse than a loud one: the file's absence would otherwise read as
+    // "this driver does not write evidence".
+    console.error(`        EVIDENCE NOT WRITTEN: ${String((e && e.message) || e).slice(0, 200)}`);
+    return null;
+  }
+};
 
 /** Everything this run changed, restored in the finally whatever happened. */
 /*
@@ -262,7 +307,7 @@ async function main() {
 }
 
 main()
-  .catch((e) => { console.error("\nDRIVER ERROR:", e && e.message); process.exitCode = 1; })
+  .catch((e) => { crashed = e; console.error("\nDRIVER ERROR:", e && e.message); process.exitCode = 1; })
   /*
    * RESTORE IS AN ASSERTION, NOT A COURTESY. This script deletes an agent and REWRITES an
    * instance-wide model slot; a restore that silently no-ops leaves the next run reading a
@@ -297,4 +342,7 @@ main()
       console.error(`\nRESTORE FAILED — the instance is NOT as this run found it:\n        ${residue.join("\n        ")}`);
       process.exitCode = 1;
     }
+    /* F-799 — written AFTER the restore, so the residue verdicts above are in the file too. */
+    const written = writeEvidence();
+    if (written) console.log(`        evidence: ${written}`);
   });

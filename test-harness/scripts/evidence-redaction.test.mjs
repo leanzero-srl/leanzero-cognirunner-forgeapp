@@ -2470,7 +2470,8 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     `${f}: the evidence.json write is redacted too (fields assigned outside PASS/FAIL/NV reach it)`);
 }
 
-/* ── 4k. F-787 — AN EVIDENCE FILE NAMES THE COMMIT THAT PRODUCED IT ─────────────
+/* ── 4k. F-787 / F-799 — AN EVIDENCE FILE NAMES THE COMMIT THAT PRODUCED IT, AND A
+ *              DRIVER THAT PRINTS A VERDICT LEAVES A FILE ──────────────────────
  *
  * `evidence.json` records what a run SAW. It never recorded what CODE produced it, so an
  * evidence file and the driver that wrote it could drift apart with nothing in either to
@@ -2497,13 +2498,21 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
      (name the exemption, prune it when converted) is what a future debt must be written in —
      and an empty list makes "there are no exemptions" a thing the file SAYS. */
   const PROVENANCE_DEBT = [];
-  /* An evidence WRITER is a file that writes an evidence.json, found the same crude textual
-     way rule 4b's redaction check finds it — deliberately the same predicate, so the two
-     rules can never disagree about which files are evidence writers. */
-  const writers = liveFiles.filter((f) => {
-    const s = readFileSync(path.join(here, f), "utf8");
-    return /writeFileSync\(/.test(s) && /evidence\.json/.test(s);
-  });
+  /* An evidence WRITER is a file that writes an artefact a later reader will open beside a
+     findings row, found the same crude textual way rule 4b's redaction check finds it.
+     F-799 WIDENED IT: it used to mean the literal filename `evidence.json`, which let two
+     real evidence artefacts out of the cohort on a naming technicality —
+     `harness-fault-expiry-live.mjs` writes `${OUT}/${ENV_NAME}-<timestamp>.json` and
+     `pipeline-scaffold-live.mjs` writes `state.json`, both under `results/`, and neither
+     carried a commit. What makes a file evidence is WHERE it lands, not what it is called. */
+  const writesArtefact = (s) => /writeFileSync\(/.test(s) && (/evidence\.json/.test(s) || /RESULTS_DIR|["`]\.\.\/results\//.test(s));
+  ok(writesArtefact('fs.writeFileSync(`${OUT}/evidence.json`, x);\nconst OUT = new URL("../results/x", import.meta.url).pathname;'),
+    "4k (F-799) POSITIVE CONTROL: the widened predicate still sees the classic evidence.json writer");
+  ok(writesArtefact('const OUT = new URL("../results/harness-fault-expiry", import.meta.url).pathname;\nfs.writeFileSync(file, y);'),
+    "4k (F-799) POSITIVE CONTROL: …and now also sees a differently-named artefact written under results/, which is the case it was blind to");
+  ok(!writesArtefact('const s = readFileSync(p, "utf8");'),
+    "4k (F-799) NEGATIVE CONTROL: a file that only READS is not an evidence writer");
+  const writers = liveFiles.filter((f) => writesArtefact(readFileSync(path.join(here, f), "utf8")));
   const missing = writers.filter((f) => !/runProvenance/.test(readFileSync(path.join(here, f), "utf8")));
 
   ok(writers.length > 20,
@@ -2520,6 +2529,61 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
   /* And the helper really is in the lib, so this rule points at a home that exists. */
   ok(/export function runProvenance/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8")),
     "4k (F-787): lib/driver-report.mjs exports runProvenance — ONE home, so `commit`/`dirty`/`at` cannot come to mean different things in different evidence files");
+
+  /* ── F-799 — THE COHORT THE PROVENANCE RULE COULD NOT SEE AT ALL ────────────────
+   *
+   * Everything above polices files that DO write evidence. It said nothing about a driver
+   * that writes none, which is the worse case and the one F-799 was cut for:
+   * `va-shadow-door-live.mjs` runs 23 assertions and a browser DOM read against a live
+   * tenant, and every one of those verdicts lived in scrollback. A findings row resting on
+   * "it passed on 2d7b8204" then has nothing behind it, and the run is not cheap to re-take
+   * — it creates an agent, rewrites an instance-wide model slot and waits out real windows.
+   *
+   * THE COHORT IS THE ONE RULE 4j ALREADY DEFINES: a driver that prints a COUNTS SUMMARY is
+   * a driver that claims a verdict, and a claimed verdict with no artefact behind it is the
+   * shape this polices. The predicate is imported in spirit but re-derived here on the same
+   * two regexes, because a summary-printing driver that writes nothing is exactly the file
+   * whose only trace is the line rule 4j is about.
+   *
+   * A DEBT LEDGER, in this file's established shape, for this file's established reason: 10
+   * drivers are in it today and turning ten red in one pass makes this the rule people
+   * delete. The named ten are permitted, THE COUNT MAY NOT GROW, a driver NOT on the list
+   * must write an artefact, and a converted entry must come OFF the list. The three F-799
+   * converted (va-shadow-door, va-pinned-survival, va-purge-on-delete) are deliberately
+   * absent from it — that is what "converted" looks like. */
+  const ARTEFACT_DEBT = [
+    "brakes-knowledge-live.mjs", "git-rotation-window-live.mjs", "issue-key-live.mjs",
+    "resolvers-live.mjs", "sandbox-confluence-live.mjs", "va-capability-gate-live.mjs",
+    "va-compaction-live.mjs", "va-rest-doors-live.mjs", "va-shadow-live.mjs",
+    "web-search-live.mjs",
+  ];
+  const LEADING_NL = /console\.(?:log|error)\(\s*(?:"\\n"\s*\+\s*)?[`"']\\n/;
+  const COUNTED = /(?:\$\{[^}]*\}[\s·,:.]*(?:pass|fail|not verified|N\/V)|(?:PASS|FAIL|N\/V)[\s·,:.]*\$\{)/i;
+  const claimsVerdict = (s) => s.split("\n").some((l) => LEADING_NL.test(l) && (/formatResultLine/.test(l) || COUNTED.test(l)));
+
+  ok(claimsVerdict('  console.log("\\n" + formatResultLine({ passes, fails, unproven }));'),
+    "4k (F-799) POSITIVE CONTROL: a driver that prints a RESULT line is recognised as claiming a verdict — a predicate that matched nothing would make this half green by finding no drivers");
+  ok(!claimsVerdict('  console.log(`  PASS  ${s}`);'),
+    "4k (F-799) NEGATIVE CONTROL: a per-check line is not a claimed verdict, so a driver that prints checks and no summary is not asked for an artefact");
+
+  const verdictDrivers = liveFiles.filter((f) => claimsVerdict(readFileSync(path.join(here, f), "utf8")));
+  const noArtefact = verdictDrivers.filter((f) => !writesArtefact(readFileSync(path.join(here, f), "utf8")));
+  ok(verdictDrivers.length > 20,
+    `4k (F-799): the verdict-claiming cohort is found, not assumed — ${verdictDrivers.length} live drivers print a summary`);
+  ok(noArtefact.length <= ARTEFACT_DEBT.length,
+    `4k (F-799): the no-artefact debt did not GROW — ${noArtefact.length} drivers claim a verdict and write no file, ledger allows ${ARTEFACT_DEBT.length}`);
+  const bare = noArtefact.filter((f) => !ARTEFACT_DEBT.includes(f));
+  ok(bare.length === 0,
+    `4k (F-799): a driver that claims a verdict must leave a machine-readable artefact — ${bare.join(", ")} prints a RESULT line and writes nothing, so the run exists only in the terminal it was run from`);
+  const converted = ARTEFACT_DEBT.filter((f) => !noArtefact.includes(f));
+  ok(converted.length === 0,
+    `4k (F-799): the artefact debt list is PRUNED — ${converted.join(", ")} now writes an artefact and must come off ARTEFACT_DEBT, because a warn-list nobody shortens is a permanent exemption`);
+  /* The three this finding converted are asserted BY NAME to be out of the ledger and in
+     the writer cohort, so a revert cannot quietly put them back on the warn-list. */
+  for (const f of ["va-shadow-door-live.mjs", "va-pinned-survival-live.mjs", "va-purge-on-delete-live.mjs"]) {
+    ok(!ARTEFACT_DEBT.includes(f) && writers.includes(f) && !missing.includes(f),
+      `4k (F-799): ${f} writes an evidence file AND records provenance — the three drivers this finding converted are named, so a revert shows up here rather than as a silent re-entry on the debt list`);
+  }
 }
 
 

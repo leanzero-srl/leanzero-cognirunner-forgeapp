@@ -52,7 +52,7 @@ import { execFileSync } from "node:child_process";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
 import { testState } from "../lib/rules-api.mjs";
 import { gitHookUrl } from "../lib/git-hook-url.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 /* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
    catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
@@ -78,7 +78,14 @@ const OUT = new URL("../results/git-webhook-setup", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 const STATE = OUT + "/state.json";
 const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, "utf8")) : { checks: [] };
-const saveState = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
+/* F-799 — WHICH COMMIT PRODUCED THIS FILE. The state file is this driver's evidence: it
+   carries every check of every phase, and it is what a reader opens weeks later. The 4k
+   cohort used to be found by the literal name `evidence.json`, so an artefact under
+   `results/` with another name was outside the rule and carried no commit. */
+const saveState = () => {
+  state.provenance = runProvenance();
+  fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
+};
 
 /* F-796 - THE PASSES ARE COUNTED, NOT INFERRED. This driver only ever counted FAILURES,
    so a RESULT line through `formatResultLine` could have said `0 pass` over a run that

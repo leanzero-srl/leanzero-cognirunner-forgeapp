@@ -41,7 +41,7 @@ import { chromium } from "../../static/_screenshot-harness/node_modules/playwrig
 import { loadEnv } from "../lib/env.mjs";
 import { testState } from "../lib/rules-api.mjs";
 import { readJobLog, assertLockRefusal } from "../lib/gh-job-log.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -64,7 +64,13 @@ const OUT = new URL("../results/pipeline-scaffold", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 const STATE = OUT + "/state.json";
 const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, "utf8")) : { checks: [] };
-const save = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
+/* F-799 — WHICH COMMIT PRODUCED THIS FILE. The 4k rule used to find evidence writers by
+   the literal name `evidence.json`, so this file — a real evidence artefact under
+   `results/`, just differently named — was outside the cohort and carried no commit. */
+const save = () => {
+  state.provenance = runProvenance();
+  fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
+};
 let failures = 0;
 let passes = 0;
 let crashed = null;   /* F-792 — set by the phase wrapper below; the RESULT line reads it */

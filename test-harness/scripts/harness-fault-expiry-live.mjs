@@ -91,7 +91,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 import { drainSweep as runDrain } from "../lib/sweep-drain.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 /* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
    catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
@@ -444,6 +444,10 @@ try {
   }
 
   ev.summary = { passes, fails, unproven };
+  /* F-799 — WHICH COMMIT PRODUCED THIS FILE. The 4k rule used to find evidence writers by
+     the literal name `evidence.json`, so this file — a real evidence artefact under
+     `results/`, just differently named — was outside the cohort and carried no commit. */
+  ev.provenance = runProvenance();
   const file = `${OUT}/${ENV_NAME}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
   fs.writeFileSync(file, JSON.stringify(redactSecrets(ev), null, 2));
   console.log("\n" + formatResultLine({ passes, fails, unproven, crashed }));

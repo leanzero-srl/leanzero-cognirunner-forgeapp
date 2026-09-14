@@ -35,6 +35,12 @@ const APPS = ["config-ui", "admin-panel"];
 // the CLAUDE.md cross-check below then tells you the doc needs the same edit.
 export const DUPLICATED_COMPONENTS = [
   "FunctionBlock.jsx", "FunctionBuilder.jsx", "CodeEditor.jsx", "DocRepository.jsx",
+  // F-896 — DocSizeHint.jsx is the ONE home for "how big is this document": the UTF-8
+  // measure, the cap gate, the wording and the element itself. It exists because the two
+  // Add-Document forms each carried their own `formatSize` and one of them counted UTF-16
+  // code units against no cap. It is imported by DocRepository.jsx (both copies) AND by
+  // admin-panel's DocsTab.jsx, so it has to be byte-identical in both apps like its caller.
+  "DocSizeHint.jsx",
   "AILoadingState.jsx", "KnowledgePanel.jsx", "SkillsTab.jsx", "SkillEditor.jsx",
   // F-237 — these three were byte-identical in both apps while the lists said
   // otherwise: PremadeRuleForm.jsx was in NEITHER list (so nothing held it equal),

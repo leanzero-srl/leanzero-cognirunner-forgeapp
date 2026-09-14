@@ -5,13 +5,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
-import { DOC_CONTENT_MAX_BYTES, DOC_CONTENT_MAX_LABEL, utf8Bytes } from "../../../../src/shared/registry-limits.js";
+import DocSizeHint, { formatSize, isDocContentTooLarge } from "./DocSizeHint";
 import { isPermissionRefusal, permissionRefusalText, isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "./refusal";
 
 // CSP-safe JavaScript syntax check: parse with Lezer (no eval / new Function,
@@ -291,18 +291,13 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
     }
   };
 
-  // Sizes here are UTF-8 BYTES: the hint below and the cap gate both measure with
-  // `utf8Bytes`, the same helper `saveContextDoc` gates on, so this panel can never
-  // refuse text the backend accepts or accept text it refuses (F-836). Rows written
-  // by OTHER doc writers (builtin seeding, research persistence) still carry a
-  // character-count `contentLength`, so their size column reads low for non-ASCII.
-  const formatSize = (bytes) => {
-    if (bytes < 1024) return `${bytes} B`;
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  };
-
-  // Memoized: the editor re-renders per keystroke and this encodes the whole body.
-  const newContentBytes = useMemo(() => utf8Bytes(newContent), [newContent]);
+  /* Sizes here are UTF-8 BYTES, and the measure, the wording and the cap all come from
+     ./DocSizeHint - the ONE home (F-896). This panel used to carry its own `formatSize`
+     and its own `utf8Bytes` call, which is exactly how admin-panel's DocsTab ended up
+     with a SECOND hint measuring characters against no cap at all. Rows written by other
+     doc writers carry a byte `contentLength` too (src/index.js uses `utf8Bytes` on every
+     one), so the size column below speaks the same unit as the hint. */
+  const contentTooLarge = isDocContentTooLarge(newContent);
 
   // Hide rows the backend disabled (e.g. soft-deleted builtins)
   const visibleDocs = docs.filter((d) => !d.disabled);
@@ -380,13 +375,11 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
             </div>
           )}
           <div className="doc-add-actions">
-            <span className="doc-size-hint">
-              {newContentBytes > 0 ? formatSize(newContentBytes) : ""}{newContentBytes > DOC_CONTENT_MAX_BYTES ? ` (too large, max ${DOC_CONTENT_MAX_LABEL})` : ""}
-            </span>
+            <DocSizeHint content={newContent} />
             <button
               className={`btn-save-doc${saving ? " is-busy busy-solid" : ""}`}
               onClick={handleSave}
-              disabled={saving || !newTitle.trim() || !newContent.trim() || newContentBytes > DOC_CONTENT_MAX_BYTES || validationMsg?.type === "error"}
+              disabled={saving || !newTitle.trim() || !newContent.trim() || contentTooLarge || validationMsg?.type === "error"}
             >
               Save to Library
             </button>

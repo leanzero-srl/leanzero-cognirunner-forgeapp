@@ -47,6 +47,10 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 // The slot NAME has ONE home (src/shared/provider-slots.js). A retyped
 // "COGNIRUNNER_KEY_openai" here would silently rot the day a helper changes.
 import { providerKeySlot } from "../../src/shared/provider-slots.js";
+// F-769 — the ONE home of "reduce a credential slot to a witness, through the read
+// ceiling". The copy that used to live in this file read `r.json.value`, a field the
+// ceiling no longer answers for a credential-family key.
+import { readKeySlotWitness, describeKeySlot, sameKeySlot } from "../lib/key-slot-witness.mjs";
 
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const PROVIDER = arg("provider", "openai");
@@ -89,12 +93,17 @@ async function hook(body, method = "POST", qs = "") {
 }
 const invoke = async (functionKey, payload = {}, accountId = ADMIN) =>
   hook({ action: "invokeResolver", functionKey, payload, accountId });
-/** The KEY SLOT, reduced to a FINGERPRINT. Never the value, never its length. */
-const keySlotFingerprint = async (provider) => {
-  const r = await hook(null, "GET", `?what=kvs&key=${encodeURIComponent(providerKeySlot(provider))}`);
-  const v = r.json ? r.json.value : undefined;
-  return v === null || v === undefined ? "EMPTY" : "PRESENT";
-};
+/**
+ * The KEY SLOT, reduced to a WITNESS: PRESENT/EMPTY from `present`, plus the row's
+ * sha256-16 identity from `fingerprint`. Never the value, never its length.
+ *
+ * F-769 — the reduction, and every "we did not actually get an answer" case, lives in
+ * lib/key-slot-witness.mjs. That matters here: the old copy read `.value`, which the read
+ * ceiling removed, so after the ceiling it would have reduced EVERY answer to "EMPTY" and
+ * the restore check below would have compared EMPTY to EMPTY and printed PASS forever.
+ */
+const keySlotWitness = (provider) =>
+  readKeySlotWitness((qs) => hook(null, "GET", qs), providerKeySlot(provider));
 const getKey = (provider) => invoke("getOpenAIKey", { provider });
 const arm = (mode, ttlSeconds) => hook({ action: "armKeyReadFault", provider: PROVIDER, mode, ttlSeconds });
 const disarm = () => hook({ action: "disarmKeyReadFault", provider: PROVIDER });
@@ -106,8 +115,9 @@ async function main() {
   if (ping.status !== 200) throw new Error(`the hook is not reachable on ${ENV_NAME} (GET -> ${ping.status})`);
   PASS(`hook reachable on ${ENV_NAME}, secret accepted`);
 
-  const slotBefore = await keySlotFingerprint(PROVIDER);
-  info(`the ${PROVIDER} key slot is ${slotBefore} before anything (fingerprint only — no value is read into this script)`);
+  const slotBefore = await keySlotWitness(PROVIDER);
+  info(`the ${PROVIDER} key slot is ${describeKeySlot(slotBefore)} before anything (present + fingerprint only — no value is read into this script)`);
+  if (slotBefore.state === "UNREADABLE") info(`…and it is UNREADABLE, so the restore check below will FAIL rather than pass on nothing: ${slotBefore.why}`);
 
   try {
     /* ── STEP 0 — the CONTROL, on the SAME resolver and the same provider ──── */
@@ -211,9 +221,17 @@ async function main() {
     if (back.json && back.json.success === true) PASS("…and getOpenAIKey is back to normal - the resolver that failed above now works", { hasKey: back.json.hasKey, isByok: back.json.isByok });
     else FAIL("getOpenAIKey is still failing after the disarm", { body: JSON.stringify(back.json).slice(0, 300) });
 
-    const slotAfter = await keySlotFingerprint(PROVIDER);
-    if (slotAfter === slotBefore) PASS(`the ${PROVIDER} key slot is unchanged (${slotBefore} -> ${slotAfter}) - the lever never went near a credential`);
-    else FAIL("the provider key slot changed across this run", { before: slotBefore, after: slotAfter });
+    const slotAfter = await keySlotWitness(PROVIDER);
+    const verdict = sameKeySlot(slotBefore, slotAfter);
+    ev.keySlot = { before: describeKeySlot(slotBefore), after: describeKeySlot(slotAfter), same: verdict.same, why: verdict.why };
+    // The IDENTITY half, not merely present/absent: a slot that still holds A key but no
+    // longer THE key is exactly the damage this check exists to catch, and a bare
+    // PRESENT === PRESENT would report it as untouched.
+    if (verdict.same) {
+      PASS(`the ${PROVIDER} key slot is unchanged (${describeKeySlot(slotBefore)} -> ${describeKeySlot(slotAfter)}) - the lever never went near a credential`);
+    } else {
+      FAIL("the provider key slot is not the one this run found", { before: describeKeySlot(slotBefore), after: describeKeySlot(slotAfter), why: verdict.why });
+    }
 
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);

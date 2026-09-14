@@ -1061,6 +1061,103 @@ for (const f of armingDrivers) {
     `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);
 }
 
+/* ── 4h. F-702 — THE SWEEP DRAIN HAS ONE HOME, AND THE LEDGER STORES A STRING ────
+   F-690 moved the drain DECISION into `lib/sweep-drain.mjs` and left the loop to each
+   caller. That held for exactly one driver: `plant-sweep-live.mjs` landed in the SAME
+   range with a hand-rolled loop that never imported the module, so the contract had two
+   homes again and the pure function had one caller. The copy re-derived finishedness from
+   `truncated` (deprecated by F-692 now that `complete` exists), paced a flat 1 s instead of
+   500/1000/2000, and had neither spin detection nor the resumed-once rule — so the SAME
+   refusing store failed with "still not complete after 10 resume call(s)" in one driver and
+   a named `not-converging` in the other.
+
+   A DIRECTORY RULE, not a per-file one, for the reason F-689 gives: the next drain driver
+   is inside it on the day it is written, without anyone remembering to add it. */
+const sweepDrivers = liveFiles.filter((f) => /sweepHarnessFaults|clearPlantedFaults/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
+ok(sweepDrivers.length >= 2,
+  `the drain rule found every driver that sweeps the fault keyspace (${sweepDrivers.join(", ")})`);
+
+/** The local helpers a driver binds to a sweeping web-trigger action. */
+const sweepHelpers = (code) =>
+  [...code.matchAll(/const\s+([A-Za-z_$][\w$]*)\s*=[^;]*?action:\s*"(?:sweepHarnessFaults|clearPlantedFaults)"/g)].map((m) => m[1]);
+
+/**
+ * Every LOOP BODY in the file, brace-balanced from the loop keyword. Regexes cannot match
+ * nested braces, and a drain loop is nothing but nested braces, so the body is walked.
+ */
+const loopBodies = (code) => {
+  const out = [];
+  for (const m of code.matchAll(/\b(?:while|for)\s*\(|\bdo\s*\{/g)) {
+    let i = code.indexOf("{", m.index);
+    if (i < 0) continue;
+    let depth = 0;
+    for (let j = i; j < code.length; j++) {
+      if (code[j] === "{") depth++;
+      else if (code[j] === "}") { depth--; if (depth === 0) { out.push(code.slice(i, j + 1)); break; } }
+    }
+  }
+  return out;
+};
+
+for (const f of sweepDrivers) {
+  const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+
+  /* (a) FINISHEDNESS IS READ, NEVER RE-DERIVED. `complete` is the library's single source;
+     the two agree on every answer the current library can emit, which is exactly what makes
+     a private copy dangerous — it keeps agreeing right up until the answer is reshaped. */
+  ok(!/truncated\s*(?:!==|===)\s*true/.test(code),
+    `${f}: no \`truncated !== true\` / \`truncated === true\` finishedness test — read \`complete\` (or \`answerComplete\`), the one source F-692 deprecates the derivation for`);
+
+  /* (b) THE LOOP IS THE LIBRARY'S. A sweeping driver imports the drain and does not write
+     its own around a sweep call. */
+  ok(/from\s+"\.\.\/lib\/sweep-drain\.mjs"/.test(code),
+    `${f}: imports the drain from lib/sweep-drain.mjs rather than hand-rolling the contract`);
+  const helpers = sweepHelpers(code);
+  ok(helpers.length > 0, `${f}: the rule can SEE this driver's sweep helper(s) — a rule that matches nothing proves nothing`);
+  for (const body of loopBodies(code)) {
+    for (const h of helpers) {
+      ok(!new RegExp(`\\b${h}\\s*\\(`).test(body),
+        `${f}: \`${h}(\` is called inside a hand-written loop — the resume loop belongs to drainSweep(), or the back-off and the spin detector exist only in the other driver`);
+    }
+  }
+
+  /* (c) THE DRAIN LEDGER STORES COPIED PRIMITIVES, NEVER A SECOND REFERENCE. `redactSecrets`
+     is cycle-safe by WeakSet: an object already reachable from `ev` is written as
+     `[CIRCULAR]` the second time it is met. `{ call: 1, ...ev.firstReal }` is a SHALLOW
+     copy — it re-used the very cursor object `ev.firstReal.cursor` held — so call 1's cursor,
+     the one field this driver exists to prove, was erased from the ledger. */
+  ok(!/\.\.\.ev\./.test(code),
+    `${f}: an evidence sub-object is spread into another evidence node — the spread is SHALLOW, so the redactor meets the nested object twice and writes [CIRCULAR] over it; copy the token as a STRING`);
+}
+
+/* POSITIVE CONTROLS. Each is the pre-cut shape, and each must FIRE — an empty match set is
+   not evidence until the matcher is shown to see the thing at all. */
+ok(/truncated\s*(?:!==|===)\s*true/.test("if (s.truncated !== true) { complete = s.failed === 0; }"),
+  "POSITIVE CONTROL: the derivation ban SEES the exact line plant-sweep-live carried");
+ok(/truncated\s*(?:!==|===)\s*true/.test("res.json.complete === true || res.json.truncated !== true"),
+  "POSITIVE CONTROL: …and the cleanup loop's OR, whose right arm calls a refusing page finished");
+{
+  const before = `const sweep = (body) => hook({ action: "sweepHarnessFaults", ...body });
+    while (!complete && n < MAX) { const res = await sweep({ cursor }); n++; }`;
+  const helpers = sweepHelpers(before);
+  ok(helpers.includes("sweep"), "POSITIVE CONTROL: the helper finder binds `sweep` to the sweeping action");
+  const bodies = loopBodies(before);
+  ok(bodies.length === 1 && /\bsweep\s*\(/.test(bodies[0]),
+    "POSITIVE CONTROL: …and the loop walker FINDS the hand-rolled resume loop around it");
+}
+{
+  /* Brace balance, not a regex: a loop whose body nests objects and closures is still one body,
+     and a sweep call after the loop is NOT in it. */
+  const nested = `while (x) { if (y) { const s = { a: { b: 1 } }; } }\nawait sweep({ cursor });`;
+  const bodies = loopBodies(nested);
+  ok(bodies.length === 1 && !/\bsweep\s*\(/.test(bodies[0]),
+    "POSITIVE CONTROL: the walker balances nested braces and does not swallow the call AFTER the loop");
+}
+ok(/\.\.\.ev\./.test("const calls = [{ call: 1, ...ev.firstReal }];"),
+  "POSITIVE CONTROL: the [CIRCULAR] ban SEES the exact seeding line that erased call 1's cursor");
+ok(!/\.\.\.ev\./.test("const calls = [{ call: 1, ...shape(first.json) }];"),
+  "POSITIVE CONTROL: …and does not fire on a freshly built shape, which shares nothing");
+
 /* ── 5. the hardened drivers redact in the writers themselves ──────────────────── */
 for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "perm-namesake-ui-live.mjs"]) {
   const src = readFileSync(path.join(here, f), "utf8");

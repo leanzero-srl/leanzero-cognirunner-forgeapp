@@ -181,3 +181,80 @@ export function decideSweepStep(answer, state) {
 
   return { action: "resume", sleepMs: 0, cursor, stopReason: null, state: next };
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * THE DRAIN LOOP ITSELF — F-702. ONE HOME FOR THE I/O TOO, NOT JUST THE DECISION.
+ *
+ * F-690 moved the DECISION here and left every caller to write its own loop around it. That
+ * was enough for exactly one driver: `plant-sweep-live.mjs` landed in the SAME range with a
+ * hand-rolled loop that never imported this module — so the contract had two homes again,
+ * and `decideSweepStep` had a single caller. The hand-rolled copy re-derived finishedness
+ * from `truncated` (the derivation F-692 deprecates), backed off a flat 1 s instead of
+ * 500/1000/2000, had no byte-identical detection and no `deletes-failed`-resumed-once rule,
+ * so the SAME refusing store produced "still not complete after 10 resume call(s)" in one
+ * driver and a named `not-converging` in the other.
+ *
+ * So the loop is here as well, and a driver supplies only the POST. Finishedness is READ
+ * from the answer's `complete` (via `answerComplete`) and never re-derived at a call site;
+ * `evidence-redaction.test.mjs` enforces that as a directory rule over `scripts/*-live.mjs`.
+ *
+ * @param post   (cursor) => Promise<{status, json}> — one sweep call. `cursor` is null on the
+ *               first call and the resume token thereafter.
+ * @param opts.maxCalls  the bound; a drain needing more is a finding, not a retry.
+ * @param opts.first     an answer ALREADY received (a driver that judged call 1 itself), so
+ *                       it is decided and counted exactly like any other.
+ * @param opts.onAnswer  (json, callNumber) => void — the driver's own accounting/ledger.
+ * @param opts.sleep     injectable for tests; defaults to a real timer.
+ * @returns {{drained, stopReason, calls, pausedMs, last}} — `drained` is the ONLY success.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+export async function drainSweep(post, opts = {}) {
+  const {
+    maxCalls = 20,
+    first = null,
+    onAnswer = null,
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  } = opts;
+
+  let state = newDrainState();
+  let calls = 0, cursor = null, pausedMs = 0;
+  let drained = false, stopReason = null, last = null;
+  let answer = first ?? null;
+
+  for (;;) {
+    if (answer === null) {
+      if (calls >= maxCalls) {
+        stopReason = `the sweep was still incomplete (reason "${last?.reason ?? null}") after the ${maxCalls}-call bound`;
+        break;
+      }
+      const res = await post(cursor);
+      calls++;
+      if (!res || res.status !== 200 || res.json?.ok !== true) {
+        stopReason = `sweep call ${calls} did not answer 200/ok (HTTP ${res?.status ?? 0})`;
+        break;
+      }
+      answer = res.json;
+    } else {
+      /* The seeded answer is a CALL — it cost a web-trigger invocation and it counts against
+         the bound exactly like one the loop made itself. */
+      calls++;
+    }
+
+    last = answer;
+    if (onAnswer) onAnswer(answer, calls);
+
+    const step = decideSweepStep(answer, state);
+    state = step.state;
+    if (step.action === "done") { drained = true; break; }
+    if (step.action === "stop") { stopReason = `${step.stopReason} (after ${calls} call(s))`; break; }
+    if (step.sleepMs > 0) {
+      /* The BACK-OFF, actually taken. Sleeping is the whole point of the `deletes-failing`
+         answer: the page will not start landing deletes because it was asked again sooner. */
+      pausedMs += step.sleepMs;
+      await sleep(step.sleepMs);
+    }
+    cursor = step.cursor;
+    answer = null;
+  }
+
+  return { drained, stopReason, calls, pausedMs, last };
+}

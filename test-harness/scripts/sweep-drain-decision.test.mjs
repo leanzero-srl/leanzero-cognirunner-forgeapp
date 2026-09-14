@@ -9,13 +9,20 @@
  *
  * The `deletes-failing` back-off contract used to be asserted only against a hand-written
  * loop inside `harness-fault-ttl.test.mjs` — a loop that existed nowhere in production. This
- * suite asserts the function `harness-fault-expiry-live.mjs` actually calls, so the contract
- * and its proof have one home. Every case below is a REAL answer shape from
- * `src/harness-fault.js`'s return statement, not a convenient stand-in.
+ * suite asserts the function the live drivers actually call, so the contract and its proof
+ * have one home. Every case below is a REAL answer shape from `src/harness-fault.js`'s
+ * return statement, not a convenient stand-in.
+ *
+ * F-702 — AND THE LOOP, NOT ONLY THE DECISION. Moving the decision here still left every
+ * caller free to write its own loop around it, and `plant-sweep-live.mjs` did: a second home
+ * for the contract, with a flat back-off, a deprecated `truncated` derivation and no spin
+ * detection. `drainSweep` is now that loop, `harness-fault-expiry-live.mjs` and
+ * `plant-sweep-live.mjs` both supply only the POST, and `evidence-redaction.test.mjs` holds
+ * the directory rule that keeps the next driver inside it. §8 covers it.
  */
 import assert from "node:assert/strict";
 import {
-  decideSweepStep, newDrainState, answerSignature, answerComplete, madeProgress,
+  decideSweepStep, newDrainState, answerSignature, answerComplete, madeProgress, drainSweep,
   DELETES_FAILING_BACKOFF_MS, IDENTICAL_ANSWER_LIMIT,
 } from "../lib/sweep-drain.mjs";
 
@@ -177,4 +184,91 @@ assert.notEqual(answerSignature(failing(1)), answerSignature(failing(2)));
 assert.notEqual(answerSignature(failing(1)), answerSignature({ ...failing(1), deleted: 1 }));
 assert.notEqual(answerSignature(failing(1)), answerSignature({ ...failing(1), reason: "budget" }));
 
-console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived");
+/* ── 8 · F-702 · THE LOOP ITSELF, not just the decision ───────────────────────────────────
+ * `plant-sweep-live.mjs` hand-rolled its drain beside this module and so had a SECOND copy
+ * of the contract: flat 1 s back-off, finishedness re-derived from `truncated`, no spin
+ * detection. The loop lives here now and both live drivers supply only the POST, so the same
+ * refusing store cannot produce two different verdicts. These cases drive it with a scripted
+ * server and an injected clock — no I/O, no real sleeping. */
+const server = (answers) => {
+  const seen = [];
+  const post = async (cursor) => {
+    seen.push(cursor);
+    const next = answers[seen.length - 1];
+    return next === undefined ? { status: 500, json: null } : { status: 200, json: next };
+  };
+  return { post, seen };
+};
+/** Collect the sleeps instead of taking them, so the pacing is asserted without the wait. */
+const fakeClock = () => { const slept = []; return { slept, sleep: async (ms) => { slept.push(ms); } }; };
+
+// A healthy multi-page drain: every page resumed at once, ending on the library's `complete`.
+{
+  const { post, seen } = server([budget(1), budget(2), done()]);
+  const clock = fakeClock();
+  const d = await drainSweep(post, { maxCalls: 10, sleep: clock.sleep });
+  assert.equal(d.drained, true, "a sweep that answers complete is drained");
+  assert.equal(d.calls, 3);
+  assert.equal(d.stopReason, null);
+  assert.equal(d.pausedMs, 0, "a healthy drain never pauses");
+  assert.deepEqual(seen, [null, "page-1", "page-2"], "the first call carries no cursor, each resume carries the last one");
+  assert.deepEqual(clock.slept, []);
+}
+
+// THE F-702 SCENARIO. A store refusing the same page: the old hand-rolled loop POSTed the
+// identical token back ten times, 1 s apart, and failed with "still not complete after 10
+// resume call(s)" — naming the harness's private bound instead of the cause.
+{
+  const { post, seen } = server(Array.from({ length: 12 }, () => failing(1)));
+  const clock = fakeClock();
+  const d = await drainSweep(post, { maxCalls: 11, sleep: clock.sleep });
+  assert.equal(d.drained, false);
+  assert.match(d.stopReason, /not-converging/, "the drain must name the CAUSE, not its own bound");
+  assert.ok(d.calls <= IDENTICAL_ANSWER_LIMIT,
+    `and it must stop at the spin detector, not at the bound (calls ${d.calls}, bound 11)`);
+  assert.deepEqual(clock.slept, [500, 1000], "the resumes it did allow were PACED with the published back-off, never a flat 1 s");
+  assert.equal(d.pausedMs, 1500);
+  assert.ok(seen.every((c) => c === null || c === "page-1"));
+}
+
+// A driver may hand the loop a call it ALREADY made (plant-sweep judges call 1 itself). It is
+// decided and counted exactly like any other, and it seeds the spin detector.
+{
+  const { post, seen } = server([budget(2), done()]);
+  const d = await drainSweep(post, { maxCalls: 10, first: budget(1), sleep: fakeClock().sleep });
+  assert.equal(d.drained, true);
+  assert.equal(d.calls, 3, "the seeded answer is a CALL - it cost a web-trigger invocation");
+  assert.deepEqual(seen, ["page-1", "page-2"], "the first POST resumes from the seeded answer's cursor");
+}
+// A seeded answer that is ALREADY complete must not cause a single further call.
+{
+  const { post, seen } = server([]);
+  const d = await drainSweep(post, { maxCalls: 10, first: done() });
+  assert.equal(d.drained, true);
+  assert.equal(d.calls, 1);
+  assert.deepEqual(seen, [], "nothing more is owed once the answer is complete");
+}
+
+// An HTTP failure is a stop that names the call, and the bound is a stop that names itself.
+{
+  const d = await drainSweep(async () => ({ status: 503, json: null }), { maxCalls: 5 });
+  assert.equal(d.drained, false);
+  assert.match(d.stopReason, /call 1 did not answer 200\/ok \(HTTP 503\)/);
+  assert.equal(d.calls, 1, "a refusing door is not retried by the drain");
+}
+{
+  // Distinct pages, each landing deletes: legitimately progressing, so only the bound stops it.
+  const { post } = server(Array.from({ length: 20 }, (_, i) => budget(i + 1)));
+  const d = await drainSweep(post, { maxCalls: 4, sleep: fakeClock().sleep });
+  assert.equal(d.drained, false);
+  assert.equal(d.calls, 4);
+  assert.match(d.stopReason, /after the 4-call bound/);
+}
+// `ok: false` in a 200 body is not a usable answer either.
+{
+  const d = await drainSweep(async () => ({ status: 200, json: { ok: false, reason: "forbidden" } }), { maxCalls: 3 });
+  assert.equal(d.drained, false);
+  assert.match(d.stopReason, /did not answer 200\/ok/);
+}
+
+console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived, and drainSweep is the one loop both live drivers obey (F-702)");

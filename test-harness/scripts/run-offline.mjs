@@ -21,7 +21,7 @@
 // order dependence between suites (shared temp files, a fixture one suite writes and another reads)
 // surfaces instead of hiding behind the alphabet. Reproduce a red run with
 // OFFLINE_SHUFFLE=1 OFFLINE_SHUFFLE_SEED=<seed>.
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -140,6 +140,23 @@ if (Number.isFinite(rawTimeout) && rawTimeout > 0 && rawTimeout !== DEFAULT_SUIT
   console.log(`OFFLINE_SUITE_TIMEOUT_MS=${SUITE_TIMEOUT_MS} — per-suite timeout overridden (default ${DEFAULT_SUITE_TIMEOUT_MS}ms).`);
 }
 
+/* F-807 — A FAILING SUITE'S OUTPUT SURVIVES THE RUN.
+   The console keeps the last 600 bytes, which is enough to recognise a failure you already
+   understand and useless for one you do not: a roster-ui flake in pass 12 left nothing to
+   read and could never be diagnosed. The full stdout+stderr of any suite that fails or times
+   out is written here (results/ is gitignored) and the path is printed on the FAIL line. */
+const logDir = path.join(here, "..", "results", "offline");
+const writeFailureLog = (suite, out) => {
+  try {
+    mkdirSync(logDir, { recursive: true });
+    const file = path.join(logDir, `${suite.replace(/\.test\.mjs$/, "")}.log`);
+    writeFileSync(file, out, "utf8");
+    return path.relative(path.join(here, ".."), file);
+  } catch (e) {
+    return `(could not write log: ${e.message})`;
+  }
+};
+
 let failed = 0;
 const failedSuites = [];
 const rows = [];
@@ -163,7 +180,8 @@ for (const f of files) {
     failed++;
     failedSuites.push(f);
     rows.push(`  ✗ ${f.padEnd(28)} TIMED OUT after ${(elapsedMs / 1000).toFixed(1)}s (limit ${(SUITE_TIMEOUT_MS / 1000).toFixed(1)}s) — killed. `
-      + `The suite did not finish; raise OFFLINE_SUITE_TIMEOUT_MS only if it is genuinely slow rather than stuck.\n`
+      + `The suite did not finish; raise OFFLINE_SUITE_TIMEOUT_MS only if it is genuinely slow rather than stuck. `
+      + `Full output: ${writeFailureLog(f, out)}\n`
       + out.slice(-600));
     continue;
   }
@@ -171,7 +189,9 @@ for (const f of files) {
     || (out.split("\n").filter(Boolean).pop() || "").trim();
   const okRun = r.status === 0;
   if (!okRun) { failed++; failedSuites.push(f); }
-  rows.push(`  ${okRun ? "✓" : "✗"} ${f.padEnd(28)} ${okRun ? (summary || "").slice(0, 70) : "FAILED (exit " + r.status + ")\n" + out.slice(-600)}`);
+  rows.push(`  ${okRun ? "✓" : "✗"} ${f.padEnd(28)} ${okRun
+    ? (summary || "").slice(0, 70)
+    : `FAILED (exit ${r.status}) — full output: ${writeFailureLog(f, out)}\n${out.slice(-600)}`}`);
 }
 
 console.log(`\n=== Offline suite: ${files.length} test files ===`);

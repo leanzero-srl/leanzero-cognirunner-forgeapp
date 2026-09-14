@@ -20,7 +20,10 @@
 //           (exit 2, one sentence naming what is missing and both ways to fix it) and spawns NO
 //           suite, instead of letting the two suites that reach into node_modules by path report
 //           as product regressions.
-import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, existsSync, rmSync, symlinkSync } from "node:fs";
+//   F-807 — a failing or timed-out suite's FULL stdout+stderr is written to results/offline/
+//           and the path is printed on the FAIL line; the console keeps only the 600-byte tail,
+//           which in pass 12 left a roster-ui flake with nothing to read.
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync, existsSync, rmSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -32,6 +35,14 @@ const ok = (c, msg) => { if (c) pass++; else { fail++; console.log("  FAIL:", ms
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REAL_RUNNER = path.join(here, "run-offline.mjs");
 const REPO_ROOT = path.resolve(here, "..", "..");
+
+// A line long enough that the head of the fixture's output CANNOT survive the 600-byte tail the
+// console keeps: if the head is in the log file, the log holds more than the console does.
+const MARKER_HEAD = "FIRST-LINE-MARKER-a1b2c3";
+const MARKER_TAIL = "LAST-LINE-MARKER-z9y8x7";
+const failingSuiteSrc = `console.log("${MARKER_HEAD}");\n`
+  + `for (let i = 0; i < 60; i++) console.log("filler line " + i + " ${"x".repeat(40)}");\n`
+  + `console.error("${MARKER_TAIL}");\nprocess.exit(1);\n`;
 
 /* Builds a throwaway harness that MIRRORS THE REAL LAYOUT — <tmp>/test-harness/scripts/ with the
    installs one level above at <tmp>/node_modules — because the two suites this precondition exists
@@ -102,6 +113,55 @@ const disposable = (h) => { cleanups.push(h.root); return h; };
   ok(r.status === 0, `deps present → exit 0 (got ${r.status}); out tail: ${out.slice(-300)}`);
   ok(/OFFLINE SUITE: PASS \(3\/3\)/.test(out), "deps present → all three fixture suites ran and passed");
   ok(!/NOT RUN/.test(out), "deps present → the precondition does not fire");
+}
+
+// ── F-807: a failing suite leaves its FULL output on disk, and the FAIL line says where ─────────
+{
+  const h = disposable(makeHarness({
+    "boom.test.mjs": failingSuiteSrc,
+    "fine.test.mjs": `console.log("fine: 1 passed, 0 failed");\n`,
+  }));
+  linkInstalls(h);
+  const r = runHarness(h);
+  const out = (r.stdout || "") + (r.stderr || "");
+  ok(r.status === 1, `failing suite → exit 1, not 2 (got ${r.status})`);
+  ok(/FAILING SUITES: boom\.test\.mjs/.test(out), "failing suite → named on the last line");
+
+  const logFile = path.join(h.harness, "results", "offline", "boom.log");
+  ok(existsSync(logFile), "failing suite → results/offline/<suite>.log written");
+  const log = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  ok(log.includes(MARKER_HEAD), "log holds the FIRST line of the suite's output (the console tail cannot)");
+  ok(log.includes(MARKER_TAIL), "log holds stderr as well as stdout");
+  ok(log.length > 600, `log is the full output, not the 600-byte tail (${log.length} bytes)`);
+  ok(!out.includes(MARKER_HEAD), "console still shows only the tail — the log is what holds the head");
+  ok(/results\/offline\/boom\.log/.test(out), "the FAIL line prints the log path");
+  ok(out.includes(MARKER_TAIL), "the FAIL line still carries the 600-byte tail inline");
+  ok(!existsSync(path.join(h.harness, "results", "offline", "fine.log")), "a PASSING suite writes no log");
+}
+
+// ── F-807: a TIMED-OUT suite leaves a log too (the hang case F-731 bounded) ──────────────────────
+{
+  const h = disposable(makeHarness({
+    "hang.test.mjs": `console.log("${MARKER_HEAD}");\n`
+      + `for (let i = 0; i < 60; i++) console.log("filler line " + i + " ${"x".repeat(40)}");\n`
+      + `setTimeout(() => {}, 60000);\n`,
+  }));
+  linkInstalls(h);
+  const r = runHarness(h, { OFFLINE_SUITE_TIMEOUT_MS: "1500" });
+  const out = (r.stdout || "") + (r.stderr || "");
+  ok(r.status === 1, `hung suite → exit 1 (got ${r.status})`);
+  ok(/TIMED OUT/.test(out), "hung suite → reported as a timeout, not a hang");
+  const logFile = path.join(h.harness, "results", "offline", "hang.log");
+  ok(existsSync(logFile), "hung suite → its log is written too");
+  ok(existsSync(logFile) && readFileSync(logFile, "utf8").includes(MARKER_HEAD),
+    "hung suite log holds the output produced before the kill");
+  ok(/results\/offline\/hang\.log/.test(out), "the TIMED OUT line prints the log path");
+}
+
+// results/ is gitignored in test-harness/ — the logs must never become committable artefacts.
+{
+  const gi = readFileSync(path.join(here, "..", ".gitignore"), "utf8");
+  ok(/^results\/$/m.test(gi), "test-harness/.gitignore ignores results/ (where the failure logs land)");
 }
 
 for (const root of cleanups) { try { rmSync(root, { recursive: true, force: true }); } catch { /* temp dir */ } }

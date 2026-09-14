@@ -1798,10 +1798,15 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const build = (deps) => new Function(
     "runCoderTurn", "isHeadlessTrigger", "recordCoderPfOutcome", "claimRuleExecution",
     "storage", "coderPfDoneClaimKey", "CODER_PF_DONE_TTL", "buildCoderKnowledge", "console",
+    // F-829 — the execution-time gate is a collaborator here too: this block tests the
+    // CLAIM's control flow, so the gate is stubbed to "allow" unless a case says otherwise.
+    "resolveFreshCoderGate", "agentActionRefusalText",
     `return (${src});`,
   )(deps.runCoderTurn, () => false, deps.recordCoderPfOutcome, deps.claimRuleExecution,
     deps.storage, (id) => `coder_pf_done:${id}`, { ttl: { value: 24, unit: "HOURS" } },
-    deps.buildCoderKnowledge || (async () => ({})), quiet);
+    deps.buildCoderKnowledge || (async () => ({})), quiet,
+    deps.resolveFreshCoderGate || (async () => ({ facts: { provider: "openai", edition: "standard" }, queuedFacts: null, allowed: null, refusal: null })),
+    (r) => String(r));
 
   const makeDeps = (over = {}) => {
     const held = new Set();
@@ -1864,6 +1869,134 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     await run(PF, "TASK-5");
     ok(state.runs === 1, "EXECUTED (F-393): a claim that cannot answer fails OPEN and the turn runs");
   }
+}
+
+/* ════ F-829 — the queued capability verdict is RE-DERIVED at execution time ════ */
+// The producer's gate is memoised (30 s, hot path) and its facts ride the queue payload.
+// The engine re-ran the PREDICATE against those frozen facts and read nothing, so a
+// provider switch or a spent allowance INSIDE the queue's lifetime (minutes) still let a
+// queued turn commit, open a PR or deploy on an instance whose real verdict refuses.
+// `resolveFreshCoderGate` is executed here against stub fact-readers and the REAL gate.
+{
+  const at = asyncSrc.indexOf("const resolveFreshCoderGate = async (p) => {");
+  ok(at > 0, "F-829: resolveFreshCoderGate exists in src/async-handler.js");
+  const end = asyncSrc.indexOf("\n};\n", at);
+  const src = asyncSrc.slice(at, end + 2).replace("const resolveFreshCoderGate = ", "");
+  const gateMod = await import("../../src/shared/agent-actions.js");
+  // FRESH facts come from a stub that stands in for agentGateFacts — the ONE reader. The
+  // predicate and the gate builder are the SHIPPED ones: nothing about capability is
+  // re-implemented in this test either.
+  const buildGate = (facts) => new Function(
+    "agentGateFacts", "buildAgentGateContext", "normalizeAllowedActions", "getAgentAction", "isHeadlessTrigger",
+    `return (${src});`,
+  )(async () => facts, gateMod.buildAgentGateContext, gateMod.normalizeAllowedActions, gateMod.getAgentAction,
+    (s) => s === "postfunction" || s === "listener" || s === "external");
+
+  // A `build` mode's payload: two writes and one read, already intersected with the
+  // producer's (BYOK) verdict, armed by an ADMIN so the role arm cannot be the cause.
+  const PAYLOAD = {
+    issueKey: "LZPT-9", threadId: "pf_r9_1", triggerSource: "postfunction", headless: true,
+    savedByRole: "admin",
+    allowedActions: ["commit_files", "open_pull_request", "get_pull_request"],
+    gateFacts: { provider: "openai", edition: "standard", agentModel: "gpt-5.4", allowanceLevel: null },
+  };
+  const BYOK_FRESH = { provider: "openai", edition: "standard", agentModel: "gpt-5.4", allowanceLevel: null };
+  const STANDARD_FORGE = { provider: "atlassian", edition: "standard", agentModel: "claude-haiku-4.5", allowanceLevel: null };
+  const CODER_FORGE_HAIKU = { provider: "atlassian", edition: "advanced", agentModel: "claude-haiku-4.5", allowanceLevel: null };
+  const CODER_FORGE_OK = { provider: "atlassian", edition: "advanced", agentModel: "claude-sonnet-5", allowanceLevel: null };
+  const CODER_FORGE_SPENT = { provider: "atlassian", edition: "advanced", agentModel: "claude-sonnet-5", allowanceLevel: "hard" };
+
+  {
+    // BLOCK — the headline case. Queued on BYOK, executing on Forge LLM STANDARD.
+    const out = await buildGate(STANDARD_FORGE)(PAYLOAD);
+    ok(out.refusal && out.refusal.reason === "needs-coder-edition",
+      `EXECUTED (F-829): stale BYOK facts, instance now atlassian+Standard → refused (got ${JSON.stringify(out.refusal)})`);
+    ok(out.queuedFacts && out.queuedFacts.provider === "openai" && out.facts.provider === "atlassian",
+      "EXECUTED (F-829): the queued facts are KEPT as advisory provenance and the fresh ones are the verdict's");
+  }
+  {
+    // BLOCK — Coder edition, but Forge LLM on a non-frontier agent model.
+    const out = await buildGate(CODER_FORGE_HAIKU)(PAYLOAD);
+    ok(out.refusal && out.refusal.reason === "needs-frontier-model",
+      `EXECUTED (F-829): atlassian+Coder+Haiku at execution → needs-frontier-model (got ${JSON.stringify(out.refusal)})`);
+  }
+  {
+    // ALLOW — the facts did not change.
+    const out = await buildGate(BYOK_FRESH)(PAYLOAD);
+    ok(out.refusal === null, "EXECUTED (F-829): fresh BYOK facts run — the re-derivation refuses nothing it should not");
+    ok(out.allowed.length === 3, `EXECUTED (F-829): …and the whole queued ceiling survives (got ${out.allowed.length})`);
+  }
+  {
+    // ALLOW — a legitimately capable Forge LLM instance.
+    const out = await buildGate(CODER_FORGE_OK)(PAYLOAD);
+    ok(out.refusal === null && out.allowed.includes("commit_files"),
+      "EXECUTED (F-829): atlassian+Coder+Sonnet at execution runs, writes intact");
+  }
+  {
+    // BLOCK — the ALLOWANCE arm, which the queued facts said was fine.
+    const out = await buildGate(CODER_FORGE_SPENT)(PAYLOAD);
+    ok(out.refusal && out.refusal.reason === "allowance-exhausted",
+      `EXECUTED (F-829): an allowance spent AFTER the enqueue refuses at execution (got ${JSON.stringify(out.refusal)})`);
+  }
+  {
+    // THE F-390 QUESTION, asked on this side of the queue too: a read survives, every
+    // write is gone — that is not a run of a mode named for its writes.
+    const out = await buildGate(BYOK_FRESH)({ ...PAYLOAD, savedByRole: "editor" });
+    ok(out.refusal && out.refusal.reason === "needs-admin",
+      `EXECUTED (F-829/F-390): only a READ survived, so the turn is refused rather than half-run (got ${JSON.stringify(out.refusal)})`);
+  }
+  {
+    // A PANEL turn carries no ceiling: it gets fresh facts and nothing is pre-refused —
+    // the engine offers what those facts allow.
+    const out = await buildGate(STANDARD_FORGE)({ issueKey: "LZPT-9", threadId: "t1" });
+    ok(out.refusal === null && out.allowed === null,
+      "EXECUTED (F-829): a panel turn (no queued ceiling) is not pre-refused; it is gated by the engine on the fresh facts");
+  }
+
+  /* ── the CONSUMER wiring: the fresh verdict is what reaches the engine ── */
+  const atX = asyncSrc.indexOf("const executeCoderTurn = async (params, taskId) => {");
+  const endX = asyncSrc.indexOf("\n};\n", atX);
+  const xsrc = asyncSrc.slice(atX, endX + 2).replace("const executeCoderTurn = ", "");
+  const quiet2 = { log() {}, warn() {}, error() {} };
+  const buildRun = (gateOut, state) => new Function(
+    "runCoderTurn", "isHeadlessTrigger", "recordCoderPfOutcome", "claimRuleExecution",
+    "storage", "coderPfDoneClaimKey", "CODER_PF_DONE_TTL", "buildCoderKnowledge", "console",
+    "resolveFreshCoderGate", "agentActionRefusalText",
+    `return (${xsrc});`,
+  )(async (args) => { state.ran = args; return { success: true, endedBy: "finish" }; },
+    () => true, async (p, o) => { state.recorded = o; }, async () => true,
+    { delete: async () => {} }, (id) => `coder_pf_done:${id}`, {},
+    async () => { state.knowledge = (state.knowledge || 0) + 1; return {}; }, quiet2,
+    async () => gateOut, gateMod.agentActionRefusalText);
+  const PF = { ...PAYLOAD, message: "go", pf: { mode: "build", strict: false } };
+  {
+    const state = {};
+    const out = await buildRun({ facts: BYOK_FRESH, queuedFacts: PAYLOAD.gateFacts, allowed: ["commit_files"], refusal: null }, state)(PF, "T-1");
+    ok(out.success === true, "EXECUTED (F-829): an allowed turn still runs");
+    ok(state.ran && state.ran.gateFacts === BYOK_FRESH,
+      "EXECUTED (F-829): the engine is handed the FRESH facts, never params.gateFacts — its second assertion is now worth something");
+    ok(state.ran && state.ran.allowedActions.length === 1,
+      "EXECUTED (F-829): …and the ceiling it receives is the queued one INTERSECTED with the fresh verdict");
+  }
+  {
+    const state = {};
+    const out = await buildRun({ facts: STANDARD_FORGE, queuedFacts: PAYLOAD.gateFacts, allowed: [], refusal: { reason: "needs-coder-edition" } }, state)(PF, "T-2");
+    ok(out.success === false && out.refused === true && out.reason === "needs-coder-edition",
+      "EXECUTED (F-829): a refusal at execution returns the machine-readable reason on the task row");
+    ok(!state.ran, "EXECUTED (F-829): …the turn NEVER runs, so no token is spent and nothing is written");
+    ok(!state.knowledge, "EXECUTED (F-829): …and no knowledge is read either — the refusal is the first thing decided");
+    ok(state.recorded && state.recorded.refused === true && /Coder edition|BYOK/.test(String(state.recorded.error)),
+      "EXECUTED (F-829): …and it is recorded on the Coder log with the operator sentence, not a bare code");
+  }
+}
+
+/* The docblock the defect hid behind must not come back (F-829). */
+{
+  const block = indexSrc.slice(indexSrc.indexOf("THE FRESHNESS POLICY"), indexSrc.indexOf("const agentGateFacts = async"));
+  ok(!/the engine re-runs the gate/.test(block),
+    "F-829: the false claim 'the engine re-runs the gate' is gone from the freshness policy");
+  ok(/F-829/.test(block) && /fresh/i.test(block),
+    "F-829: …replaced by the real contract — a memoised producer and a FRESH consumer");
 }
 
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);

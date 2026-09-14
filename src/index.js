@@ -11159,10 +11159,23 @@ resolver.define("testPostFunction", async ({ payload, context }) => {
  *   of that pair and runs per transition; it keeps the memo, and it is marked in place.
  *   Its cost is the MIRROR DANGER, written down rather than hidden: for up to 30 s after
  *   a provider switch the run site can still hold the OLD provider's facts, so a BYOK
- *   provider stale in the memo would let it arm and run capability-gated actions on an
- *   instance that is now atlassian+Haiku. Bounded by the TTL, on the run path only, and
- *   the engine re-runs the gate — but it is not zero. `src/rules-api.js` is memoised too,
- *   for the same per-request reason and with the same caveat.
+ *   provider stale in the memo can let it ENQUEUE capability-gated actions on an instance
+ *   that is now atlassian+Haiku. `src/rules-api.js` is memoised too, for the same
+ *   per-request reason and with the same caveat.
+ *
+ * WHAT BOUNDS THAT DANGER (F-829) — say this precisely, because the sentence that used to
+ *   stand here was false and a whole class of defect hid behind it. It called the danger
+ *   "bounded by the TTL, on the run path only" because the engine re-ran it. The engine DID re-run
+ *   the PREDICATE — against the facts the producer serialised into the queue payload. It
+ *   read nothing, so re-running it re-derived the same verdict from the same stale numbers,
+ *   and the real bound was the QUEUE'S lifetime (minutes), not the memo's 30 s.
+ *   THE CONTRACT IS NOW: a MEMOISED PRODUCER and a FRESH CONSUMER. The run-time gate here
+ *   decides only whether to spend the enqueue, and its facts ride the payload as
+ *   `queuedFacts` — ADVISORY, logged when they diverge, never decisive. Before any
+ *   capability-gated action executes, `resolveFreshCoderGate` (src/async-handler.js) calls
+ *   THIS function with `{ fresh: true }` and runs the same predicate on facts read at
+ *   EXECUTION time; a verdict that has since turned refuses there, with the producer's own
+ *   refusal shape. So the memo can cost an enqueue — never a write.
  */
 const agentGateFacts = async (context, { fresh = false } = {}) => {
   // `managedKeyPresent` is an ENV read, not I/O — free, never memoised, and always
@@ -21349,7 +21362,13 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, privileg
     // `buildAgentGateContext` is the ONE place they become a verdict. triggerSource is
     // "external" because a transition is not a human — the same answer the engine will
     // reach from `headless:true`, computed here so the refusal can be logged BEFORE a
-    // token is spent (the engine re-runs it; agreeing twice is the point).
+    // token is spent.
+    //
+    // F-829 — THIS VERDICT DECIDES THE ENQUEUE, NOT THE RUN. It is memoised (hot path), so
+    // it can be up to 30 s stale, and a queued turn runs minutes later. The consumer
+    // re-derives the facts FRESH before any capability-gated action executes
+    // (`resolveFreshCoderGate`, src/async-handler.js); `gateFacts` below rides the payload
+    // as ADVISORY provenance only.
     const facts = await agentGateFacts(null); // F-811 HOT PATH: memoised on purpose — see the freshness policy on agentGateFacts.
     const gate = buildAgentGateContext({ ...facts, triggerSource: "external", savedByRole });
     const gated = normalizeAllowedActions(mode.actions, gate);
@@ -21414,6 +21433,9 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, privileg
       // simulation intercepts every git write and the workspace writer posts nothing.
       simulation: config?.simulationMode === true,
       connectionId,
+      // ADVISORY (F-829): what the instance looked like at ENQUEUE time, carried so the
+      // consumer can log a divergence. The consumer reads its own fresh facts and those
+      // are what gate the run.
       gateFacts: facts,
       savedByRole,
       // F-463 — THE RULE'S SKILL BINDING. `buildCoderKnowledge` (src/async-handler.js)
@@ -21487,7 +21509,16 @@ export const recordCoderPfOutcome = async (params, out) => {
   let status = "success";
   let reason = "";
   let recommendation = null;
-  if (out && out.success === false) {
+  if (out && out.refused === true) {
+    // F-829 — THE GATE REFUSED AT EXECUTION TIME, and it is written EXACTLY as the
+    // producer's own environment refusal is (`envProblem`, enqueueCoderPostFunction):
+    // `strict` is the one switch that decides whether an environment problem reads as a
+    // failure or a skip, and the same problem must not read differently because of WHICH
+    // side of the queue noticed it. One refusal shape, two discovery points.
+    status = pf.strict === true ? "error" : "skipped";
+    reason = String(out.error || "The Coder did not run: the instance may no longer perform this rule's actions.").slice(0, 400);
+    recommendation = String(out.recommendation || "Nothing was written to the repository.").slice(0, 400);
+  } else if (out && out.success === false) {
     status = "error";
     reason = `The Coder run failed: ${String(out.error || "no reason given").slice(0, 300)}`;
     recommendation = "Nothing further was written. Open the issue's Coder log comment for what it managed before it stopped.";
@@ -21510,7 +21541,9 @@ export const recordCoderPfOutcome = async (params, out) => {
       type: CODER_PF_TYPE,
       issueKey,
       fieldId: "coder",
-      isValid: status === "success",
+      // A non-strict environment SKIP is not a failed run — the same rule `envProblem`
+      // applies on the producer side (F-829).
+      isValid: status === "success" || status === "skipped",
       decision: status.toUpperCase(),
       reason,
       recommendation,

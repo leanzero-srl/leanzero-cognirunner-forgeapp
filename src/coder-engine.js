@@ -718,6 +718,12 @@ const runCoderTurnClaimed = async ({
   // there is no human, so the trigger IS "external" and the gate drops every `dangerous`
   // action and every `confirm` action on a rule an admin did not save. One flag, one
   // place; nothing below re-decides it.
+  //
+  // F-829 — `gateFacts` MUST BE THE CALLER'S CURRENT FACTS, never a set carried in a queue
+  // payload. This gate is a PREDICATE over facts it cannot read; re-running it on facts a
+  // producer froze minutes ago re-derives the producer's verdict and proves nothing. The
+  // queue consumer therefore re-reads them fresh (`resolveFreshCoderGate`,
+  // src/async-handler.js) and hands THOSE in; the resolvers already read fresh.
   const gate = gateFacts
     ? buildAgentGateContext({ ...gateFacts, triggerSource: headless ? "external" : null, savedByRole })
     : undefined;

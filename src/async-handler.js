@@ -92,6 +92,11 @@ import {
   managedKeyForConsumer,
   managedCloudStatus,
   PROVIDER_OPENROUTER_BASE_URL,
+  // F-829 — THE ONE FACT-READER (F-302), bound by this process too. A queued task's
+  // facts were read by the PRODUCER minutes earlier, behind a 30 s memo; this consumer
+  // re-reads them FRESH at execution time. Same function, `{ fresh: true }`, never a
+  // second copy of the four reads.
+  agentGateFacts,
 } from "./index";
 import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS, MAX_BUDGET_DEFER_DELAY_S, TOKEN_SPENDING_TASK_TYPES } from "./shared/ai-budget.js";
 // Learned memories — injected into static-PF reviews and persisted by the
@@ -132,6 +137,10 @@ import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 // through the client, never straight to `requestConfluence`.
 import { createConfluenceClient } from "./confluence-client.js";
 import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL, getCoderThread, getCoderPinnedKnowledge } from "./coder-engine.js";
+// F-829 — the ONE gate predicate and the ONE refusal vocabulary, used here exactly as the
+// producer uses them. Nothing about capability is decided in this file; it only supplies
+// FRESH facts to the same three functions.
+import { buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText } from "./shared/agent-actions.js";
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
 import { knowledgeBudget, fieldGuideAudience, fieldGuideBudget } from "./shared/registry-limits.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
@@ -2062,6 +2071,68 @@ export const executeHarnessProbe = async (params, taskId) => {
   return { success: true, key };
 };
 
+/**
+ * F-829 — THE CAPABILITY VERDICT IS RE-DERIVED HERE, AT EXECUTION TIME.
+ *
+ * THE DEFECT. The run-time transition gate (`enqueueCoderPostFunction`, src/index.js)
+ * reads the instance's facts through the 30 s memo — deliberately, it is the hot path —
+ * and then SERIALISES them into the queue payload. The engine re-ran the PREDICATE
+ * (`agentCapability`) against those frozen facts and read nothing itself, so "the engine
+ * re-runs the gate" bought no freshness at all: it re-derived the same verdict from the
+ * same stale numbers. A queued turn can sit for minutes. Switch the provider from BYOK to
+ * Forge LLM Standard, or spend the month's allowance, inside that window and the turn
+ * still ran `commit_files` / `open_pull_request` / `trigger_deploy` on an instance whose
+ * real verdict was `needs-coder-edition` / `needs-frontier-model` / `allowance-exhausted`.
+ * The bound was never the 30 s TTL; it was the queue's lifetime.
+ *
+ * THE CUT. The consumer asks the ONE fact-reader (`agentGateFacts`, src/index.js) for
+ * FRESH facts — `{ fresh: true }`, the same reads every other answer and save door in this
+ * product makes, and the same policy this whole file already follows for the provider, the
+ * edition and the allowance. The QUEUED facts become advisory: kept as `queuedFacts` so a
+ * divergence is visible in the log, never decisive. No fact is read twice and no predicate
+ * is re-implemented: this function supplies fresh facts to `buildAgentGateContext` and
+ * `normalizeAllowedActions`, which stay the one gate.
+ *
+ * THE CEILING is the payload's `allowedActions` — already `mode ∩ producer-verdict`, so
+ * intersecting it with the fresh verdict can only ever REMOVE actions. A panel turn
+ * carries no ceiling; it gets fresh facts and the engine offers what they allow.
+ *
+ * THE REFUSAL mirrors the producer's, because the question is the producer's: did anything
+ * this rule EXISTS FOR survive (F-390)? "Some read survived" is not a run. It is answered
+ * before a token is spent and before any knowledge is read.
+ *
+ * NEVER THROWS: `agentGateFacts` fails to the restrictive side and the rest is pure.
+ */
+const resolveFreshCoderGate = async (p) => {
+  const headless = isHeadlessTrigger(p.triggerSource) || p.headless === true;
+  const savedByRole = p.savedByRole || "editor";
+  // No invocation context in a queue consumer — the edition ladder starts at
+  // getAppContext() and falls through to the KVS snapshot, exactly as currentEditionFresh
+  // does a few hundred lines up.
+  const facts = await agentGateFacts(undefined, { fresh: true });
+  const gate = buildAgentGateContext({ ...facts, triggerSource: headless ? "external" : null, savedByRole });
+  const out = { facts, queuedFacts: p.gateFacts || null, allowed: null, refusal: null };
+  if (!Array.isArray(p.allowedActions)) return out;
+
+  const ceiling = p.allowedActions.map((id) => String(id));
+  const gated = normalizeAllowedActions(ceiling, gate);
+  out.allowed = gated.allowed;
+  const reasonOf = (rows) => (rows.find((r) => r && r.reason) || {}).reason || "capability-off:git";
+  if (!gated.allowed.length) {
+    out.refusal = { reason: reasonOf(gated.refused || []) };
+    return out;
+  }
+  // The WRITE subset (F-390): a mode named for its writes that keeps only a read has
+  // nothing left to do, and spending a frontier turn to discover that at the first tool
+  // call is the waste F-390 already paid for once.
+  const writes = ceiling.filter((id) => (getAgentAction(id) || {}).confirm === true);
+  const surviving = writes.filter((id) => gated.allowed.includes(id));
+  if (writes.length && !surviving.length) {
+    out.refusal = { reason: reasonOf((gated.refused || []).filter((r) => writes.includes(r.id))) };
+  }
+  return out;
+};
+
 const executeCoderTurn = async (params, taskId) => {
   const p = params || {};
   // F-393 — THE PER-EVENT COMPLETION CLAIM, for the POST-FUNCTION path only.
@@ -2086,6 +2157,31 @@ const executeCoderTurn = async (params, taskId) => {
       return { success: false, skipped: true, error: "redelivery of a completed PF turn, skipped" };
     }
   }
+  // F-829 — THE VERDICT, RE-DERIVED NOW, before any knowledge is read and before a single
+  // token is spent. The queued facts are advisory from here on.
+  const gateNow = await resolveFreshCoderGate(p);
+  if (gateNow.queuedFacts && (gateNow.queuedFacts.provider !== gateNow.facts.provider
+      || gateNow.queuedFacts.edition !== gateNow.facts.edition
+      || gateNow.queuedFacts.allowanceLevel !== gateNow.facts.allowanceLevel)) {
+    console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: the instance changed after this turn was queued `
+      + `(queued ${gateNow.queuedFacts.provider}/${gateNow.queuedFacts.edition}/${gateNow.queuedFacts.allowanceLevel} → `
+      + `now ${gateNow.facts.provider}/${gateNow.facts.edition}/${gateNow.facts.allowanceLevel}); the FRESH facts decide.`);
+  }
+  if (gateNow.refusal) {
+    const why = agentActionRefusalText(gateNow.refusal.reason);
+    const refused = {
+      success: false,
+      refused: true,
+      reason: gateNow.refusal.reason,
+      error: `The Coder did not run: ${why}. The instance's AI capability changed after this run was queued, so nothing was written.`,
+      recommendation: "Switch to a BYOK provider, or upgrade to CogniRunner Coder, in Apps → CogniRunner → Settings. No token was spent and nothing was written to the repository.",
+    };
+    console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: refused at execution — ${gateNow.refusal.reason}`);
+    // The completion claim STAYS TAKEN: this delivery reached a recorded outcome, and a
+    // redelivery must not re-ask a question the instance has already answered.
+    if (p.pf) await recordCoderPfOutcome(p, refused);
+    return refused;
+  }
   let out;
   try {
     out = await runCoderTurn({
@@ -2096,9 +2192,13 @@ const executeCoderTurn = async (params, taskId) => {
       // carries no `simulation` — turn a simulated thread into a live-writing one.
       simulation: typeof p.simulation === "boolean" ? p.simulation : undefined,
       connectionId: p.connectionId || null, maxRounds: p.maxRounds,
-      gateFacts: p.gateFacts || null, savedByRole: p.savedByRole || "editor", cancelToken: taskId,
+      // F-829 — THE FRESH FACTS, never `p.gateFacts`. The engine's own gate is the second
+      // assertion of the same verdict; it is only worth anything if the facts under it are
+      // the instance's CURRENT ones. `p.gateFacts` is kept in the payload for the log only.
+      gateFacts: gateNow.facts, savedByRole: p.savedByRole || "editor", cancelToken: taskId,
       headless: isHeadlessTrigger(p.triggerSource) || p.headless === true,
-      allowedActions: Array.isArray(p.allowedActions) ? p.allowedActions : null,
+      // Already intersected with the fresh verdict above; the engine intersects again.
+      allowedActions: Array.isArray(gateNow.allowed) ? gateNow.allowed : null,
       // BOTH PATHS (F-404): the panel turn and the headless post-function turn are the same
       // task type, and both arrive here.
       knowledge: await buildCoderKnowledge(p),

@@ -392,7 +392,20 @@ async function main() {
     if (shot_.leaked) {
       FAIL("a screenshot capture was REFUSED because a readable email address survived the mask — the F-660 guarantee fired and this run FAILS on it regardless of the roster verdict", { leaks: shot_.leaks });
     }
-    ev.summary = { passes, fails, unproven, shots: shot_.shots.length, captured: shot_.shots.filter((s) => s.captured).length, leaks: shot_.leaks.length };
+    /* F-693 — THE POSITIVE CONTROL FOR THE MASK ITSELF, ONCE PER RUN.
+       Every per-shot verdict above is "nothing readable was left", which a mask matching
+       ZERO elements satisfies unconditionally: rename `.perm-ident-email` and this driver
+       reports MORE passes than before while every PNG renders real addresses. This driver
+       opens the user-search dropdown on a NAMESAKE fixture, and that view is known to carry
+       at least one address — so a run that saw no span at all did not prove what its passes
+       claim, whatever else went green. `perm-selector-parity.test.mjs` catches the rename
+       offline; this catches the view that stopped rendering, the frame that never loaded and
+       the dropdown that never opened. */
+    const mask = shot_.positiveControl();
+    ev.maskPositiveControl = mask;
+    if (mask.ok) PASS(mask.sentence, { spans: mask.spanTotal, masked: mask.maskedTotal, captures: mask.captures });
+    else FAIL(mask.sentence, { spans: mask.spanTotal, captures: mask.captures, expected: "the user-search dropdown on a namesake fixture renders at least one `.perm-ident-email`" });
+    ev.summary = { passes, fails, unproven, shots: shot_.shots.length, captured: shot_.shots.filter((s) => s.captured).length, leaks: shot_.leaks.length, maskSpans: mask.spanTotal };
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n  ${passes} PASS · ${fails} FAIL · ${unproven} N/V   -> ${OUT}/evidence.json\n`);
     process.exit(fails ? 1 : 0);

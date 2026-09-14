@@ -1,0 +1,138 @@
+/*
+ * CogniRunner - AI-powered workflow validation for Jira
+ * Copyright (C) 2025 LeanZero
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * THE DRAIN LOOP'S DECISION, IN ONE PLACE — F-690.
+ *
+ * `sweepHarnessFaults` answers a PAGE, never the keyspace, and every caller that wants a
+ * whole-keyspace verdict has to resume on the returned `cursor`. F-682 added the reason
+ * `deletes-failing` — truncated, with THIS page's own cursor — precisely so that a caller
+ * could tell "there is more to do" from "I am not converging". F-690 is that the contract
+ * existed only in the offline test's hand-written loop: `drainSweep`, the ONLY real caller,
+ * broke solely on `truncated !== true`, so a `deletes-failing` answer was POSTed straight
+ * back, unpaced, up to its private 20-call bound — twenty web-trigger invocations, twenty
+ * full KVS queries and sixty rejected deletes hammering a store that is already refusing.
+ * The bound was the harness's, not the contract's; an unbounded `while (cursor)` caller,
+ * which `src/harness-fault.js`'s own docblock still invites, never stopped at all.
+ *
+ * So the decision is now a PURE FUNCTION with no I/O, unit-tested offline against all three
+ * reasons, and the live driver is the dumb loop that obeys it. One rule, one home (LAW 1):
+ * `harness-fault-ttl.test.mjs` asserted a loop that existed nowhere in production, which is
+ * the same defect one layer up.
+ *
+ * THE ANSWERS AND WHAT EACH EARNS:
+ *   · `deletes-failing` — nothing landed on this page. PAUSE with exponential back-off
+ *     (500 ms, 1 s, 2 s) and resume, at most `DELETES_FAILING_BACKOFF_MS.length` times.
+ *     A store that refuses three paced retries is not going to answer the fourth, and the
+ *     stop says `not-converging` rather than the driver's generic "bound".
+ *   · the SAME ANSWER `IDENTICAL_ANSWER_LIMIT` times — byte-identical counters, reason and
+ *     cursor — is the spin itself, made visible. It stops immediately with `not-converging`
+ *     whatever the reason was, because a loop whose answer never changes cannot converge by
+ *     being run again.
+ *   · `deletes-failed` — the sweep REACHED the end of the keyspace but some delete did not
+ *     land, and the cursor points at the page where the failures started. That is worth
+ *     exactly ONE resume: the retry either clears the mess or answers the same thing, and
+ *     the second identical answer is not new information.
+ *   · anything else (`budget`, `pages`) — a healthy partial sweep. Resume at once, no pause.
+ *
+ * FINISHEDNESS IS READ, NOT RE-DERIVED (F-692 prep). `complete` is the library's single
+ * source for "the whole keyspace was walked and every delete landed". This function reads it
+ * when the answer carries it and only falls back to `truncated !== true` for an answer from a
+ * build that predates it, so the driver's verdict cannot silently diverge from the library's.
+ */
+
+/** The pause before each `deletes-failing` resume. Its LENGTH is also the try cap. */
+export const DELETES_FAILING_BACKOFF_MS = [500, 1000, 2000];
+
+/** How many byte-identical answers in a row prove the loop is not converging. */
+export const IDENTICAL_ANSWER_LIMIT = 3;
+
+/**
+ * The bytes a resume can possibly change. Two answers that agree on ALL of these have moved
+ * nothing: the same page, the same counters, the same stop and the same resume token.
+ * `rows` is deliberately excluded — it is derived from the same page and can be capped, so
+ * it adds noise without adding a distinction.
+ */
+export const answerSignature = (j) => JSON.stringify({
+  scanned: j?.scanned ?? null,
+  deleted: j?.deleted ?? null,
+  failed: j?.failed ?? null,
+  truncated: j?.truncated ?? null,
+  reason: j?.reason ?? null,
+  rowsTruncated: j?.rowsTruncated ?? null,
+  complete: j?.complete ?? null,
+  cursor: typeof j?.cursor === "string" ? j.cursor : null,
+});
+
+/** The loop's carried state. Held by the caller, threaded through `decideSweepStep`. */
+export const newDrainState = () => ({
+  lastSignature: null,
+  identical: 0,
+  failingTries: 0,
+  resumedAfterFailed: false,
+});
+
+/**
+ * Is this answer finished? `complete` when the answer carries it (the library's single
+ * source), the legacy derivation only when it does not.
+ */
+export const answerComplete = (j) =>
+  (typeof j?.complete === "boolean" ? j.complete : j?.truncated !== true);
+
+/**
+ * ONE STEP of the drain loop, decided from the answer and the carried state.
+ *
+ * @returns {{action: "done"|"resume"|"stop", sleepMs: number, cursor: string|null,
+ *            stopReason: string|null, state: object}}
+ *   `action:"done"`   — the answer is complete; its counters describe the whole keyspace.
+ *   `action:"resume"` — POST `cursor` back after `sleepMs`.
+ *   `action:"stop"`   — give up; `stopReason` is the sentence a verdict can name.
+ */
+export function decideSweepStep(answer, state) {
+  const prev = state || newDrainState();
+  const signature = answerSignature(answer);
+  const identical = signature === prev.lastSignature ? prev.identical + 1 : 1;
+  const next = { ...prev, lastSignature: signature, identical };
+  const stop = (stopReason) => ({ action: "stop", sleepMs: 0, cursor: null, stopReason, state: next });
+  const reason = answer?.reason ?? null;
+
+  if (answerComplete(answer)) {
+    return { action: "done", sleepMs: 0, cursor: null, stopReason: null, state: next };
+  }
+
+  const cursor = typeof answer?.cursor === "string" && answer.cursor ? answer.cursor : null;
+  if (!cursor) {
+    return stop(`the sweep answered incomplete (reason "${reason}") with NO resumable cursor — the remaining rows are unreachable and their state unknown`);
+  }
+
+  /* THE SPIN, NAMED. Checked before the per-reason branches so it covers `budget` and
+     `pages` too: any answer that repeats itself byte for byte is the same page coming back. */
+  if (identical >= IDENTICAL_ANSWER_LIMIT) {
+    return stop(`not-converging: the sweep answered byte-identically ${identical} times in a row (reason "${reason}", deleted:${answer?.deleted ?? null}, failed:${answer?.failed ?? null}) — resuming it again cannot change the answer`);
+  }
+
+  if (reason === "deletes-failing") {
+    if (prev.failingTries >= DELETES_FAILING_BACKOFF_MS.length) {
+      return stop(`not-converging: ${prev.failingTries} paced retries of a "deletes-failing" page all landed no delete (failed:${answer?.failed ?? null}) — the store is refusing and further resumes only double the load on it`);
+    }
+    next.failingTries = prev.failingTries + 1;
+    return {
+      action: "resume",
+      sleepMs: DELETES_FAILING_BACKOFF_MS[next.failingTries - 1],
+      cursor, stopReason: null, state: next,
+    };
+  }
+
+  if (reason === "deletes-failed") {
+    if (prev.resumedAfterFailed) {
+      return stop(`the sweep reached the end of the keyspace but ${answer?.failed ?? "some"} delete(s) did not land, and the one resume from that page did not clear them`);
+    }
+    next.resumedAfterFailed = true;
+    return { action: "resume", sleepMs: 0, cursor, stopReason: null, state: next };
+  }
+
+  return { action: "resume", sleepMs: 0, cursor, stopReason: null, state: next };
+}

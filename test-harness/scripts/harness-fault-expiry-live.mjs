@@ -90,6 +90,7 @@ import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
+import { decideSweepStep, newDrainState } from "../lib/sweep-drain.mjs";
 
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 /* The provider slot this driver faults. Declared up here because the F-679 refusal names
@@ -182,6 +183,10 @@ const rowShape = (r) => ({ until: r.json?.until ?? null, expired: r.json?.expire
 const sweepShape = (j) => ({
   scanned: j?.scanned ?? null, deleted: j?.deleted ?? null, failed: j?.failed ?? null,
   truncated: j?.truncated ?? null, reason: j?.reason ?? null,
+  /* F-690/F-692 — `complete` is the LIBRARY'S single source for "the whole keyspace was
+     walked and every delete landed". It is carried here so the evidence records the answer
+     the loop actually obeyed, rather than a `truncated` the driver re-derived a verdict from. */
+  complete: typeof j?.complete === "boolean" ? j.complete : null,
   rowsTruncated: j?.rowsTruncated ?? null, hasCursor: Boolean(j?.cursor),
   expiredRows: (j?.rows || []).filter((r) => r.expired).length,
   liveRows: (j?.rows || []).filter((r) => !r.expired).length,
@@ -194,14 +199,32 @@ const MAX_SWEEP_CALLS = 20;
 /*
  * DRAIN a sweep to completion instead of judging its first page.
  *
- * Loops `while (truncated)` on the returned `cursor`, accumulating the COUNTERS across calls,
- * and stops on exactly one of four terminal conditions, each of which a verdict can name:
- *   drained:true           — a call answered `truncated:false`. The accumulated counters
- *                            describe the WHOLE keyspace and may be asserted on.
- *   stopReason "no cursor" — `truncated:true` with no resumable token. The work is abandoned
- *                            and nothing about the rest of the keyspace is known.
- *   stopReason "bound"     — still truncated after MAX_SWEEP_CALLS.
- *   stopReason "HTTP"      — a call did not answer 200/ok.
+ * Accumulates the COUNTERS across calls and stops on exactly one terminal condition, each of
+ * which a verdict can name:
+ *   drained:true                  — a call answered `complete:true`. The accumulated counters
+ *                                   describe the WHOLE keyspace and may be asserted on.
+ *   stopReason "no ... cursor"    — incomplete with no resumable token. The work is abandoned
+ *                                   and nothing about the rest of the keyspace is known.
+ *   stopReason "not-converging"   — the store is refusing deletes, or the answer is repeating
+ *                                   itself byte for byte. See `lib/sweep-drain.mjs`.
+ *   stopReason "deletes-failed …" — the keyspace was walked but deletes did not land, and the
+ *                                   one resume from that page did not clear them.
+ *   stopReason "bound"            — still incomplete after MAX_SWEEP_CALLS.
+ *   stopReason "HTTP"             — a call did not answer 200/ok.
+ *
+ * F-690 — THE LOOP OBEYS THE CONTRACT INSTEAD OF ONLY `truncated`. This loop used to break
+ * solely on `truncated !== true`, which made `deletes-failing` — truncated, with THIS page's
+ * own cursor — indistinguishable from a healthy budget resume: the identical token went
+ * straight back, unpaced, twenty times, sixty rejected deletes at a store already refusing,
+ * and it stopped on the driver's private bound rather than on anything the contract said.
+ * The decision now lives in `lib/sweep-drain.mjs` as a pure function with an offline unit
+ * around all three reasons, because the previous home of that contract was a hand-written
+ * loop inside `harness-fault-ttl.test.mjs` — one rule, two homes, and the production one
+ * never implemented it. This function is now only the I/O: call, decide, sleep, resume.
+ *
+ * F-692 prep — FINISHEDNESS IS READ, NOT RE-DERIVED. `drained` comes from the answer's own
+ * `complete`, so tightening that field in `src/harness-fault.js` cannot leave this driver
+ * asserting over a page the library considers unfinished.
  *
  * A resumed sweep may RE-LIST rows it already cleaned (its cursor re-fetches the page it was
  * working on, by design), so these totals can OVER-count. That direction is safe for every
@@ -211,6 +234,7 @@ const MAX_SWEEP_CALLS = 20;
 const drainSweep = async (dryRun) => {
   const totals = { scanned: 0, deleted: 0, failed: 0, expiredRows: 0, liveRows: 0, legacyNoUntil: 0 };
   let calls = 0, cursor = null, lastShape = null, drained = false, stopReason = null, rowsTruncatedAny = false;
+  let state = newDrainState(), pausedMs = 0;
   while (calls < MAX_SWEEP_CALLS) {
     const res = await sweep(dryRun, cursor);
     calls++;
@@ -222,16 +246,21 @@ const drainSweep = async (dryRun) => {
     lastShape = shape;
     for (const k of Object.keys(totals)) totals[k] += Number(shape[k] || 0);
     if (shape.rowsTruncated === true) rowsTruncatedAny = true;
-    if (shape.truncated !== true) { drained = true; break; }
-    const next = res.json?.cursor;
-    if (typeof next !== "string" || !next) {
-      stopReason = `sweep answered truncated:true (reason "${shape.reason}") with NO resumable cursor after ${calls} call(s) — the remaining rows are unreachable and their state unknown`;
-      break;
+
+    const step = decideSweepStep(res.json, state);
+    state = step.state;
+    if (step.action === "done") { drained = true; break; }
+    if (step.action === "stop") { stopReason = `${step.stopReason} (after ${calls} call(s))`; break; }
+    if (step.sleepMs > 0) {
+      /* The BACK-OFF, actually taken. Sleeping is the whole point of the `deletes-failing`
+         answer: the page will not start landing deletes because it was asked again sooner. */
+      pausedMs += step.sleepMs;
+      await new Promise((r) => setTimeout(r, step.sleepMs));
     }
-    cursor = next;
+    cursor = step.cursor;
   }
-  if (!drained && !stopReason) stopReason = `sweep still truncated (reason "${lastShape?.reason}") after the ${MAX_SWEEP_CALLS}-call bound`;
-  return { drained, stopReason, calls, rowsTruncatedAny, ...totals, last: lastShape };
+  if (!drained && !stopReason) stopReason = `sweep still incomplete (reason "${lastShape?.reason}") after the ${MAX_SWEEP_CALLS}-call bound`;
+  return { drained, stopReason, calls, rowsTruncatedAny, pausedMs, ...totals, last: lastShape };
 };
 
 /*
@@ -253,6 +282,9 @@ const sweepUsable = (label, d, listMustBeWhole = true) => {
 /** What a drained sweep leaves in the evidence file: the totals, not one call's page. */
 const drainShape = (d) => ({
   drained: d.drained, calls: d.calls, rowsTruncated: d.rowsTruncatedAny,
+  /* F-690 — how long the drain SLEPT between resumes. Zero on a healthy run; non-zero is the
+     back-off having been taken, which is the one visible trace that the store was refusing. */
+  pausedMs: d.pausedMs ?? 0,
   scanned: d.scanned, deleted: d.deleted, failed: d.failed,
   expiredRows: d.expiredRows, liveRows: d.liveRows, legacyNoUntil: d.legacyNoUntil,
   ...(d.stopReason ? { stopReason: d.stopReason } : {}),

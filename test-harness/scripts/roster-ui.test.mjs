@@ -25,7 +25,7 @@
  * Run: node scripts/roster-ui.test.mjs (auto-discovered by run-offline.mjs)
  */
 
-import { MASK_EMAILS_SRC, RESTORE_EMAILS_SRC, shotMasked, makeShot, makeRosterUI } from "../lib/roster-ui.mjs";
+import { MASK_EMAILS_SRC, RESTORE_EMAILS_SRC, shotMasked, makeShot, makeRosterUI, maskPositiveControl } from "../lib/roster-ui.mjs";
 import { maskEmail } from "../lib/redact.mjs";
 import { idTail } from "../lib/roster-restore.mjs";
 
@@ -244,6 +244,76 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
   const bare = makeShot();
   const r = await bare(okPage, frameOf({ total: 0, masked: 0, readable: 0 }), "/tmp/cr-d.png");
   ok(r.captured === false, "makeShot() with no writer still answers; the result rides out on the return value");
+}
+
+/* ── 6b. F-693 — A CAPTURE THAT MASKED NOTHING DOES NOT CLAIM IT MASKED EVERYTHING ──
+   The PASS sentence used to read "captured with every email masked" for EVERY successful
+   capture, including the ones that found nothing to mask — and when F-681 measured the
+   artefact set, all three shot records read `{total:0, masked:0, readable:0}`. That is how a
+   selector rot reads as a guarantee: rename `.perm-ident-email` and every capture reports
+   total:0, the PASS COUNT GOES UP, and every PNG renders real addresses. The per-shot verdict
+   stays a PASS (some views carry no address) but says which it is; the guarantee moves to
+   `maskPositiveControl`, asserted once per run by the drivers that visit a view which must
+   carry an address. */
+{
+  const frameOf = (result) => ({ evaluate: async () => result });
+  const page = { screenshot: async () => {} };
+  const wrote = { pass: [], nv: [], fail: [] };
+  const W = {
+    pass: (s, d) => wrote.pass.push({ s, d }),
+    nv: (s, d) => wrote.nv.push({ s, d }),
+    fail: (s, d) => wrote.fail.push({ s, d }),
+  };
+  const s = makeShot(W);
+
+  await s(page, frameOf({ total: 0, masked: 0, readable: 0 }), "/tmp/cr-empty.png");
+  ok(wrote.pass.length === 1 && /nothing to mask on this view/.test(wrote.pass[0].s),
+    `a capture with NOTHING to mask says so (got: ${JSON.stringify(wrote.pass[0].s)})`);
+  ok(!/every email masked/.test(wrote.pass[0].s),
+    "…and never claims 'every email masked' — the sentence F-693 is about");
+  ok(/0 email span\(s\) present/.test(wrote.pass[0].s),
+    "…and states the number it measured, so a reader can see the zero instead of inferring it");
+  ok(wrote.fail.length === 0 && wrote.nv.length === 0,
+    "…and it is still a PASS: a view with no address is legitimate, the refusal belongs at run level");
+
+  /* THE RUN-LEVEL CONTROL, which is where the zero is caught. */
+  const zero = s.positiveControl();
+  ok(zero.ok === false && zero.spanTotal === 0 && zero.captures === 1,
+    `a run whose every capture measured 0 spans FAILS the control (got: ${JSON.stringify(zero)})`);
+  ok(/matched nothing all run/.test(zero.sentence) && /selector drift/.test(zero.sentence),
+    `…and the sentence names both causes a reader must go and check (got: ${JSON.stringify(zero.sentence)})`);
+  ok(/vacuous/.test(zero.sentence),
+    "…and says plainly that the per-shot verdicts in such a run proved nothing");
+
+  await s(page, frameOf({ total: 2, masked: 2, readable: 0 }), "/tmp/cr-real.png");
+  ok(/2 email span\(s\) on the view, none left readable/.test(wrote.pass[1].s),
+    `a capture that DID mask states its count and what it asserted (got: ${JSON.stringify(wrote.pass[1].s)})`);
+  const live = s.positiveControl();
+  ok(live.ok === true && live.spanTotal === 2 && live.captures === 2,
+    `ONE capture with a real span is enough to pass the control for the whole run (got: ${JSON.stringify(live)})`);
+  ok(/the selector is live/.test(live.sentence), "…and the sentence says what that buys");
+
+  /* A REFUSED capture measured the view too, so its spans count. Otherwise a run whose only
+     span-bearing capture was refused would ALSO report "the mask matched nothing", which is
+     a second, wrong diagnosis on top of the leak. */
+  const t = makeShot(W);
+  await t(page, frameOf({ total: 5, masked: 0, readable: 5 }), "/tmp/cr-leak.png").catch(() => {});
+  const refused = t.positiveControl();
+  ok(refused.ok === true && refused.spanTotal === 5,
+    `a REFUSED capture still counts toward the control — it measured the view (got: ${JSON.stringify(refused)})`);
+
+  /* No captures at all is its own sentence: not "the selector drifted", but "nothing ran". */
+  const none = maskPositiveControl([]);
+  ok(none.ok === false && none.captures === 0 && /ran on NO view/.test(none.sentence),
+    `a run with zero captures is named as such, not misdiagnosed as selector drift (got: ${JSON.stringify(none.sentence)})`);
+  ok(maskPositiveControl(undefined).ok === false && maskPositiveControl(null).captures === 0,
+    "…and the control never throws on a driver that has no shots array to give it");
+
+  /* `perm-discriminator-live` and `knowledge-doors-editor-live` have TWO recorders and
+     concatenate them, so the control must accept a plain array as well as the binding. */
+  const both = maskPositiveControl([...s.shots, ...t.shots]);
+  ok(both.ok === true && both.captures === 3 && both.spanTotal === 7,
+    `the control sums across concatenated recorders (got: ${JSON.stringify(both)})`);
 }
 
 /* ── 7. F-666 — THE ADMIN GRANT, AND A RESTORE THAT FINISHES ────────────────────

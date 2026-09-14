@@ -52,6 +52,59 @@ export function rosterIdOf(row) {
   return null;
 }
 
+/**
+ * F-658 — THE ROLE A ROSTER ROW ACTUALLY CARRIES, read by the PRODUCT'S OWN RULE.
+ *
+ * `app_admins` still holds legacy rows: bare strings, and objects with no `role`. The
+ * product treats BOTH as ADMIN — `src/index.js:480-481` (getUserPermissions) and
+ * `removeAppAdmin`/`updateUserRole`'s last-admin guards all read
+ * `typeof entry === "object" && entry.role ? entry.role : "admin"`. The restore used to
+ * re-add a lost row with `row.role || "viewer"` (and the `changed` path fell through to
+ * `ROLE_LABEL[role] || ROLE_LABEL.editor`, clicking **Editor** for an undefined role), so
+ * restoring a legacy row DEMOTED a real site admin to viewer or editor and left the run's
+ * own second read telling an operator to repair it by hand.
+ *
+ * THE SCOPE DEFAULT IS THE PRODUCT'S TOO, AND IT IS NOT `addAppAdmin`'s. `addAppAdmin`
+ * clamps a missing scope to "own", but the READ at :481 defaults a role-less object to
+ * "all" (and forces "all" for an admin). The restore must reproduce the EFFECTIVE
+ * permission the row conferred, which is what the read says, so this mirrors the read.
+ *
+ * @returns {{role: "viewer"|"editor"|"admin", scope: "own"|"all"}}
+ */
+export function rosterRowRole(row) {
+  const isObject = row !== null && typeof row === "object";
+  const role = isObject && row.role ? row.role : "admin";
+  const scope = role === "admin" ? "all" : (isObject && row.scope ? row.scope : "all");
+  return { role, scope };
+}
+
+const VALID_ROLES = ["viewer", "editor", "admin"];
+const VALID_SCOPES = ["own", "all"];
+
+/**
+ * The permission-bearing shape of a roster row: a bare string becomes the object the
+ * product reads it as. This is the ONLY shape a restore verdict may compare (F-659),
+ * because `addAppAdmin` always pushes a full object and can therefore never reproduce a
+ * bare-string row byte-for-byte — comparing raw shapes makes a correct restore a
+ * permanent red.
+ */
+export function normaliseRosterRow(row) {
+  return { accountId: rosterIdOf(row), ...rosterRowRole(row) };
+}
+
+/**
+ * Can `addAppAdmin` reproduce the permission this row confers? It cannot express a role
+ * or scope outside the product's own enums, and a caller must REFUSE rather than click a
+ * default — the F-658 defect was exactly a default click.
+ */
+export function isReproducibleRosterRow(row) {
+  const { role, scope } = rosterRowRole(row);
+  if (!rosterIdOf(row)) return { ok: false, reason: "the row carries no account id" };
+  if (!VALID_ROLES.includes(role)) return { ok: false, reason: `role "${role}" is not one of ${VALID_ROLES.join("/")}` };
+  if (!VALID_SCOPES.includes(scope)) return { ok: false, reason: `scope "${scope}" is not one of ${VALID_SCOPES.join("/")}` };
+  return { ok: true, role, scope };
+}
+
 /** The last segment of an account id — what the `.perm-ident-id` chip renders. */
 export function idTail(accountId) {
   const s = String(accountId || "");

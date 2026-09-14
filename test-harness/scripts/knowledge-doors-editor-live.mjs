@@ -47,6 +47,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
+  isReproducibleRosterRow,
 } from "../lib/roster-restore.mjs";
 
 const env = loadEnv();
@@ -196,16 +197,23 @@ async function readRows(frame, sel) {
  * identified (the caller's N/V), and NEVER clicks a row it has not identified.
  */
 async function grantRole(accountId, role, scope, queries) {
+  /* F-658 — NO DEFAULT CLICK. `ROLE_LABEL[role] || ROLE_LABEL.editor` used to turn an
+     undefined role (a legacy roster row, which the PRODUCT reads as admin) into a click
+     on **Editor**, silently demoting a real site admin on the restore path. A role this
+     function cannot express is a refusal, not a nearest neighbour. */
+  if (!ROLE_LABEL[role] || !SCOPE_LABEL[scope]) {
+    return { ok: false, refused: true, reason: `refusing to click a default for role=${JSON.stringify(role)} scope=${JSON.stringify(scope)} — the UI cannot express it` };
+  }
   const qs = (queries && queries.length ? queries : ["Mihai"]).concat([idTail(accountId)]);
   for (const q of qs) {
     const r = await withAdminPanel(async (page, frame) => {
       await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
       await frame.locator(".perm-search-input").waitFor({ state: "visible", timeout: 60000 });
       await frame.locator(".perm-search-wrap .dropdown").nth(0).click();
-      await frame.locator(".dropdown-item-name", { hasText: ROLE_LABEL[role] || ROLE_LABEL.editor }).first().click();
+      await frame.locator(".dropdown-item-name", { hasText: ROLE_LABEL[role] }).first().click();
       await sleep(500);
       await frame.locator(".perm-search-wrap .dropdown").nth(1).click();
-      await frame.locator(".dropdown-item-name", { hasText: SCOPE_LABEL[scope] || SCOPE_LABEL.all }).first().click();
+      await frame.locator(".dropdown-item-name", { hasText: SCOPE_LABEL[scope] }).first().click();
       await sleep(400);
       await frame.locator(".perm-search-input").fill(q);
       await sleep(4500);
@@ -278,20 +286,29 @@ async function restoreRosterToSnapshot(snapshot) {
       const r = await removeAccount(id);
       actions.push({ act: "remove-stray", id: idTail(id), ...r });
     }
-    /* A changed row is put back by removing it and re-granting the snapshot's role. */
+    /* A changed row is put back by removing it and re-granting the snapshot's role.
+       F-658 — the role comes from `rosterRowRole`, the PRODUCT's reading of the row, not
+       from `c.before.role`, which is `undefined` on every legacy row and used to fall
+       through to a default Editor click. A row the UI cannot reproduce is REFUSED, and
+       the refusal is recorded so the operator repairs the right thing. */
     for (const c of plan.changed) {
+      const repro = isReproducibleRosterRow(c.before);
+      if (!repro.ok) { actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: false, refused: true, reason: repro.reason }); continue; }
       const r1 = await removeAccount(c.accountId);
       actions.push({ act: "remove-changed", id: idTail(c.accountId), ...r1 });
       if (r1.removed) {
-        const r2 = await grantRole(c.accountId, c.before.role, c.before.scope, [c.before.displayName, c.before.emailAddress].filter(Boolean));
-        actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: !!r2.ok, reason: r2.reason });
+        const r2 = await grantRole(c.accountId, repro.role, repro.scope, [c.before.displayName, c.before.emailAddress].filter(Boolean));
+        actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: !!r2.ok, role: repro.role, scope: repro.scope, reason: r2.reason });
       }
     }
-    /* Re-add anything the run removed that the snapshot had. */
+    /* Re-add anything the run removed that the snapshot had — with the role the PRODUCT
+       reads off the snapshot row (a bare string or a role-less object is an ADMIN). */
     for (const row of plan.missing) {
       const id = rosterIdOf(row);
-      const r = await grantRole(id, row.role || "viewer", row.scope || "all", [row.displayName, row.emailAddress].filter(Boolean));
-      actions.push({ act: "readd-missing", id: idTail(id), ok: !!r.ok, reason: r.reason });
+      const repro = isReproducibleRosterRow(row);
+      if (!repro.ok) { actions.push({ act: "readd-missing", id: idTail(id), ok: false, refused: true, reason: repro.reason }); continue; }
+      const r = await grantRole(id, repro.role, repro.scope, [row.displayName, row.emailAddress].filter(Boolean));
+      actions.push({ act: "readd-missing", id: idTail(id), ok: !!r.ok, role: repro.role, scope: repro.scope, reason: r.reason });
     }
     if (plan.sameSet) break;   // only the ORDER differs; no click can fix that
   }

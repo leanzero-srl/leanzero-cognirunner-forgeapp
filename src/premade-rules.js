@@ -236,7 +236,10 @@ async function runValidator(cfg, mf, issueKey, read, gitDeps = {}) {
       const opv = cfg.op || "eq";
       const target = String(cfg.compareValue ?? "").trim();
       if (target === "") return PASS;
-      const C = { eq: "equal to", ne: "not equal to", gt: "greater than", lt: "less than", gte: "at least", lte: "at most", contains: "contain" };
+      // F-897: ONE home for the operator's English. Each entry is the WHOLE predicate that
+      // follows "must", verb included, so "contains" reads "must contain" and never the
+      // ungrammatical "must be contain". Do not re-add a hard-coded "be" to the templates below.
+      const C = { eq: "be equal to", ne: "be not equal to", gt: "be greater than", lt: "be less than", gte: "be at least", lte: "be at most", contains: "contain" };
       const parts = Array.isArray(value) ? value.map(fieldText) : [fieldText(value)]; // array-aware (per-element)
       // strict numeric: the WHOLE trimmed string must be a number — so a date ("2026-07-01") or version
       // ("1.2.3") is NOT numeric (was silently parseFloat'd to its leading number → year-only date compares).
@@ -246,10 +249,10 @@ async function runValidator(cfg, mf, issueKey, read, gitDeps = {}) {
       // date-aware ordering for ISO-date fields (Due date etc.) so gt/lt work on dates, not years.
       const isDate = (s) => /^\d{4}-\d{2}-\d{2}/.test(String(s).trim());
       if (["gt", "lt", "gte", "lte"].includes(opv)) {
-        if (nums) { const ok = opv === "gt" ? a > b : opv === "lt" ? a < b : opv === "gte" ? a >= b : a <= b; return ok ? PASS : fail(`${label} must be ${C[opv]} “${target}”.`); }
+        if (nums) { const ok = opv === "gt" ? a > b : opv === "lt" ? a < b : opv === "gte" ? a >= b : a <= b; return ok ? PASS : fail(`${label} must ${C[opv]} “${target}”.`); }
         if (parts.length === 1 && isDate(parts[0]) && isDate(target)) {
           const da = Date.parse(parts[0]), db = Date.parse(target);
-          if (!Number.isNaN(da) && !Number.isNaN(db)) { const ok = opv === "gt" ? da > db : opv === "lt" ? da < db : opv === "gte" ? da >= db : da <= db; return ok ? PASS : fail(`${label} must be ${C[opv]} “${target}”.`); }
+          if (!Number.isNaN(da) && !Number.isNaN(db)) { const ok = opv === "gt" ? da > db : opv === "lt" ? da < db : opv === "gte" ? da >= db : da <= db; return ok ? PASS : fail(`${label} must ${C[opv]} “${target}”.`); }
         }
         return PASS; // can't order non-numeric/non-date → fail-open
       }
@@ -257,7 +260,7 @@ async function runValidator(cfg, mf, issueKey, read, gitDeps = {}) {
       if (opv === "ne") ok = nums ? a !== b : !parts.some((p) => norm(p) === norm(target));
       else if (opv === "contains") ok = parts.some((p) => norm(p).includes(norm(target)));
       else ok = nums ? a === b : parts.some((p) => norm(p) === norm(target)); // eq
-      return ok ? PASS : fail(`${label} must be ${C[opv] || opv} “${target}”.`);
+      return ok ? PASS : fail(`${label} must ${C[opv] || `be ${opv}`} “${target}”.`);
     }
     case "field-regex": {
       if (isEmpty(value)) return PASS; // emptiness is the required rule's job — don't double-enforce

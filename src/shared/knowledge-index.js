@@ -23,7 +23,7 @@
  */
 
 /** Content fingerprint of the baked corpus. Changes whenever any section changes. */
-export const KNOWLEDGE_CONTENT_VERSION = "2de3826245571ec9";
+export const KNOWLEDGE_CONTENT_VERSION = "58c15fd5c7e54c25";
 
 /**
  * Fingerprint of this file's METADATA — pack pin lists, the pin map, section audiences.
@@ -69,7 +69,7 @@ export const KNOWLEDGE_PACKS = [
     "id": "forge-app-builder",
     "title": "Forge app builder",
     "sections": 61,
-    "bytes": 144338,
+    "bytes": 144374,
     "pinned": [
       "forge-app-builder#core-forge-concepts"
     ]
@@ -78,7 +78,7 @@ export const KNOWLEDGE_PACKS = [
     "id": "forge-platform-facts",
     "title": "Forge platform facts",
     "sections": 23,
-    "bytes": 59741,
+    "bytes": 59949,
     "pinned": []
   },
   {
@@ -2347,7 +2347,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "4aeb901ac1006050",
+      "hash": "ce94ae0b465790a8",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -2373,11 +2373,11 @@ export const KNOWLEDGE_INDEX = [
       "codegen",
       "review"
     ],
-    "bytes": 2664,
+    "bytes": 2700,
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "4aeb901ac1006050",
+      "hash": "ce94ae0b465790a8",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -2405,7 +2405,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "4aeb901ac1006050",
+      "hash": "ce94ae0b465790a8",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -2436,7 +2436,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "4aeb901ac1006050",
+      "hash": "ce94ae0b465790a8",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -4106,7 +4106,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -4129,11 +4129,11 @@ export const KNOWLEDGE_INDEX = [
       "review",
       "fix"
     ],
-    "bytes": 2341,
+    "bytes": 2549,
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -4162,7 +4162,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -4195,7 +4195,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -4229,7 +4229,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -4262,7 +4262,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -4292,7 +4292,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },

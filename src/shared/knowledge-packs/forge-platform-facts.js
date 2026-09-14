@@ -338,7 +338,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 1165,
@@ -366,11 +366,11 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
-    "bytes": 2341,
-    "body": "The `viewportSize` (`small`, `medium`, `large`) is a hint, not a strict cap. Test layouts in each size; complex forms feel cramped in `small`.\n\n## FaaS Limits\n| Surface | Default Timeout | Hard Ceiling |\n|---|---|---|\n| Resolver / trigger / validator / post-function | 25 s | 25 s |\n| `consumer` (async event handler) | 25 s default, set `timeoutSeconds:` to extend | 900 s |\n| `preUninstall` | 55 s | 55 s |\n| `queue.push` payload | — | 50 events / 200 KB combined |\n| `InvocationError.retryData` | — | 4 KB |\n| Async retries | — | 4 retries |\n\nIf you need >25 s, push to an async queue. See `26-async-events-and-queues.md`.\n\n## An ESM-only subpath export is a landmine in the backend bundle\nThe Forge backend bundler is **webpack 5, target node18, CommonJS output**. A\npackage whose subpath is exported only under the `import` condition resolves\nfine in plain `node` and fails **only inside the bundle** — which is the one\nplace you cannot easily debug.\n\nReal case: `unpdf` loads PDF.js with `await import(\"unpdf/pdfjs\")`. Under\n`require` conditions that throws `ERR_PACKAGE_PATH_NOT_EXPORTED`, surfacing to\nthe user as *\"Serverless PDF.js bundle could not be resolved\"* — which reads\nlike a corrupt PDF, not a build problem.\n\nThe fix removes both possible mechanisms rather than betting on which one bit:\n\n```js\nimport * as pdfjsModule from \"unpdf/pdfjs\";   // STATIC — same chunk, no runtime resolution\nimport { definePDFJSModule } from \"unpdf\";\nexport const ensurePdfjs = () => definePDFJSModule(() => Promise.resolve(pdfjsModule));\n```\n\nVerify against the deployed bundle, never locally: this class of bug is invisible\nin `node`.\n\n## Async chunks land OUTSIDE the Custom UI resource directory\nA Custom UI resource is a **directory** (`resources: [{key, path: src/chat/globalPage}]`).\nWebpack emits async chunks next to `output.path`, which is usually the parent —\nso `import()` anywhere in the frontend produces a chunk that **404s at runtime\nwith no useful error**. A third-party library doing `import()` internally\n(tesseract.js does) cannot be fixed by a static import on your side.\n\n```js\n// webpack.config.js\nmodule: {\n  parser: { javascript: { dynamicImportMode: \"eager\" } },  // inline every import()\n  rules: [...],\n}\n```\n\nBeware: a second `module:` key silently replaces the first. Merge into the\nexisting block."
+    "bytes": 2549,
+    "body": "The `viewportSize` (`small`, `medium`, `large`) is a hint, not a strict cap. Test layouts in each size; complex forms feel cramped in `small`.\n\n## FaaS Limits\n| Surface | Default Timeout | Hard Ceiling |\n|---|---|---|\n| Resolver / trigger / validator / post-function | 25 s | 25 s |\n| `consumer` / scheduled trigger function | 55 s default, set `timeoutSeconds:` to extend (limits-invocation page, verified 2026-09-14: \"Default timeout is 55 seconds. Use timeoutSeconds to extend it.\") | 900 s |\n| `preUninstall` | 55 s (unverified — not stated on the limits-invocation page as of 2026-09-14) | 55 s (unverified) |\n| `queue.push` payload | — | 50 events / 200 KB combined |\n| `InvocationError.retryData` | — | 4 KB |\n| Async retries | — | 4 retries |\n\nIf you need >25 s, push to an async queue. See `26-async-events-and-queues.md`.\n\n## An ESM-only subpath export is a landmine in the backend bundle\nThe Forge backend bundler is **webpack 5, target node18, CommonJS output**. A\npackage whose subpath is exported only under the `import` condition resolves\nfine in plain `node` and fails **only inside the bundle** — which is the one\nplace you cannot easily debug.\n\nReal case: `unpdf` loads PDF.js with `await import(\"unpdf/pdfjs\")`. Under\n`require` conditions that throws `ERR_PACKAGE_PATH_NOT_EXPORTED`, surfacing to\nthe user as *\"Serverless PDF.js bundle could not be resolved\"* — which reads\nlike a corrupt PDF, not a build problem.\n\nThe fix removes both possible mechanisms rather than betting on which one bit:\n\n```js\nimport * as pdfjsModule from \"unpdf/pdfjs\";   // STATIC — same chunk, no runtime resolution\nimport { definePDFJSModule } from \"unpdf\";\nexport const ensurePdfjs = () => definePDFJSModule(() => Promise.resolve(pdfjsModule));\n```\n\nVerify against the deployed bundle, never locally: this class of bug is invisible\nin `node`.\n\n## Async chunks land OUTSIDE the Custom UI resource directory\nA Custom UI resource is a **directory** (`resources: [{key, path: src/chat/globalPage}]`).\nWebpack emits async chunks next to `output.path`, which is usually the parent —\nso `import()` anywhere in the frontend produces a chunk that **404s at runtime\nwith no useful error**. A third-party library doing `import()` internally\n(tesseract.js does) cannot be fixed by a static import on your side.\n\n```js\n// webpack.config.js\nmodule: {\n  parser: { javascript: { dynamicImportMode: \"eager\" } },  // inline every import()\n  rules: [...],\n}\n```\n\nBeware: a second `module:` key silently replaces the first. Merge into the\nexisting block."
   },
   {
     "id": "forge-platform-facts/jira-forge/e828b082/forge-development-gotchas-jira-1",
@@ -396,7 +396,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 2342,
@@ -430,7 +430,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 3703,
@@ -465,7 +465,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 2243,
@@ -499,7 +499,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 2576,
@@ -530,7 +530,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md",
-      "hash": "cb83656981c6988c",
+      "hash": "45ade5457663916b",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 2280,

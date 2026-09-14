@@ -179,8 +179,21 @@ export const TITLE_MAX_CHARS = 200;
  * post-function falls back to it at run time AND the rule form shows it as the default
  * in its placeholder, so a reader of the form sees the title their transition will
  * actually write. A second copy in the form is how the two start disagreeing.
+ *
+ * F-915 - the separator is a COLON, not an em dash. The owner's no-dash rule covers every
+ * character this app shows a human, and a page title is copy on somebody's Confluence
+ * space rather than inside this repo. The escape `\u2014` is why it survived three copy
+ * sweeps: ui-copy-dashes.test.mjs scanned for the literal glyph and could not see it, and
+ * now scans for the escape too.
+ *
+ * WHAT THE CHANGE TOUCHES, stated because a title is an IDENTITY here: the page
+ * post-function finds the page it wrote before by the advisory issue property FIRST and
+ * only falls back to the rendered title, and a rule that saved its own `titleTemplate` is
+ * not affected at all. The case that changes is a DEFAULT-titled page on an issue whose
+ * property was lost: it is now titled with a colon, so the fallback search will not match
+ * the dashed page and a second page can be created. No existing page is renamed.
  */
-export const CONFLUENCE_DEFAULT_TITLE_TEMPLATE = "{issueKey} \u2014 {summary}";
+export const CONFLUENCE_DEFAULT_TITLE_TEMPLATE = "{issueKey}: {summary}";
 export const COMMENT_TEMPLATE_MAX_CHARS = 2000;
 
 /**

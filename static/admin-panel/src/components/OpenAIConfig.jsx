@@ -1864,7 +1864,7 @@ export default function OpenAIConfig({ invoke }) {
               : isAtlassian
                 ? "Atlassian-hosted, ready, no key needed"
                 : noKeyNeeded
-                  ? "Managed by LeanZero \u2014 ready, no key needed"
+                  ? "Managed by LeanZero, ready, no key needed"
                   : (isByok ? `Using your ${providerLabel} key` : "No key configured");
             return (
               <div className="openai-status" style={{ marginBottom: "16px" }}>
@@ -1887,7 +1887,7 @@ export default function OpenAIConfig({ invoke }) {
                   </div>
                   <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                     {loadFailed
-                      ? `CogniRunner couldn\u2019t read the stored key status for ${providerLabel}. Nothing has changed \u2014 retry, or paste a key below to configure this provider now.`
+                      ? `CogniRunner couldn\u2019t read the stored key status for ${providerLabel}. Nothing has changed: retry, or paste a key below to configure this provider now.`
                       : isLmStudio
                       ? lmStatusBody
                       : isAtlassian

@@ -255,7 +255,7 @@ export const PREMADE_VALIDATORS = [
   {
     key: "git-build-passed",
     label: "Git: the pull request's build passed",
-    help: "Block unless the CI build on the linked pull request's head commit has passed. Verified LIVE against the provider on every transition \u2014 the cognirunner.git issue property is only used to find the pull request, never as evidence.",
+    help: "Block unless the CI build on the linked pull request's head commit has passed. Verified LIVE against the provider on every transition. The Git state CogniRunner records on the issue is only used to find the pull request, never as evidence.",
     category: "Git",
     network: true,
     params: { git: true },
@@ -273,7 +273,7 @@ export const PREMADE_VALIDATORS = [
   {
     key: "git-pr-comments-resolved",
     label: "Git: the pull request's comments are resolved",
-    help: "Block while any review comment on the linked pull request is still unresolved. GitHub's REST API cannot report thread resolution at all \u2014 with Strict on that unknown blocks, with Strict off it allows (PR_COMMENT_RESOLVED_UNKNOWN).",
+    help: "Block while any review comment on the linked pull request is still unresolved. GitHub's REST API cannot report thread resolution at all: with Strict on that unknown blocks, with Strict off it allows (PR_COMMENT_RESOLVED_UNKNOWN).",
     category: "Git",
     network: true,
     params: { git: true },
@@ -282,7 +282,7 @@ export const PREMADE_VALIDATORS = [
   {
     key: "git-pr-merged",
     label: "Git: the pull request is merged",
-    help: "Block unless the linked pull request has actually been merged, read live from the provider. A merged flag in the cognirunner.git property alone never satisfies this rule \u2014 the property is advisory and anyone who can write issue properties can forge it.",
+    help: "Block unless the linked pull request has actually been merged, read live from the provider. A merged flag in the Git state CogniRunner records on the issue never satisfies this rule on its own: that state is advisory and anyone who can write issue properties can forge it.",
     category: "Git",
     network: true,
     params: { git: true },
@@ -570,7 +570,7 @@ export const PREMADE_CONDITIONS = [
   {
     key: "git-pr-merged",
     label: "Git: the pull request is merged",
-    help: "Only show this transition when the last pull request CogniRunner saw for the chosen repository was merged. A condition hides the transition only on a known-negative state; it never blocks on a missing property. Use the Git VALIDATOR of the same name to actually block on it \u2014 that one verifies live.",
+    help: "Only show this transition when the last pull request CogniRunner saw for the chosen repository was merged. A condition hides the transition only on a known-negative state; it never blocks on a missing property. Use the Git VALIDATOR of the same name to actually block on it: that one verifies live.",
     category: "Git",
     params: { picker: { key: "repo", label: "Repository", source: "gitrepos", ph: "Choose a repository\u2026" } },
     availability: "available",
@@ -578,7 +578,7 @@ export const PREMADE_CONDITIONS = [
   {
     key: "git-pr-approved",
     label: "Git: the pull request is approved",
-    help: "Only show this transition when the last pull request CogniRunner saw for the chosen repository was approved. A condition hides the transition only on a known-negative state; it never blocks on a missing property. Use the Git VALIDATOR of the same name to block on it \u2014 that one verifies live.",
+    help: "Only show this transition when the last pull request CogniRunner saw for the chosen repository was approved. A condition hides the transition only on a known-negative state; it never blocks on a missing property. Use the Git VALIDATOR of the same name to block on it: that one verifies live.",
     category: "Git",
     params: { picker: { key: "repo", label: "Repository", source: "gitrepos", ph: "Choose a repository\u2026" } },
     availability: "available",
@@ -600,7 +600,7 @@ export const PREMADE_CONDITIONS = [
   {
     key: "confluence-page-linked",
     label: "Confluence: a page is linked to this issue",
-    help: "Only show this transition once CogniRunner has recorded a Confluence page for the issue \u2014 written by the Confluence validator when it passes, and by the Confluence page post-function. A condition hides the transition only on a known-negative state; it never blocks on a missing property, so an issue CogniRunner has never checked still shows the transition. The property is advisory and anyone who can edit the issue can forge it; use the Confluence VALIDATOR to actually require a page \u2014 that one searches Confluence live.",
+    help: "Only show this transition once CogniRunner has recorded a Confluence page for the issue, written by the Confluence validator when it passes, and by the Confluence page post-function. A condition hides the transition only on a known-negative state; it never blocks on a missing property, so an issue CogniRunner has never checked still shows the transition. The property is advisory and anyone who can edit the issue can forge it; use the Confluence VALIDATOR to actually require a page: that one searches Confluence live.",
     category: "Confluence",
     requiresProduct: "confluence",
     params: {},

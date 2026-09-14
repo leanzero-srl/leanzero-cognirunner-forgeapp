@@ -477,6 +477,44 @@ export async function testStateTrigger(req) {
      * `reason: "deletes-failed"` carries the cursor of the page whose deletes failed so the
      * caller retries it, and `reason: "deletes-failing"` says the call is NOT converging —
      * a whole batch landed nothing — so a loop must back off instead of spinning. */
+    /* ===== F-706 live proof: the dev-only DELETE fault lever =====
+     * THE SEVENTH MEMBER of the `armHarnessFault` family, and the one the SWEEP's own answer
+     * contract needs. F-682 (`deletes-failing`), F-683 (`deletes-failed` + `failedResume`),
+     * F-690 (the drain's back-off) and F-691 (the unresolved failure riding the resume token)
+     * are all about what the sweep does when a KVS delete REFUSES — and nothing a tester can
+     * do on a real tenant makes one refuse. plant-sweep-live saw `failed: 0` throughout, so
+     * that whole half of the contract was proven against the offline mock only.
+     *
+     * THE PREFIX IS EXACT, and it is the PLANT's: `armDeleteFault` accepts
+     * `HARNESS_FAULT_PLANT_PREFIX` and nothing else, by equality, exactly as `armJiraFault`
+     * accepts one path. A lever that could fail an arbitrary delete could strand app data;
+     * this one can only refuse to remove inert ballast nothing reads, which expires on its
+     * own in 60 s anyway. The prefix allow-list, the mode allow-list, the count cap (50) and
+     * the TTL cap (120 s) all live in src/harness-fault.js, never retyped here, and the lever
+     * is consulted in exactly one place: the shared delete batch of the sweep and the clear.
+     *
+     * It plants no data and returns none: the body carries a prefix, a mode, a count and a
+     * TTL. Disarm and read are the generic pair, keyed by the same prefix. */
+    if (body.action === "armDeleteFault" || body.action === "disarmDeleteFault" || body.action === "readDeleteFault") {
+      const {
+        armDeleteFault, disarmHarnessFault, readHarnessFault,
+        HARNESS_FAULT_DELETE, HARNESS_FAULT_PLANT_PREFIX, DELETE_FAULT_MODES,
+        HARNESS_DELETE_FAULT_MAX_COUNT, HARNESS_DELETE_FAULT_MAX_TTL_SECONDS,
+      } = await import("./harness-fault.js");
+      // The one prefix this family may touch has ONE home; the door names it, never a literal.
+      const prefix = HARNESS_FAULT_PLANT_PREFIX;
+      if (body.action === "armDeleteFault") {
+        const r = await armDeleteFault({ prefix: body.prefix === undefined ? prefix : body.prefix, mode: body.mode, count: body.count, ttlSeconds: body.ttlSeconds });
+        // The clamps live with the lever; a refusal from it overrides the optimistic ok.
+        return json(r.ok === false ? 400 : 200, {
+          ok: true, prefix, modes: DELETE_FAULT_MODES,
+          maxCount: HARNESS_DELETE_FAULT_MAX_COUNT, maxTtlSeconds: HARNESS_DELETE_FAULT_MAX_TTL_SECONDS, ...r,
+        });
+      }
+      if (body.action === "disarmDeleteFault") return json(200, { ok: true, prefix, ...(await disarmHarnessFault(HARNESS_FAULT_DELETE, [prefix])) });
+      return json(200, { ok: true, prefix, ...(await readHarnessFault(HARNESS_FAULT_DELETE, [prefix])) });
+    }
+
     if (body.action === "sweepHarnessFaults") {
       const { sweepHarnessFaults, sweepCursorWellFormed, BAD_SWEEP_CURSOR_CODE } = await import("./harness-fault.js");
       const rawCursor = body.cursor;

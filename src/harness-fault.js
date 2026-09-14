@@ -231,6 +231,106 @@ export const HARNESS_GATED_EXPORTS = Object.freeze([
   "sweepHarnessFaults",  // F-667
   "plantHarnessFaults",  // F-688
   "clearPlantedFaults",  // F-688
+  "armDeleteFault",      // F-706
+]);
+
+/*
+ * F-704 — A LIST OF WHO MUST ASK IS ONLY A GATE IF IT IS CHECKED AGAINST WHO IS THERE.
+ *
+ * F-694 moved the gated-export rule out of two test files and into `HARNESS_GATED_EXPORTS`
+ * above — but the only completeness check was `occurrences of "if (!harnessEnabled())" ===
+ * HARNESS_GATED_EXPORTS.length`, and BOTH SIDES OF THAT ARE THE GATED SET. An export added
+ * WITHOUT the gate line AND without joining the list moves neither number: 9 === 9, the
+ * per-name loop iterates the list and so never visits it, and a KVS-touching export ships
+ * reachable with no `HARNESS_SECRET` — the exact production-silence property the gate exists
+ * for. The docblock above claimed that case was covered. It caught only the GATED-but-
+ * unlisted one (count 10 vs length 9).
+ *
+ * The missing half is the COMPLEMENT, so the complement is data too. These three lists
+ * PARTITION `Object.keys(await import("./harness-fault.js"))` — every export is on exactly
+ * one, and nothing is on none — which is what turns "the list is right" from a claim into an
+ * assertion. Adding an export to this module now fails the offline suites until its author
+ * has said, in this file, which of the three it is:
+ *
+ *  · `HARNESS_GATED_EXPORTS`          — touches storage; opens with `if (!harnessEnabled())`.
+ *  · `HARNESS_INHERITED_GATE_EXPORTS` — touches storage ONLY through a gated export, so it
+ *    inherits the gate instead of restating it. This pair used to be a hand-written denylist
+ *    inside `harness-fault-ttl.test.mjs` — a THIRD home of the rule, which is why it is here.
+ *  · `HARNESS_UNGATED_EXPORTS`        — pure: constants, key builders, clamps, predicates,
+ *    encoders and the error class. None of them names `storage.` at all, and the shared
+ *    contract asserts that of every one of them, so "pure" is checked and not asserted.
+ *
+ * The contract itself has ONE home — `test-harness/lib/gated-export-contract.mjs` — asked by
+ * both suites, with a fake extra export as its negative control.
+ */
+export const HARNESS_INHERITED_GATE_EXPORTS = Object.freeze([
+  "keyReadFaultMode",  // reads through readHarnessFault (F-629)
+  "jiraFaultStatus",   // reads through readHarnessFault (F-655)
+]);
+
+export const HARNESS_UNGATED_EXPORTS = Object.freeze([
+  // The lists themselves, and the predicate the gate is made of.
+  "HARNESS_GATED_EXPORTS",
+  "HARNESS_INHERITED_GATE_EXPORTS",
+  "HARNESS_UNGATED_EXPORTS",
+  "harnessEnabled",
+  "HarnessFault",
+  // Kinds, key shapes and the caps every lever is clamped to.
+  "HARNESS_FAULT_MAX_COUNT",
+  "HARNESS_FAULT_TTL_SECONDS",
+  "HARNESS_FAULT_GIT_DISPATCH",
+  "HARNESS_FAULT_HOOK_PROMOTE",
+  "HARNESS_FAULT_KEY_READ",
+  "HARNESS_FAULT_JIRA",
+  "HARNESS_FAULT_KEY_PREFIX",
+  "KEY_READ_FAULT_MODES",
+  "HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS",
+  "JIRA_FAULT_USER_SEARCH_PATH",
+  "JIRA_FAULT_PATHS",
+  "HARNESS_JIRA_FAULT_MAX_TTL_SECONDS",
+  "jiraFaultStatusValid",
+  "harnessFaultKey",
+  "faultTtlOption",
+  "faultRowDeadline",
+  "faultRowExpired",
+  // The sweep's constants, cursor grammar and answer tail — all pure.
+  "HARNESS_FAULT_SWEEP_PAGE_SIZE",
+  "HARNESS_FAULT_SWEEP_MAX_PAGES",
+  "HARNESS_FAULT_SWEEP_DEFAULT_MS",
+  "HARNESS_FAULT_SWEEP_MAX_MS",
+  "HARNESS_FAULT_SWEEP_MAX_ROWS",
+  "KVS_DELETE_BATCH",
+  "KVS_DELETE_PAUSE_MS",
+  "HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY",
+  "encodeSweepCursor",
+  "SWEEP_CURSOR_MAX_BYTES",
+  "sweepCursorWellFormed",
+  "BAD_SWEEP_CURSOR_CODE",
+  "decodeSweepToken",
+  "decodeSweepCursor",
+  "sweepAnswerTail",
+  "sweepBudgetMs",
+  // The plant's constants and clamps.
+  "HARNESS_FAULT_PLANT",
+  "HARNESS_FAULT_PLANT_PREFIX",
+  "HARNESS_FAULT_PLANT_MAX",
+  "HARNESS_FAULT_PLANT_MS_PER_ROW",
+  "HARNESS_FAULT_PLANT_CALL_MAX",
+  "HARNESS_FAULT_PLANT_TTL_SECONDS",
+  "HARNESS_FAULT_PLANT_BACKDATE_SECONDS",
+  "plantCountClamped",
+  "plantStartIndexClamped",
+  "plantMaxForCall",
+  "plantTtlSeconds",
+  "plantedFaultKey",
+  // The delete fault's kind, modes, caps and code mapping (F-706).
+  "HARNESS_FAULT_DELETE",
+  "DELETE_FAULT_MODES",
+  "HARNESS_DELETE_FAULT_MAX_COUNT",
+  "HARNESS_DELETE_FAULT_MAX_TTL_SECONDS",
+  "HARNESS_DELETE_FAULT_CODE",
+  "DELETE_FAULT_THROTTLE_CODE",
+  "deleteFaultCode",
 ]);
 
 /*
@@ -868,6 +968,133 @@ export const sweepBudgetMs = (maxMs) => {
  * additionally returned as its own token field on EVERY call that carries one, however that
  * call ended, so a caller never has to reconstruct where the mess was.
  */
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-706 — THE FAILING-DELETE HALF OF THE SWEEP CONTRACT HAD NO LIVE DOOR.
+ *
+ * F-682 (`deletes-failing`), F-683 (`deletes-failed` + `failedResume`), F-690 (the drain's
+ * back-off) and F-691 (the unresolved failure riding the resume token) are ALL about what
+ * the sweep does when a KVS delete REFUSES. Nothing a tester can do on a real tenant makes
+ * one refuse: plant-sweep-live on 2026-09-14 saw `failed: 0` and zero RATE_LIMIT throughout,
+ * so four rows of the sweep's answer contract were proven against the offline mock only —
+ * the same "offline-only" state F-688 built `plantHarnessFaults` to end for the multi-page
+ * path.
+ *
+ * `armDeleteFault` is that door, and it is the SEVENTH member of the `armHarnessFault`
+ * family — same gate, same row shape, same `until`, same clamps-live-with-the-lever rule,
+ * same generic `disarmHarnessFault` / `readHarnessFault` for the other two verbs (a
+ * kind-specific pair would be two homes for one rule). What keeps it from being a lever that
+ * can break a real tenant:
+ *
+ *  · THE PREFIX IS EXACT, AND IT IS THE PLANT'S. `armDeleteFault` accepts one value —
+ *    `HARNESS_FAULT_PLANT_PREFIX` — by equality, exactly as `armJiraFault` accepts one path.
+ *    There is no wildcard and no caller-chosen prefix, because a lever that can fail "any
+ *    delete under harness_fault:" can strand another driver's lever row, and one that can
+ *    fail an arbitrary key can strand app data. Planted rows are inert ballast nothing reads
+ *    (F-688), so refusing to delete them costs nothing but the row's own 60 s TTL.
+ *  · IT IS CONSULTED IN ONE PLACE: `settleDeletes`, the single delete-batch helper both the
+ *    sweep and the clear now call. Nothing else in this module — and nothing outside it —
+ *    can reach it. In particular the lever's OWN row is not under the plant prefix, so
+ *    arming one can never make it undisarmable.
+ *  · IT IS COUNTED, AND THE COUNT IS SPENT THROUGH THE EXISTING CONSUMPTION HOME.
+ *    `harnessFaultArmed` is what decrements it: it preserves the row's `until` (F-667, a
+ *    decrement must never re-arm a window) and deletes the row at zero. Consumption is
+ *    SEQUENTIAL, before the parallel deletes, so three concurrent deletes cannot read-modify-
+ *    write the same counter into an unknown value — the batch is 3, the cost is 3 awaits.
+ *  · IT ENDS BY ITSELF, twice over: `count` ≤ 50 faults and `ttlSeconds` ≤ 120 s, both
+ *    clamped here rather than at the door.
+ *
+ * `refuse` is the synthetic failure — a `HarnessFault` carrying `HARNESS_DELETE_FAULT`, a
+ * code no platform ever emits, so a log reader can never mistake a planted failure for a
+ * real one. `throttle` carries `RATE_LIMIT_EXCEEDED`, the code F-677 and F-682 were written
+ * about, so a drain can be driven down the exact path the pacing exists for. The sweep does
+ * not discriminate between them — a rejected delete is `failed`, whatever the reason — which
+ * is the point: the lever produces the CONDITION, and the contract already says what the
+ * answer must be.
+ */
+export const HARNESS_FAULT_DELETE = "delete";
+export const DELETE_FAULT_MODES = Object.freeze(["refuse", "throttle"]);
+export const HARNESS_DELETE_FAULT_MAX_COUNT = 50;
+export const HARNESS_DELETE_FAULT_MAX_TTL_SECONDS = 120;
+/** A code no platform emits: a planted refusal is never mistaken for a real one. */
+export const HARNESS_DELETE_FAULT_CODE = "HARNESS_DELETE_FAULT";
+/** The code F-677/F-682 are about, so `throttle` reproduces the real condition verbatim. */
+export const DELETE_FAULT_THROTTLE_CODE = "RATE_LIMIT_EXCEEDED";
+
+/** Which code a mode rejects with. Pure, and the ONE place the mapping lives. */
+export const deleteFaultCode = (mode) =>
+  mode === "throttle" ? DELETE_FAULT_THROTTLE_CODE : HARNESS_DELETE_FAULT_CODE;
+
+/**
+ * F-706 — arm the delete fault for the PLANT prefix, for a bounded count and window.
+ *
+ * GATED FIRST, like the other six. The prefix allow-list, the mode allow-list, the count cap
+ * and the TTL cap all live HERE, not at the web trigger: the clamp belongs with the thing it
+ * bounds. Disarm and read are the generic `disarmHarnessFault` / `readHarnessFault` with
+ * `HARNESS_FAULT_DELETE` and the same prefix.
+ */
+export const armDeleteFault = async ({ prefix, mode, count, ttlSeconds } = {}) => {
+  if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
+  // EXACT equality against the one prefix this lever may touch — never a prefix test.
+  if (prefix !== HARNESS_FAULT_PLANT_PREFIX) {
+    return { ok: false, reason: "bad-prefix", prefix: HARNESS_FAULT_PLANT_PREFIX };
+  }
+  if (!DELETE_FAULT_MODES.includes(mode)) return { ok: false, reason: "bad-mode", modes: DELETE_FAULT_MODES };
+  const n = Math.max(1, Math.min(HARNESS_DELETE_FAULT_MAX_COUNT, Math.floor(Number(count) || 1)));
+  const seconds = Math.max(1, Math.min(HARNESS_DELETE_FAULT_MAX_TTL_SECONDS, Math.floor(Number(ttlSeconds) || HARNESS_DELETE_FAULT_MAX_TTL_SECONDS)));
+  const key = harnessFaultKey(HARNESS_FAULT_DELETE, prefix);
+  const { until } = await setFaultRow(key, { mode, count: n, armedAt: new Date().toISOString() }, seconds);
+  return { key, prefix, mode, count: n, ttlSeconds: seconds, until };
+};
+
+/**
+ * What the lever says RIGHT NOW, or `null` for "not armed".
+ *
+ * Reads THROUGH `readHarnessFault`, so it inherits the gate and F-664's read-time expiry
+ * judgement exactly as `keyReadFaultMode` and `jiraFaultStatus` do — a row past its `until`
+ * is answered absent and deleted, and a lever this cannot read is a lever that is not armed.
+ * Best-effort, like every consuming side in this module: a fault must never be able to fail
+ * a sweep by accident.
+ */
+const loadDeleteFault = async () => {
+  try {
+    const row = await readHarnessFault(HARNESS_FAULT_DELETE, [HARNESS_FAULT_PLANT_PREFIX]);
+    const value = (row && row.value) || null;
+    if (!value || !DELETE_FAULT_MODES.includes(value.mode) || !(Number(value.count) > 0)) return null;
+    return { prefix: HARNESS_FAULT_PLANT_PREFIX, mode: value.mode, spent: false };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * THE delete batch — for the sweep AND for the clear, which ran two byte-identical copies of
+ * it. One home is what lets the F-706 lever be consulted in exactly one place instead of two.
+ *
+ * Consumption is sequential and happens BEFORE the parallel deletes: `harnessFaultArmed` is a
+ * read-modify-write on one row, and three of them racing inside `Promise.allSettled` would
+ * spend an unknowable number of units. When the count runs out mid-batch the lever is marked
+ * `spent` for the rest of the call and every remaining key is deleted for real — which is the
+ * transition a drain test needs (`deletes-failing` → resume → `complete`).
+ */
+const settleDeletes = async (batch, fault) => {
+  const faulted = new Map();
+  if (fault && !fault.spent) {
+    for (const key of batch) {
+      if (!String(key).startsWith(fault.prefix)) continue;
+      // The ONE consumption home (F-667): decrements, carries `until` through, deletes at zero.
+      if (!(await harnessFaultArmed(HARNESS_FAULT_DELETE, fault.prefix))) { fault.spent = true; break; }
+      faulted.set(key, fault.mode);
+    }
+  }
+  return Promise.allSettled(batch.map((key) => {
+    if (!faulted.has(key)) return storage.delete(key);
+    const code = deleteFaultCode(faulted.get(key));
+    const err = new HarnessFault(`planted delete fault (${code}) on ${key}`);
+    err.code = code;
+    return Promise.reject(err);
+  }));
+};
+
 export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startCursor = null } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
   const dry = dryRun === true;
@@ -889,6 +1116,10 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
    * failure two calls back is still a row this drain condemned and did not delete. */
   let unresolved = startToken.unresolved;
   let failedResume = startToken.failedResume;
+  /* F-706 — the planted delete fault, read ONCE per call (never per batch: a per-batch read
+   * would double the KVS traffic of the one call whose whole job is to be cheap). A dry run
+   * deletes nothing and so consumes nothing. */
+  const deleteFault = dry ? null : await loadDeleteFault();
   for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
     // The cursor that re-fetches THIS page - the resume point for anything that stops inside it.
     const resume = cursor;
@@ -929,7 +1160,9 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
         }
         if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
         const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
-        const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
+        // F-706: the ONE delete batch, shared with the clear — and the only consult site of
+        // the planted delete fault.
+        const settled = await settleDeletes(batch, deleteFault);
         let landed = 0;
         for (const outcome of settled) { if (outcome.status === "fulfilled") { deleted++; landed++; } else failed++; }
         // F-691: the EARLIEST unresolved failure wins, and "none yet" is `!unresolved` - never
@@ -1202,6 +1435,8 @@ export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } =
   // Inherited across calls (F-691), exactly as in the sweep: completeness is a DRAIN's.
   let unresolved = startToken.unresolved;
   let failedResume = startToken.failedResume;
+  // F-706: the same lever the sweep reads, read once per call, consulted in the same helper.
+  const deleteFault = await loadDeleteFault();
   for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
     const resume = cursor;
     if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
@@ -1219,7 +1454,9 @@ export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } =
       }
       if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
       const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
-      const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
+      // F-706: the shared delete batch — the sweep's copy of this loop and this one had drifted
+      // into two homes of the same six lines; the fault has to be consulted in exactly one.
+      const settled = await settleDeletes(batch, deleteFault);
       let landed = 0;
       for (const outcome of settled) { if (outcome.status === "fulfilled") { deleted++; landed++; } else failed++; }
       // F-691: the EARLIEST unresolved failure wins, and "none yet" is `!unresolved` - never

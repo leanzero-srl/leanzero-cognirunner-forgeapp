@@ -11119,7 +11119,8 @@ resolver.define("testPostFunction", async ({ payload, context }) => {
  * ONE MEMO READ: `getProviderConfig()` answers provider AND allowance from the same
  * 30 s memo (the allowance arm only does extra work on Forge LLM), and
  * `currentEdition(context)` takes the invocation's own licence when it has one.
- * `getAgentModel()` rides the same memo.
+ * The agent MODEL does NOT ride that memo: `getAgentModelFor(facts.provider)` resolves it
+ * for the provider THIS call just read, fresh or memoised (F-811).
  *
  * FAILS TO THE RESTRICTIVE SIDE, and never throws: a fact we could not read is
  * omitted, and `buildAgentGateContext` refuses what it was not told about. That is
@@ -11140,6 +11141,24 @@ resolver.define("testPostFunction", async ({ payload, context }) => {
  * Virtual Administrator run in warm containers that a provider switch, a licence
  * change or a spent allowance cannot invalidate. It is the same facts read without
  * the 30 s memo, never a different set of facts.
+ *
+ * THE FRESHNESS POLICY (F-811), because the two arms must never split:
+ *   EVERY ANSWER AND EVERY SAVE DOOR IS `fresh: true`. The status card
+ *   (`getAgentCapability`), the Coder gate, saveListener, testListener and the
+ *   saveScheduledJob action gate all read fresh — because the OTHER half of the same
+ *   answer already did. `vaCapabilityVerdict` (src/virtual-admin.js) has been fresh
+ *   since F-485, and `prepareVaSave` (src/va-admin.js) rides it INSIDE THE SAME
+ *   saveScheduledJob request as the gate at the saveScheduledJob site below: one
+ *   request, two arms, and a memo on one of them is a verdict that contradicts itself.
+ *   A capability answer is rare (a form, a tab, a save), so the memo buys nothing here.
+ *   THE ONE EXCEPTION is the RUN-TIME gate at the transition site, which is neither arm
+ *   of that pair and runs per transition; it keeps the memo, and it is marked in place.
+ *   Its cost is the MIRROR DANGER, written down rather than hidden: for up to 30 s after
+ *   a provider switch the run site can still hold the OLD provider's facts, so a BYOK
+ *   provider stale in the memo would let it arm and run capability-gated actions on an
+ *   instance that is now atlassian+Haiku. Bounded by the TTL, on the run path only, and
+ *   the engine re-runs the gate — but it is not zero. `src/rules-api.js` is memoised too,
+ *   for the same per-request reason and with the same caveat.
  */
 const agentGateFacts = async (context, { fresh = false } = {}) => {
   // `managedKeyPresent` is an ENV read, not I/O — free, never memoised, and always
@@ -11168,7 +11187,11 @@ const agentGateFacts = async (context, { fresh = false } = {}) => {
     facts.edition = (await currentEdition(context, fresh ? { fresh: true } : undefined)).edition;
   } catch (e) { /* restrictive: edition unknown → Coder-only actions refuse */ }
   try {
-    facts.agentModel = await getAgentModel();
+    // F-811 — THE MODEL IS RESOLVED FOR **THIS FACT SET'S** PROVIDER, never for the memo's.
+    // `getAgentModel()` resolved its own provider through the 30 s memo, so the fresh arm
+    // could read provider `atlassian` and then hand the gate `managed`'s model id. A fact
+    // set that is half one provider and half another is a gate two doors disagree about.
+    facts.agentModel = await getAgentModelFor(facts.provider);
   } catch (e) { /* restrictive: a frontier-model check with no model refuses */ }
   return facts;
 };
@@ -11323,7 +11346,7 @@ resolver.define("saveListener", async ({ payload, context }) => {
   // both directions: save time refuses every git action against the restrictive
   // default, and run time drops the ids. Same helper, same four facts, for the
   // resolver, the REST API and the two run sites.
-  const [facts, savedByRole] = await Promise.all([agentGateFacts(context), savedByRoleFor(context.accountId)]);
+  const [facts, savedByRole] = await Promise.all([agentGateFacts(context, { fresh: true }), savedByRoleFor(context.accountId)]);
   // `savedByRole` rides the CONTEXT as well as the row: it is what an admin-confirm
   // action (a PR verdict) is gated on, and it comes from the ROSTER — never from the
   // payload, or the flag would be self-granted by whoever is saving.
@@ -11364,7 +11387,7 @@ resolver.define("testListener", async ({ payload, context }) => {
   return okOr(async () => {
     // F-302 — a TEST must gate exactly like a save, or an admin proves a draft that
     // the save then refuses (or worse, the other way round).
-    const facts = await agentGateFacts(context);
+    const facts = await agentGateFacts(context, { fresh: true });
     const savedByRole = await savedByRoleFor(context.accountId);
     const gate = buildAgentGateContext({ ...facts, triggerSource: null, savedByRole });
     let listener;
@@ -11446,7 +11469,7 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
     if (refusal) return refusal;
   }
   // F-302 — see saveListener: the same gate, built from the same four facts.
-  const [facts, savedByRole] = await Promise.all([agentGateFacts(context), savedByRoleFor(context.accountId)]);
+  const [facts, savedByRole] = await Promise.all([agentGateFacts(context, { fresh: true }), savedByRoleFor(context.accountId)]);
   // `savedByRole` rides the CONTEXT as well as the row: it is what an admin-confirm
   // action (a PR verdict) is gated on, and it comes from the ROSTER — never from the
   // payload, or the flag would be self-granted by whoever is saving.
@@ -11957,7 +11980,7 @@ resolver.define("getForgeIdentityStatus", async ({ context }) => {
 resolver.define("getAgentCapability", async ({ context }) => {
   if (!(await requireRole(context.accountId, "viewer"))) return noPerm("check the Coder capability", "viewer");
   return okOr(async () => {
-    const facts = await agentGateFacts(context);
+    const facts = await agentGateFacts(context, { fresh: true });
     // No provider read = no capability, the same rule buildAgentGateContext applies
     // (F-281): an unanswered question is refused, never assumed.
     const verdict = facts.provider
@@ -11998,7 +12021,7 @@ resolver.define("getAgentCapability", async ({ context }) => {
 const coderGate = async (context) => {
   const adv = await requireAdvanced(context, "coder");
   if (!adv.ok) return { refusal: adv.refusal };
-  const facts = await agentGateFacts(context);
+  const facts = await agentGateFacts(context, { fresh: true });
   // FAILS TO THE RESTRICTIVE SIDE, like every other consumer of these facts: no provider
   // read means no capability, never an assumed one.
   const verdict = facts.provider ? agentCapability(facts) : { enabled: false, reason: "unknown" };
@@ -15298,20 +15321,72 @@ const getOpenAIModel = async () => {
 };
 
 /**
- * The ACTIVE provider's agent model: the saved agent slot, else the ordinary model.
- * Falling back to getOpenAIModel() rather than to a literal keeps one default in the
+ * F-811 — THE AGENT MODEL OF A NAMED PROVIDER. The provider is the CALLER'S, never a memo's.
+ *
+ * `agentGateFacts` can read its provider fresh (`fresh:true` — the Virtual Administrator
+ * and the save doors) or from the 30 s memo. The agent MODEL, however, came from
+ * `getAgentModel()`, which resolved a provider of its own THROUGH THAT MEMO — so one fact
+ * set could carry provider A with provider B's model id. Measured: the memo still held
+ * `managed` after the provider row was deleted, so the status card answered
+ * enabled/`managed` with agentModel `anthropic/claude-sonnet-5`, while the fresh
+ * save-time arm resolved provider `atlassian` (an absent row defaults there) and, reading
+ * the SAME memo-derived model, refused with `needs-frontier-model`. Two doors, one
+ * instance, opposite answers — and the permissive one was the one a user sees.
+ *
+ * So the chain takes the provider as an ARGUMENT and reads NO provider anywhere:
+ * agent slot → ordinary model slot → env var → `PROVIDERS[provider].defaultModel`.
+ * Falling back to the ordinary model rather than to a literal keeps one default in the
  * app; on Forge LLM that means Haiku, which agentCapability() then refuses — a
  * deliberate, visible refusal instead of a silent frontier upgrade.
  *
+ * NOT a second home for the model rule: the two POLICIES it applies (clampManagedModel,
+ * FORGE_LLM_MODELS) are the shared ones in src/shared/edition.js. What it deliberately
+ * does not carry is getOpenAIModel's legacy-slot MIGRATION, which is a one-time write
+ * that belongs on the active-provider path and must not fire for a provider that is not
+ * even active, and the 30 s memo, which is what this exists to escape.
+ *
  * Not cached: agent surfaces are rare and low-frequency compared with validators.
  */
-export const getAgentModel = async () => {
+export const getAgentModelFor = async (provider) => {
+  if (!provider) return null;
+  let model = null;
   try {
-    const { provider } = await getProviderConfig();
     const saved = await storage.get(providerAgentModelSlot(provider));
-    if (saved) return String(saved);
-  } catch (e) { /* fall through to the ordinary model */ }
-  return getOpenAIModel();
+    if (saved) model = String(saved);
+    if (!model) {
+      const savedOrdinary = await storage.get(providerModelSlot(provider));
+      if (savedOrdinary) model = String(savedOrdinary);
+    }
+    // The same server-side billing backstop the ordinary path applies, from the same
+    // one home: a slot holding anything outside the offer resolves to Sonnet 5 rather
+    // than being sent to OpenRouter on our account.
+    if (model && provider === MANAGED_PROVIDER_ID) model = clampManagedModel(model);
+  } catch (e) { /* restrictive: an unread slot falls through to the provider default */ }
+  if (!model && process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) model = process.env.OPENAI_MODEL;
+  if (!model) model = (PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || "gpt-5.4-mini";
+  // BELT: a slot written while another provider was active can still hold that vendor's
+  // id. On Forge LLM the gate is an EXACT-ID check (FORGE_LLM_FRONTIER, edition.js), so
+  // such an id could only ever be refused — but it would be refused while NAMING a model
+  // this provider cannot run, which is the same half-and-half fact set in miniature.
+  // Resolve it to what Forge LLM would actually run. NOT a prefix strip: the exact-id
+  // policy in edition.js is a PRICING decision, and "anthropic/claude-opus-5" is not
+  // "claude-opus-5". Access control stays with agentCapability, which is unchanged.
+  if (provider === "atlassian" && !FORGE_LLM_MODELS.advanced.includes(String(model))) return FORGE_LLM_DEFAULT;
+  return model;
+};
+
+/**
+ * The ACTIVE provider's agent model — a thin wrapper on getAgentModelFor for the callers
+ * that have no provider of their own (the resolver door, the Virtual Administrator's
+ * model pick). Anything that has ALREADY resolved a provider passes it instead, or it
+ * reopens F-811.
+ */
+export const getAgentModel = async () => {
+  let provider = null;
+  try {
+    provider = (await getProviderConfig()).provider || null;
+  } catch (e) { /* no provider → no model, the restrictive answer */ }
+  return getAgentModelFor(provider);
 };
 
 /**
@@ -21289,7 +21364,7 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, privileg
     // "external" because a transition is not a human — the same answer the engine will
     // reach from `headless:true`, computed here so the refusal can be logged BEFORE a
     // token is spent (the engine re-runs it; agreeing twice is the point).
-    const facts = await agentGateFacts(null);
+    const facts = await agentGateFacts(null); // F-811 HOT PATH: memoised on purpose — see the freshness policy on agentGateFacts.
     const gate = buildAgentGateContext({ ...facts, triggerSource: "external", savedByRole });
     const gated = normalizeAllowedActions(mode.actions, gate);
     const gitAllowed = gated.allowed.filter((id) => (getAgentAction(id) || {}).namespace === "git");

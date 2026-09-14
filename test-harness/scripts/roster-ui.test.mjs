@@ -25,7 +25,7 @@
  * Run: node scripts/roster-ui.test.mjs (auto-discovered by run-offline.mjs)
  */
 
-import { MASK_EMAILS_SRC, RESTORE_EMAILS_SRC, shotMasked, makeShot, makeRosterUI, maskPositiveControl } from "../lib/roster-ui.mjs";
+import { MASK_EMAILS_SRC, RESTORE_EMAILS_SRC, shotMasked, makeShot, makeRosterUI, maskPositiveControl, SETTLE_MS } from "../lib/roster-ui.mjs";
 import { maskEmail } from "../lib/redact.mjs";
 import { idTail } from "../lib/roster-restore.mjs";
 
@@ -337,6 +337,50 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
      used below, and they are deliberately not the same function. */
   const chip = (id) => String(id).split("-").pop();
 
+  /* F-731 — THE FIXTURES BELOW HAVE NO RENDER TO WAIT FOR, SO THEY DO NOT WAIT FOR ONE.
+     `removeAccount` settles twice against a real admin-panel iframe (`SETTLE_MS`), and
+     7i's unrepairable roster pays BOTH on all four repair passes — twenty seconds of pure
+     `setTimeout` for one case, inside the OFFLINE suite. There is no iframe here: the fake
+     DOM answers synchronously, so a settle can only ever burn wall clock. Lowering it
+     changes nothing these cases assert — the roster diff, the pass count, the verdict and
+     the failures are all computed from the fake's state, not from the passage of time.
+     The DEFAULT is proven separately, by the arm just below, which runs a restore with no
+     override at all and measures that both real settles were actually paid. */
+  const FAST_SETTLE = { rosterList: 50, removeConfirm: 50 };
+
+  /* THE DEFAULT ARM. It exists because every other restore case here now overrides the
+     settle, and an override that nothing checks is how a "5 second wait" silently becomes
+     a 50 ms one live. One stray, removed successfully, no override: the elapsed time must
+     account for BOTH live settles, which is the only evidence that `SETTLE_MS` still
+     reaches `removeAccount` and that F-671's measured live waits are what a driver gets. */
+  {
+    const snapshot = [{ accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own" }];
+    const live = [
+      { accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own" },
+      { accountId: DIR[2].accountId, displayName: "Cid Namesake", role: "editor", scope: "all" },   // the stray
+    ];
+    const { st, deps } = makeFakeUI({ roster: live });
+    const t0 = Date.now();
+    const res = await makeRosterUI(deps).restoreRosterToSnapshot(snapshot);   // NO settleMs
+    const elapsed = Date.now() - t0;
+
+    ok(SETTLE_MS.rosterList === 1500 && SETTLE_MS.removeConfirm === 3500,
+      `F-731: SETTLE_MS still holds the MEASURED live waits (got ${JSON.stringify(SETTLE_MS)})`);
+    ok(res && res.ok === true && st.roster.length === 1,
+      "F-731: the default-settle restore still repairs the roster");
+    ok(elapsed >= SETTLE_MS.rosterList + SETTLE_MS.removeConfirm,
+      `F-731: …and it PAID both live settles — the default is real, not a name over a 50ms wait (elapsed ${elapsed}ms, floor ${SETTLE_MS.rosterList + SETTLE_MS.removeConfirm}ms)`);
+    /* POSITIVE CONTROL: the same restore with the override is dramatically faster, so the
+       measurement above is a measurement of the SETTLE and not of the fixture's own cost. */
+    const { deps: fastDeps } = makeFakeUI({ roster: live.map((r) => ({ ...r })) });
+    const t1 = Date.now();
+    const fast = await makeRosterUI({ ...fastDeps, settleMs: FAST_SETTLE }).restoreRosterToSnapshot(snapshot);
+    const fastElapsed = Date.now() - t1;
+    ok(fast && fast.ok === true, "F-731 CONTROL: the lowered settle repairs the identical roster identically");
+    ok(fastElapsed < SETTLE_MS.rosterList,
+      `F-731 CONTROL: …in a fraction of the time, so \`settleMs\` is what the elapsed time above measured (${fastElapsed}ms vs ${elapsed}ms)`);
+  }
+
   function makeFakeUI(opts = {}) {
     const st = {
       roster: (opts.roster || []).map((r) => ({ ...r })),
@@ -525,7 +569,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     const { st, deps } = makeFakeUI({ roster: live, throwFor: "Bob" });
     let threw = null;
     let res = null;
-    try { res = await makeRosterUI(deps).restoreRosterToSnapshot(snapshot); }
+    try { res = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).restoreRosterToSnapshot(snapshot); }
     catch (e) { threw = String(e.message); }
     ok(threw === null, `restoreRosterToSnapshot does NOT throw out on a failed repair (got: ${threw})`);
     ok(res && res.ok === false, "…it reports the restore as FAILED, because one row genuinely could not be put back");
@@ -560,7 +604,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     const live = [{ accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own" }];
     const { st, deps } = makeFakeUI({ roster: live, throwFor: "Ann" });
     let threw = null, res = null;
-    try { res = await makeRosterUI(deps).restoreRosterToSnapshot(snapshot); }
+    try { res = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).restoreRosterToSnapshot(snapshot); }
     catch (e) { threw = String(e.message); }
     ok(threw === null, `a throw in the CHANGED repair does not escape the restore (got: ${threw})`);
 
@@ -622,6 +666,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     const ui = makeRosterUI({
       ...deps,
       record: { pass: (s, d) => wrote.pass.push({ s, d }), nv: (s, d) => wrote.nv.push({ s, d }), fail: (s, d) => wrote.fail.push({ s, d }) },
+      settleMs: FAST_SETTLE,
     });
     let threw = null, res = null;
     try { res = await ui.restoreRosterToSnapshot(snapshot); }
@@ -731,7 +776,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     ];
     const { st, deps } = makeFakeUI({ roster: live, maskLeaks: true, stickyRemove: true });
     let threw = null, res = null;
-    try { res = await makeRosterUI(deps).restoreRosterToSnapshot(snapshot); }
+    try { res = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).restoreRosterToSnapshot(snapshot); }
     catch (e) { threw = String(e.message); }
 
     ok(threw === null, `F-717: the unrepairable roster does not crash the restore (got: ${threw})`);

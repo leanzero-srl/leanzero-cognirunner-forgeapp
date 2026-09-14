@@ -53,6 +53,30 @@ export const SCOPE_LABEL = { own: /^Own Rules/, all: /^All Rules/ };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * F-731 — `removeAccount`'s TWO SETTLES HAVE ONE HOME AND ONE NAME.
+ *
+ * They used to be bare `sleep(1500)` / `sleep(3500)` literals buried in `removeAccount`,
+ * which made them invisible to everything except a reader of that function — and
+ * invisible is how they became a COST nobody could see. F-717 added an offline fixture
+ * that drives `restoreRosterToSnapshot` over a roster that CANNOT be repaired, so every
+ * one of the four repair passes pays both settles in real `setTimeout`s: five seconds a
+ * pass, twenty seconds for one test case, inside an OFFLINE suite that is supposed to
+ * finish in seconds. Naming them is what lets a fake-DOM fixture lower them — the fixture
+ * has no browser to settle and no render to wait for — while a live driver keeps the
+ * measured values.
+ *
+ * THE DEFAULTS ARE THE LIVE VALUES AND THEY DO NOT CHANGE HERE. `rosterList` is the
+ * settle after the Permissions tab is opened and the first card is visible, before the
+ * card list is read by discriminator; `removeConfirm` is the settle after the `.cr-confirm`
+ * "Remove" click, before the restore screenshot — both are against a real admin-panel
+ * iframe re-render. Lower them only where there is no render to miss; `roster-ui.test.mjs`
+ * keeps one arm on the untouched default precisely so the live numbers stay proven.
+ * (F-671's separate "1.2s settle and a second read" measurement lives in `grantRole` and
+ * is untouched by this.)
+ */
+export const SETTLE_MS = Object.freeze({ rosterList: 1500, removeConfirm: 3500 });
+
+/**
  * The mask `lib/redact.mjs#maskEmail` produces, re-expressed for the BROWSER context.
  * It is a source STRING because it is evaluated inside the page, where this module's
  * imports do not exist. `redact.mjs` stays the authority for the SHAPE; this is the one
@@ -373,8 +397,19 @@ export function makeShot(record) {
  *   fold one array into its evidence than read N call sites.
  *   Omitted entirely, the answer still rides out on the returned `shot` field, which
  *   `restoreRosterToSnapshot` folds into `actions`.
+ * @param deps.settleMs        (F-731, TEST HOOK — omit it in every live driver) a partial
+ *   override of `SETTLE_MS`, e.g. `{ rosterList: 50, removeConfirm: 50 }`. It exists so the
+ *   offline fake-DOM fixtures, which have no browser render to wait for, stop paying five
+ *   real seconds per repair pass. Supplying it live would be waiting less than the measured
+ *   settle for a render that genuinely takes that long.
  * ═══════════════════════════════════════════════════════════════════════════════ */
-export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
+export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs }) {
+  /* F-731 — the ONE test hook for the two `removeAccount` settles. Omitted (every live
+     driver), the measured defaults in `SETTLE_MS` apply unchanged; supplied, only the keys
+     given are overridden, so a fixture that lowers `removeConfirm` still pays the real
+     `rosterList`. Per-instance and not a module mutator: two `makeRosterUI`s in one
+     process cannot silently change each other's timing. */
+  const settle = { ...SETTLE_MS, ...(settleMs || {}) };
   const rosterIds = async () => (await rosterRows()).map(rosterIdOf);
   const shot = makeShot(record);
 
@@ -546,7 +581,7 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
     const r = await withAdminPanel(async (page, frame) => {
       await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
       await frame.locator(".perm-admin-card").first().waitFor({ state: "visible", timeout: 60000 });
-      await sleep(1500);
+      await sleep(settle.rosterList);
       const cards = await readRows(frame, ".perm-admin-card");
       let pick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
       if (pick.index < 0 && cards.every((c) => !c.idTitle && !c.idShown)) {
@@ -560,7 +595,7 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
       await card.locator(".perm-remove-btn").click();
       await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
       await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
-      await sleep(3500);
+      await sleep(settle.removeConfirm);
       const rmShot = await shot(page, frame, out + "/03-roster-restore-" + idTail(accountId).slice(0, 8) + ".png");
       return { removed: true, how: pick.how, index: pick.index, shot: rmShot };
     });

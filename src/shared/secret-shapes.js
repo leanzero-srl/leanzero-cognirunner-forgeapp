@@ -360,3 +360,28 @@ export const SECRET_FIELD_NAME_HINTS = [
   "token", "secret", "password", "credential", "apikey", "privatekey", "bearer",
   "authorization", "cookie", "webtrigger", "webhookurl", "cognirunnerkey", "gitconnection",
 ];
+
+/**
+ * F-849 — FIELD NAMES THAT MAKE A VALUE A URL, beside the names that make it a credential,
+ * because they are the same KIND of question and the harness kept its own answer.
+ *
+ * `isDevUrlKey` in `test-harness/lib/redact.mjs` masks a whole value because of its KEY —
+ * the name half of that file's contract — and it did it from a hand-written alternation
+ * (`url|baseurl|base_url|href|endpoint|hookurl|hook_url|webtrigger|webtriggerurl`). That is
+ * the second home this module exists to remove: a repo that starts writing `callbackUrl` or
+ * `requestUrl` teaches one list and not the other, and the list that does not learn is the
+ * one standing between a capability URL and a committed evidence file.
+ *
+ * FLAT, like `SECRET_FIELD_NAME_HINTS`, and asked the same way: the caller lowercases the
+ * key and strips non-alphanumerics before looking it up, so `base_url`, `baseURL` and
+ * `base-url` are one entry and cannot be spelled differently on the two sides. Unlike the
+ * secret hints this is an EXACT list, not a substring rule: a URL key is masked whole, and
+ * `substring` semantics would claim every field whose name merely ends in `url`, including
+ * ones that carry prose.
+ *
+ * Naming a value a URL is not by itself a reason to mask it — `isDevUrlKey` also requires
+ * the value to look like the dev web trigger. This list answers only "is this field a URL".
+ */
+export const URL_FIELD_NAME_HINTS = [
+  "url", "baseurl", "href", "endpoint", "hookurl", "webtrigger", "webtriggerurl",
+];

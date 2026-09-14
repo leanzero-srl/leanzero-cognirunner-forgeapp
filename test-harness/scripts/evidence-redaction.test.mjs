@@ -2701,8 +2701,8 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
- * ── 4m. F-803 / F-830 — ONE HOME FOR WHAT A CREDENTIAL LOOKS LIKE, AND FOR WHAT IT
- * ── IS CALLED ────────────────────────────────────────────────────────────────────
+ * ── 4m. F-803 / F-830 / F-849 — ONE HOME FOR WHAT A CREDENTIAL LOOKS LIKE, AND FOR
+ * ── WHAT A FIELD IS CALLED ───────────────────────────────────────────────────────
  *
  * There were two, and they disagreed about this app's OWN bearer. `src/test-hook.js`
  * (`SECRET_VALUE_RE` — the dev hook's write refusal AND its read ceiling) knew
@@ -2780,6 +2780,40 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     "4m (F-830) POSITIVE CONTROL: the pre-fix `SECRET_KEY` literal IS seen as a private name list");
   ok(nameListCopy("const isDevUrlKey = /^(url|baseurl|href|endpoint|hookurl|webtrigger)$/i;").length === 0,
     "4m (F-830) NEGATIVE CONTROL: a URL-KEY rule that happens to mention one hint is not a second name list");
+
+  /* ── 1c. F-849 — AND THE URL-KEY NAMES, WHICH WERE THE LAST PRIVATE LIST IN THIS FILE ──
+   *
+   * The NEGATIVE CONTROL directly above is the tell: `isDevUrlKey` was a hand-written
+   * alternation of FIELD NAMES sitting one function below a credential-NAME rule that
+   * F-830 had already moved to the one home, and it stayed private only because it carries
+   * too few credential hints to trip `nameListCopy`. It is the same KIND of question —
+   * "what is this field called" — so it is answered from the same module now, and this
+   * block is the parity: the list is a flat lowercase-alphanumeric list, `redact.mjs`
+   * IMPORTS it, and `redact.mjs` no longer carries a URL-name alternation of its own.
+   *
+   * The BEHAVIOUR half runs the four spellings the old regex knew plus the two it could
+   * not know (`baseURL`, `base-url`), because flattening the key is what the one-home form
+   * buys: a name is one entry, not three. And the value test is asserted to still be the
+   * other half — a `url` field that is not the dev web trigger comes back whole, which is
+   * what keeps this from becoming a rule that eats every URL in an evidence file. */
+  const URL_HINTS = shapes.URL_FIELD_NAME_HINTS;
+  ok(Array.isArray(URL_HINTS) && URL_HINTS.length >= 6 && URL_HINTS.every((h) => /^[a-z0-9]+$/.test(h)),
+    "4m (F-849): the URL-key names are a flat lowercase-alphanumeric list in the one home");
+  ok(/import[\s\S]{0,300}URL_FIELD_NAME_HINTS[\s\S]{0,300}secret-shapes\.js/.test(redactSrc),
+    "4m (F-849): lib/redact.mjs imports the URL-key names rather than declaring them");
+  const urlListCopy = (code) => [...code.matchAll(/\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\]|\\.)*\])+\/[gimsuy]*/g)]
+    .map((m) => m[0])
+    .filter((lit) => URL_HINTS.filter((h) => lit.toLowerCase().includes(h)).length >= 3);
+  ok(urlListCopy(redactCode).length === 0,
+    `4m (F-849): lib/redact.mjs may not carry its own URL-NAME list (found ${urlListCopy(redactCode).join(" ")})`);
+  ok(urlListCopy("const isDevUrlKey = /^(url|baseurl|base_url|href|endpoint|hookurl)$/i;").length === 1,
+    "4m (F-849) POSITIVE CONTROL: the pre-fix `isDevUrlKey` literal IS seen as a private URL-name list");
+  const DEV_URL = "https://abc123.atlassian-dev.net/x1/deadbeefcafebabe";
+  for (const k of ["url", "baseUrl", "base_url", "hookUrl", "hook_url", "webTriggerUrl", "baseURL", "base-url"])
+    ok(redactSecrets({ [k]: DEV_URL })[k] === REDACTED,
+      `4m (F-849): a dev web-trigger URL under \`${k}\` is masked by NAME — the last two spellings the private regex could not see`);
+  ok(redactSecrets({ url: "https://example.invalid/docs" }).url === "https://example.invalid/docs",
+    "4m (F-849): …and the VALUE test is still the other half — an ordinary URL under `url` is not touched");
   // …and the behaviour the parity exists for, at BOTH layers.
   const FOUR = { privateKey: "-----BEGIN RSA PRIVATE KEY-----abcdefgh", cookie: "sessionid=abc123def456",
     credential: "hunter2hunter2hunter2", webhookUrl: "https://example.invalid/y/zz" };

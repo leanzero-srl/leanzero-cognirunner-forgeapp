@@ -71,7 +71,7 @@
  * decided by the VALUE's shape, never by the parameter's name.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import { createHash } from "node:crypto";
-import { replaceCredentialSpans, credentialPrefixRegex, SECRET_FIELD_NAME_HINTS } from "../../src/shared/secret-shapes.js";
+import { replaceCredentialSpans, credentialPrefixRegex, SECRET_FIELD_NAME_HINTS, URL_FIELD_NAME_HINTS } from "../../src/shared/secret-shapes.js";
 
 export const REDACTED = "[REDACTED]";
 
@@ -317,9 +317,30 @@ export function maskFaultKey(key) {
 const EMBEDDED_PAIR = /("([A-Za-z0-9_.\-]+)"\s*:\s*)"(?:[^"\\]|\\.)*"/g;
 const redactEmbeddedPairs = (s) => s.replace(EMBEDDED_PAIR, (m, pre, name) => (secretKeyExact(name) ? `${pre}"${REDACTED}"` : m));
 
-/** True when this key/value pair is a URL that leaks the dev web-trigger. */
+/**
+ * True when this key/value pair is a URL that leaks the dev web-trigger.
+ *
+ * F-849 — THE URL-KEY NAMES CAME FROM THEIR ONE HOME. This rule used to carry a
+ * hand-written alternation (`url|baseurl|base_url|href|endpoint|hookurl|hook_url|
+ * webtrigger|webtriggerurl`) sitting one function below a credential-NAME rule that F-830
+ * had already moved into `src/shared/secret-shapes.js`. Two lists of field names, one of
+ * them shared and one of them private, is the shape F-830 was cut to remove — so the URL
+ * names live beside the credential names now and the door and this file cannot disagree
+ * about what a URL field is called.
+ *
+ * Asked the same way the credential hints are: the key is flattened (lowercased,
+ * non-alphanumerics dropped) before the lookup, so `base_url`, `baseURL` and `base-url`
+ * are one entry rather than three spellings somebody has to remember to add. EXACT match,
+ * not substring — a URL key is masked WHOLE, and a substring rule would claim every field
+ * whose name merely ends in `url`.
+ *
+ * The VALUE test is unchanged and is still the other half: a field named `url` is masked
+ * only when what it holds is this installation's dev web trigger.
+ */
+const URL_KEY_NAMES = new Set(URL_FIELD_NAME_HINTS);
+const flatKey = (k) => String(k).toLowerCase().replace(/[^a-z0-9]/g, "");
 const isDevUrlKey = (key, value) =>
-  /^(url|baseurl|base_url|href|endpoint|hookurl|hook_url|webtrigger|webtriggerurl)$/i.test(String(key)) &&
+  URL_KEY_NAMES.has(flatKey(key)) &&
   typeof value === "string" && /atlassian-dev\.net/i.test(value);
 
 /**

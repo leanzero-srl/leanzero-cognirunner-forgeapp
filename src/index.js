@@ -125,8 +125,9 @@ import {
   slimRegistryRow,
   normalizeFunctionsForStorage,
   brakeRefusalText,
-  DOC_CONTENT_MAX_CHARS,
+  DOC_CONTENT_MAX_BYTES,
   DOC_TOO_LARGE_MESSAGE,
+  utf8Bytes,
 } from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
@@ -7984,6 +7985,21 @@ const seedBuiltinDocs = async () => {
 };
 
 /**
+ * Is this thrown error the KVS platform refusing a value for being too large?
+ *
+ * Forge does not export a typed error for this, so the detection is on the error's
+ * name/code/message. Deliberately BROAD on the phrasing and NARROW on the meaning: a
+ * false positive only changes the wording of a failure that was already a failure,
+ * while a miss puts the platform's own sentence in front of a user again (F-836).
+ * Anything that does not look like a size refusal keeps the generic error path.
+ */
+function isStorageSizeError(error) {
+  const parts = [error?.name, error?.code, error?.statusCode, error?.message].filter(Boolean).join(" ");
+  if (/413/.test(parts)) return true;
+  return /(payload|value|entity|request)[^.]{0,40}(too large|too big|exceed)|too large|size limit|exceeds the maximum/i.test(parts);
+}
+
+/**
  * Save a reference document to the shared repository.
  */
 resolver.define("saveContextDoc", async ({ payload, context }) => {
@@ -7999,9 +8015,12 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
     if (!title || !content) {
       return { success: false, error: "Title and content are required" };
     }
-    // Cap + wording: src/shared/registry-limits.js (both DocRepository copies gate on the
-    // same export, in the same unit — characters).
-    if (content.length > DOC_CONTENT_MAX_CHARS) {
+    // Cap + wording: src/shared/registry-limits.js. BYTES of UTF-8, measured with the
+    // shared `utf8Bytes` helper that both DocRepository copies also call — F-836: this
+    // gate used to count UTF-16 code units while the ceiling it protects (the ~240KiB
+    // KVS value limit) is bytes, so CJK prose passed at up to 3x the real size.
+    const contentBytes = utf8Bytes(content);
+    if (contentBytes > DOC_CONTENT_MAX_BYTES) {
       return { success: false, error: DOC_TOO_LARGE_MESSAGE };
     }
 
@@ -8010,7 +8029,8 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
       id,
       title: title.substring(0, 100),
       category: category || "General",
-      contentLength: content.length,
+      // Bytes, the same unit as the gate — the UI renders this with formatSize as B/KB.
+      contentLength: contentBytes,
       createdBy: context.accountId || null,
       createdAt: new Date().toISOString(),
     };
@@ -8027,6 +8047,16 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
     return { success: true, id };
   } catch (error) {
     console.error("Failed to save context doc:", error);
+    // F-836: when the PLATFORM is the one refusing on size, answer in our own words and
+    // name the measured size. The byte gate above should make this unreachable for the
+    // content alone; it stays because the stored value is content + metadata, and because
+    // a refusal that quotes the platform's sentence names neither a size nor a remedy.
+    if (isStorageSizeError(error)) {
+      return {
+        success: false,
+        error: `${DOC_TOO_LARGE_MESSAGE}. This document measured ${Math.round(utf8Bytes(payload?.content) / 1000)} KB.`,
+      };
+    }
     return { success: false, error: error.message };
   }
 });

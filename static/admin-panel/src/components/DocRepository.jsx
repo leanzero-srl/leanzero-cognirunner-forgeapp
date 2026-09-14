@@ -5,13 +5,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
-import { DOC_CONTENT_MAX_CHARS, DOC_CONTENT_MAX_LABEL } from "../../../../src/shared/registry-limits.js";
+import { DOC_CONTENT_MAX_BYTES, DOC_CONTENT_MAX_LABEL, utf8Bytes } from "../../../../src/shared/registry-limits.js";
 import { isPermissionRefusal, permissionRefusalText, isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "./refusal";
 
 // CSP-safe JavaScript syntax check: parse with Lezer (no eval / new Function,
@@ -291,10 +291,18 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
     }
   };
 
-  const formatSize = (len) => {
-    if (len < 1024) return `${len} B`;
-    return `${(len / 1024).toFixed(1)} KB`;
+  // Sizes here are UTF-8 BYTES: the hint below and the cap gate both measure with
+  // `utf8Bytes`, the same helper `saveContextDoc` gates on, so this panel can never
+  // refuse text the backend accepts or accept text it refuses (F-836). Rows written
+  // by OTHER doc writers (builtin seeding, research persistence) still carry a
+  // character-count `contentLength`, so their size column reads low for non-ASCII.
+  const formatSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
   };
+
+  // Memoized: the editor re-renders per keystroke and this encodes the whole body.
+  const newContentBytes = useMemo(() => utf8Bytes(newContent), [newContent]);
 
   // Hide rows the backend disabled (e.g. soft-deleted builtins)
   const visibleDocs = docs.filter((d) => !d.disabled);
@@ -373,12 +381,12 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
           )}
           <div className="doc-add-actions">
             <span className="doc-size-hint">
-              {newContent.length > 0 ? formatSize(newContent.length) : ""}{newContent.length > DOC_CONTENT_MAX_CHARS ? ` (too large, max ${DOC_CONTENT_MAX_LABEL})` : ""}
+              {newContentBytes > 0 ? formatSize(newContentBytes) : ""}{newContentBytes > DOC_CONTENT_MAX_BYTES ? ` (too large, max ${DOC_CONTENT_MAX_LABEL})` : ""}
             </span>
             <button
               className={`btn-save-doc${saving ? " is-busy busy-solid" : ""}`}
               onClick={handleSave}
-              disabled={saving || !newTitle.trim() || !newContent.trim() || newContent.length > DOC_CONTENT_MAX_CHARS || validationMsg?.type === "error"}
+              disabled={saving || !newTitle.trim() || !newContent.trim() || newContentBytes > DOC_CONTENT_MAX_BYTES || validationMsg?.type === "error"}
             >
               Save to Library
             </button>

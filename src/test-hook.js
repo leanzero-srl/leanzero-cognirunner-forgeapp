@@ -157,13 +157,56 @@ export const CREDENTIAL_KEY_FAMILIES = [
   "harness_stash:",
 ];
 
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-794 — THE NAME CATCH-ALL'S OWN FALSE POSITIVES, REVIEWED ONE BY ONE.
+ *
+ * The catch-all is coarse in the SAFE direction on purpose, and the F-769 reasoning for
+ * that stands. But coarse in the safe direction is only free while the alternative is
+ * "answer the whole row plain" — once the FIELD ceiling exists (`maskSecretFields`), a row
+ * the catch-all claims for its NAME alone is now over-masked when what it actually holds
+ * is a HASH and a PREFIX. `api_tokens` is exactly that: `createApiTokenInternal`
+ * (src/rules-api.js) stores `{id, name, hash: sha256(token), prefix: token.slice(0,10),
+ * createdAt, createdBy, role, lastUsedAt, revokedAt}` — the plaintext is shown once and
+ * never stored — and `api_token_revoked:{id}` is a tombstone, `{id, revokedAt}`. Neither
+ * row can hand anyone a bearer, and masking them whole costs a driver the ability to see
+ * that a mint landed, what its role is, or that a revoke wrote its tombstone.
+ *
+ * A key listed here is NOT a credential family, so it drops through to the FIELD ceiling.
+ * `fields` names the field NAMES within it that are still masked wherever they appear —
+ * `hash` is not a `SECRET_KEY_HINTS` word and never should be (a hash is not a secret in
+ * general), but THIS hash is a verification oracle for a live bearer and a fingerprint
+ * answers every question a driver had about it.
+ *
+ * PER KEY, WITH THE REASON, LIKE `NOT_A_CREDENTIAL` IN THE CENSUS TEST: the judgement
+ * being recorded is "this ROW is safe to read field-by-field", never "this WORD is safe".
+ * A new key containing `token` is still claimed by the catch-all until someone reads it.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+export const NAME_CATCHALL_EXEMPT = new Map([
+  ["api_tokens", { fields: ["hash"], why: "the mint row stores sha256(token)+prefix, never the bearer (src/rules-api.js createApiTokenInternal); `hash` is fingerprinted because it verifies a live token" }],
+  ["api_token_revoked:", { fields: [], why: "a revoke tombstone, `{id, revokedAt}` (src/rules-api.js revokeApiTokenInternal) — it carries no secret at all" }],
+]);
+
+/** The reviewed exemption for a key, or null. A trailing `:` entry matches as a prefix. */
+const catchAllExemption = (key) => {
+  for (const [k, entry] of NAME_CATCHALL_EXEMPT) {
+    if (key === k || (k.endsWith(":") && key.startsWith(k))) return entry;
+  }
+  return null;
+};
+
+/** The extra field NAMES the field ceiling masks in this row (empty for almost every key). */
+export const extraMaskedFieldsFor = (key) => (typeof key === "string" ? (catchAllExemption(key)?.fields || []) : []);
+
 /**
  * TRUE when the VALUE behind this key is a credential and must never be returned.
- * Prefix match on the declared families, then the name catch-all.
+ * Prefix match on the declared families, then the reviewed exemptions, then the name
+ * catch-all. A DECLARED family always wins — an exemption can only ever excuse the
+ * catch-all, never a family someone deliberately added.
  */
 export const isCredentialKey = (key) => {
   if (typeof key !== "string" || key.length === 0) return false;
   if (CREDENTIAL_KEY_FAMILIES.some((p) => key.startsWith(p))) return true;
+  if (catchAllExemption(key)) return false;
   const flat = key.toLowerCase().replace(/[^a-z0-9]/g, "");
   return SECRET_KEY_HINTS.some((h) => flat.includes(h));
 };
@@ -368,27 +411,130 @@ export const notPlantedRefusal = (what) => ({
   harnessRefusal: "not-planted",
 });
 
-export const findPlantedSecret = (value, path = "", depth = 0) => {
-  if (depth > 6) return null;
-  if (typeof value === "string") {
-    return SECRET_VALUE_RE.test(value) ? { field: path || "(root)", why: "value-looks-like-a-credential" } : null;
-  }
-  if (!value || typeof value !== "object") return null;
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length && i < 50; i++) {
-      const hit = findPlantedSecret(value[i], `${path}[${i}]`, depth + 1);
-      if (hit) return hit;
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-794 — ONE TRAVERSAL, TWO CALLERS: THE WRITE REFUSAL AND THE READ MASK.
+ *
+ * `findSecretFields` walks a value and returns EVERY path whose FIELD NAME reads like a
+ * credential (`SECRET_KEY_HINTS`) or whose STRING VALUE looks like one
+ * (`SECRET_VALUE_RE`), in depth-first order. Two doors ask it one question:
+ *
+ *   · the WRITE refusal (`findPlantedSecret`) wants the FIRST hit, to name a field and
+ *     refuse the body. Its behaviour is UNCHANGED — it is now the one-line caller that
+ *     takes `[0]`, at the same `depth > 6` ceiling it always had.
+ *   · the READ mask (`maskSecretFields`, the `?what=kvs` FIELD ceiling) wants ALL hits,
+ *     so it can answer the row with exactly those subtrees replaced and the rest plain.
+ *
+ * TWO CEILINGS, ON PURPOSE. The write refusal keeps 6: a plant body is a small, flat,
+ * harness-authored thing, and a deeper walk only costs every refused body more work. The
+ * read mask walks to `READ_MASK_MAX_DEPTH`, because the rows it must see through are real
+ * tenant configs (`config_registry` → rule → config → functions[] → step) and a secret one
+ * level below the walker's sight is a secret returned in plain text. Below that depth the
+ * mask FAILS CLOSED — the subtree is replaced by a fingerprint and its path is listed —
+ * because "I could not look" must never be spelled the same way as "I looked and it was
+ * clean". The write refusal never reaches that edge in practice; if a plant body ever
+ * nests 7 deep it refuses, which is the safe direction for a door that plants state.
+ *
+ * A FIELD-NAME hit does NOT descend: the whole subtree under a field called `headers` is
+ * the credential, not one leaf of it, and the read mask replaces exactly that subtree.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+const WRITE_REFUSAL_MAX_DEPTH = 6;
+const READ_MASK_MAX_DEPTH = 12;
+
+export const findSecretFields = (value, { maxDepth = WRITE_REFUSAL_MAX_DEPTH, maxItems = 50, extraFieldNames = [] } = {}) => {
+  const extra = new Set(extraFieldNames);
+  const out = [];
+  const walk = (v, path, depth) => {
+    if (depth > maxDepth) { out.push({ field: path || "(root)", why: "below-the-walker-depth-ceiling" }); return; }
+    if (typeof v === "string") {
+      if (SECRET_VALUE_RE.test(v)) out.push({ field: path || "(root)", why: "value-looks-like-a-credential" });
+      return;
     }
-    return null;
-  }
-  for (const [k, v] of Object.entries(value)) {
-    const flat = k.toLowerCase().replace(/[^a-z0-9]/g, "");
-    // `key` alone is a legitimate harness word (a KVS key); the hints below are not.
-    if (SECRET_KEY_HINTS.some((h) => flat.includes(h))) return { field: path ? `${path}.${k}` : k, why: "field-name-reads-like-a-credential" };
-    const hit = findPlantedSecret(v, path ? `${path}.${k}` : k, depth + 1);
-    if (hit) return hit;
-  }
-  return null;
+    if (!v || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length && i < maxItems; i++) walk(v[i], `${path}[${i}]`, depth + 1);
+      return;
+    }
+    for (const [k, sub] of Object.entries(v)) {
+      const p = path ? `${path}.${k}` : k;
+      const flat = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+      // `key` alone is a legitimate harness word (a KVS key); the hints below are not.
+      if (extra.has(k)) { out.push({ field: p, why: "reviewed-field-mask-for-this-key" }); continue; }
+      if (SECRET_KEY_HINTS.some((h) => flat.includes(h))) { out.push({ field: p, why: "field-name-reads-like-a-credential" }); continue; }
+      walk(sub, p, depth + 1);
+    }
+  };
+  walk(value, "", 0);
+  return out;
+};
+
+export const findPlantedSecret = (value) => findSecretFields(value)[0] || null;
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-794 — THE FIELD CEILING. THE READ CEILING WAS PER-KEY; A CREDENTIAL IS PER-FIELD.
+ *
+ * F-769 drew the `?what=kvs` disclosure ceiling around a KEY FAMILY: a row whose KEY is a
+ * credential answers a fingerprint, and EVERY OTHER ROW answers entirely in plain text.
+ * That is the right shape for a row that IS a secret (`COGNIRUNNER_KEY_*` — a naked
+ * string). It is the wrong shape for a MIXED row, and the app is full of mixed rows:
+ * `config_registry`, `pf_code:*`, `job:*`, `listener:*`, `async_job:*` are tenant configs
+ * whose key says nothing and which can carry an endpoint credential inside them. The tell
+ * is already written down elsewhere in this repo: `src/shared/rule-portability.js` strips
+ * `headers` from an export as "endpoint auth" — the exporter knows those rows hold
+ * credentials, and this door did not.
+ *
+ * So a non-family key is now answered FIELD BY FIELD: the value comes back with every
+ * path `findSecretFields` names replaced by `{masked:true, why, fingerprint}` and a
+ * top-level `maskedFields:[path]` saying which, and everything else PLAIN. A driver still
+ * reads a rule's events, filters and step names out of `job:*`; it no longer reads the
+ * bearer token under `functions[].endpoint.headers`.
+ *
+ * THE RESIDUAL, STATED OUT LOUD RATHER THAN LEFT TO BE DISCOVERED. This is a FIELD-NAME
+ * ceiling with a value-shape backstop, and free text is neither:
+ *   · `functions[].code`, `agent.instructions`, `prompt`/`systemPrompt`/`instructions` and
+ *     every other prose field come back PLAIN. A tenant who pasted a token into a prompt is
+ *     caught ONLY if it wears a shape `SECRET_VALUE_RE` knows (`sk-…`, `ghp_…`, `xoxb-`,
+ *     `github_pat_`, a `.atlassian-dev.net/` web-trigger URL, or a declared key family
+ *     name). A bare hex/base64 blob in a prompt is invisible, and masking every long
+ *     string in a `code` field would mask the code.
+ *   · a field named in a language no hint covers (`autorisierung`, `pw`) is invisible for
+ *     the same reason the F-778 catch-all could not see `COGNIRUNNER_CONTEXT7_REMOTE`: a
+ *     name-based rule can only see the names it knows. A `headers` MAP is walked field by
+ *     field, so `Authorization`, `Cookie` and anything containing `token`/`apikey` are
+ *     masked and `X-Trace` stays readable — which is the point, and also the residual: a
+ *     bearer sent under `X-Client-Id` is not caught by name, only by shape.
+ * What it DOES guarantee: the shape a door cannot read is MASKED, never returned. A
+ * subtree below `READ_MASK_MAX_DEPTH` is fingerprinted, not answered.
+ *
+ * Returns `null` when the row is clean (the caller answers it plain, unchanged), otherwise
+ * `{value, maskedFields}`. The fingerprint is the ONE `credentialFingerprint` (F-780) —
+ * there is no second digest in this file and there must not be.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+export const maskSecretFields = async (value, { extraFieldNames = [] } = {}) => {
+  // `maxItems: Infinity` — the write refusal stops at 50 array items because a plant body
+  // is small and the FIRST hit is all it needs; a READ that stopped at 50 would answer
+  // `config_registry`'s 51st rule in plain text. A KVS value is capped at 240 KiB, so the
+  // walk is bounded by the row itself.
+  const hits = findSecretFields(value, { maxDepth: READ_MASK_MAX_DEPTH, maxItems: Infinity, extraFieldNames });
+  if (hits.length === 0) return null;
+  const why = new Map(hits.map((h) => [h.field, h.why]));
+  const maskedFields = [];
+  const rebuild = async (v, path, depth) => {
+    const at = path || "(root)";
+    if (why.has(at)) {
+      maskedFields.push(at);
+      return { masked: true, why: why.get(at), fingerprint: await credentialFingerprint(v) };
+    }
+    if (!v || typeof v !== "object") return v;
+    if (Array.isArray(v)) {
+      const out = [];
+      for (let i = 0; i < v.length; i++) out.push(await rebuild(v[i], `${path}[${i}]`, depth + 1));
+      return out;
+    }
+    const out = {};
+    for (const [k, sub] of Object.entries(v)) out[k] = await rebuild(sub, path ? `${path}.${k}` : k, depth + 1);
+    return out;
+  };
+  return { value: await rebuild(value, "", 0), maskedFields };
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
@@ -1712,6 +1858,12 @@ export async function testStateTrigger(req) {
       if (isCredentialKey(body.key)) {
         return json(200, { key: body.key, set, present: now !== null, fingerprint: await credentialFingerprint(now), masked: true });
       }
+      // F-794 — and the FIELD ceiling for the same reason, in the same shape. This echo is
+      // the caller's own value, so it discloses nothing new TODAY; it takes the mask so
+      // that "what this door says about a secret-carrying row" has ONE shape in both
+      // directions and a driver never learns to read a field here that the GET masks.
+      const fieldMask = await maskSecretFields(now, { extraFieldNames: extraMaskedFieldsFor(body.key) });
+      if (fieldMask) return json(200, { key: body.key, set, now: fieldMask.value, maskedFields: fieldMask.maskedFields });
       return json(200, { key: body.key, set, now });
     }
     /* F-769 — the two halves of the stash door; see its docblock at `kvWriteAllowList`. */
@@ -2199,9 +2351,16 @@ export async function testStateTrigger(req) {
      * key lands in a committed file verbatim.
      *
      * So a credential-family key (`isCredentialKey`, ONE HOME above) answers
-     * `{key, present, fingerprint, masked:true}` and never `value`. EVERY OTHER KEY IS
-     * UNCHANGED — `pf_code:*`, `job:*`, `va_*`, `config_registry`, `app_admins`, a key
-     * this file has never heard of: all still return their value.
+     * `{key, present, fingerprint, masked:true}` and never `value`.
+     *
+     * F-794 — AND EVERY OTHER KEY IS ANSWERED FIELD BY FIELD, because that ceiling was
+     * per-KEY while a credential is per-FIELD. `pf_code:*`, `job:*`, `listener:*`,
+     * `async_job:*` and `config_registry` are MIXED rows — a tenant config whose key says
+     * nothing, carrying an endpoint bearer inside it — and they were answering entirely
+     * plain. `maskSecretFields` (ONE HOME, above, the same traversal the write refusal
+     * uses) replaces every secret-looking PATH with a fingerprint and leaves the rest
+     * readable; `maskedFields` says which. Its residual — free text such as
+     * `functions[].code` and `agent.instructions` — is stated in full at its docblock.
      *
      * THIS DOES NOT COST THE F-126 CONFIRMATION the comment above protects. F-126 plants
      * a provider fault by CLEARING a slot, and `present:false` answers that precisely;
@@ -2227,6 +2386,9 @@ export async function testStateTrigger(req) {
           masked: true,
         });
       }
+      // The FIELD ceiling. A clean row answers exactly as it always did.
+      const fieldMask = await maskSecretFields(stored, { extraFieldNames: extraMaskedFieldsFor(key) });
+      if (fieldMask) return json(200, { key, value: fieldMask.value, maskedFields: fieldMask.maskedFields });
       return json(200, { key, value: stored });
     }
     return json(400, { error: `unknown what=${what}` });

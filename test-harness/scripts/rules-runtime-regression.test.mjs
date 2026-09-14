@@ -674,7 +674,110 @@ try {
       const parsed = JSON.parse((await kvsRead(key)).body);
       assert.deepEqual(parsed.value, value, `${key}: the value still comes back verbatim`);
       assert.equal(parsed.masked, undefined, `${key}: an ordinary row is not marked masked`);
+      assert.equal("maskedFields" in parsed, false, `${key}: a clean row says nothing about masking (F-794)`);
     }
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-794 — THE FIELD CEILING. The F-769 ceiling is per-KEY; a credential is per-FIELD,
+   * and the app's mixed rows (`config_registry`, `pf_code:*`, `job:*`, `listener:*`,
+   * `async_job:*`) answered entirely plain because their KEY says nothing. These pin the
+   * three answers the door now gives: masked-by-field, plain-when-clean, and the
+   * `api_tokens` row that the NAME catch-all used to over-mask whole.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("BLOCK: a secret FIELD inside a non-credential row is masked, and its siblings are not (F-794)", async () => {
+    const BEARER = "zz-harness-planted-endpoint-bearer-zz";
+    const key = "job:field-ceiling";
+    const row = { id: "field-ceiling", name: "Nightly sync", enabled: true,
+      functions: [{ name: "call", endpoint: { url: "https://example.test/x", headers: { Authorization: `Bearer ${BEARER}`, "X-Trace": "t-1" } }, code: "api.log('x')" }] };
+    storage.__seed(key, row);
+    assert.equal(isCredentialKey(key), false, "premise: `job:*` is not and must not become a credential FAMILY — the row is mostly readable");
+    const res = await kvsRead(key);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.includes(BEARER), false, "the endpoint bearer reached the wire — this is F-794");
+    const parsed = JSON.parse(res.body);
+    assert.deepEqual(parsed.maskedFields, ["functions[0].endpoint.headers.Authorization"],
+      "the masked PATH is named to the FIELD, so a driver knows exactly what it is not being shown");
+    assert.deepEqual(parsed.value.value ?? null, null, "the row is not swallowed into a `value` wrapper");
+    assert.equal(parsed.value.name, "Nightly sync", "a sibling field is PLAIN — this is not the per-key ceiling wearing a new name");
+    assert.equal(parsed.value.functions[0].code, "api.log('x')", "…and so is the step code");
+    assert.equal(parsed.value.functions[0].endpoint.url, "https://example.test/x", "…and the endpoint URL, which is not a credential");
+    const masked = parsed.value.functions[0].endpoint.headers.Authorization;
+    assert.equal(masked.masked, true);
+    assert.equal(masked.why, "field-name-reads-like-a-credential");
+    assert.match(masked.fingerprint, /^[0-9a-f]{16}$/, "the ONE credentialFingerprint (F-780), not a second digest");
+    // The header MAP is walked field by field, so a header whose name says nothing stays
+    // readable — and a credential under such a name is the residual the docblock names.
+    assert.equal(parsed.value.functions[0].endpoint.headers["X-Trace"], "t-1",
+      "a header the hints do not name is plain: the ceiling reads NAMES, and that is stated at maskSecretFields");
+  });
+  await check("BLOCK: a value-SHAPED secret in free text is caught even where no field name says so (F-794)", async () => {
+    const key = "pf_code:rule-9:deadbeef";
+    storage.__seed(key, { code: "const k = 'sk-abcdefghijkl';", note: "harmless" });
+    const parsed = JSON.parse((await kvsRead(key)).body);
+    assert.deepEqual(parsed.maskedFields, ["code"], "an `sk-…` shape is masked even inside a field called `code`");
+    assert.equal(parsed.value.note, "harmless", "…and the harmless sibling is plain");
+    // THE RESIDUAL, asserted rather than assumed: a token with no known SHAPE in free text
+    // is NOT caught. Stated at maskSecretFields' docblock; pinned here so it is not a surprise.
+    storage.__seed(key, { code: "const k = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';" });
+    assert.equal("maskedFields" in JSON.parse((await kvsRead(key)).body), false,
+      "a shapeless blob in free text is a KNOWN residual of a field-name ceiling — masking every long string would mask the code");
+  });
+  await check("the api_tokens row is no longer over-masked whole: hash fingerprinted, the rest readable (F-794)", async () => {
+    const { API_TOKENS_KEY, REVOKED_TOKEN_PREFIX } = await import("../../src/rules-api.js");
+    assert.equal(isCredentialKey(API_TOKENS_KEY), false,
+      "the NAME catch-all claimed `api_tokens` for the word `token`, but the row stores sha256(token)+prefix and never the bearer");
+    const HASH = "9f".repeat(32);
+    storage.__seed(API_TOKENS_KEY, [{ id: "tok_1", name: "CI", hash: HASH, prefix: "cgr_0a1b2c", role: "editor", revokedAt: null }]);
+    const parsed = JSON.parse((await kvsRead(API_TOKENS_KEY)).body);
+    assert.deepEqual(parsed.maskedFields, ["[0].hash"], "only the hash is masked, by the REVIEWED per-key rule");
+    assert.equal(parsed.value[0].hash.masked, true);
+    assert.equal(parsed.value[0].hash.why, "reviewed-field-mask-for-this-key");
+    assert.match(parsed.value[0].hash.fingerprint, /^[0-9a-f]{16}$/);
+    assert.equal(JSON.stringify(parsed).includes(HASH), false, "the stored hash verifies a live bearer, so it does not reach the wire");
+    assert.equal(parsed.value[0].prefix, "cgr_0a1b2c", "the PREFIX is plain — it is what the UI shows and cannot authenticate");
+    assert.equal(parsed.value[0].role, "editor", "…and the role, which is the thing a driver reads this row for");
+    // The tombstone carries no secret at all, so it answers completely plain.
+    const stone = `${REVOKED_TOKEN_PREFIX}tok_1`;
+    storage.__seed(stone, { id: "tok_1", revokedAt: "2026-09-14T00:00:00.000Z" });
+    const stoneRes = JSON.parse((await kvsRead(stone)).body);
+    assert.equal(isCredentialKey(stone), false, "a revoke tombstone is not a credential row");
+    assert.deepEqual(stoneRes.value, { id: "tok_1", revokedAt: "2026-09-14T00:00:00.000Z" });
+    assert.equal("maskedFields" in stoneRes, false);
+    // …and the exemption may only ever excuse the CATCH-ALL, never a declared family.
+    assert.equal(isCredentialKey("api_tokens_backup"), true, "a NEW key carrying the word is still claimed until someone reads it");
+  });
+  await check("the kvSet write echo mirrors the read, so the door has ONE shape in both directions (F-794)", async () => {
+    const BEARER = "zz-harness-echo-bearer-zz";
+    const value = { probe: { headers: { Authorization: `Bearer ${BEARER}` } }, label: "echo" };
+    const res = await kvSet("COGNIRUNNER_MEMORY_SETTINGS", value);
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.body.includes(BEARER), false, "the echo handed the caller's own bearer back on the wire");
+    const parsed = JSON.parse(res.body);
+    assert.deepEqual(parsed.maskedFields, ["probe.headers.Authorization"], "the same paths as the GET names");
+    assert.equal(parsed.now.label, "echo", "…and the same plain siblings");
+    assert.equal(parsed.now.probe.headers.Authorization.masked, true);
+    // Same row, same shape, through the READ door.
+    const readBack = JSON.parse((await kvsRead("COGNIRUNNER_MEMORY_SETTINGS")).body);
+    assert.deepEqual(readBack.maskedFields, parsed.maskedFields);
+    assert.equal(readBack.value.probe.headers.Authorization.fingerprint, parsed.now.probe.headers.Authorization.fingerprint,
+      "one fingerprint for one row, whichever door answered");
+  });
+  await check("POSITIVE CONTROL: the field walker still SEES, and fails CLOSED on what it cannot read (F-794)", async () => {
+    const { findSecretFields, findPlantedSecret, maskSecretFields } = await import("../../src/test-hook.js");
+    // It sees both kinds of hit, at depth, and reports ALL of them rather than the first.
+    const hits = findSecretFields({ a: { password: 1 }, b: ["ghp_abcdefgh"], c: "fine" }, { maxDepth: 12 });
+    assert.deepEqual(hits.map((h) => h.field), ["a.password", "b[0]"], "every path, not just the first");
+    // The WRITE refusal is unchanged: the same first hit, the same shape, the same depth 6.
+    assert.deepEqual(findPlantedSecret({ a: { password: 1 }, b: ["ghp_abcdefgh"] }),
+      { field: "a.password", why: "field-name-reads-like-a-credential" });
+    assert.equal(findPlantedSecret({ nothing: "here" }), null, "a clean body is still null, never an empty array");
+    // FAIL CLOSED: a subtree the read walker cannot reach is fingerprinted, not answered.
+    let deep = "leaf"; for (let i = 0; i < 14; i++) deep = { down: deep };
+    const masked = await maskSecretFields(deep);
+    assert.ok(masked && masked.maskedFields.length === 1, "a row deeper than the walker's ceiling is masked, not returned plain");
+    assert.match(masked.maskedFields[0], /^down(\.down)+$/);
+    assert.equal(JSON.stringify(masked.value).includes("leaf"), false, "…and the unread leaf never reaches the wire");
+    assert.equal(await maskSecretFields({ plain: "row" }), null, "a clean row masks NOTHING — the cut is narrow");
   });
   await check("kvStash/kvRestore move a credential by NAME, never by value (F-769)", async () => {
     // THE DRIVER THIS DOOR EXISTS FOR: va-compaction-live.mjs replaces the BYOK key with a

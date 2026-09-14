@@ -754,6 +754,163 @@ for (const f of drivers) {
     "NEGATIVE CONTROL (F-812): a driver that only READS the token list mints nothing and is not in this rule's world");
 }
 
+/* ── RULE 6 (F-839) · THE VA RECEIPT LIST IS READ THROUGH ONE LIBRARY ───────────────
+ *
+ * `getVaStatus` (src/va-admin.js `status`) runs a BOUNDED PREFIX SCAN for
+ * `va_tick:{agent}:*`. When that scan faults it does not refuse the whole door — the panel
+ * still needs the health, the caps and the settle window — so it answers `receipts: []`
+ * AND a named `receiptsUnavailable: "scan_unavailable" | "scan_failed"` beside it. The
+ * Agents tab reads the named reason and says "Stored history could not be read".
+ *
+ * SEVEN drivers read `.receipts` and NOTHING ELSE. F-832 fixed ONE of them
+ * (`va-recreate-settle-live.mjs`, through `lib/va-tick-receipt.mjs`) and the other six kept
+ * their own two-line `receiptsOf`/`latest` pair, carrying the whole defect verbatim — which
+ * is what a fix with no directory rule behind it always does. On a faulted scan they graded
+ * the emptiness both ways:
+ *   · as a FAIL against a product that ticked (`va-compaction-live`'s "the receipt carries
+ *     no compacted{} block", `va-shadow-live`'s "no prepare receipt appeared within the
+ *     wait", `va-pinned-survival-live`'s convergence check, which then RETURNED);
+ *   · as a vacuous PASS — `va-compaction-live`'s "no compacted{} block on the backoff tick"
+ *     is TRUE of a receipt nobody could read, so that arm passed while measuring nothing and
+ *     would have survived the backoff being deleted.
+ * And two `va-shadow-live` `pollStatus` predicates spun their FULL wait (TICK_WAIT_S, then
+ * POST_WAIT_S) against a door that had already answered `receiptsUnavailable`, then read the
+ * timeout as an absence.
+ *
+ * SEPARATELY, THE COUNT. `recordTick` (src/va-ledger.js) `store.set`s
+ * `va_tick:{agent}:{phase}-{tickId}` and `tickId` is a FIVE-MINUTE BUCKET, so it OVERWRITES
+ * IN PLACE. `va-receipt-copy-live`'s `tick()` waited for `receipts.length` to GROW and
+ * therefore could not see a second tick inside one bucket at all — it reported "no new
+ * receipt within 180s" about a tick that wrote one. "A new receipt appeared" is an IDENTITY
+ * question (`tickId` + `at`), which is why `receiptAppeared` exists in the lib.
+ *
+ * SO THE RULE IS A DOOR RULE, and it has three arms, all read off CODE
+ * (`maskNonCode` blanks comments, string bodies, template TEXT and regex literals while
+ * KEEPING `${…}` holes — so prose may quote the defect, as this docblock does, and an
+ * interpolated read is still a read):
+ *
+ *   6a — no `*-live.mjs` performs a `.receipts` property read.
+ *   6b — no `*-live.mjs` DEFINES its own `receiptsOf`. The lib exports one; a local
+ *        redefinition is how all six of these files hid the same two decisions, and it is
+ *        also the shape a count read through (`receiptsOf(body).length`), which 6a alone
+ *        cannot see.
+ *   6c — no `*-live.mjs` destructures `receipts` out of a status body, which is the next
+ *        spelling of 6a and the one a reader would reach for after this rule lands.
+ *
+ * WHAT IT DOES NOT POLICE: what a driver does with the answer once the lib has given it.
+ * That is a judgement rule and it lives in `judgeTickReceipt` / `receiptAppeared`, proved
+ * offline in `va-tick-receipt.test.mjs`. This rule only guarantees they are ASKED.
+ */
+const RECEIPT_LIB = "va-tick-receipt.mjs";
+/** The lib's own readers. A destructure off one of THESE is the converged shape, not a breach. */
+const RECEIPT_READERS = ["receiptsOf", "newestReceipt", "receiptPoll", "receiptPollNew", "receiptAppeared"];
+export function receiptDoorViolations(src) {
+  const code = maskNonCode(src);
+  const out = [];
+  if (/\.\s*receipts\b/.test(code)) {
+    out.push("reads `.receipts` off a status body directly — a faulted prefix scan answers `receipts: []` beside `receiptsUnavailable`, so this cannot tell an UNREAD ledger from an empty one; read it through lib/" + RECEIPT_LIB);
+  }
+  if (/\b(?:const|let|var|function)\s+receiptsOf\b/.test(code)) {
+    out.push("DEFINES its own `receiptsOf` — lib/" + RECEIPT_LIB + " exports one, and a local copy is both where the unavailability reason gets dropped and where a `.length` COUNT hides (recordTick overwrites `va_tick:{agent}:{phase}-{tickId}` within a five-minute bucket, so a count cannot see a second tick)");
+  }
+  /* The RHS is read, because `const { receipts, unavailable } = receiptsOf(body)` is the
+     lib's OWN return shape and is the very thing this rule is pushing drivers towards. What
+     6c catches is the same destructure off a raw status body. */
+  const destructure = code.match(/\{[^{}]*\breceipts\b[^{}]*\}\s*=\s*([A-Za-z_$][\w$]*)?/);
+  if (destructure && !RECEIPT_READERS.includes(destructure[1])) {
+    out.push("DESTRUCTURES `receipts` out of a status body — the same read as `.receipts`, spelled the way a reader reaches for after the property form is policed");
+  }
+  return out;
+}
+
+/* THE EXEMPTIONS, and the ONLY reason one is granted: the read is EVIDENCE PRINTED BESIDE
+ * a grade that is made on another door, never the grade itself. Both files say so in their
+ * own source, and the reason is QUOTED here so the exemption cannot outlive it. */
+const RECEIPT_DOOR_EXEMPT = {
+  "va-settling-carrier-live.mjs": {
+    lines: [171],
+    why: "the read is `Array.isArray(sBefore.receipts) ? sBefore.receipts.length : null` into `ev.statusBefore`, and the grade beside it is a SHAPE check — `hasOwnProperty(\"receipts\")`, i.e. \"getVaStatus CAN see this agent (it answered a status body for it) - the control is a real read\". It never asks what is IN the list, so an unavailable scan cannot change its verdict.",
+  },
+  "va-shadow-door-live.mjs": {
+    lines: [268, 299, 416],
+    why: "its own docblock: \"THE UNIT OF 'WATCHED' IS `va_health:{agent}.prepareTicks`, NOT THE RECEIPT LIST. This script first counted `getVaStatus().receipts.filter(phase===\\\"prepare\\\").length` and reported a false failure with it.\" The count survives ONLY inside the info line `(receipt rows=${r && r.receipts})`, printed beside the health counter that every assertion is actually made on.",
+  },
+};
+
+for (const f of drivers) {
+  const v = receiptDoorViolations(fs.readFileSync(path.join(here, f), "utf8"));
+  if (RECEIPT_DOOR_EXEMPT[f]) continue;
+  ok(v.length === 0, "RULE 6 (F-839) " + f + ": " + v.join("; "));
+}
+{
+  /* AN EXEMPTION NAMING A DELETED FILE IS A COMMENT PRETENDING TO BE A RULE, and an
+     exemption that is not load-bearing is a hole nobody is watching. Both are asserted,
+     the same way RULE 4c does it. */
+  for (const [f, e] of Object.entries(RECEIPT_DOOR_EXEMPT)) {
+    const full = path.join(here, f);
+    const exists = fs.existsSync(full);
+    ok(exists, "RULE 6 (F-839): the exempt driver " + f + " still exists");
+    if (!exists) continue;
+    const src = fs.readFileSync(full, "utf8");
+    ok(receiptDoorViolations(src).length > 0,
+      "RULE 6 (F-839): the exemption for " + f + " is LOAD-BEARING (it is granted because: " + e.why.slice(0, 90) + "…)");
+    /* The line numbers are evidence, not the rule: they are asserted to still hold a read so
+       that a reader checking the exemption is sent to the right place. */
+    const lines = src.split("\n");
+    for (const n of e.lines) {
+      ok(/\breceipts\b/.test(lines[n - 1] || ""),
+        "RULE 6 (F-839): " + f + ":" + n + " is still one of the evidence-only reads the exemption names");
+    }
+  }
+
+  /* THE COHORT HAS A SUBJECT. A door rule whose door nobody walks through is green because
+     it asked nothing — seven drivers read the VA receipt list today. */
+  const throughLib = drivers.filter((f) => fs.readFileSync(path.join(here, f), "utf8").includes(RECEIPT_LIB));
+  ok(throughLib.length >= 7,
+    "F-839: the rule has real subjects — " + throughLib.length + " live driver(s) read the VA receipt list through lib/" + RECEIPT_LIB + " (" + throughLib.join(", ") + ")");
+
+  /* POSITIVE CONTROL — the pre-fix lines, VERBATIM. An empty offender list above is not
+     evidence until the scan is shown to fire on the defect it was written for. */
+  const F839_ORIGINAL = [
+    "const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);",
+    "const latest = (s, phase) => receiptsOf(s).filter((r) => r.phase === phase)[0] || null;",
+  ].join("\n");
+  const fired = receiptDoorViolations(F839_ORIGINAL);
+  ok(fired.length === 2,
+    "POSITIVE CONTROL (F-839): va-capability-gate-live's own pre-fix pair (byte-identical in va-purge-on-delete-live and, minus the phase argument, in va-compaction-live and va-shadow-live) fires BOTH arms — a raw `.receipts` read AND a local `receiptsOf` (" + fired.join(" | ") + ")");
+  ok(receiptDoorViolations('const latestPrepare = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []).filter((r) => r.phase === "prepare")[0] || null;').length === 1,
+    "POSITIVE CONTROL (F-839): va-pinned-survival-live's one-liner, which inlined the same read without a named helper, fires the `.receipts` arm");
+  ok(receiptDoorViolations([
+    'const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);',
+    'const before = receiptsOf((await invoke("getVaStatus", { jobId })).body).length;',
+    "if (rs.length > before) return rs[0];",
+  ].join("\n")).length === 2,
+    "POSITIVE CONTROL (F-839): va-receipt-copy-live's COUNT comparison — `.length` on a locally-defined `receiptsOf`, a question `recordTick`'s five-minute bucket overwrite makes unanswerable — is caught by the local-definition arm, which is why 6b exists at all");
+
+  ok(receiptDoorViolations('const { receipts } = (await invoke("getVaStatus", { jobId })).body;').length === 1,
+    "POSITIVE CONTROL (F-839): 6c fires on a destructure off a RAW status body — the next spelling of the defect, and the one that would walk straight past 6a");
+  ok(receiptDoorViolations("const { receipts } = st;").length === 1,
+    "…including off a plain identifier holding the body, which is how the shortest version of it reads");
+
+  /* …and the shapes it must not fire on, or the drivers become unwritable. */
+  ok(receiptDoorViolations([
+    'import { newestReceipt, unavailableNote } from "../lib/va-tick-receipt.mjs";',
+    'const { receipt, unavailable } = newestReceipt(st, "prepare");',
+    "if (unavailable) NV(unavailableNote(unavailable, \"the compacted{} block\"));",
+  ].join("\n")).length === 0,
+    "NEGATIVE CONTROL (F-839): the converged shape — the lib does the reading and hands back the named reason beside the row — is clean, and `{ receipt, unavailable }` is not a `receipts` destructure");
+  ok(receiptDoorViolations('import { receiptsOf } from "../lib/va-tick-receipt.mjs";\nconst { receipts } = receiptsOf(body);').length === 0,
+    "NEGATIVE CONTROL (F-839): IMPORTING the lib's `receiptsOf` is the point of the rule, not a breach of it — 6b polices a local DEFINITION, and the pair it returns is `{receipts, unavailable}`");
+  ok(receiptDoorViolations('const paneText = await card.locator(".va-receipts").innerText();').length === 0,
+    "NEGATIVE CONTROL (F-839): a CSS class in the Agents tab is a browser locator, not a status body — va-receipt-copy-live reads the receipts pane that way and must keep doing so");
+  ok(receiptDoorViolations('/* the old line read `s.receipts` and could not see receiptsUnavailable */\n').length === 0,
+    "NEGATIVE CONTROL (F-839): PROSE may quote the defect — this docblock, the lib and six driver headers all do, and a rule undescribable in its own comment is unmaintainable");
+  ok(receiptDoorViolations('info(`the status door answered receipts: [] beside receiptsUnavailable`);').length === 0,
+    "NEGATIVE CONTROL (F-839): …and so may a STRING a driver prints, which is how these files explain an N/V to the operator reading the log");
+  ok(receiptDoorViolations('info(`receipt rows=${r && r.receipts}`);').length === 1,
+    "NEGATIVE CONTROL, INVERTED (F-839): an interpolated read INSIDE a template is still a read — `maskNonCode` keeps `${…}` holes as code, so va-shadow-door-live's evidence line is exempted deliberately and not by accident");
+}
+
 /* RULE 3 (F-715) HAS MOVED. It lived here only because `evidence-redaction.test.mjs` was
  * held by another hand the day it was written, and its own comment said so: "it belongs in
  * 4f and should be folded there". F-718 folded it. The env-id cohort - every `lib/*.mjs`

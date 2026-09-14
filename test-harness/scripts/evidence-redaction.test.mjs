@@ -1730,15 +1730,50 @@ ok(guardedDrivers.length === liveFiles.length,
 {
   /* …and both halves of that union have real subjects, so a green result above is not green
      because one of the two doors was quietly emptied. */
-  const viaGuard = guardedDrivers.filter((f) => /requireEnvAck\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
-  const viaDeclare = guardedDrivers.filter((f) => !viaGuard.includes(f));
+  /* ── F-753 · EACH DOOR IS DETECTED BY ITS OWN CALL ──────────────────────────────
+     `viaDeclare` used to be "guardedDrivers MINUS viaGuard", i.e. every file WITHOUT
+     `requireEnvAck` — so the "no driver may use both doors" assertion below ran over exactly
+     the files that cannot violate it and could never fire. A half-converted driver that kept
+     `requireEnvAck(argv, { faults: [], mutates: [] })` for the environment AND gained
+     `declareMutations(["agents"])` at module top was classified `viaGuard`, fell out of
+     `viaDeclare`, was never checked — and `declaredMutations` then read the WEAKER of its two
+     declarations, because it prefers the `mutates:` literal over `declareMutations([…])` via
+     `||`. The two declarations disagree and rule 4g grades the file read-only while its real
+     declaration says `agents`.
+
+     The `||` preference is not the thing to fix: with the both-doors rule REACHABLE, a file
+     that carries two declarations goes red before anything has to choose between them, which
+     is the honest order — refuse the ambiguity rather than resolve it. */
+  const usesGuardDoor = (code) => /requireEnvAck\s*\(/.test(code);
+  const usesDeclareDoor = (code) => /declareMutations\s*\(/.test(code);
+  /* Controlled on FIXTURE STRINGS, because the real cohort contains no violator — which is
+     exactly the condition under which the old formulation looked green. */
+  {
+    const half = 'import { requireEnvAck, declareMutations } from "../lib/shared-env-guard.mjs";\n'
+      + 'declareMutations(["agents"]);\n'
+      + 'const { envName } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [] });';
+    ok(usesGuardDoor(half) && usesDeclareDoor(half),
+      "POSITIVE CONTROL (F-753): a HALF-CONVERTED driver carrying both doors is seen by BOTH predicates — under the old subtraction it was viaGuard only, so the both-doors assertion skipped it entirely");
+    ok(declaredMutations(half).length === 0,
+      "…and this is why that matters: `declaredMutations` reads the `mutates: []` half and reports NO mutation, while the file's real declaration says `agents` — the rule would grade the weaker of two disagreeing declarations");
+    const declareOnly = 'import { declareMutations } from "../lib/shared-env-guard.mjs";\ndeclareMutations(["roster"]);';
+    ok(usesDeclareDoor(declareOnly) && !usesGuardDoor(declareOnly),
+      "NEGATIVE CONTROL (F-753): a correctly-converted dev-only driver uses ONE door and stays clean");
+    const guardOnly = 'const { envName } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["issues"] });';
+    ok(usesGuardDoor(guardOnly) && !usesDeclareDoor(guardOnly),
+      "NEGATIVE CONTROL (F-753): …and so does a guarded one");
+  }
+  const viaGuard = guardedDrivers.filter((f) => usesGuardDoor(stripComments(readFileSync(path.join(here, f), "utf8"))));
+  const viaDeclare = guardedDrivers.filter((f) => usesDeclareDoor(stripComments(readFileSync(path.join(here, f), "utf8"))));
   ok(viaGuard.length >= 25, `F-733: the environment-resolving door still holds its drivers (${viaGuard.length})`);
   ok(viaDeclare.length >= 20, `F-733: …and the dev-only door holds its own (${viaDeclare.length})`);
+  ok(viaGuard.length + viaDeclare.length === guardedDrivers.length,
+    `F-753: the two doors PARTITION the cohort — each driver is counted once, so neither an overlap nor a gap can hide in the subtraction that used to define the second set (guard ${viaGuard.length} + declare ${viaDeclare.length} vs ${guardedDrivers.length} drivers)`);
   /* A dev-only driver must NOT resolve an environment: `declareMutations` exists precisely so
      that it does not, and a file carrying both is a conversion done twice. */
   for (const f of viaDeclare) {
     const code = stripComments(readFileSync(path.join(here, f), "utf8"));
-    ok(!/requireEnvAck\s*\(/.test(code),
+    ok(!usesGuardDoor(code),
       `${f}: declares through the dev-only door and must not ALSO call requireEnvAck — one home for the decision, per driver`);
     ok(/from\s+"\.\.\/lib\/shared-env-guard\.mjs"/.test(code),
       `${f}: imports declareMutations from the guard rather than describing its own blast radius (the F-686 defect, one cohort over)`);

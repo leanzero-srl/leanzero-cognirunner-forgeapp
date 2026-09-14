@@ -1812,7 +1812,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // belongs — agent-knowledge.test.mjs for the rules, coder-engine.test.mjs for the payload.
   const build = (deps) => new Function(
     "runCoderTurn", "isHeadlessTrigger", "recordCoderPfOutcome", "claimRuleExecution",
-    "storage", "coderPfDoneClaimKey", "CODER_PF_DONE_TTL", "buildCoderKnowledge", "console",
+    "storage", "coderDoneClaimKey", "CODER_DONE_TTL", "buildCoderKnowledge", "console",
     // F-829 — the execution-time gate is a collaborator here too: this block tests the
     // CLAIM's control flow, so the gate is stubbed to "allow" unless a case says otherwise.
     "resolveFreshCoderGate", "agentActionRefusalText",
@@ -1821,16 +1821,16 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "DEFAULT_SAVED_BY_ROLE",
     `return (${src});`,
   )(deps.runCoderTurn, () => false, deps.recordCoderPfOutcome, deps.claimRuleExecution,
-    deps.storage, (id) => `coder_pf_done:${id}`, { ttl: { value: 24, unit: "HOURS" } },
+    deps.storage, (id) => `coder_done:${id}`, { ttl: { value: 24, unit: "HOURS" } },
     deps.buildCoderKnowledge || (async () => ({})), quiet,
     deps.resolveFreshCoderGate || (async () => ({ facts: { provider: "openai", edition: "standard" }, queuedFacts: null, allowed: null, refusal: null })),
     (r) => String(r), ROLES.DEFAULT_SAVED_BY_ROLE);
 
   const makeDeps = (over = {}) => {
     const held = new Set();
-    const state = { runs: 0, recorded: 0, deleted: [] };
+    const state = { runs: 0, recorded: 0, deleted: [], messages: [] };
     return { state, deps: {
-      runCoderTurn: async () => { state.runs++; return { success: true, endedBy: "finish", rounds: 3 }; },
+      runCoderTurn: async (args) => { state.runs++; state.messages.push(args && args.userMessage); return { success: true, endedBy: "finish", rounds: 3 }; },
       recordCoderPfOutcome: async () => { state.recorded++; },
       claimRuleExecution: async (_s, key) => { if (held.has(key)) return false; held.add(key); return true; },
       storage: { delete: async (k) => { state.deleted.push(k); held.delete(k); } },
@@ -1867,18 +1867,61 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     const { state, deps } = makeDeps({ runCoderTurn: async () => { throw new Error("provider down"); } });
     const run = build(deps);
     const out = await run(PF, "TASK-3");
-    ok(out.success === false && state.deleted.includes("coder_pf_done:TASK-3"),
+    ok(out.success === false && state.deleted.includes("coder_done:TASK-3"),
       "EXECUTED (F-393): a throw before any recorded outcome RELEASES the completion claim");
     const again = await run(PF, "TASK-3");
     ok(again.success === false && !again.skipped, "EXECUTED (F-393): …so the retry is not mistaken for a redelivery");
   }
   {
-    // A PANEL turn (no `pf` block) never takes the claim at all — the user may re-send.
+    // F-911 BLOCK — THE PANEL PATH TAKES THE SAME CLAIM. F-393 exempted it ("a human
+    // would notice"); the turn most likely to be redelivered is the one that hit the
+    // 900 s consumer limit, whose result no human ever saw. A second run would append the
+    // user's message to the thread again, spend a second frontier turn of up to eight
+    // rounds and could open a SECOND consent ticket for the same action.
     const { state, deps } = makeDeps();
     const run = build(deps);
-    await run({ issueKey: "LZPT-8", threadId: "t1", message: "hi" }, "TASK-4");
-    await run({ issueKey: "LZPT-8", threadId: "t1", message: "hi" }, "TASK-4");
-    ok(state.runs === 2, "EXECUTED (F-393): the claim is POST-FUNCTION only — a panel turn is unaffected");
+    const PANEL = { issueKey: "LZPT-8", threadId: "t1", message: "hi" };
+    const first = await run(PANEL, "TASK-4");
+    const second = await run(PANEL, "TASK-4");
+    ok(state.runs === 1, `EXECUTED (F-911): the SAME panel payload delivered twice runs the engine ONCE (ran ${state.runs}x)`);
+    ok(state.messages.length === 1 && state.messages[0] === "hi",
+      "EXECUTED (F-911): …so the thread is handed ONE user message, not two — and one turn can open at most one ticket");
+    ok(first && first.success === true, "EXECUTED (F-911): the first delivery is answered normally");
+    ok(second && second.duplicate === true && second.status === "duplicate",
+      "EXECUTED (F-911): …the redelivery is answered `duplicate`, which the panel treats as already-answered");
+    ok(!("error" in second),
+      "EXECUTED (F-911): …and carries NO `error` string, so the consumer leaves the task row `done` instead of stamping a red failure over a turn that succeeded");
+    ok(state.recorded === 0, "EXECUTED (F-911): a panel turn records no PF outcome either way");
+  }
+  {
+    // F-911 ALLOW — two DIFFERENT taskIds on ONE thread are two turns. The claim is per
+    // EVENT; a user who sends a second message must be answered.
+    const { state, deps } = makeDeps();
+    const run = build(deps);
+    const PANEL = { issueKey: "LZPT-8", threadId: "t1" };
+    const a = await run({ ...PANEL, message: "first" }, "TASK-4a");
+    const b = await run({ ...PANEL, message: "second" }, "TASK-4b");
+    ok(state.runs === 2 && a.success === true && b.success === true,
+      "EXECUTED (F-911): two different taskIds on one thread both run");
+    ok(state.messages.join("|") === "first|second",
+      "EXECUTED (F-911): …in order, each with its own message");
+  }
+  {
+    // F-911 — a PANEL turn that THREW released the claim, exactly like the PF path: no
+    // recorded outcome means the platform's retry may still run it.
+    const { state, deps } = makeDeps({ runCoderTurn: async () => { throw new Error("provider down"); } });
+    const run = build(deps);
+    const out = await run({ issueKey: "LZPT-8", threadId: "t1", message: "hi" }, "TASK-4c");
+    ok(out.success === false && state.deleted.includes("coder_done:TASK-4c"),
+      "EXECUTED (F-911): a panel turn that threw RELEASES the completion claim");
+  }
+  {
+    // F-911 — ONE KEY, ONE BUILDER. A second key shape is a second answer to "has this
+    // event already run", and the two would disagree the day one of them is changed.
+    ok(!/coder_pf_done/.test(asyncSrc) && !/coderPfDoneClaimKey/.test(asyncSrc),
+      "F-911: the consumer holds NO second completion-key name — the panel and PF paths claim the same `coder_done:<taskId>`");
+    ok((src.match(/coderDoneClaimKey\(/g) || []).length === 1,
+      "F-911: …built in exactly one place inside the coder task body");
   }
   {
     // FAIL OPEN on a KVS fault: an unreachable store must not swallow a rule's only delivery.
@@ -2046,12 +2089,12 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const quiet2 = { log() {}, warn() {}, error() {} };
   const buildRun = (gateOut, state) => new Function(
     "runCoderTurn", "isHeadlessTrigger", "recordCoderPfOutcome", "claimRuleExecution",
-    "storage", "coderPfDoneClaimKey", "CODER_PF_DONE_TTL", "buildCoderKnowledge", "console",
+    "storage", "coderDoneClaimKey", "CODER_DONE_TTL", "buildCoderKnowledge", "console",
     "resolveFreshCoderGate", "agentActionRefusalText",
     `return (${xsrc});`,
   )(async (args) => { state.ran = args; return { success: true, endedBy: "finish" }; },
     () => true, async (p, o) => { state.recorded = o; }, async () => true,
-    { delete: async () => {} }, (id) => `coder_pf_done:${id}`, {},
+    { delete: async () => {} }, (id) => `coder_done:${id}`, {},
     async () => { state.knowledge = (state.knowledge || 0) + 1; return {}; }, quiet2,
     async () => gateOut, gateMod.agentActionRefusalText);
   const PF = { ...PAYLOAD, message: "go", pf: { mode: "build", strict: false } };

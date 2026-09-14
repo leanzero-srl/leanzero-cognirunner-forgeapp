@@ -2198,18 +2198,24 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
       delete: async (k) => { rows.delete(k); },
     };
     const claim = async (_s, key) => { if (claims.has(key)) return false; claims.add(key); return true; };
-    const handlers = { codegen: async () => { calls.bodies++; return { success: true, code: "api.log('x')" }; } };
+    const handlers = {
+      codegen: async () => { calls.bodies++; return { success: true, code: "api.log('x')" }; },
+      // F-947 — an UNPOLLED type that spends model tokens, so the slice can prove the
+      // widened claim covers it; and one that must stay unclaimed.
+      memory_distill: async () => { calls.bodies++; return { success: true }; },
+      postfunction: async () => { calls.bodies++; return { success: true }; },
+    };
     const run = new Function(
       "storage", "TASK_PREFIX", "TASK_TTL_HOURS", "STATS_TASK_TYPE", "processRuleStatsReceipt",
       "LONG_QUEUE_ONLY_TASKS", "LONG_QUEUE_EVENTS", "TASK_HANDLERS", "UNPOLLED_TASKS",
-      "SELF_CLAIMING_TASKS", "UNPOLLED_LOG_TYPE", "claimRuleExecution", "taskDoneClaimKey",
+      "SELF_CLAIMING_TASKS", "CLAIMED_UNPOLLED_TASKS", "UNPOLLED_LOG_TYPE", "claimRuleExecution", "taskDoneClaimKey",
       "TASK_DONE_TTL", "isJobCancelled", "updateAsyncJob", "JOB_TTL_ACTIVE", "JOB_TTL_DONE",
       "runGatedTask", "resetInvocationTokens", "getInvocationTokens", "bumpAiBudgetBucket",
       "learnRuleCost", "sweepPostFunctionJobs", "STALE_JOB_MS", "BUDGET_WAIT_HORIZON_MS",
       "console", `return (${hsrc});`,
     )(storage, "async_task:", 1, "rulestats", async () => {},
-      new Set(["coder"]), new WeakSet(), handlers, new Set(["postfunction"]),
-      new Set(["coder"]), {}, claim, (id) => `task_done:${id}`,
+      new Set(["coder"]), new WeakSet(), handlers, new Set(["postfunction", "memory_distill"]),
+      new Set(["coder"]), new Set(["memory_distill"]), {}, claim, (id) => `task_done:${id}`,
       { ttl: { value: 24, unit: "HOURS" } }, async () => false, async () => {}, {}, {},
       async () => ({ run: true, budgetRuleId: null, budgetEstimate: 0, budgetProvider: null, budgetReserveMs: 0 }),
       () => {}, () => 0, async () => {}, async () => {}, async () => {}, 900000, 900000, quiet);
@@ -2239,6 +2245,28 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
       "EXECUTED (F-919): a duplicate arriving after the panel consumed the row writes NO new row");
   }
 
+  // BLOCK (F-947) — an UNPOLLED token-spending type is claimed too: the redelivery buys
+  // no second model call, and it writes no async_task row either way (nothing polls it).
+  {
+    const env = makeEnv();
+    const ev = () => ({ body: { taskType: "memory_distill", taskId: "M1", params: {} } });
+    await env.run(ev());
+    await env.run(ev());
+    ok(env.calls.bodies === 1, `EXECUTED (F-947): a redelivered memory_distill runs the model ONCE (ran ${env.calls.bodies}x)`);
+    ok(!env.rows.has("async_task:M1"), "EXECUTED (F-947): …and still writes no poll row — it is unpolled, just not free");
+  }
+
+  // ALLOW (F-947) — an unpolled type OUTSIDE the named set keeps its old behaviour: no
+  // completion claim here, so the platform's redelivery still reaches the body (that is
+  // what `git-event`'s requeue retry depends on).
+  {
+    const env = makeEnv();
+    const ev = () => ({ body: { taskType: "postfunction", taskId: "P1", params: {} } });
+    await env.run(ev());
+    await env.run(ev());
+    ok(env.calls.bodies === 2, "EXECUTED (F-947): an unclaimed unpolled type still runs on redelivery — its duplicate-safety lives in its own body");
+  }
+
   // ALLOW — two different task ids both run.
   {
     const env = makeEnv();
@@ -2251,10 +2279,21 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // The ORDER that makes the guarantee: claimed before the processing stamp.
   ok(asyncCode.indexOf("taskDoneClaimKey(taskId)") < asyncCode.indexOf('{ status: "processing" }'),
     "F-919: the completion claim is checked BEFORE the processing stamp");
-  // Only POLLED types are claimed here — an unpolled type that relies on the platform
-  // redelivering after a `requeue` throw must NOT hold a completion record.
-  ok(/if \(polled && !SELF_CLAIMING_TASKS\.has\(taskType\)\) \{/.test(asyncCode),
-    "F-919: only POLLED task types are claimed in the consumer");
+  // POLLED types, plus the NAMED unpolled types that spend model tokens (F-947:
+  // memory_distill, probe). Every other unpolled type stays unclaimed here — `git-event`
+  // relies on the platform redelivering after a `requeue` throw and must NOT hold a
+  // completion record, and the rest carry claims keyed on the WORK instead.
+  ok(/if \(\(polled \|\| CLAIMED_UNPOLLED_TASKS\.has\(taskType\)\) && !SELF_CLAIMING_TASKS\.has\(taskType\)\) \{/.test(asyncCode),
+    "F-919/F-947: the consumer claims the polled types plus the named token-spending unpolled ones");
+  {
+    const m = asyncSrc.match(/const CLAIMED_UNPOLLED_TASKS = new Set\((\[[^\]]*\])\);/);
+    ok(!!m, "F-947: the widening is a NAMED set, not an inline literal");
+    const set = new Set(m ? JSON.parse(m[1].replace(/'/g, '"')) : []);
+    ok(set.has("memory_distill") && set.has("probe") && set.size === 2,
+      "F-947: CLAIMED_UNPOLLED_TASKS = { memory_distill, probe }");
+    ok(![...set].some((t) => ["git-event", "postfunction", "va-tick", "va-item", "va-post"].includes(t)),
+      "F-947: …and never git-event or the work-claimed types");
+  }
   // `coder` is the one named exemption: it takes the SAME task_done record in its own body,
   // earlier (before its per-issue lock) and with its own release-on-throw and duplicate answer.
   ok(/const SELF_CLAIMING_TASKS = new Set\(\["coder"\]\)/.test(asyncCode),

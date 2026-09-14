@@ -8,7 +8,7 @@
 // THE REDELIVERY CONTRACT of the async consumer (`handler` in src/async-handler.js), run
 // against the REAL module with the @forge mocks. Forge async events are at-least-once, so
 // "what does a second delivery of the same taskId cost" is a product question, not a
-// theoretical one. The answer asserted here was once "it costs":
+// theoretical one. Two answers are asserted here, both of which were once "it costs":
 //
 //   F-946  A duplicate delivery RESERVES tokens in the minute's TPM bucket (the pacing gate
 //          runs before the completion claim, and must — a budget DEFERRAL re-pushes the same
@@ -17,6 +17,11 @@
 //          deliveries of ONE finished review; a redelivery burst deferred every other queued
 //          AI task until the minute rolled over. The invariant: reserved is back to 0 after
 //          every delivery, duplicate or not.
+//
+//   F-947  `memory_distill` and `probe` are UNPOLLED and used to take no claim at all, so a
+//          redelivery bought a second MODEL call — a second BYOK distillation, or up to
+//          3 x 50k vendor-billed Forge LLM tokens for the dev probe. "Unpolled" answers
+//          "is anyone waiting on a status row", never "is this free".
 //
 // Run: node scripts/async-redelivery.test.mjs
 import { readFileSync } from "node:fs";
@@ -77,6 +82,56 @@ ok(after3 === 0, `F-946: …and so does the next one — no leak accumulates (go
   const dupReturn = src.match(/is a redelivery of a completed task[\s\S]{0,900}?\n {4}\}/);
   ok(!!dupReturn && /await settleAiBudget\(\);/.test(dupReturn[0]),
     "F-946: the duplicate-delivery exit leaves THROUGH the settle, not around it");
+}
+
+// ===================================================================================
+// F-947 — every task type that spends model tokens holds a per-delivery claim, so the
+// second delivery runs no model. The claim record is the observable: `task_done:<taskId>`
+// exists after the first delivery, and the second delivery is answered by it.
+// ===================================================================================
+const claimed = async (taskId) => !!(await storage.get(`task_done:${taskId}`).catch(() => null));
+
+for (const taskType of ["memory_distill", "probe"]) {
+  const taskId = `redeliver_${taskType}_1`;
+  const params = { kind: "license", name: taskId, error: "boom", codeExcerpt: "x" };
+  quiet();
+  await deliver(taskType, taskId, params);
+  const first = await claimed(taskId);
+  const jobAfterFirst = await storage.get(`async_job:${taskId}`);
+  await deliver(taskType, taskId, params);
+  const jobAfterSecond = await storage.get(`async_job:${taskId}`);
+  loud();
+  ok(first === true, `F-947: ${taskType} takes the per-delivery completion claim (it spends model tokens)`);
+  // "Answer the duplicate, write nothing": the job row the first delivery finished with is
+  // untouched — a second run would have stamped it back to `running` with a new startedAt.
+  ok(jobAfterSecond && jobAfterFirst && jobAfterSecond.startedAt === jobAfterFirst.startedAt
+     && jobAfterSecond.status === jobAfterFirst.status,
+    `F-947: a redelivered ${taskType} writes nothing — the finished job row is left as it was`);
+  ok(await reserved() === 0, `F-947: …and neither delivery of ${taskType} leaks a reservation`);
+}
+
+// The exemptions stay named and reasoned, never implicit: the set exists and holds exactly
+// the two types whose double-spend was measured.
+{
+  const m = src.match(/const CLAIMED_UNPOLLED_TASKS = new Set\((\[[^\]]*\])\);/);
+  ok(!!m, "F-947: CLAIMED_UNPOLLED_TASKS is a named set");
+  if (m) {
+    const set = new Set(JSON.parse(m[1].replace(/'/g, '"')));
+    ok(set.has("memory_distill") && set.has("probe") && set.size === 2,
+      "F-947: = { memory_distill, probe } — the unpolled types that call a model");
+  }
+  ok(/\(polled \|\| CLAIMED_UNPOLLED_TASKS\.has\(taskType\)\) && !SELF_CLAIMING_TASKS\.has\(taskType\)/.test(src),
+    "F-947: the claim block reads the ONE claim decision — polled, plus the named unpolled set, minus the self-claimers");
+}
+
+// `git-event` must NOT be claimed here: it relies on the platform redelivering its taskId
+// after a `requeue` throw, so a completion claim would refuse its retry.
+{
+  const taskId = "redeliver_git_event_1";
+  quiet();
+  try { await deliver("git-event", taskId, {}); } catch { /* the body may refuse offline */ }
+  loud();
+  ok(await claimed(taskId) === false, "F-947: git-event is still NOT claimed here — its retry depends on redelivery");
 }
 
 console.log(`async-redelivery: ${pass} passed, ${fail} failed`);

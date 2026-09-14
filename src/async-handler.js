@@ -2465,6 +2465,31 @@ const LONG_QUEUE_EVENTS = new WeakSet();
 const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", PIPELINE_TASK, HARNESS_PROBE_TASK, "va-tick", "va-item", "va-post"]);
 
 /**
+ * UNPOLLED TASK TYPES THAT STILL TAKE THE PER-EVENT COMPLETION CLAIM (F-947).
+ *
+ * "Unpolled" answers "is there a status row somebody is waiting on"; it was never an
+ * answer to "does a redelivery cost money". These two spend MODEL tokens and own no
+ * idempotency of any kind, so an at-least-once redelivery bought the work twice:
+ *   memory_distill — one JSON distillation call per delivery, billed to the customer's
+ *                    BYOK key, on a lesson already saved (saveMemoryCandidate would just
+ *                    reinforce the duplicate).
+ *   probe          — the dev `forgeLlm` probe sends up to 3 x 50k tokens of filler on the
+ *                    VENDOR's Forge LLM allowance; a redelivery re-spends all of it.
+ *
+ * The rest of UNPOLLED_TASKS stay out, each for a reason that already exists in the file:
+ * `postfunction`, `git-event` and the three `va-*` tasks carry claims/receipts keyed on the
+ * WORK rather than the delivery (and `git-event` REQUIRES the platform to redeliver its
+ * taskId after a `requeue` throw — claiming here would refuse that retry); `listener` and
+ * `scheduledjob` are gated inside `runListener`/`runJob`; `gitreview` and the two
+ * admin-triggered installs (PIPELINE_TASK, CREDENTIAL_ROTATION_TASK, HARNESS_PROBE_TASK)
+ * are outside this finding's evidence — see the findings ledger.
+ *
+ * Same key, same builder, same TTL as the polled claim: there is still exactly ONE answer
+ * to "has this event already run".
+ */
+const CLAIMED_UNPOLLED_TASKS = new Set(["memory_distill", "probe"]);
+
+/**
  * TASK TYPES THAT TAKE THEIR OWN `task_done:<taskId>` CLAIM, SO `handler` MUST NOT (F-919).
  *
  * The claim is the SAME record built by the SAME builder — `taskDoneClaimKey` — so there is
@@ -2997,14 +3022,18 @@ export async function handler(event) {
   // delivery left it. "Answer the duplicate, write nothing" is the whole contract — the
   // claim outlives the 1 h status row precisely so a late duplicate cannot resurrect one.
   //
-  // UNPOLLED types are deliberately NOT claimed here: they have no status row to clobber,
+  // Plus the UNPOLLED types named in CLAIMED_UNPOLLED_TASKS (F-947): they have no status
+  // row to clobber, but they DO spend model tokens and own no other idempotency, so a
+  // redelivery bought a second billed call. "Unpolled" was never an answer to "free".
+  //
+  // The remaining UNPOLLED types are deliberately NOT claimed here: they have no status row,
   // several of them (postfunction, git-event, the VA tasks) own execution claims of their
   // own keyed on the WORK rather than the delivery, and `git-event` relies on the platform
   // redelivering the same taskId after a `requeue` throw — a completion claim taken here
   // would refuse that retry. Their duplicate-safety stays where it already lives.
   //
   // FAIL OPEN on a KVS fault: an unreachable store must never stop a first delivery.
-  if (polled && !SELF_CLAIMING_TASKS.has(taskType)) {
+  if ((polled || CLAIMED_UNPOLLED_TASKS.has(taskType)) && !SELF_CLAIMING_TASKS.has(taskType)) {
     const firstDelivery = await claimRuleExecution(
       storage, taskDoneClaimKey(taskId), TASK_DONE_TTL, "task-done");
     if (!firstDelivery) {

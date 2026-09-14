@@ -59,8 +59,14 @@ import { gitHookUrl } from "../lib/git-hook-url.mjs";
 /* F-686 — DEV-ONLY BY CONSTRUCTION: both hook calls below go to `env.TESTSTATE_URL`, and
  * there is no staging trigger for this flow, so `--env` is decided FOR this driver and the
  * acknowledgement is mandatory. `armHookPromoteFault` makes a secret rotation fail at its
- * promote step, and the connection card shows "rotation failed" to anyone who opens it. */
-requireEnvAck([...process.argv.slice(2), "--env=dev"], {
+ * promote step, and the connection card shows "rotation failed" to anyone who opens it.
+ *
+ * F-735 — THE PIN IS `forceEnv`, NOT AN APPENDED FLAG, for the reason spelled out in the
+ * guard: the old `[...process.argv.slice(2), "--env=dev"]` lost to an operator's own `--env`
+ * because `arg()` takes the first match, so `--env=staging` skipped this refusal and armed
+ * `armHookPromoteFault` on dev anyway. */
+requireEnvAck(process.argv.slice(2), {
+  forceEnv: "dev",
   faults: ["hookPromote"],
   mutates: ["git", "kvs"],   /* drives a real secret rotation on a real connection row */
   script: "git-rotation-window-live.mjs",   // count-bounded: one unit, no TTL to quote

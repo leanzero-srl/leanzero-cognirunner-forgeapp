@@ -1696,13 +1696,21 @@ ok(/faults: \["deleteFault"\]/.test(guardCallSource('  const r = requireEnvAck(a
   "POSITIVE CONTROL (F-749): the call extractor reads an INDENTED call inside a function — the shape delete-fault-drain-live.mjs has, which the old `\\n})` anchor could not match at all");
 ok(/faults: \[\]/.test(guardCallSource('const { envName } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [] });') || ""),
   "POSITIVE CONTROL (F-749): …and the one-line module-scope call every other driver uses");
+ok(/faults: \["real"\]/.test(guardCallSource(stripComments('/* the old shape was requireEnvAck([...argv, "--env=dev"], { faults: [] }) */\nrequireEnvAck(argv, { faults: ["real"] });')) || ""),
+  "NEGATIVE CONTROL (F-749/F-735): a docblock QUOTING an old call shape is prose — the extractor reads the real call, or documenting a defect would fail the rule that documents it");
 ok(guardCallSource("const r = await other(1);") === null,
   "NEGATIVE CONTROL (F-749): a file with no such call yields null rather than a stray slice");
 ok(!/mutates/.test(guardCallSource('requireEnvAck(a, { faults: ["x"] });\nsomethingElse({ mutates: ["roster"] });') || ""),
   "NEGATIVE CONTROL (F-749): the extractor stops at the call's OWN closing paren and does not swallow the next statement");
 
 for (const f of armingDrivers) {
-  const src = readFileSync(path.join(here, f), "utf8");
+  /* PROSE IS NOT A CALL — the discriminator every scan in this file uses, and this one
+     needs it too: `git-dispatch-drop-live.mjs` QUOTES its old `requireEnvAck([...argv,
+     "--env=dev"], …)` shape in the docblock that explains why the pin moved to `forceEnv`
+     (F-735), and an unstripped extractor picks the COMMENT up first and reads its
+     `faults:` — or its absence — instead of the real call's. Documenting a defect must
+     never fail the rule that documents it. */
+  const src = stripComments(readFileSync(path.join(here, f), "utf8"));
   const call = guardCallSource(src);
   ok(!!call && /faults\s*:\s*\[\s*[^\]\s]/.test(call),
     `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);

@@ -272,12 +272,16 @@ function die(lines) {
  * @param {number}  [opts.maxSeconds] the LONGEST TTL this driver arms. Omit for a
  *                                    count-bounded lever, which has no window of its own.
  * @param {string}  [opts.defaultEnv] where `--env` lands when omitted (default "staging").
+ * @param {string}  [opts.forceEnv]   this driver has NO choice of environment: it is pinned
+ *                                    here, `--env` may only ever AGREE, and a conflicting
+ *                                    `--env` is refused by name. Mutually exclusive with
+ *                                    `defaultEnv`, which is about where a free choice lands.
  * @param {boolean} [opts.requireAck] force the shared-dev refusal even with no faults.
  * @param {string}  [opts.script]     script name for the usage lines (defaults to argv[1])
  * @returns {{ envName: string, hookUrl: string, envId: string, urlVar: string,
  *            shared: boolean, acknowledged: boolean }}
  */
-export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = "staging", requireAck = false, script } = {}) {
+export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = "staging", forceEnv, requireAck = false, script } = {}) {
   if (!Array.isArray(faults)) {
     throw new Error(
       "requireEnvAck: name the faults this driver arms (`faults: []` if it arms none) — an unnamed blast radius is the defect F-686 is about"
@@ -300,8 +304,54 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
   if (!Object.prototype.hasOwnProperty.call(ENVS, defaultEnv)) {
     throw new Error(`requireEnvAck: defaultEnv "${defaultEnv}" is not one of ${ENV_NAMES.join(", ")}`);
   }
+  if (forceEnv !== undefined && !Object.prototype.hasOwnProperty.call(ENVS, forceEnv)) {
+    throw new Error(`requireEnvAck: forceEnv "${forceEnv}" is not one of ${ENV_NAMES.join(", ")}`);
+  }
   const name = script || (process.argv[1] || "").split("/").pop() || "this-driver.mjs";
-  const envName = arg(argv, "env", defaultEnv);
+
+  /* ── F-735 — A PINNED ENVIRONMENT IS THE LIBRARY'S DECISION, NOT AN ARGV TRICK ────
+   * Two drivers are dev-only by construction — `testState` resolves `TESTSTATE_URL`
+   * unconditionally and there is no staging trigger for their flow — so they tried to make
+   * the choice for themselves by appending to the operator's argv:
+   *
+   *     requireEnvAck([...process.argv.slice(2), "--env=dev"], { … })
+   *
+   * `arg()` is `argv.find(…)`, which returns the FIRST match, and the operator's argv is
+   * spread FIRST. So `--env=staging` on the command line WON: `shared` came out false, the
+   * shared-dev refusal was skipped entirely, and the two drivers whose own comments call the
+   * ack "mandatory on every run" armed `armDispatchFault` / `armHookPromoteFault` on dev in
+   * silence. The flag moved the refusal and did not move the target, because neither driver
+   * reads the guard's `hookUrl` — the tenant comes from `lib/rules-api.mjs` either way.
+   *
+   * A typo was LOUDER than the real bypass: `--env=stagng` hit the closed-set refusal above
+   * while `--env=staging` sailed through. That is the signature of a guard that can be
+   * argued with in its own argument list, so the pin moves in here where it cannot be.
+   *
+   * The conflicting `--env` is refused BY NAME rather than ignored. Silently overriding it
+   * would leave an operator who typed `--env=staging` believing they had run against
+   * staging — F-698's complaint exactly, and the reason an unknown `--env` is a refusal and
+   * not a fallback. */
+  if (forceEnv !== undefined) {
+    const asked = arg(argv, "env", null);
+    if (asked !== null && asked !== forceEnv) {
+      die([
+        `REFUSING to run: --env=${JSON.stringify(asked)}, but this driver can only ever run on ${forceEnv}.`,
+        "",
+        "It is pinned by CONSTRUCTION, not by preference: the tenant it talks to comes from",
+        `\`lib/rules-api.mjs\`, which resolves ${ENVS[forceEnv].urlVar} unconditionally, and there is no`,
+        "trigger for this flow anywhere else. So the flag could never have moved the target —",
+        "it could only have moved the REFUSAL, which is precisely what it used to do (F-735).",
+        "",
+        `Your \`--env\` is NOT being ignored. It used to be, quietly: the pin was appended after`,
+        "your argv and the first `--env` won, so this exact command ran against dev with the",
+        "shared-tenant refusal skipped, and a TYPO would have been louder than the bypass.",
+        "",
+        `  node scripts/${name}${ENVS[forceEnv].shared ? " --i-know-dev-is-shared" : ""}`,
+        `      # ${forceEnv}, the only environment this driver has`,
+      ]);
+    }
+  }
+  const envName = forceEnv !== undefined ? forceEnv : arg(argv, "env", defaultEnv);
 
   /* F-698 — A CLOSED SET, CASE-SENSITIVE, CHECKED BEFORE ANYTHING ELSE (and before
      `loadEnv`, so it answers on an unconfigured machine too). The old code forked once on

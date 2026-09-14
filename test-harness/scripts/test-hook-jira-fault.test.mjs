@@ -459,6 +459,50 @@ process.env.HARNESS_SECRET = SECRET;
   ok(doorToken === null && leftAfterDrain === 0,
     `…and POSTing that cursor back to the SAME action until it answers null finishes the job (${doorCalls} calls, left ${leftAfterDrain})`);
 
+  /* F-676 — THE ONE CALLER-CONTROLLED VALUE THIS DOOR ADDED IS VALIDATED LIKE THE REST.
+   * `cursor` went straight into `storage.query().cursor(...)` behind nothing but a typeof
+   * check — the only input here with no allow-list, beside siblings that check an exact path
+   * and a 400-599 status range. And the POST branch has no try/catch of its own, so a KVS
+   * that REJECTS a malformed or foreign token threw out of the trigger and the caller got a
+   * platform 500 with no JSON body, where every other refusal on this door is a 400 with a
+   * reason — a resume loop cannot tell "bad token" from "the tenant is down". */
+  const badCursors = [
+    ["outside the opaque-token grammar", "../../etc/passwd"],
+    ["outside the grammar by one character", "abc def"],
+    ["over the 2 KB ceiling", "A".repeat(2100)],
+    ["whitespace, which is not a token", "   "],
+    ["not a string at all", 42],
+  ];
+  for (const [why, value] of badCursors) {
+    const r = await post({ action: "sweepHarnessFaults", cursor: value, dryRun: true });
+    ok(r.status === 400 && r.body && r.body.ok === false && r.body.reason === "bad-cursor",
+      `a cursor ${why} is REFUSED 400 bad-cursor, not a 500 with no body (got ${JSON.stringify({ status: r.status, body: r.body })})`);
+  }
+  // …and the refusal is a REFUSAL: the sweep never ran, so nothing was enumerated or deleted.
+  {
+    const victim = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_676", "d-1");
+    await storage.set(victim, { count: 1, armedAt: new Date(Date.now() - 3_600_000).toISOString() });
+    const refused = await post({ action: "sweepHarnessFaults", cursor: "../../etc/passwd" });
+    ok(refused.status === 400 && (await storage.get(victim)) !== undefined,
+      "…and a refused cursor does no work at all — the expired row it would have swept is untouched");
+    await storage.delete(victim);
+  }
+
+  /* THE OTHER HALF: a cursor the GRAMMAR accepts that KVS ITSELF throws on. The offline
+   * mock's cursor was a plain key string that never rejected anything, which is exactly why
+   * no suite could answer this — `__rejectCursor` is the fixture that can. */
+  kvs.__rejectCursor("dGhpcy1pcy1ub3QteW91cnM=");
+  const rejected = await post({ action: "sweepHarnessFaults", cursor: "dGhpcy1pcy1ub3QteW91cnM=" });
+  kvs.__rejectCursor(null);
+  ok(rejected.status === 400 && rejected.body && rejected.body.ok === false && rejected.body.reason === "bad-cursor",
+    `when KVS itself THROWS on the cursor the door answers 400 bad-cursor with a body (got ${JSON.stringify({ status: rejected.status, body: rejected.body })})`);
+  ok(typeof rejected.body.error === "string" && rejected.body.error.length > 0,
+    "…carrying the platform's message, so a resume loop can tell a bad token from a dead tenant");
+  // A NULL or ABSENT cursor is not a bad one — the fresh-sweep case must keep working.
+  ok((await post({ action: "sweepHarnessFaults", cursor: null, dryRun: true })).status === 200
+    && (await post({ action: "sweepHarnessFaults", dryRun: true })).status === 200,
+    "…while an absent or explicitly null cursor is still just a fresh sweep");
+
   // A caller cannot buy more time than the trigger has: the clamp is the module's, not the door's.
   const greedy = await post({ action: "sweepHarnessFaults", maxMs: 600_000, dryRun: true });
   ok(greedy.body.budgetMs === fault.HARNESS_FAULT_SWEEP_MAX_MS,

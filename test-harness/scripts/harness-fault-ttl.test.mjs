@@ -108,8 +108,14 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   ok(fault.HARNESS_FAULT_TTL === undefined, "…and it is no longer exported under the old name");
   ok((faultCode.match(/storage\.set\(/g) || []).length === 1,
     `SOURCE: there is exactly ONE storage.set in the module — the single write home (got ${(faultCode.match(/storage\.set\(/g) || []).length})`);
-  ok((faultCode.match(/storage\.get\(/g) || []).length === 1,
-    `SOURCE: …and exactly ONE storage.get — the single read home (got ${(faultCode.match(/storage\.get\(/g) || []).length})`);
+  /* F-709: TWO reads, and the second one is named and argued. `getFaultRow` is the read home
+   * that refuses an expired row and DELETES it on the way out — which is precisely what must
+   * not happen to the head of an `expired: true` population that a resumed call is still
+   * filling in, and which would lose the deadline the resume went there for. So
+   * `plantPopulationDeadline` reads one known key raw, and returns a number, never a row. */
+  ok((faultCode.match(/storage\.get\(/g) || []).length === 2
+    && /const plantPopulationDeadline = async \(\) => \{\s*\n\s*const head = await storage\.get\(plantedFaultKey\(0\)\)/.test(faultCode),
+    `SOURCE: …and exactly TWO storage.gets — the read home, and F-709's named raw read of the population's head (got ${(faultCode.match(/storage\.get\(/g) || []).length})`);
   /* F-694 — THE GATED-EXPORT RULE HAS ONE HOME, AND IT IS THE MODULE'S OWN LIST.
    * This count used to be the literal 9, here and again in async-handler-helpers.test.mjs,
    * so every new gated export turned two suites red and was answered by editing two numbers
@@ -927,37 +933,52 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   clear();
   const live = await fault.plantHarnessFaults({ n: 2, expired: false });
   const lw = lastWrite();
-  ok(JSON.stringify(lw.options) === JSON.stringify({ ttl: { value: 60, unit: "SECONDS" } }),
-    `a planted row passes exactly { ttl: { value: 60, unit: "SECONDS" } } — forgotten ballast leaves on its own (got ${JSON.stringify(lw.options)})`);
+  ok(JSON.stringify(lw.options) === JSON.stringify({ ttl: { value: fault.plantTtlSeconds(2), unit: "SECONDS" } }),
+    `a planted row passes exactly { ttl: { value: <the window>, unit: "SECONDS" } } — forgotten ballast leaves on its own (got ${JSON.stringify(lw.options)})`);
   ok(lw.value.count === 1 && lw.value.plantedBy === "harness" && typeof lw.value.armedAt === "string",
     `…with the documented row shape (got ${JSON.stringify(lw.value)})`);
-  ok(Date.parse(lw.value.until) - Date.parse(lw.value.armedAt) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
-    `…and a live row's \`until\` is exactly armedAt + 60 s (got until=${lw.value.until} armedAt=${lw.value.armedAt})`);
+  ok(Date.parse(lw.value.until) - Date.parse(lw.value.armedAt) === fault.plantTtlSeconds(2) * 1000,
+    `…and a live row's \`until\` is exactly armedAt + the window this plant reported (got until=${lw.value.until} armedAt=${lw.value.armedAt})`);
   ok(fault.faultRowExpired(lw.value) === false && live.expired === false, "…so the sweep must LIST it and leave it alone");
 
   clear();
   const dead = await fault.plantHarnessFaults({ n: 2, expired: true });
   const dw = lastWrite();
-  ok(JSON.stringify(dw.options) === JSON.stringify({ ttl: { value: 60, unit: "SECONDS" } }),
+  ok(JSON.stringify(dw.options) === JSON.stringify({ ttl: { value: fault.plantTtlSeconds(2), unit: "SECONDS" } }),
     "an expired row passes the SAME SECONDS shape — the platform TTL is not what makes it expired");
   ok(Date.parse(dw.value.until) < Date.now(), `…but its \`until\` is in the PAST (got ${dw.value.until})`);
   ok(fault.faultRowExpired(dw.value) === true && dead.expired === true,
     "…which is the only shape the sweep will actually delete");
 
-  /* F-697 — THE WINDOW SCALES WITH THE PLANT. A flat sixty seconds is SHORTER than the plant
-   * that writes it: at the measured ~90 ms a row the head of a 400-row population was written
-   * ~36 s before the tail, so `expired: false` rows the sweep "must list and leave alone" had
-   * already crossed their own `until` by the time the sweep ran — evidence of a broken expiry
-   * predicate manufactured by the plant's own clock. Every row now gets a full minute AFTER
-   * the last row lands, whatever `n` is. */
-  ok(fault.plantTtlSeconds(0) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS
-    && fault.plantTtlSeconds(2) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS,
-    "a small plant keeps the sixty-second floor — the window was never the problem there");
-  for (const rows of [150, 400, 500]) {
-    const expectedMs = rows * fault.HARNESS_FAULT_PLANT_MS_PER_ROW;
-    ok(fault.plantTtlSeconds(rows) * 1000 >= expectedMs + fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000 - 1000,
-      `…and a ${rows}-row plant's window (${fault.plantTtlSeconds(rows)} s) covers the ~${Math.round(expectedMs / 1000)} s it takes PLUS a full minute after it`);
+  /* F-697/F-709 — THE WINDOW COVERS THE WHOLE PLANT, AND THE WHOLE PLANT IS MORE THAN ITS
+   * WRITES. F-697: a flat sixty seconds is shorter than the plant that writes it, so rows the
+   * sweep "must list and leave alone" had already crossed their own `until`. F-709: modelling
+   * that as `rows × 90 ms` was still wrong, because a population above the per-call ceiling
+   * CANNOT be planted in one call — the resume loop is mandatory, and between two calls sit a
+   * caller round trip and a cold start the write rate knows nothing about. A 500-row window
+   * was 105 s against ≥4 calls of a 15 s budget: the head expired before the tail was written,
+   * which is the manufactured evidence F-697 existed to kill, reintroduced by the resume that
+   * shipped with it.
+   *
+   * THIS SUITE NO LONGER SHARES THE MODEL IT IS CHECKING. The old assertion re-derived
+   * `rows × 90 ms` from the same constant the lever used, so it could only ever agree with it;
+   * what is asserted now is the WALL TIME of the drain the lever forces. */
+  ok(fault.plantTtlSeconds(0) === fault.HARNESS_FAULT_PLANT_TTL_SECONDS,
+    "a plant of nothing keeps the sixty-second floor");
+  ok(fault.HARNESS_FAULT_PLANT_COLD_START_MS === 5_000,
+    "F-709: a resumed call costs a round trip and a cold start besides its writes, and that cost is a named constant");
+  for (const rows of [1, 2, 150, 151, 400, 500]) {
+    const calls = Math.ceil(rows / fault.HARNESS_FAULT_PLANT_CALL_MAX);
+    const wallMs = calls * (fault.HARNESS_FAULT_SWEEP_DEFAULT_MS + fault.HARNESS_FAULT_PLANT_COLD_START_MS);
+    ok(fault.plantTtlSeconds(rows) * 1000 >= wallMs + fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+      `F-709: a ${rows}-row plant's window (${fault.plantTtlSeconds(rows)} s) covers the ${calls} call(s) the resume loop forces — ${Math.round(wallMs / 1000)} s of budget and cold starts — PLUS a full minute after the last row lands`);
+    ok(fault.plantTtlSeconds(rows) * 1000 >= rows * fault.HARNESS_FAULT_PLANT_MS_PER_ROW + fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+      `…and it still covers the old write-time model too (${rows} rows at ${fault.HARNESS_FAULT_PLANT_MS_PER_ROW} ms)`);
   }
+  ok(fault.plantTtlSeconds(500) > 105,
+    `F-709: the 500-row window is no longer the 105 s that was SHORTER than the four calls it takes (got ${fault.plantTtlSeconds(500)} s)`);
+  ok(fault.plantTtlSeconds(150) === fault.plantTtlSeconds(1) && fault.plantTtlSeconds(151) > fault.plantTtlSeconds(150),
+    `F-709: the window steps with the CALL COUNT, which is what the resume loop actually costs (150 → ${fault.plantTtlSeconds(150)} s, 151 → ${fault.plantTtlSeconds(151)} s)`);
   ok(fault.plantTtlSeconds(10_000) <= fault.HARNESS_FAULT_TTL_SECONDS,
     "…while the ten-minute family ceiling still binds — the number reported is the number written");
   ok(live.ttlSeconds === fault.plantTtlSeconds(2) && lw.options.ttl.value === live.ttlSeconds,
@@ -1175,49 +1196,69 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       `…having placed EXACTLY ${N} rows — index-derived keys, so a resumed plant is one population and not two (placed ${placed})`);
     ok(calls > 2, `…across genuinely several calls, which is the path the 25 s trigger forces (${calls})`);
 
-    /* F-697 — EVERY BATCH IS DATED WHEN IT IS WRITTEN. One `armedAt` computed before the loop
-     * dated all 500 rows from the START of a plant that takes tens of seconds, so the head's
-     * window closed while the tail was still being written. Read back the `until` of every
-     * write this plant made: they must MOVE FORWARD, not share one stamp. */
-    const plantUntils = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX))
-      .map((w) => Date.parse(w.value.until));
-    const plantArmed = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX))
-      .map((w) => Date.parse(w.value.armedAt));
+    /* F-697 + F-709 — `armedAt` IS PER BATCH, THE DEADLINE IS THE POPULATION'S.
+     *
+     * F-697: one `armedAt` computed before the loop dated every row from the START of a plant
+     * that takes tens of seconds, so a row's recorded birth had nothing to do with when it was
+     * written. Each batch is stamped when it is written, and that is still asserted below.
+     *
+     * F-709 turned the OTHER stamp the other way. `until` used to be re-derived from each
+     * call's own clock, which sounds like the same fix and is the opposite of one: the rows of
+     * call 4 then outlived the rows of call 1 by the whole wall time of the plant, and the
+     * head — whose window was computed before three round trips it knew nothing about — could
+     * be gone before the tail existed. A population is ONE thing that a sweep walks in one
+     * pass, so it gets ONE deadline, minted by the first batch of the first call and carried
+     * on `plant:000` for every call after it. What is checked here is both halves at once:
+     * `armedAt` walks forward, `until` does not move at all, and the LAST row still has a full
+     * minute after it. */
+    const plantWrites = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX));
+    const plantUntils = plantWrites.map((w) => Date.parse(w.value.until));
+    const plantArmed = plantWrites.map((w) => Date.parse(w.value.armedAt));
     ok(plantUntils.length === N && plantUntils.every((t) => Number.isFinite(t)),
       `(fixture) every one of the ${N} writes was recorded with a parseable deadline (got ${plantUntils.length})`);
-    ok(plantUntils[plantUntils.length - 1] > plantUntils[0] && plantArmed[plantArmed.length - 1] > plantArmed[0],
-      `the LAST row's window opens later than the FIRST row's — one \`armedAt\` for all of them is exactly F-697 (Δuntil ${plantUntils[plantUntils.length - 1] - plantUntils[0]} ms)`);
-    ok(plantUntils.every((t, i) => i === 0 || t >= plantUntils[i - 1]),
+    ok(plantArmed[plantArmed.length - 1] > plantArmed[0],
+      `F-697: the LAST row is dated later than the FIRST — one \`armedAt\` for the whole plant is exactly F-697 (Δ ${plantArmed[plantArmed.length - 1] - plantArmed[0]} ms)`);
+    ok(plantArmed.every((t, i) => i === 0 || t >= plantArmed[i - 1]),
       "…and it never goes BACKWARDS: each batch is stamped at write time, in order");
-    const batchStamps = [...new Set(plantUntils)];
-    // At most one stamp per BATCH — plus, at most, one extra per call, because a resume can
-    // start mid-batch. Never one per plant (F-697) and never one per row.
-    ok(batchStamps.length > 1 && batchStamps.length <= Math.ceil(N / fault.KVS_DELETE_BATCH) + calls,
-      `…with at most one stamp per BATCH of ${fault.KVS_DELETE_BATCH}, not one per plant and not one per row (${batchStamps.length} distinct stamps over ${N} rows in ${calls} calls)`);
-    ok(last.ttlSeconds === fault.plantTtlSeconds(N)
-      && plantUntils.every((t, i) => t - plantArmed[i] === fault.plantTtlSeconds(N) * 1000),
-      `…each row alive for the full scaled window from its OWN stamp, and a RESUMED call does not shorten it (${last.ttlSeconds} s vs ${fault.plantTtlSeconds(N)} s)`);
+    const armedStamps = [...new Set(plantArmed)];
+    ok(armedStamps.length > 1 && armedStamps.length <= Math.ceil(N / fault.KVS_DELETE_BATCH) + calls,
+      `…at most one \`armedAt\` per BATCH of ${fault.KVS_DELETE_BATCH}, never one per plant and never one per row (${armedStamps.length} distinct stamps over ${N} rows in ${calls} calls)`);
+    const deadlines = [...new Set(plantUntils)];
+    ok(deadlines.length === 1,
+      `F-709: …while the DEADLINE is the population's — ONE value across all ${calls} calls, not one per call (${deadlines.length} distinct)`);
+    ok(last.ttlSeconds === fault.plantTtlSeconds(N) && deadlines[0] === plantArmed[0] + fault.plantTtlSeconds(N) * 1000,
+      `F-709: …minted by the FIRST batch of the first call as its own stamp plus the reported window (${last.ttlSeconds} s)`);
+    ok(deadlines[0] - plantArmed[plantArmed.length - 1] >= fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+      `F-709: …and the LAST row written still has a full minute of life after it, which is the promise a per-call deadline could not keep (${Math.round((deadlines[0] - plantArmed[plantArmed.length - 1]) / 1000)} s)`);
 
-    /* WITHIN ONE CALL TOO — and this is the assertion that actually catches F-697. A stamp
-     * that only moves ACROSS calls is still one `armedAt` per call, which for the 150-row
-     * call the door now allows is ~13 s of rows sharing one window. Plant the whole
-     * population in ONE generous call and the stamps must still walk forward, batch by
-     * batch. */
+    /* THE RESUMED CALL IS WHERE THE DEADLINE USED TO DRIFT, so it is asserted directly: the
+     * head row's `until` is what a resumed call writes, whatever its own clock says. */
+    const headRow = await storage.get(fault.plantedFaultKey(0));
+    const tailRow = await storage.get(fault.plantedFaultKey(N - 1));
+    ok(headRow && tailRow && headRow.until === tailRow.until,
+      `F-709: the head and the tail of a multi-call population carry the IDENTICAL deadline (head ${headRow && headRow.until}, tail ${tailRow && tailRow.until})`);
+    ok(tailRow.armedAt > headRow.armedAt,
+      "F-709: …while their `armedAt` still says which was written first — two stamps, two jobs");
+
+    /* WITHIN ONE CALL TOO. `armedAt` must walk batch by batch even when no resume boundary
+     * forces it — a stamp that only moves ACROSS calls is still one stamp for the 150 rows a
+     * single call may write. */
     await purge();
     clear();
     const oneCall = await fault.plantHarnessFaults({ n: N, expired: false, maxMs: 20_000 });
     const oneCallWrites = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX));
-    const oneCallStamps = [...new Set(oneCallWrites.map((w) => w.value.until))];
+    const oneCallArmed = [...new Set(oneCallWrites.map((w) => w.value.armedAt))];
+    const oneCallUntils = [...new Set(oneCallWrites.map((w) => w.value.until))];
     ok(oneCall.complete === true && oneCall.planted === N && oneCallWrites.length === N,
       `(fixture) the whole ${N}-row population planted in ONE call (planted ${oneCall.planted})`);
-    ok(oneCallStamps.length > 1,
-      `F-697: even inside ONE call the rows do not share a single window — ${oneCallStamps.length} distinct stamps over ${N} rows, which one \`armedAt\` per plant would make exactly 1`);
-    ok(oneCallStamps.length >= Math.floor(N / fault.KVS_DELETE_BATCH / 2),
-      `…roughly one per batch of ${fault.KVS_DELETE_BATCH}, not a handful (${oneCallStamps.length})`);
-    ok(oneCallWrites.every((w, i) => i === 0 || Date.parse(w.value.until) >= Date.parse(oneCallWrites[i - 1].value.until)),
+    ok(oneCallArmed.length > 1,
+      `F-697: even inside ONE call the rows are not dated together — ${oneCallArmed.length} distinct \`armedAt\` over ${N} rows, which one stamp per plant would make exactly 1`);
+    ok(oneCallArmed.length >= Math.floor(N / fault.KVS_DELETE_BATCH / 2),
+      `…roughly one per batch of ${fault.KVS_DELETE_BATCH}, not a handful (${oneCallArmed.length})`);
+    ok(oneCallWrites.every((w, i) => i === 0 || Date.parse(w.value.armedAt) >= Date.parse(oneCallWrites[i - 1].value.armedAt)),
       "…in write order, never backwards");
-    ok(Date.parse(oneCallWrites[N - 1].value.until) - Date.parse(oneCallWrites[0].value.until) > 0,
-      "…so the TAIL of the population outlives the HEAD by exactly the time the plant took");
+    ok(oneCallUntils.length === 1,
+      `F-709: …and one call's population shares one deadline too — the rule is the population's, not the call's (${oneCallUntils.length} distinct)`);
 
     /* AND THE EXPIRED SHAPE IS STILL EXPIRED, per batch, for the sweep this ballast exists
      * for: back-dating is relative to each batch's own write time, not to one clock read. */
@@ -1227,8 +1268,9 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     const deadWrites = writes.filter((w) => String(w.key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX));
     ok(deadPaced.planted === 30 && deadWrites.every((w) => fault.faultRowExpired(w.value) === true),
       `every row of a paced \`expired: true\` plant is expired on ARRIVAL (planted ${deadPaced.planted})`);
-    ok(new Set(deadWrites.map((w) => w.value.until)).size > 1,
-      "…and they do not all share one stamp either — the back-date is per batch too");
+    ok(new Set(deadWrites.map((w) => w.value.until)).size === 1
+      && new Set(deadWrites.map((w) => w.value.armedAt)).size > 1,
+      "F-709: …sharing the population's ONE back-dated deadline while still being dated per batch — the head of an expired population is read RAW, so a resumed call can carry its deadline without the one read deleting it");
 
     writeLatencyMs = 0;
     kvs.set = spyingSet;

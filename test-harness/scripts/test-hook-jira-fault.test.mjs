@@ -730,6 +730,23 @@ process.env.HARNESS_SECRET = SECRET;
   ok(planted.body.ttlSeconds >= fault.HARNESS_FAULT_PLANT_TTL_SECONDS
     && planted.body.ttlSeconds === fault.plantTtlSeconds(250),
     `F-697: …each with a window that COVERS the plant that wrote it plus a minute after it (got ${planted.body && planted.body.ttlSeconds} s, never a flat 60 under a 22 s plant)`);
+  /* F-709 AT THE DOOR: the resume loop above spans several web-trigger calls, and every row
+   * it wrote must carry the SAME deadline. A per-call deadline made the tail outlive the head
+   * by the whole wall time of the plant — which is how the head of an `expired: false`
+   * population could be gone before the tail existed, and the sweep then "deleted rows it was
+   * told to leave alone". `armedAt` still says which row was written first. */
+  {
+    const head = await kvs.get(fault.plantedFaultKey(0));
+    const tail = await kvs.get(fault.plantedFaultKey(249));
+    ok(head && tail && head.until === tail.until,
+      `F-709: head and tail of a population planted across ${planted.calls} door call(s) share ONE deadline (head ${head && head.until}, tail ${tail && tail.until})`);
+    ok(head && tail && tail.armedAt > head.armedAt,
+      "F-709: …while `armedAt` still walks forward batch by batch");
+    ok(planted.body.ttlSeconds * 1000 >= Math.ceil(250 / fault.HARNESS_FAULT_PLANT_CALL_MAX)
+      * (fault.HARNESS_FAULT_SWEEP_DEFAULT_MS + fault.HARNESS_FAULT_PLANT_COLD_START_MS)
+      + fault.HARNESS_FAULT_PLANT_TTL_SECONDS * 1000,
+      `F-709: …and the window the door reports covers every call the resume loop forces, plus a minute (got ${planted.body && planted.body.ttlSeconds} s)`);
+  }
 
   ok((await readLever()).body.value === null, "readJiraFault answers null with 250 planted rows in the keyspace");
   ok((await post({ action: "readKeyReadFault", provider: "openai" })).body.value === null, "…readKeyReadFault too");

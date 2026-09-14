@@ -585,9 +585,11 @@ export async function testStateTrigger(req) {
      * call may ask for — one call's worth for a fresh plant, the full population for a resumed
      * one — and it is computed by the lever's `plantMaxForCall`, never retyped here.
      *
-     * F-697 — the TTL is `max(60 s, expected plant time + 60 s)` and each batch is dated when
-     * it is WRITTEN, so the head of a large `expired: false` population is still live when the
-     * sweep the tester is about to run walks over it.
+     * F-697/F-709 — the TTL covers the WALL TIME of the drain this door forces (one budget
+     * plus a cold start per resumed call, plus a full minute after the last row), and the
+     * whole population shares ONE deadline carried on `plant:000`, so the head of a large
+     * `expired: false` population is still live when the sweep the tester is about to run
+     * walks over it. `armedAt` is still stamped per batch: two stamps, two jobs.
      *
      * F-708 — `startIndex` IS JUDGED AGAINST `n`, in the lever, and past it is a REFUSAL that
      * comes back through this door's existing `ok === false` → 400 path. It used to be a 200

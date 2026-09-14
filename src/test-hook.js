@@ -162,21 +162,49 @@ export const isCredentialKey = (key) => {
 };
 
 /**
+ * THE SERIALISATION A FINGERPRINT IS TAKEN OF. ONE RULE, WRITTEN DOWN, BECAUSE TWO DOORS
+ * ANSWER "THE sha256-16 OF THIS SECRET" AND THEY DISAGREED (F-780).
+ *
+ *   · A STRING fingerprints as ITSELF. `JSON.stringify("x")` is `"x"` WITH the quotes, so
+ *     hashing the serialisation of a string hashes two bytes that are not in it. The
+ *     githooks door hashed the raw URL and the `?what=kvs` door hashed its JSON, so a
+ *     driver comparing `urlMasked.fingerprint` against `webtrigger_url:git-webhook`'s
+ *     fingerprint — both documented as "the sha256-16 of this URL", both masked under the
+ *     same doctrine — got a guaranteed mismatch for a byte-identical URL. An equality
+ *     check that always answers "it changed" is worse than none.
+ *   · ANYTHING ELSE fingerprints as CANONICAL JSON: object keys sorted, recursively. A row
+ *     that survives a KVS round trip is the same row whatever order the platform hands its
+ *     keys back in, and the whole use-case is "prove the snapshot came back identical".
+ *
+ * Numbers, booleans and arrays go through the same canonical form, so `"1"` and `1` are
+ * different fingerprints — which is right: they are different values in a KVS row.
+ */
+const canonicalJson = (value) => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  const keys = Object.keys(value).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(value[k])).join(",") + "}";
+};
+export const fingerprintInput = (value) => (typeof value === "string" ? value : canonicalJson(value));
+
+/**
  * What a masked read answers INSTEAD of the value: a sha256, truncated to 16 hex
- * characters, of the row's JSON serialisation.
+ * characters, of the row under `fingerprintInput` above.
  *
  * WHY A FINGERPRINT AND NOT JUST `present`. The two things drivers actually do with a
  * credential row are "prove the F-126 planted fault landed" (present/absent) and "prove
  * a snapshot came back byte-identical" (equality). A fingerprint serves the second
- * without serving the value. 16 hex characters is 64 bits — far too little to brute a
- * key back out of, and far more than enough that two different rows will not collide in
- * a test run. `null` and a missing row both fingerprint as `null`, never as a hash of
- * the string "null", so "absent" is one answer and not two.
+ * without serving the value. `null` and a missing row both fingerprint as `null`, never
+ * as a hash of the string "null", so "absent" is one answer and not two.
+ *
+ * THIS IS THE ONLY sha256-16 IN THIS FILE. It was not: the githooks URL mask carried a
+ * second one, inline, on a different serialisation (F-780). A rule about what a masked
+ * answer may say is exactly the rule that must not have two homes.
  */
 export const credentialFingerprint = async (value) => {
   if (value === null || value === undefined) return null;
   const { createHash } = await import("node:crypto");
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+  return createHash("sha256").update(fingerprintInput(value)).digest("hex").slice(0, 16);
 };
 
 /** Regex-escape a literal so a family prefix can be spliced into `SECRET_VALUE_RE`. */
@@ -1522,8 +1550,11 @@ export async function testStateTrigger(req) {
          * note above). Built field by field, never a spread-and-delete, so a new field on
          * a hook object is absent here until someone decides it may be shown. */
         if (functionKey === "listGitWebhooks" && r && Array.isArray(r.hooks)) {
-          const { createHash } = await import("node:crypto");
-          const maskUrl = (u) => {
+          /* F-780 — the fingerprint comes from `credentialFingerprint`, the ONE home, so a
+             driver can compare this URL's fingerprint with the one `?what=kvs` answers for
+             `webtrigger_url:*`. This door used to hash the raw string while that one hashed
+             `JSON.stringify` of it, which made that comparison always report a change. */
+          const maskUrl = async (u) => {
             const raw = String(u || "");
             if (!raw) return null;
             let host = null;
@@ -1542,18 +1573,19 @@ export async function testStateTrigger(req) {
               repo,
               // Stable across calls, so two hooks can be compared for identity; one-way,
               // so it can never be turned back into the trigger token.
-              fingerprint: createHash("sha256").update(raw).digest("hex").slice(0, 16),
+              fingerprint: await credentialFingerprint(raw),
             };
           };
+          const masked = await Promise.all(r.hooks.map((h) => maskUrl(h && h.url)));
           return json(200, {
             ...r,
-            hooks: r.hooks.map((h) => ({
+            hooks: r.hooks.map((h, i) => ({
               hookId: h && h.hookId != null ? String(h.hookId) : null,
               events: h && Array.isArray(h.events) ? h.events.slice() : [],
               active: !(h && h.active === false),
               // `url` is DELIBERATELY ABSENT, not nulled: an absent field cannot be
               // mistaken for "the provider had no url on this hook".
-              urlMasked: maskUrl(h && h.url),
+              urlMasked: masked[i],
             })),
             urlsMasked: true,
           });

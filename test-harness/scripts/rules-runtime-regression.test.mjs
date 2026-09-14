@@ -748,6 +748,47 @@ try {
     assert.equal(read.statusCode, 404);
   });
   /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-780 — ONE FINGERPRINT, ONE SERIALISATION, BOTH DOORS.
+   *
+   * Two homes for "the sha256-16 of this secret" in one file, disagreeing on the
+   * serialisation: `?what=kvs` hashed `JSON.stringify(value)` (a string arrives QUOTED)
+   * and the githooks URL mask hashed the raw string. A driver proving a hook still points
+   * at the same trigger compares `urlMasked.fingerprint` against the fingerprint of
+   * `webtrigger_url:git-webhook` — both documented as "the sha256-16 of this URL", both
+   * masked under the same doctrine — and got a guaranteed mismatch for a byte-identical
+   * URL. An equality check that always reports a change is worse than no check.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("a string fingerprints identically through BOTH doors (F-780)", async () => {
+    const URL_VALUE = "https://x.atlassian-dev.net/x1/zz-trigger-token-zz";
+    // DOOR ONE — the masked read of the stored capability URL.
+    storage.__seed("webtrigger_url:git-webhook", URL_VALUE);
+    const viaKvs = JSON.parse((await kvsRead("webtrigger_url:git-webhook")).body);
+    assert.equal(viaKvs.masked, true, "premise: a webtrigger_url row is masked");
+    assert.match(viaKvs.fingerprint, /^[0-9a-f]{16}$/);
+    // DOOR TWO — the helper both doors now share, asked on the same bytes.
+    const { credentialFingerprint, fingerprintInput } = await import("../../src/test-hook.js");
+    assert.equal(await credentialFingerprint(URL_VALUE), viaKvs.fingerprint,
+      "the SAME URL through the two doors is the SAME fingerprint — this is the finding");
+    // THE SERIALISATION, documented and asserted: a string is itself, never its JSON.
+    assert.equal(fingerprintInput(URL_VALUE), URL_VALUE, "a string fingerprints as ITSELF, not as a quoted JSON string");
+    assert.notEqual(await credentialFingerprint(URL_VALUE), await credentialFingerprint(JSON.stringify(URL_VALUE)),
+      "…which is a real distinction, not a no-op: the quoted form is a DIFFERENT value");
+    // …and an object is CANONICAL json, so key order cannot change a fingerprint.
+    assert.equal(fingerprintInput({ b: 1, a: 2 }), '{"a":2,"b":1}');
+    assert.equal(await credentialFingerprint({ url: "u", apiKey: "k" }), await credentialFingerprint({ apiKey: "k", url: "u" }),
+      "a row that came back from KVS with its keys in another order is the SAME row");
+    assert.notEqual(await credentialFingerprint({ url: "u", apiKey: "k" }), await credentialFingerprint({ url: "u", apiKey: "K" }),
+      "…while a changed value is still a changed fingerprint");
+    assert.equal(await credentialFingerprint(null), null, "absent is one answer, not a hash of the string null");
+  });
+  await check("the sha256-16 fingerprint has exactly ONE home in the hook (F-780)", async () => {
+    const code = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    const truncated = (code.match(/digest\("hex"\)\.slice\(0, 16\)/g) || []).length;
+    assert.equal(truncated, 1, `a second sha256-16 is a second serialisation waiting to disagree (found ${truncated})`);
+    assert.match(code, /createHash\("sha256"\)\.update\(fingerprintInput\(value\)\)/,
+      "…and the one home hashes the DOCUMENTED serialisation, not a raw JSON.stringify");
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
    * F-779 — THE STASH TTL IS A GUARANTEE, AND SOMETHING FINALLY ENUMERATES THE KEYSPACE.
    *
    * The TTL was best-effort with a PERMANENT fallback: when `storage.set(..., ttl)` threw,

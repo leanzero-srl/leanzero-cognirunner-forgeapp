@@ -52,6 +52,7 @@ import {
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "./shared/roster-roles.js";
 import { isKeyConflict, safeKeyPart } from "./shared/kvs-keys.js";
 import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js";
 // The project-key memo mechanics + the cap live with the leak table they serve (F-419).
@@ -382,8 +383,9 @@ const REGISTRY_MIGRATIONS_KEY = "registry_migrations";
 /**
  * Check if a user is an admin (Jira site admin OR app admin).
  */
-const VALID_ROLES = ["viewer", "editor", "admin"];
-const VALID_SCOPES = ["own", "all"];
+// F-844 — the role/scope vocabulary is imported, never re-typed. It lived here AND in
+// the harness mirror (test-harness/lib/roster-restore.mjs); src/shared/roster-roles.js
+// is now its one home, so the mirror cannot start refusing rows this file accepts.
 
 /**
  * Get a user's full permission entry: { role, scope }.
@@ -488,7 +490,14 @@ const getUserPermissions = async (accountId, { allowBootstrap = false } = {}) =>
     const entry = appUsers.find((a) => (typeof a === "string" ? a : a.accountId) === accountId);
     if (entry) {
       const role = (typeof entry === "object" && entry.role) ? entry.role : "admin";
-      const scope = role === "admin" ? "all" : ((typeof entry === "object" && entry.scope) ? entry.scope : "all");
+      // F-840 — a row that states a non-admin role but no scope reads as
+      // DEFAULT_ROSTER_SCOPE ("own"), the SAME default addAppAdmin/updateUserRole
+      // clamp a missing scope to. This read used to answer "all" here, so the read
+      // and the writes disagreed and the wider answer won. `role === "admin"` still
+      // forces "all" by construction (as it does in the resolvers and the UI), so a
+      // LEGACY role-less row — which reads as admin above — is unaffected. See
+      // src/shared/roster-roles.js for why "own" is the safe tie-break.
+      const scope = role === "admin" ? "all" : ((typeof entry === "object" && entry.scope) ? entry.scope : DEFAULT_ROSTER_SCOPE);
       return { role, scope };
     }
 
@@ -5001,7 +5010,7 @@ resolver.define("addAppAdmin", async ({ payload, context }) => {
   const { accountId, displayName, role, scope, emailAddress } = payload;
   if (!accountId) return { success: false, error: "Account ID required" };
   const assignRole = VALID_ROLES.includes(role) ? role : "viewer";
-  const assignScope = assignRole === "admin" ? "all" : (VALID_SCOPES.includes(scope) ? scope : "own");
+  const assignScope = assignRole === "admin" ? "all" : (VALID_SCOPES.includes(scope) ? scope : DEFAULT_ROSTER_SCOPE);
 
   let users = (await storage.get(APP_ADMINS_KEY)) || [];
   if (users.some((a) => (typeof a === "string" ? a : a.accountId) === accountId)) {
@@ -5031,7 +5040,7 @@ resolver.define("updateUserRole", async ({ payload, context }) => {
   const { accountId, role, scope } = payload;
   if (!accountId) return { success: false, error: "Account ID required" };
   if (!VALID_ROLES.includes(role)) return { success: false, error: "Invalid role. Choose: viewer, editor, admin" };
-  const newScope = role === "admin" ? "all" : (VALID_SCOPES.includes(scope) ? scope : "own");
+  const newScope = role === "admin" ? "all" : (VALID_SCOPES.includes(scope) ? scope : DEFAULT_ROSTER_SCOPE);
 
   let users = (await storage.get(APP_ADMINS_KEY)) || [];
   const idx = users.findIndex((a) => (typeof a === "string" ? a : a.accountId) === accountId);

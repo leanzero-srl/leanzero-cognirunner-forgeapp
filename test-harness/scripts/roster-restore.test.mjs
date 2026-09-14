@@ -32,7 +32,9 @@
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
   rosterRowRole, normaliseRosterRow, isReproducibleRosterRow,
+  VALID_ROLES as MIRROR_VALID_ROLES, VALID_SCOPES as MIRROR_VALID_SCOPES,
 } from "../lib/roster-restore.mjs";
+import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "../../src/shared/roster-roles.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -218,8 +220,8 @@ const searchRows = (ids, extra = {}) => ids.map((id, i) => row(id, { i, ...(extr
   eq(rosterRowRole(LEGACY_OBJECT), { role: "admin", scope: "all" }, "a role-less OBJECT row is an admin with scope all");
   eq(rosterRowRole(LEGACY_ROLELESS_WITH_SCOPE), { role: "admin", scope: "all" },
     "...and an admin's scope is forced to all, exactly as addAppAdmin/updateUserRole do");
-  eq(rosterRowRole({ accountId: ADMIN, role: "editor" }), { role: "editor", scope: "all" },
-    "a non-admin row with NO scope defaults to `all` — the PRODUCT's read default, not addAppAdmin's `own` clamp");
+  eq(rosterRowRole({ accountId: ADMIN, role: "editor" }), { role: "editor", scope: DEFAULT_ROSTER_SCOPE },
+    "F-840: a non-admin row with NO scope defaults to `own` — ONE default, shared by the product read AND addAppAdmin");
   eq(rosterRowRole({ accountId: ADMIN, role: "editor", scope: "own" }), { role: "editor", scope: "own" },
     "an explicit role/scope pair is carried through untouched");
   eq(rosterRowRole({ accountId: ADMIN, role: "viewer", scope: "own" }), { role: "viewer", scope: "own" },
@@ -256,6 +258,63 @@ const searchRows = (ids, extra = {}) => ids.map((id, i) => row(id, { i, ...(extr
   eq(isReproducibleRosterRow(plan.missing[0]), { ok: true, role: "admin", scope: "all" },
     "...and it is re-added as an ADMIN — the demotion is gone");
 }
+
+/* ── 8b. F-840 — ONE SCOPE DEFAULT, AND IT IS THE NARROW ONE ───────────────────
+   THE DEFECT. The product's READ of an `app_admins` row (`getUserPermissions`,
+   src/index.js) answered `scope: "all"` for a row that stated a non-admin role but no
+   scope, while the WRITES (`addAppAdmin`, `updateUserRole`) clamped a missing scope to
+   `"own"`. Two copies of one rule, disagreeing — and this harness mirror copied the
+   WIDER read, so restoring a scope-less editor row re-granted reach over EVERY rule on
+   the instance to an account that had never been given it.
+
+   THE CUT. `DEFAULT_ROSTER_SCOPE` in `src/shared/roster-roles.js` is the only answer,
+   and it is `"own"`: an editor whose scope was never stated must not gain site-wide
+   reach. The read, both writes and this mirror all import it. The ADMIN role is
+   untouched — `role === "admin"` forces `"all"` by construction in the resolvers and in
+   the UI — so a LEGACY row (bare string, or an object with no `role`) still reads
+   admin/all, exactly as block 8 asserts.
+
+   BLOCK / ALLOW, stated as such:
+     BLOCK — a scope-less EDITOR row must not read, nor be re-granted, as `all`;
+     ALLOW — an EXPLICIT `scope: "all"` editor row survives untouched. This is a
+             DEFAULT, never a clamp: it must not narrow a scope somebody stated. */
+{
+  const EDITOR = "557058:88888888-8888-8888-8888-888888888888";
+  const NO_SCOPE = { accountId: EDITOR, displayName: "Scopeless Editor", role: "editor" };
+  const EXPLICIT_ALL = { accountId: EDITOR, displayName: "Wide Editor", role: "editor", scope: "all" };
+
+  ok(DEFAULT_ROSTER_SCOPE === "own",
+    "the shared default is `own` — the narrow value; widening it is a permission change, not a refactor");
+
+  /* The READ side: what the product's own rule says a row confers. */
+  eq(rosterRowRole(NO_SCOPE), { role: "editor", scope: "own" },
+    "BLOCK: a scope-less EDITOR row READS as `own`, never `all`");
+  /* The WRITE side, mirrored: `isReproducibleRosterRow` reports the exact role/scope a
+     re-grant hands to `addAppAdmin`, whose clamp is now the same constant. */
+  eq(isReproducibleRosterRow(NO_SCOPE), { ok: true, role: "editor", scope: "own" },
+    "BLOCK: ...and a re-GRANT of that row WRITES `own` too — read and write agree");
+
+  eq(rosterRowRole(EXPLICIT_ALL), { role: "editor", scope: "all" },
+    "ALLOW: an EXPLICIT `all` editor row survives — the default never narrows a stated scope");
+  eq(rosterRowRole({ accountId: EDITOR, role: "admin" }), { role: "admin", scope: "all" },
+    "ALLOW: an ADMIN row still reads `all` by construction, default or no default");
+
+  /* POSITIVE CONTROL — the old read default, so the assertions above are evidence of a
+     CHANGE and not of a rule that already agreed. */
+  const OLD_READ_SCOPE = (row) => (row.role === "admin" ? "all" : (row.scope ? row.scope : "all"));
+  ok(OLD_READ_SCOPE(NO_SCOPE) === "all" && rosterRowRole(NO_SCOPE).scope === "own",
+    "POSITIVE CONTROL: the old read handed the scope-less editor `all`; the shared default hands it `own`");
+  ok(OLD_READ_SCOPE(EXPLICIT_ALL) === rosterRowRole(EXPLICIT_ALL).scope,
+    "POSITIVE CONTROL: ...and it changed NOTHING for a row that stated its scope");
+
+  /* The restore PLAN for a snapshot row with no scope: a re-grant carrying `own`. */
+  const plan = planRosterRestore([NO_SCOPE], []);
+  ok(plan.missing.length === 1 && rosterIdOf(plan.missing[0]) === EDITOR,
+    "a scope-less snapshot row that is gone now is planned for re-add");
+  eq(normaliseRosterRow(plan.missing[0]), { accountId: EDITOR, role: "editor", scope: "own" },
+    "BLOCK: the re-grant planned from a scope-less snapshot row carries `own`");
+}
+
 
 /* ── 9. F-659 — THE VERDICT IS A SET, BECAUSE `addAppAdmin` APPENDS ─────────────
    `addAppAdmin` does `users.push`, so ANY restore that re-adds a row lands it at the
@@ -307,6 +366,46 @@ const searchRows = (ids, extra = {}) => ids.map((id, i) => row(id, { i, ...(extr
      set compare must catch it even though both shapes are "legacy-ish". */
   ok(rosterRestoreVerdict([ADMIN], [{ accountId: ADMIN, role: "viewer", scope: "own" }]).ok === false,
     "F-658 + F-659: a legacy admin row demoted to viewer is a FAIL, not a shape difference");
+}
+
+/* ── 8c. F-844 — THE MIRROR'S VOCABULARY *IS* THE PRODUCT'S, BY IDENTITY ───────
+   THE DEFECT. `VALID_ROLES` / `VALID_SCOPES` were declared verbatim in TWO places:
+   `src/index.js`, where `addAppAdmin` and `updateUserRole` clamp an incoming role and
+   scope, and `test-harness/lib/roster-restore.mjs`, where `isReproducibleRosterRow`
+   decides whether a restore may reproduce a row at all. That is the same two-copies-of-
+   one-rule shape that produced F-840 — and here it is worse than cosmetic: the moment
+   the product gains a role, the mirror starts REFUSING rows the product happily accepts,
+   and a perfectly good restore reports "not reproducible".
+
+   THE CUT. `src/shared/roster-roles.js` is the one home; the backend imports it and this
+   mirror RE-EXPORTS it.
+
+   WHY IDENTITY (`===`) AND NOT DEEP EQUALITY. A re-typed private copy passes a deep
+   compare on the day it is typed — that is exactly how the duplicate survived this long.
+   Only reference identity proves the mirror is reading the product's array rather than
+   its own lookalike, so only identity can stop the copy coming back. */
+{
+  ok(MIRROR_VALID_ROLES === VALID_ROLES,
+    "the mirror's VALID_ROLES IS the shared array (identity) — not a lookalike copy");
+  ok(MIRROR_VALID_SCOPES === VALID_SCOPES,
+    "the mirror's VALID_SCOPES IS the shared array (identity) — not a lookalike copy");
+
+  /* Frozen, because the array is shared BY REFERENCE across the backend, the admin panel
+     and this harness: an in-place sort or push here would rewrite everyone's vocabulary. */
+  ok(Object.isFrozen(VALID_ROLES) && Object.isFrozen(VALID_SCOPES),
+    "both vocabularies are frozen — a shared-by-reference enum no caller may mutate");
+
+  /* The vocabulary still says what the product's refusal messages promise. */
+  eq([...VALID_ROLES], ["viewer", "editor", "admin"], "the roles are viewer/editor/admin, widest LAST");
+  eq([...VALID_SCOPES], ["own", "all"], "the scopes are own/all");
+  ok(VALID_SCOPES.includes(DEFAULT_ROSTER_SCOPE),
+    "the shared default scope is a member of the shared scope vocabulary");
+
+  /* And the gate still bites: a role outside the vocabulary is REFUSED, not defaulted. */
+  ok(isReproducibleRosterRow({ accountId: TARGET, role: "superuser", scope: "all" }).ok === false,
+    "a role outside the shared vocabulary is REFUSED by the mirror");
+  ok(isReproducibleRosterRow({ accountId: TARGET, role: "editor", scope: "global" }).ok === false,
+    "a scope outside the shared vocabulary is REFUSED by the mirror");
 }
 
 console.log(`roster-restore.test.mjs: ${pass} passed, ${fail} failed`);

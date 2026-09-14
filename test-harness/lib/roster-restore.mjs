@@ -45,6 +45,8 @@
  * `scripts/roster-restore.test.mjs` (auto-discovered by `run-offline.mjs`).
  */
 
+import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "../../src/shared/roster-roles.js";
+
 /** The account id of a roster row, which may be a bare string or a `{accountId,…}` object. */
 export function rosterIdOf(row) {
   if (typeof row === "string") return row;
@@ -64,22 +66,33 @@ export function rosterIdOf(row) {
  * restoring a legacy row DEMOTED a real site admin to viewer or editor and left the run's
  * own second read telling an operator to repair it by hand.
  *
- * THE SCOPE DEFAULT IS THE PRODUCT'S TOO, AND IT IS NOT `addAppAdmin`'s. `addAppAdmin`
- * clamps a missing scope to "own", but the READ at :481 defaults a role-less object to
- * "all" (and forces "all" for an admin). The restore must reproduce the EFFECTIVE
- * permission the row conferred, which is what the read says, so this mirrors the read.
+ * THE SCOPE DEFAULT IS THE PRODUCT'S TOO, AND THERE IS NOW EXACTLY ONE OF THEM (F-840).
+ * The read and `addAppAdmin` used to disagree — the read answered "all" for a scope-less
+ * row while the write clamped to "own" — and this mirror copied the wider READ, so a
+ * restore re-granted site-wide reach to a row that had never been given it. Both product
+ * paths now take `DEFAULT_ROSTER_SCOPE` from `src/shared/roster-roles.js`, imported here
+ * rather than re-typed, so this mirror cannot drift from the read again. `role === "admin"`
+ * still forces "all" by construction, which is why a LEGACY row (a bare string, or an
+ * object with no `role`) reads admin/all exactly as before.
  *
  * @returns {{role: "viewer"|"editor"|"admin", scope: "own"|"all"}}
  */
 export function rosterRowRole(row) {
   const isObject = row !== null && typeof row === "object";
   const role = isObject && row.role ? row.role : "admin";
-  const scope = role === "admin" ? "all" : (isObject && row.scope ? row.scope : "all");
+  const scope = role === "admin" ? "all" : (isObject && row.scope ? row.scope : DEFAULT_ROSTER_SCOPE);
   return { role, scope };
 }
 
-const VALID_ROLES = ["viewer", "editor", "admin"];
-const VALID_SCOPES = ["own", "all"];
+/*
+ * F-844 — the vocabulary is the PRODUCT's, re-exported, never re-typed here. This mirror
+ * used to carry its own copy of both enums; a copy can only agree with the product by
+ * luck, and when the product gains a role this copy would start REFUSING rows the
+ * product accepts (a restore reporting "not reproducible" for an ordinary row). The
+ * offline suite asserts IDENTITY with the shared export, so a private copy cannot creep
+ * back in unnoticed.
+ */
+export { VALID_ROLES, VALID_SCOPES };
 
 /**
  * The permission-bearing shape of a roster row: a bare string becomes the object the

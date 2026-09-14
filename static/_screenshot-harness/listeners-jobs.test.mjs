@@ -2224,6 +2224,64 @@ try {
     await close(env);
   }
 
+  /* ---------------- F-853 - the SCOPE-LESS roster row reads what the backend enforces ---
+   * F-840: a stored `app_admins` row that states a role and NO `scope` was read as "all"
+   * by the product and clamped to "own" by both write paths. F-843: the admin panel kept
+   * its own third copy of that default (`user.scope || "all"`) and therefore PRINTED
+   * site-wide reach over a backend that enforces own-rules-only. Both were fixed by hand
+   * against a fixture set in which EVERY row carried an explicit scope - i.e. the shape
+   * that produced the defect could not be rendered at all.
+   *
+   * `ADMINS` now holds one permanently scope-less editor ("Noa Unscoped"). This journey is
+   * the only thing that reads it, and it reads BOTH surfaces of the same row: the card's
+   * text (what an admin believes) and the scope dropdown's seeded value (what the next
+   * save would write). They must agree, and they must both say OWN - a card saying "All
+   * rules" over a backend enforcing `own` is the F-843 damage verbatim, and a dropdown
+   * seeded "All Rules" would WIDEN the row on the next unrelated role change.
+   *
+   * Both themes, because this is rendered text and a theme-specific regression in the
+   * scope line would be invisible to a light-only run.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-853 ${theme} a scope-less roster row reads and seeds OWN`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Permissions");
+      const card = page.locator(".perm-admin-card", { hasText: "Noa Unscoped" }).first();
+      await card.waitFor({ timeout: 10000 });
+
+      const scopeLine = (await card.locator(".perm-admin-role").innerText()).trim();
+      ok(scopeLine === "Own rules only",
+        `F-853 ${theme} THE assertion - the card of a scope-less editor reads "Own rules only" - got ${JSON.stringify(scopeLine)}`);
+
+      /* The dropdowns on the card, in DOM order: role then scope. The scope select only
+         renders for a non-admin row, which is why this row is an EDITOR. */
+      const selects = card.locator(".dropdown-trigger");
+      ok(await selects.count() === 2, `F-853 ${theme} the editor row offers both a role and a scope dropdown`);
+      const roleSeed = (await selects.nth(0).innerText()).replace(/\s+/g, " ").trim();
+      const scopeSeed = (await selects.nth(1).innerText()).replace(/\s+/g, " ").trim();
+      ok(roleSeed.includes("Editor"), `F-853 ${theme} the role dropdown seeds the stored role - got ${JSON.stringify(roleSeed)}`);
+      ok(scopeSeed.includes("Own Rules") && !scopeSeed.includes("All Rules"),
+        `F-853 ${theme} the scope dropdown seeds "Own Rules", so an unrelated role change cannot widen the row - got ${JSON.stringify(scopeSeed)}`);
+
+      ok(await page.locator("select").count() === 0, `F-853 ${theme} no native <select> on this tab`);
+      /* Owner design law on the card carrying the scope line: no left accent rail. */
+      const rail = await card.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bl: cs.borderLeftWidth, bt: cs.borderTopWidth };
+      });
+      ok(rail.bl === rail.bt, `F-853 ${theme} the roster card has NO left accent rail - ${JSON.stringify(rail)}`);
+
+      /* the tab's entrance animation must land before the shot, or the proof is a blank
+         page that nonetheless passed every assertion above */
+      await page.waitForTimeout(700);
+      await shot(page, `f853-scopeless-row-${theme}`);
+      ok(env.errors.length === 0, `F-853 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x F-853 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- F-653 - the plain search then grant then roster email hop ----------
    * Breaker 63 noted that the default picker fixture carried no `emailAddress` at all, so
    * the ordinary journey (a single, non-namesake user) never rendered an email end to end

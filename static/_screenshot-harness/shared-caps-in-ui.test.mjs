@@ -271,5 +271,141 @@ ok(stale.length === 0, stale.length === 0
   ? `all ${ALLOW.length} allow-list entries still match a live line`
   : `stale allow-list entries (the code moved on; re-read the reason before deleting):\n    ` + stale.join("\n    "));
 
+/* ===========================================================================
+ * 6. F-853 - NO UI FILE MAY TYPE A ROSTER ROLE/SCOPE **DEFAULT** LITERAL
+ *
+ * THE DEFECT THIS ARM EXISTS TO KILL. F-840 found the product's READ of an `app_admins`
+ * row defaulting a scope-less editor to `"all"` - site-wide reach - while both WRITE
+ * paths clamped the same silence to `"own"`. F-843 found the third copy: the admin
+ * panel's roster card carried its own private `user.scope || "all"` and therefore
+ * PRINTED a wider scope than the backend enforced. F-844 pulled the vocabulary itself
+ * (`VALID_ROLES` / `VALID_SCOPES`) into `src/shared/roster-roles.js`. Three findings, one
+ * mechanism: a default typed as a literal at the place that happens to need it.
+ *
+ * Each of those was fixed by hand. NOTHING stopped the fourth copy - and a wrong roster
+ * default is not a cosmetic drift: it is a permission the product grants, or displays as
+ * granted, that nobody ever gave.
+ *
+ * THE RULE
+ *   No file under `static/{config-ui,admin-panel,config-view,issue-glance}/src` may write
+ *   a roster-vocabulary literal ("own"/"all"/"viewer"/"editor"/"admin") as the DEFAULT of
+ *   a binding whose name is about a role or a scope. The three shapes that count:
+ *     A. `<something>.scope || "all"` / `role ?? "viewer"` - the F-843 shape exactly;
+ *     B. `useState("own")` on a line binding a `*Scope` / `*Role` state;
+ *     C. `const scope = <cond> ? "all" : ...` - a ternary standing in for a default.
+ *   The defaults live in `src/shared/roster-roles.js` (`DEFAULT_ROSTER_SCOPE` today) and
+ *   are imported. Anything else needs an allow-list entry here that says, in words, why
+ *   that literal is not a default.
+ *
+ * WHAT IS DELIBERATELY NOT AN OFFENCE - THE ADMIN-FORCING BRANCH IS A RULE, NOT A DEFAULT.
+ *   `role === "admin" ? "all" : <x>` is exempted BY SHAPE (a ternary whose condition tests
+ *   `=== "admin"` / `!== "admin"`), and the negative control below pins that. An admin's
+ *   scope is "all" BY CONSTRUCTION: both resolvers force it on write, `rosterRowRole`
+ *   forces it on read, and the panel forces it in the dropdown. It is not a value anyone
+ *   may configure, so there is no default to centralise - hoisting it into roster-roles.js
+ *   would invent a knob that the backend does not honour. A DEFAULT answers "nothing was
+ *   stated"; this answers "admin was stated", which is the opposite case.
+ *
+ * BLIND SPOTS, stated rather than papered over: a default reached through a variable
+ * (`const WIDE = "all"; scope || WIDE`) is invisible to a textual rule, as is a default
+ * assembled at runtime. The rule catches the shape all three findings actually took.
+ * ------------------------------------------------------------------------- */
+const ROSTER_WORDS = ["own", "all", "viewer", "editor", "admin"];
+const ROSTER_LIT = `"(${ROSTER_WORDS.join("|")})"`;
+/* "is this binding about a role or a scope?" - the leaf of `user.scope`, the `addRole` of
+   a useState pair, the `scope` of `const scope =`. `rulesFilter` / `typeFilter` are NOT,
+   which is why the many `useState("all")` filter defaults in App.js are not swept in. */
+const ROLEISH = /(scope|role)/i;
+
+/** @returns {{how:string, line:number, text:string}[]} */
+function scanRosterDefaults(src) {
+  const code = maskComments(src);
+  const lineOf = (idx) => code.slice(0, idx).split("\n").length;
+  const lines = src.split("\n");
+  const out = [];
+  const push = (idx, how) => {
+    const line = lineOf(idx);
+    out.push({ how, line, text: lines[line - 1] || "" });
+  };
+
+  /* A. `x.scope || "all"` / `role ?? "viewer"` - the F-843 shape. */
+  for (const m of code.matchAll(new RegExp(`([A-Za-z_$][\\w$.]*)\\s*(?:\\|\\||\\?\\?)\\s*${ROSTER_LIT}`, "g"))) {
+    if (ROLEISH.test(m[1])) push(m.index, `${m[1]} || ${JSON.stringify(m[2])}`);
+  }
+
+  /* B. `const [addScope, setAddScope] = useState("own")`. */
+  for (const m of code.matchAll(new RegExp(`\\[\\s*([A-Za-z_$][\\w$]*)[^\\]]*\\]\\s*=\\s*useState\\(\\s*${ROSTER_LIT}\\s*\\)`, "g"))) {
+    if (ROLEISH.test(m[1])) push(m.index, `useState(${JSON.stringify(m[2])}) for ${m[1]}`);
+  }
+
+  /* C. `const scope = <cond> ? "all" : ...` - a ternary standing in for a default. The
+     admin-forcing condition is exempt by shape: it is a rule, not a default. */
+  for (const m of code.matchAll(new RegExp(`(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*([^;\\n]*?)\\?\\s*\\(?\\s*${ROSTER_LIT}`, "g"))) {
+    if (!ROLEISH.test(m[1])) continue;
+    if (/[!=]==\s*"admin"/.test(m[2])) continue;          // admin is "all" BY CONSTRUCTION
+    push(m.index, `${m[1]} = <cond> ? ${JSON.stringify(m[3])}`);
+  }
+
+  /* C2. the ELSE arm of the same shape - `const roleOf = (t) => (ok ? t.role : "admin")`.
+     A fallback is a default wherever it sits in the ternary, and the widest value is the
+     one that hurts. Same admin-forcing exemption. */
+  for (const m of code.matchAll(new RegExp(`(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*([^;\\n]*?)\\?[^;\\n]*?:\\s*\\(?\\s*${ROSTER_LIT}`, "g"))) {
+    if (!ROLEISH.test(m[1])) continue;
+    if (/[!=]==\s*"admin"/.test(m[2])) continue;
+    push(m.index, `${m[1]} = <cond> ? ... : ${JSON.stringify(m[3])}`);
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/* POSITIVE CONTROL: the pre-F-843 PermissionsTab line, verbatim. If this stops firing the
+   arm is dead and the finding could ship again unseen. */
+const PRE_F843 = `            const scope = typeof user === "object" ? (user.scope || "all") : "all";\n`;
+ok(scanRosterDefaults(PRE_F843).length > 0,
+  "positive control: the pre-F-843 `user.scope || \"all\"` line is flagged");
+
+/* NEGATIVE CONTROL: the admin-forcing branch, in both live shapes. A RULE, not a default. */
+const ADMIN_FORCING = `
+const effectiveScope = addRole === "admin" ? "all" : addScope;
+const nextScope = newRole === "admin" ? "all" : (newScope || DEFAULT_ROSTER_SCOPE);
+`;
+ok(scanRosterDefaults(ADMIN_FORCING).length === 0,
+  "negative control: `role === \"admin\" ? \"all\"` is a RULE (admin is all by construction), not a default");
+
+/* NEGATIVE CONTROL: the shared default, imported and named, is the shape we want. */
+ok(scanRosterDefaults(`const scope = user.scope || DEFAULT_ROSTER_SCOPE;\n`).length === 0,
+  "negative control: `user.scope || DEFAULT_ROSTER_SCOPE` - the imported default - raises nothing");
+
+/* NEGATIVE CONTROL: a list filter that happens to be called "all" is not a roster scope. */
+ok(scanRosterDefaults(`const [rulesFilter, setRulesFilter] = useState("all");\n`).length === 0,
+  "negative control: a `rulesFilter` default of \"all\" is a filter, not a roster scope");
+
+const ROSTER_ALLOW = [
+  { file: "components/PermissionsTab.jsx", match: 'const role = typeof user === "object" ? (user.role || "admin")',
+    why: "the LEGACY-ROW rule, not a default: a bare account-id string (and an object with no role at all) IS an admin row - that is what the backend's rosterRowRole reads it as, and F-840 deliberately did not narrow it. Mirroring a rule the read enforces, not inventing a configurable default" },
+  { file: "components/ApiAccessPanel.jsx", match: 'const roleOf = (t) =>',
+    why: "an API-TOKEN role, not a roster row: this panel keeps its own ROLES list for token scopes and falls back to \"admin\" for a token whose role is unrecognised. Shares the words, not the vocabulary - see the finding filed against this fallback being the WIDEST value" },
+  { file: "components/ApiAccessPanel.jsx", match: 'useState("admin")',
+    why: "the token-creation form's initial selection (same API-TOKEN vocabulary as the entry above), not the scope a roster row confers" },
+];
+
+const rosterUsed = new Set();
+const rosterOffences = [];
+for (const file of sources) {
+  const rel = relative(join(REPO, "static"), file).split(sep).join("/");
+  for (const hit of scanRosterDefaults(readFileSync(file, "utf8"))) {
+    const idx = ROSTER_ALLOW.findIndex((a) => rel.endsWith(a.file) && hit.text.includes(a.match));
+    if (idx >= 0) { rosterUsed.add(idx); continue; }
+    rosterOffences.push(`${rel}:${hit.line}  ${hit.how}\n      ${hit.text.trim().slice(0, 140)}`);
+  }
+}
+ok(rosterOffences.length === 0, rosterOffences.length === 0
+  ? "no UI file types a roster role/scope DEFAULT literal - they come from src/shared/roster-roles.js"
+  : `${rosterOffences.length} roster default literal(s) outside roster-roles.js:\n    ` + rosterOffences.join("\n    "));
+
+const rosterStale = ROSTER_ALLOW.map((a, i) => (rosterUsed.has(i) ? null : `${a.file} "${a.match}"`)).filter(Boolean);
+ok(rosterStale.length === 0, rosterStale.length === 0
+  ? `all ${ROSTER_ALLOW.length} roster allow-list entries still match a live line`
+  : `stale roster allow-list entries (re-read the reason before deleting):\n    ` + rosterStale.join("\n    "));
+
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} - ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

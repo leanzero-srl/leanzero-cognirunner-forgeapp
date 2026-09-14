@@ -10,17 +10,21 @@ import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
 import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 import { confirmDialog } from "../confirmDialog";
+import { DEFAULT_ROSTER_ROLE, DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "../../../../src/shared/roster-roles.js";
 
-const ROLE_OPTIONS = [
-  { value: "viewer", label: "Viewer" },
-  { value: "editor", label: "Editor" },
-  { value: "admin", label: "Admin" },
-];
+/* F-844 — the VALUES come from the shared vocabulary; only the LABELS are local. These
+   dropdowns used to re-type `"viewer"/"editor"/"admin"` and `"own"/"all"` verbatim — a
+   third copy of an enum the resolvers clamp against. A panel offering a value the
+   backend rejects (or silently omitting one it accepts) is a divergence nobody sees
+   until a grant fails. Order is the shared array's order: widest reach LAST. A value
+   with no label falls back to the raw value rather than rendering blank, so adding a
+   role in `src/shared/roster-roles.js` surfaces here immediately instead of vanishing. */
+const ROLE_LABELS = { viewer: "Viewer", editor: "Editor", admin: "Admin" };
+const SCOPE_LABELS = { own: "Own Rules", all: "All Rules" };
 
-const SCOPE_OPTIONS = [
-  { value: "own", label: "Own Rules" },
-  { value: "all", label: "All Rules" },
-];
+const ROLE_OPTIONS = VALID_ROLES.map((value) => ({ value, label: ROLE_LABELS[value] || value }));
+
+const SCOPE_OPTIONS = VALID_SCOPES.map((value) => ({ value, label: SCOPE_LABELS[value] || value }));
 
 const ROLE_DESCRIPTIONS = {
   viewer: "Can view rules and logs",
@@ -128,8 +132,11 @@ export default function PermissionsTab({ invoke }) {
   const [searchRefusal, setSearchRefusal] = useState(null);
   const [searchError, setSearchError] = useState(null);
   const [adding, setAdding] = useState(null);
-  const [addRole, setAddRole] = useState("viewer");
-  const [addScope, setAddScope] = useState("own");
+  // F-853 — the Add form seeds the ROLE from the one home too. It seeded a hand-typed
+  // "viewer" while the line below already imported its scope; the gate caught the pair.
+  const [addRole, setAddRole] = useState(DEFAULT_ROSTER_ROLE);
+  // F-843 — the Add form seeds the scope from the one home, not a re-typed literal.
+  const [addScope, setAddScope] = useState(DEFAULT_ROSTER_SCOPE);
   const [removing, setRemoving] = useState(null);
   const [changingRole, setChangingRole] = useState(null);
   // accountId of a just-added user — drives the one-shot .flash-success on its card
@@ -258,7 +265,7 @@ export default function PermissionsTab({ invoke }) {
 
   const handleRoleChange = async (accountId, newRole, newScope) => {
     if (changingRole) return;
-    const effectiveScope = newRole === "admin" ? "all" : (newScope || "own");
+    const effectiveScope = newRole === "admin" ? "all" : (newScope || DEFAULT_ROSTER_SCOPE);
     // Optimistic: the select reflects the choice immediately. On failure revert
     // ONLY this user's role/scope — restoring a whole-list snapshot would wipe
     // users added/removed concurrently.
@@ -483,7 +490,22 @@ export default function PermissionsTab({ invoke }) {
             const name = typeof user === "string" ? user : user.displayName;
             const avatar = typeof user === "object" ? user.avatarUrl : null;
             const role = typeof user === "object" ? (user.role || "admin") : "admin";
-            const scope = typeof user === "object" ? (user.scope || "all") : "all";
+            /* F-843 — the scope-less roster row reads the SAME here as the backend
+               enforces it. This line carried a private `|| "all"` while
+               `getUserPermissions` (post F-840) grants such a row `own`, so the card
+               announced "All rules" over an editor who in fact reached only their own.
+               The default now comes from src/shared/roster-roles.js, the one home.
+
+               The two branches that are NOT the default, and why they stay:
+               - `role === "admin"` is "all" BY CONSTRUCTION (both write paths force it,
+                 and scopeLabel says "always"), so an admin row never consults the
+                 default even when its stored scope is missing; and
+               - a LEGACY row (a bare account-id string) reads as role "admin" above,
+                 and therefore as scope "all" here — F-840 deliberately did not narrow
+                 those, and neither does this. */
+            const scope = typeof user === "object"
+              ? (user.scope || (role === "admin" ? "all" : DEFAULT_ROSTER_SCOPE))
+              : "all";
             const isRemoving = removing === id;
             const isChanging = changingRole === id;
             /* F-645 — the roster is the ONLY place an admin can verify a grant landed

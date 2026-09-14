@@ -878,7 +878,22 @@ export const renderReviewSummary = (va, opts = {}) => {
   const sources = [];
   const desks = asArray(intake.serviceDesks);
   const mentions = asArray(intake.mentionsOf);
-  if (desks.length) sources.push(`${desks.length} service desk source${desks.length === 1 ? "" : "s"}`);
+  /*
+   * F-928 - COUNT THE QUEUES, NOT THE SOURCES. This line counted DESKS and called them
+   * "sources", so an agent watching three queues of one desk reviewed as "1 service desk
+   * source" - the number the admin had just picked (three) appeared nowhere, and the
+   * review card is the last screen before the agent starts working. The queues are what
+   * the sweep actually reads, so they are what the card says.
+   *
+   * A desk with NO queue listed is the whole desk, so it contributes no queue number; a
+   * record where no desk names a queue reads "2 service desks" and nothing more, rather
+   * than an honest-looking "0 queues".
+   */
+  const queueCount = desks.reduce((n, d) => n + asArray(isObj(d) ? d.queueIds : null).length, 0);
+  if (desks.length) {
+    const deskPhrase = `${desks.length} service desk${desks.length === 1 ? "" : "s"}`;
+    sources.push(queueCount ? `${deskPhrase} and ${queueCount} queue${queueCount === 1 ? "" : "s"}` : deskPhrase);
+  }
   if (intake.jql) sources.push("a JQL filter");
   if (mentions.length) sources.push(`mentions of ${mentions.length} ${mentions.length === 1 ? "person" : "people"}`);
   out.push(sources.length ? `It picks up work from ${sources.join(", ")}.` : "It has no intake source yet, so it will find nothing to work on.");

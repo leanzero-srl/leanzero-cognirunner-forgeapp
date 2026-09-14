@@ -565,6 +565,23 @@ const at = (stepId) => {
   ok(!s.join(" ").includes("replyInternal"), "no power id leaks into the review card");
   const bare = normalizeVa({ persona: { name: "Mute" }, powers: { replyInternal: false } }, catalogToCtx(CATALOG)).va;
   ok(renderReviewSummary(bare).some((x) => x.includes("no powers")), "an agent with no powers is told so");
+
+  /* F-928 - THE CARD COUNTED DESKS AND CALLED THEM SOURCES. Three queues of one desk
+     reviewed as "1 service desk source", so the number the admin had just picked was
+     nowhere on the last screen before the agent starts working. The queues are what the
+     sweep reads, so the card counts them. */
+  const intakeOf = (serviceDesks) => renderReviewSummary(normalizeVa(
+    { persona: { name: "Nadia" }, intake: { serviceDesks } }, catalogToCtx(CATALOG)).va).join(" ");
+  const many = intakeOf([{ serviceDeskId: "1", queueIds: ["10", "11"] }, { serviceDeskId: "2", queueIds: ["20"] }]);
+  ok(/2 service desks and 3 queues/.test(many), `two desks and three queues are counted as both (got ${many})`);
+  const one = intakeOf([{ serviceDeskId: "2", queueIds: ["20"] }]);
+  ok(/1 service desk and 1 queue\b/.test(one), `the singular forms are used for one of each (got ${one})`);
+  const threeOfOne = intakeOf([{ serviceDeskId: "1", queueIds: ["10", "11"] }]);
+  ok(/1 service desk and 2 queues/.test(threeOfOne), `one desk with two queues names the queues (got ${threeOfOne})`);
+  ok(!/service desk source/.test(`${many} ${one} ${threeOfOne}`), "the word source is gone from the desk phrase");
+  // A desk with no queue named is the WHOLE desk, so there is no queue number to give.
+  const whole = intakeOf([{ serviceDeskId: "1", queueIds: [] }, { serviceDeskId: "2", queueIds: [] }]);
+  ok(/2 service desks\./.test(whole) && !/queue/.test(whole), `desks with no queues read as desks alone (got ${whole})`);
 }
 
 console.log(`\nva-wizard: ${pass} passed, ${fail} failed`);

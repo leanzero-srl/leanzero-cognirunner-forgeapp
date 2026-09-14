@@ -18,6 +18,9 @@ import { normalizeJob, runJob, executeScheduledJobTask, scheduledTick } from "..
 import { JIRA_EVENTS } from "../../src/shared/jira-events.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { testStateTrigger } from "../../src/test-hook.js";
+// F-770 — the platform's key predicate, imported from its ONE home so these checks
+// assert the same rule the door now asks rather than a retyped copy of it.
+import { isKvsKey } from "../../src/shared/kvs-keys.js";
 
 // F-137 — the two "no retyped slot name" gates below stripped only WHOLE-LINE comments,
 // so a trailing `// COGNIRUNNER_KEY_openai` (a comment is allowed to NAME a slot) read as
@@ -481,7 +484,15 @@ try {
       { name: "a non-string key", body: { key: { nested: true }, value: "x" }, field: "key" },
       { name: "an empty key", body: { key: "", value: "x" }, field: "key" },
       { name: "a 501-character key", body: { key: "a".repeat(501), value: "x" }, field: "key" },
-      { name: "a key with whitespace", body: { key: "COGNIRUNNER_AI PROVIDER", value: "x" }, field: "key" },
+      /* F-770 — THE TWO CONTROLS, ON THE CHARACTER THAT ACTUALLY MATTERS. F-742's second
+       * copy of the key grammar refused whitespace (which the platform ALLOWS) and passed
+       * "/" (which the platform REFUSES — it is the F-346 character). So "/" is the BLOCK
+       * control here and a SPACE is the ALLOW control in the sibling check below; the
+       * pair is asserted on BOTH doors, the kvSet write and the `?what=kvs` read. */
+      { name: "a key containing a slash (F-346's character)", body: { key: "COGNIRUNNER_AI/PROVIDER", value: "x" }, field: "key" },
+      { name: "a key containing a percent sign", body: { key: "COGNIRUNNER_AI%PROVIDER", value: "x" }, field: "key" },
+      { name: "a non-ASCII key", body: { key: "COGNIRUNNER_日本語", value: "x" }, field: "key" },
+      { name: "an all-whitespace key", body: { key: "   ", value: "x" }, field: "key" },
       // The value cases must sit on an ALLOWLISTED key, or the allow-list answers first —
       // which is the point of the ordering: authorisation is not this door's question.
       { name: "an omitted value", body: { key: "COGNIRUNNER_AI_PROVIDER" }, field: "value" },
@@ -516,6 +527,74 @@ try {
     const big = await kvSet("COGNIRUNNER_AI_PROVIDER", "é".repeat(100 * 1024));
     assert.equal(big.statusCode, 200, "a 200 KiB multi-byte value is under the cap and passes");
     assert.equal(JSON.parse((await kvSet("COGNIRUNNER_AI_PROVIDER", null)).body).set, "deleted");
+  });
+  /* F-770 — ONE GRAMMAR, TWO DOORS, BOTH CONTROLS. The shape door now asks
+   * `isKvsKey` from src/shared/kvs-keys.js instead of keeping a second copy. These two
+   * checks pin the pair of characters the two copies disagreed about, in BOTH
+   * directions and on BOTH doors, so a future "tidy-up" that re-inlines a charset
+   * regex fails here rather than on a tenant.
+   *
+   * The DISCRIMINATOR on the write door is the refusal SHAPE, not the status: a legal
+   * key that nobody allow-listed is 400 `key not allowlisted` with NO `field`, which
+   * proves it got PAST the shape check; an illegal key is 400 `bad-request` WITH
+   * `field:"key"`, which proves it did not. */
+  const kvsRead = (key) => testStateTrigger({
+    method: "GET",
+    headers: { authorization: ["Bearer offline-claim-secret"] },
+    queryParameters: { what: ["kvs"], key: [key] },
+  });
+  await check("a SPACE is legal to the platform, so neither door may refuse it (F-770)", async () => {
+    // Forge's own pattern is ^(?!\s+$)[a-zA-Z0-9:._\s#-]+$ — whitespace is admitted.
+    const SPACED = "COGNIRUNNER_AI PROVIDER";
+    assert.equal(isKvsKey(SPACED), true, "premise: the platform's own predicate accepts a space");
+
+    const written = await testStateTrigger({
+      method: "POST",
+      headers: { authorization: ["Bearer offline-claim-secret"] },
+      body: JSON.stringify({ action: "kvSet", key: SPACED, value: "x" }),
+    });
+    const wParsed = JSON.parse(written.body);
+    assert.match(wParsed.error, /not allowlisted/, `the write door must refuse the space key on AUTHORISATION, not shape (got ${written.body})`);
+    assert.equal(wParsed.field, undefined, "…so the refusal carries no `field` — the shape door passed it through");
+
+    // The READ door has no allow-list, so a legal key is a plain 200 — the false refusal
+    // F-770 is about would have been a 400 here, blinding a driver on a real row.
+    storage.__seed(SPACED, "a value a tenant really holds");
+    const read = await kvsRead(SPACED);
+    assert.equal(read.statusCode, 200, `the read door must not refuse a legal key (got ${read.statusCode} ${read.body})`);
+    assert.equal(JSON.parse(read.body).value, "a value a tenant really holds");
+  });
+  await check('"/" and friends are ILLEGAL, so BOTH doors refuse them by shape (F-770)', async () => {
+    // "/" is the F-346 character: it used to pass this door and throw INVALID_KEY at the
+    // platform, which is the 500/424 F-742 exists to eliminate.
+    for (const bad of ["acme/app", "pf_code:rule-1/a1b2c3", "x%y", "日本語", "   "]) {
+      assert.equal(isKvsKey(bad), false, `premise: the platform's predicate refuses ${JSON.stringify(bad)}`);
+
+      const written = await testStateTrigger({
+        method: "POST",
+        headers: { authorization: ["Bearer offline-claim-secret"] },
+        body: JSON.stringify({ action: "kvSet", key: bad, value: "x" }),
+      });
+      assert.equal(written.statusCode, 400, `write door: ${JSON.stringify(bad)} must be 400`);
+      const wParsed = JSON.parse(written.body);
+      assert.equal(wParsed.error, "bad-request", `write door: ${JSON.stringify(bad)} is refused by SHAPE, before the allow-list`);
+      assert.equal(wParsed.field, "key", `write door: ${JSON.stringify(bad)} names the field`);
+
+      const read = await kvsRead(bad);
+      assert.equal(read.statusCode, 400, `read door: ${JSON.stringify(bad)} must be 400, never a platform throw`);
+      const rParsed = JSON.parse(read.body);
+      assert.equal(rParsed.error, "bad-request", `read door: ${JSON.stringify(bad)} is a named refusal`);
+      assert.equal(rParsed.field, "key", `read door: ${JSON.stringify(bad)} names the field`);
+    }
+  });
+  await check("the hook keeps NO second copy of the KVS key grammar (F-770)", async () => {
+    // The defect was a duplicated grammar, so the assertion is against DUPLICATION, not
+    // against today's behaviour: behaviour can be restored by a copy, this cannot.
+    const src = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+    assert.match(src, /from "\.\/shared\/kvs-keys\.js"/, "test-hook.js must import the grammar's one home");
+    const code = stripJsComments(src);
+    assert.equal(/KVS_KEY_MAX_CHARS\s*=/.test(code), false, "test-hook.js must not redeclare KVS_KEY_MAX_CHARS");
+    assert.equal(/KVS_KEY_PATTERN\s*=/.test(code), false, "test-hook.js must not redeclare KVS_KEY_PATTERN");
   });
   await check("kvSet stays behind HARNESS_SECRET", async () => {
     const response = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "kvSet", key: "COGNIRUNNER_AI_PROVIDER", value: null }) });

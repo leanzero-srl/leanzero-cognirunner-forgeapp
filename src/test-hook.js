@@ -14,6 +14,9 @@
 import { kvs as storage } from "@forge/kvs";
 import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 import { readBearerToken } from "./shared/http-headers.js";
+// F-770: "is this a legal KVS key" has ONE home, and it is not this file. Same module the
+// key BUILDERS assert against, so this door and the builders cannot drift apart again.
+import { isKvsKey, KVS_KEY_PATTERN, KVS_KEY_MAX_CHARS } from "./shared/kvs-keys.js";
 // F-163: the memory-store key NAMES come from the module that owns them — never retyped here.
 import { MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY } from "./memories.js";
 // F-566: same discipline for the knowledge-pack settings slot — the module that owns it.
@@ -141,17 +144,31 @@ export const findPlantedSecret = (value, path = "", depth = 0) => {
  * credential in a body is refused rather than reflected (`findPlantedSecret`). A size
  * in bytes is a measurement, not a disclosure, so a reason may carry it.
  *
- * THE CHARSET CHECK IS DELIBERATELY COARSE. The KEY door also guards the unrestricted
- * `?what=kvs` READ, which must stay able to look at any row a live tenant holds —
- * `pf_code:{id}:{hash}`, `log_entry:*`, keys this file has never heard of. So it bounds
- * what the platform actually rejects (not a string, empty, over 500 characters,
- * whitespace or control characters) and does not invent a narrower alphabet: a false
- * refusal here blinds a driver, while everything it does refuse would have thrown.
+ * THE KEY GRAMMAR IS NOT THIS FILE'S TO OWN (F-770). The KEY door also guards the
+ * unrestricted `?what=kvs` READ, which must stay able to look at any row a live tenant
+ * holds — `pf_code:{id}:{hash}`, `log_entry:*`, keys this file has never heard of. F-742
+ * expressed that as a deliberately COARSE local check, and in doing so wrote a SECOND
+ * home for "is this a legal KVS key" (plus a second `KVS_KEY_MAX_CHARS = 500`) beside
+ * `src/shared/kvs-keys.js`, which already owns the platform's own grammar. The two homes
+ * disagreed in BOTH directions, which is worse than either being wrong alone:
+ *
+ *   - `"a b"` is LEGAL to the platform (its pattern admits whitespace explicitly) and the
+ *     local check answered 400 on it — a FALSE REFUSAL, the exact harm "coarse" was meant
+ *     to avoid, on a row a live tenant really holds.
+ *   - `"a/b"`, `"pf_code:1/2"`, `"x%y"` and non-ASCII all PASSED the local check and are
+ *     ILLEGAL, so they still reached the platform and still produced the
+ *     `ForgeKvsAPIError [INVALID_KEY]` -> 500/424 that F-742 exists to eliminate. "/" is
+ *     the character that caused F-346, so it is the first thing a repo driver types.
+ *
+ * So the predicate is now `isKvsKey` from `src/shared/kvs-keys.js` — ONE HOME, the same
+ * one the key BUILDERS assert against (`assertKvsKey`), dependency-free and already
+ * bundled into this backend. This door keeps only the 400 SHAPE (`{ok,error,field,
+ * reason}`) and the field names; what counts as a key is no longer its opinion.
+ * "Unrestricted" is unchanged: there is still no allow-list on a read.
  *
  * Returns `null` when the pair is usable, or the 400 body `{ ok, error, field, reason }`.
  * ONE HOME — the census of the sibling doors is in the comment at the `kvSet` call site.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
-export const KVS_KEY_MAX_CHARS = 500;
 export const KVS_VALUE_MAX_BYTES = 240 * 1024;
 const badRequest = (field, reason) => ({ ok: false, error: "bad-request", field, reason });
 
@@ -160,7 +177,9 @@ export const kvsKeyRefusal = (key) => {
   if (typeof key !== "string") return badRequest("key", `key must be a string (got ${key === null ? "null" : typeof key})`);
   if (key.length === 0) return badRequest("key", "key must not be empty");
   if (key.length > KVS_KEY_MAX_CHARS) return badRequest("key", `key must be at most ${KVS_KEY_MAX_CHARS} characters (got ${key.length})`);
-  if (/[\u0000-\u0020\u007f]/.test(key)) return badRequest("key", "key must not contain whitespace or control characters");
+  // The platform's own grammar, asked at its ONE home. The reason may name the pattern:
+  // it is a published constant, not a value.
+  if (!isKvsKey(key)) return badRequest("key", `key must match the platform key pattern ${KVS_KEY_PATTERN} — alphanumerics, ":", ".", "_", "#", "-" and spaces (note "/" is not legal)`);
   return null;
 };
 

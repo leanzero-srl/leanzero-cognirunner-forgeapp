@@ -6205,23 +6205,33 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
 /**
  * The agent model for a provider (admin panel). Read-only; viewer floor is enough
  * because it exposes no key and no URL — just which model an agent would use.
+ *
+ * F-835 — THIS DOOR IS NOT ITS OWN RESOLVER. It used to carry a THIRD copy of the
+ * resolution chain: agent slot, then — only if the target happened to be the ACTIVE
+ * provider — `getOpenAIModel()`, and otherwise `PROVIDERS[target].defaultModel`
+ * outright. So for a provider the admin was merely BROWSING, the panel never read that
+ * provider's ORDINARY model slot, while `agentGateFacts → getAgentModelFor(target)`
+ * did. Measured shape: an admin who saved Sonnet 5 in the Forge LLM model slot without
+ * filling the agent slot saw "claude-haiku-4-5 / needs a frontier model" on the Settings
+ * tab while the capability card next to it said enabled — F-811's split, one surface
+ * over, and the pessimistic answer was the one the user could act on.
+ *
+ * It now asks `getAgentModelFor(provider)` — the SAME binding the gate rides
+ * (`resolveModelForProvider(provider, { agentSlot: true, migrate: false })`) — and adds
+ * only the display flags that are genuinely this door's business. The managed clamp and
+ * the Forge LLM belt are NOT re-applied here: they live in the chain (F-826), so a clamp
+ * at this call site could only ever drift from the one the gate gets.
+ *
+ * `migrate:false` is part of the parity AND part of F-837: a viewer-floor READ door must
+ * not perform the one-time legacy-slot WRITE, which is exactly what the old
+ * `getOpenAIModel()` arm did.
  */
 resolver.define("getAgentModel", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view the agent model", "viewer");
   try {
     const provider = await resolveTargetProvider(payload);
-    const saved = await storage.get(providerAgentModelSlot(provider));
     const { edition } = await currentEdition(context);
-    let model = saved ? String(saved) : null;
-    if (!model) {
-      model = provider === (await activeProviderId())
-        ? await getOpenAIModel()
-        : ((PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || null);
-    }
-    // The managed engine's saved agent model is clamped to the offer on the way out,
-    // for the same reason the ordinary model is: the panel must never display a model
-    // the adapter would refuse to send.
-    if (provider === MANAGED_PROVIDER_ID && model) model = clampManagedModel(model);
+    const model = await getAgentModelFor(provider);
     // frontierOnly tells the panel to offer ONLY frontier ids here: on Forge LLM Haiku
     // is not an agent model at any edition, and on the managed engine the whole offer is
     // frontier already — so both answer true and the panel needs no third rule.

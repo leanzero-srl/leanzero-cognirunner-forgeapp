@@ -382,6 +382,78 @@ const vaRecord = {
   }
 }
 
+/* ═════ F-835 — THE PANEL'S AGENT-MODEL DOOR IS THE GATE'S READER, FOR EVERY PROVIDER ═════
+ *
+ * F-811 put the two CAPABILITY arms back together. The admin panel's Settings tab then
+ * turned out to hold a THIRD copy of the same chain: the `getAgentModel` resolver
+ * (OpenAIConfig.jsx calls it with `provider: <the row being browsed>`) read the agent
+ * slot and, for anything that was not the ACTIVE provider, answered
+ * `PROVIDERS[target].defaultModel` WITHOUT EVER READING THAT PROVIDER'S ORDINARY MODEL
+ * SLOT — while `agentGateFacts → getAgentModelFor(target)` read it. Same instance, same
+ * provider, two model ids: the panel said Haiku / needs-frontier-model beside a
+ * capability card that said enabled.
+ *
+ * The property is PARITY, asserted across the cross-product of provider × slot state
+ * rather than on one convenient row, because the old door was RIGHT for the active
+ * provider with an agent slot filled — the only combination anyone tests by hand.
+ *
+ * These run in the MAIN world (the active provider here is whatever the world seeded);
+ * the door takes its provider from the payload and the chain reads no provider at all,
+ * so nothing here depends on the 30 s memo.
+ */
+{
+  const { handler: idxHandler, getAgentModelFor } = await import("../../src/index.js");
+  const { PROVIDER_IDS } = await import("../../src/shared/provider-slots.js");
+  const door = async (provider) => idxHandler(
+    { call: { functionKey: "getAgentModel", payload: { provider } }, context: {} },
+    { principal: { accountId: ADMIN } },
+  );
+  const slotStates = [
+    ["both slots empty", null, null],
+    ["ONLY the ordinary model slot — the state the old door could not see", null, "claude-sonnet-5"],
+    ["only the agent slot", "claude-opus-5", null],
+    ["both, agent wins", "claude-opus-5", "claude-sonnet-5"],
+    ["a vendor-prefixed id in the ordinary slot", null, "anthropic/claude-opus-5"],
+    ["a junk id in the agent slot", "totally/bogus-9", null],
+  ];
+  const { providerModelSlot, providerAgentModelSlot: agentSlotKey } = await import("../../src/shared/provider-slots.js");
+  for (const [label, agentVal, modelVal] of slotStates) {
+    for (const p of PROVIDER_IDS) {
+      if (agentVal) await storage.set(agentSlotKey(p), agentVal); else await storage.delete(agentSlotKey(p));
+      if (modelVal) await storage.set(providerModelSlot(p), modelVal); else await storage.delete(providerModelSlot(p));
+      const r = await door(p);
+      const gate = await getAgentModelFor(p);
+      ok(r && r.success === true, `F-835.PARITY (${label}) ${p}: the door answers`);
+      eq(String(r && r.model), String(gate), `F-835.PARITY (${label}) ${p}: the door's model IS the gate's model`);
+    }
+  }
+  // …and the display flags the door legitimately adds are still there.
+  for (const p of PROVIDER_IDS) {
+    await storage.delete(agentSlotKey(p)); await storage.delete(providerModelSlot(p));
+    const r = await door(p);
+    eq(r.frontierOnly, p === "atlassian" || p === "managed", `F-835.FLAGS ${p}: frontierOnly is unchanged`);
+    ok(typeof r.edition === "string", `F-835.FLAGS ${p}: the edition still rides along`);
+  }
+  // Restore the world's own seeding — later blocks read these.
+  await storage.set("COGNIRUNNER_AGENT_MODEL_atlassian", "claude-sonnet-5");
+}
+
+/* ═════ F-835/F-837 SOURCE SHAPE — the door DERIVES, it does not re-resolve ═════ */
+{
+  const idxSrc2 = readFileSync(path.join(fileURLToPath(new URL("../../src/index.js", import.meta.url))), "utf8");
+  const i = idxSrc2.indexOf('resolver.define("getAgentModel"');
+  ok(i > 0, "F-835.SHAPE: found the getAgentModel resolver");
+  const body = idxSrc2.slice(i, idxSrc2.indexOf("\n});", i));
+  ok(/getAgentModelFor\(provider\)/.test(body),
+    "F-835.SHAPE: the door asks getAgentModelFor — the same binding the gate rides");
+  ok(!/getOpenAIModel\(\)/.test(body),
+    "F-835.SHAPE: …and no longer falls through the ACTIVE-provider reader (that arm also carried migrate:true — F-837)");
+  ok(!/PROVIDERS\[provider\]/.test(body),
+    "F-835.SHAPE: …and no longer answers the default table directly, skipping the provider's model slot");
+  ok(!/clampManagedModel\(/.test(body),
+    "F-835.SHAPE: …and re-applies no policy of its own — the clamp and the Forge LLM belt are the chain's (F-826)");
+}
+
 console.log(`agent capability seams (F-485, world ${world}): ${pass} passed, ${fail} failed`);
 
 /* F-811 — one child per instance shape, for the same reason the OFF world is a child:

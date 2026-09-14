@@ -3720,6 +3720,45 @@ const injectStyles = () => {
     .va-purge-write { padding: 2px 8px; border-radius: 4px; background: #475569; color: #fff; font-size: 11px; font-weight: 700; }
     html[data-color-mode="dark"] .va-purge-write { background: #64748b; }
     .va-purge-more { margin: 0; }
+
+    /* ═════════ F-917 — LISTENER ENGINE CARD + TYPED REPOSITORY PICKER ═════════
+       ONE delimited block, appended last so it cannot be interleaved with another
+       surgeon's edit. Two surfaces:
+
+       .lst-engine   the BUILT-IN ENGINE card that replaces the agent editor on a row
+                     carrying agentlessTaskType. Wears the GIT namespace hue
+                     (#a21caf light / #c026d3 dark, the same pair .agc-kind-code and
+                     .code-repo already use) because the only engine today is the PR
+                     reviewer and it belongs to the Code column visually. Solid fill on
+                     the badge, white ink, a FULL border on the card — no left rail,
+                     no tint anywhere.
+       .evp-repopick the repository multi-pick: solid git-hue chips with a × each, over
+                     a CustomSelect that adds one at a time. A repo the rule names that
+                     no connection allows is marked, in the same solid red the refusal
+                     grammar uses, because it is a rule that will never fire.
+       ════════════════════════════════════════════════════════════════════════ */
+    .lst-engine { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .lst-engine-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+    .lst-engine-badge { padding: 3px 9px; border-radius: 4px; background: #a21caf; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; }
+    html[data-color-mode="dark"] .lst-engine-badge { background: #c026d3; }
+    .lst-engine-title { font-size: 14px; font-weight: 700; color: var(--text-color); }
+    .lst-engine-summary { margin: 0; font-size: 13px; font-weight: 600; line-height: 1.5; color: var(--text-color); }
+    .lst-engine-brakes { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+    .lst-engine-brakes li { font-size: 12.5px; font-weight: 600; line-height: 1.45; color: var(--text-secondary); }
+    .lst-engine-conn { margin: 0; padding-top: 9px; border-top: 1px solid var(--border-color); font-size: 12.5px; font-weight: 600; line-height: 1.45; color: var(--text-secondary); }
+
+    .evp-repopick { display: flex; flex-direction: column; gap: 8px; }
+    .evp-repopick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .evp-repo-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; background: #a21caf; color: #fff; font-size: 12px; font-weight: 700; }
+    html[data-color-mode="dark"] .evp-repo-chip { background: #c026d3; }
+    /* A repository no connection allows can never be read: the rule looks configured and
+       never fires. Same solid red the refusal grammar uses, never a faded warning tint. */
+    .evp-repo-chip.is-unallowed { background: #dc2626; }
+    html[data-color-mode="dark"] .evp-repo-chip.is-unallowed { background: #ef4444; }
+    .evp-repo-chip-flag { padding: 0 5px; border-radius: 3px; background: #0f172a; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 0.04em; }
+    .evp-repo-chip-x { border: none; background: transparent; color: #fff; font-size: 14px; line-height: 1; cursor: pointer; padding: 0; }
+    .evp-repopick-add { max-width: 460px; }
+    .evp-repopick-none { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
 `;
   document.head.appendChild(style);
 };

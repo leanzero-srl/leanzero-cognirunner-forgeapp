@@ -16,7 +16,7 @@ import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 import { readBearerToken } from "./shared/http-headers.js";
 // F-803: "what does a credential VALUE look like" has ONE home, shared with the harness
 // evidence redactor — the two used to disagree about this app's own Rules-API bearer.
-import { SECRET_VALUE_SHAPES, SECRET_FIELD_NAME_HINTS } from "./shared/secret-shapes.js";
+import { SECRET_VALUE_SHAPES, SECRET_FIELD_NAME_HINTS, anchoredShapeSources } from "./shared/secret-shapes.js";
 // F-770: "is this a legal KVS key" has ONE home, and it is not this file. Same module the
 // key BUILDERS assert against, so this door and the builders cannot drift apart again.
 import { isKvsKey, safeKeyPart, KVS_KEY_PATTERN, KVS_KEY_MAX_CHARS } from "./shared/kvs-keys.js";
@@ -326,9 +326,45 @@ const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  *     `glpat-`, `AKIA`, `xoxp-` or a JWT, all of which the evidence redactor at the file
  *     boundary already knew. Two lists, one question, and the door was the weaker of them.
  */
-const SECRET_VALUE_RE = new RegExp(
-  "(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|") + "|" + SECRET_VALUE_SHAPES.join("|") + ")",
+const secretValueRe = (flags = "") => new RegExp(
+  "(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|") + "|" + anchoredShapeSources().join("|") + ")",
+  flags,
 );
+const SECRET_VALUE_RE = secretValueRe();
+
+/**
+ * F-814 — the SPANS, not just the yes/no, because the read ceiling now needs to know WHERE
+ * in a string the credential is. `anchoredShapeSources()` is the same census carrying the
+ * left anchor the bare `SECRET_VALUE_SHAPES` list does not: `risk-assessment` contains
+ * `sk-` followed by 8 word characters, and this regex used to answer true about it.
+ *
+ * Built per call — a `g` regex kept across calls carries `lastIndex`, which is the reason
+ * `credentialValueRegex` next door is a factory too.
+ */
+const secretSpansInText = (text) => {
+  if (typeof text !== "string" || text === "") return [];
+  const re = secretValueRe("g");
+  const out = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m[0] === "") { re.lastIndex++; continue; }
+    out.push({ start: m.index, end: m.index + m[0].length });
+  }
+  return out;
+};
+
+/**
+ * Is the WHOLE trimmed string a credential and nothing else? This is the discriminator
+ * between the two projections F-814 introduced: a value that IS a bare credential is
+ * replaced WHOLE — there is nothing else in it to read — and a credential inside a
+ * sentence is replaced IN PLACE, because the sentence is what the door is read for.
+ */
+const isBareCredential = (text) => {
+  const t = String(text).trim();
+  if (t === "") return false;
+  const spans = secretSpansInText(t);
+  return spans.length === 1 && spans[0].start === 0 && spans[0].end === t.length;
+};
 
 export const SECRET_PLANT_REFUSAL = "harnessRefusal: a plant body may never carry a credential — this door plants state, never secrets";
 
@@ -457,7 +493,14 @@ export const findSecretFields = (value, { maxDepth = WRITE_REFUSAL_MAX_DEPTH, ma
   const walk = (v, path, depth) => {
     if (depth > maxDepth) { out.push({ field: path || "(root)", why: "below-the-walker-depth-ceiling" }); return; }
     if (typeof v === "string") {
-      if (SECRET_VALUE_RE.test(v)) out.push({ field: path || "(root)", why: "value-looks-like-a-credential" });
+      // F-814 — TWO ANSWERS, because a string can BE a credential or merely CONTAIN one.
+      // A bare credential is the whole value (`?what=provider` seeded with `sk-…`): the node
+      // is replaced. A credential inside prose (a validator `reason`, a rule `prompt`, a
+      // step's `code`) is a hit on the TOKEN, and the read projection rewrites the token in
+      // place so the sentence survives. The WRITE refusal treats both the same — it only
+      // ever asks whether there is a credential in the plant body at all.
+      if (isBareCredential(v)) { out.push({ field: path || "(root)", why: "value-looks-like-a-credential" }); return; }
+      if (secretSpansInText(v).length > 0) out.push({ field: path || "(root)", why: "value-redacted-in-text" });
       return;
     }
     if (!v || typeof v !== "object") return;
@@ -495,7 +538,9 @@ export const findPlantedSecret = (value) => findSecretFields(value)[0] || null;
  *
  * So a non-family key is now answered FIELD BY FIELD: the value comes back with every
  * path `findSecretFields` names replaced by `{masked:true, why, fingerprint}` and a
- * top-level `maskedFields:[path]` saying which, and everything else PLAIN. A driver still
+ * top-level `maskedFields:[path]` saying which, and everything else PLAIN. (F-814: a path
+ * whose hit was a credential INSIDE FREE TEXT is the exception — it stays a string with
+ * only the token rewritten as `<masked:fingerprint>`, and `maskedWhy[path]` says so.) A driver still
  * reads a rule's events, filters and step names out of `job:*`; it no longer reads the
  * bearer token under `functions[].endpoint.headers`.
  *
@@ -533,6 +578,20 @@ export const maskSecretFields = async (value, { extraFieldNames = [] } = {}) => 
     const at = path || "(root)";
     if (why.has(at)) {
       maskedFields.push(at);
+      // F-814 — IN PLACE for free text. Replacing the whole node destroyed the field a
+      // driver reads that row FOR (a validator's `reason`, a rule's `prompt`, a step's
+      // `code`) and asserted a false cause for it. Only the matched TOKEN goes, replaced by
+      // its own fingerprint, so the sentence around it stays readable and the path is still
+      // named in `maskedFields`. A whole-node mask is now reserved for a FIELD-NAME hit and
+      // for a value that IS a bare credential.
+      if (why.get(at) === "value-redacted-in-text") {
+        let out = "", cursor = 0;
+        for (const { start, end } of secretSpansInText(v)) {
+          out += v.slice(cursor, start) + `<masked:${await credentialFingerprint(v.slice(start, end))}>`;
+          cursor = end;
+        }
+        return out + v.slice(cursor);
+      }
       return { masked: true, why: why.get(at), fingerprint: await credentialFingerprint(v) };
     }
     if (!v || typeof v !== "object") return v;
@@ -545,7 +604,13 @@ export const maskSecretFields = async (value, { extraFieldNames = [] } = {}) => 
     for (const [k, sub] of Object.entries(v)) out[k] = await rebuild(sub, path ? `${path}.${k}` : k, depth + 1);
     return out;
   };
-  return { value: await rebuild(value, "", 0), maskedFields };
+  /* F-814 — `maskedFields` is still a LIST OF PATHS (drivers read it that way and must not
+     have to change), and `maskedWhy` says WHICH of the two projections each path got:
+     `value-redacted-in-text` means the field is still a readable string with the token
+     rewritten, anything else means the node was replaced. Without it a caller could only
+     tell the two apart by inspecting the value, which is the guesswork this cut removes. */
+  const projected = await rebuild(value, "", 0);
+  return { value: projected, maskedFields, maskedWhy: Object.fromEntries(maskedFields.map((f) => [f, why.get(f)])) };
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
@@ -579,6 +644,14 @@ export const maskSecretFields = async (value, { extraFieldNames = [] } = {}) => 
  * THE RESIDUAL IS UNCHANGED and is the one stated at `maskSecretFields`: free text
  * (`functions[].code`, `agent.instructions`, a log entry's AI output) is caught only by
  * SHAPE (`SECRET_VALUE_RE`).
+ *
+ * F-814 — AND FREE TEXT IS NOW REDACTED IN PLACE RATHER THAN SWALLOWED. Widening the
+ * ceiling onto the log and registry arms put PROSE through a rule written for a header
+ * value: an unanchored `sk-` matched `risk-assessment`, and a validator `reason` or a rule
+ * `prompt` came back as `{masked:true, why:"value-looks-like-a-credential"}` — an object
+ * where four drivers read a string, and a false cause asserted about a sentence with no
+ * credential in it. The shape is anchored (`src/shared/secret-shapes.js`) and the
+ * projection now replaces the TOKEN, not the field.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
 export const readCeiling = async (key, value) => {
   const stored = value === undefined ? null : value;
@@ -586,7 +659,7 @@ export const readCeiling = async (key, value) => {
     return { masked: true, present: stored !== null, fingerprint: await credentialFingerprint(stored) };
   }
   const m = await maskSecretFields(stored, { extraFieldNames: extraMaskedFieldsFor(key) });
-  return m ? { value: m.value, maskedFields: m.maskedFields } : { value: stored };
+  return m ? { value: m.value, maskedFields: m.maskedFields, maskedWhy: m.maskedWhy } : { value: stored };
 };
 
 /**
@@ -624,7 +697,7 @@ const answerStored = async (envelope, key, value) =>
 const storedFields = async (envelope, key, value) => {
   const c = await readCeiling(key, value);
   if (c.masked) return { masked: true, present: c.present, fingerprint: c.fingerprint };
-  return { [envelope]: c.value, ...(c.maskedFields ? { maskedFields: c.maskedFields } : {}) };
+  return { [envelope]: c.value, ...(c.maskedFields ? { maskedFields: c.maskedFields, maskedWhy: c.maskedWhy } : {}) };
 };
 
 /** The row is NOT answered — only whether it is there and which bytes it was. */

@@ -51,9 +51,30 @@
  * the token on the line. `test-hook.js` only ever asks `.test()`, so the tail costs it
  * nothing. One shape, both jobs.
  *
- * WHY THERE ARE NO `\b` ANCHORS. `redact.mjs` had none, and adding them would NARROW the
- * redactor — `…=sk-abcdefgh` would stop matching. Narrowing the last line before disk is
- * not a trade this file is allowed to make.
+ * WHY THERE ARE NO `\b` ANCHORS, AND WHY THERE IS A LEFT ONE ANYWAY (F-814). `redact.mjs`
+ * had none, and a `\b` would NARROW the redactor — `…=sk-abcdefgh` must keep matching, and
+ * so must `sk-abc…` glued to the end of a longer token, because the tail is what `.replace()`
+ * removes. Narrowing the last line before disk is not a trade this file is allowed to make.
+ *
+ * But an unanchored LEFT side was not a width, it was a false positive: `risk-assessment`,
+ * `risk-register` and `risk-mitigation` all contain `sk-` followed by 8+ word characters, so
+ * the shape matched ordinary English and the read ceiling (`?what=logs`, `?what=execlogs`,
+ * `?what=registry`) then destroyed a validator's `reason` and a rule's `prompt` and asserted
+ * `why:"value-looks-like-a-credential"` about a sentence containing no credential.
+ *
+ * So every PREFIX shape carries `LEFT_ANCHOR` — `(?<![A-Za-z0-9])`, a zero-width lookbehind,
+ * NOT `\b`:
+ *   · zero-width, so `.replace()` still removes the whole token and nothing else;
+ *   · `(?<![A-Za-z0-9])` rather than `(?<!\w)`, so `_`/`-`/`=`/`"`/`:` before the prefix are
+ *     still a match — `…=sk-abcdefgh`, `Bearer sk-…`, `"sk-…"`, `X_sk-…` all still redact;
+ *   · nothing is added on the RIGHT: the greedy tail stays greedy, which is the property
+ *     `redact.mjs` needs.
+ * MEASURED: `risk-assessment`, `risk-register`, `risk-mitigation`, `disk-usage` no longer
+ * match; every specimen in the F-803 census still does (pinned in `evidence-redaction.test.mjs`).
+ *
+ * `.atlassian-dev.net/` is the ONE shape with no left anchor, and it must stay that way: the
+ * character before it is the alphanumeric tail of a hostname (`…abc123.atlassian-dev.net/`),
+ * so a left anchor would turn that shape off entirely.
  *
  * WHAT IS DELIBERATELY NOT A SHAPE — a bare hex or base64 blob. `maskSecretFields` walks
  * `functions[].code` and `agent.instructions`, and a rule that masked every long opaque
@@ -88,12 +109,62 @@ export const SECRET_VALUE_SHAPES = [
   "\\.atlassian-dev\\.net/",              // a Forge dev web-trigger URL: bearer-less, and itself a capability
 ];
 
+const LEFT_ANCHOR = "(?<![A-Za-z0-9])";
+
+/**
+ * The ONE shape that must NOT be left-anchored — see the header. Listed by its exact source
+ * so a shape added to the census is anchored by default and an exemption has to be written
+ * down on purpose.
+ */
+const NO_LEFT_ANCHOR = new Set(["\\.atlassian-dev\\.net/"]);
+
+/**
+ * The census as it is actually MATCHED: every prefix shape with `LEFT_ANCHOR` in front.
+ * `SECRET_VALUE_SHAPES` stays the bare census — it is what the parity test reads to check
+ * that every declared prefix is the head of a declared shape — and this is the derived
+ * form. Two views, one list.
+ */
+export const anchoredShapeSources = () => SECRET_VALUE_SHAPES.map((sh) => (NO_LEFT_ANCHOR.has(sh) ? sh : LEFT_ANCHOR + sh));
+
 /**
  * Build the value regex. A FACTORY, never a shared instance: a `g` regex carries
  * `lastIndex` between calls, so two callers sharing one object answer differently
  * depending on who asked last. `redact.mjs` wants `g`, `test-hook.js` wants none.
  */
-export const credentialValueRegex = (flags = "") => new RegExp("(" + SECRET_VALUE_SHAPES.join("|") + ")", flags);
+export const credentialValueRegex = (flags = "") => new RegExp("(" + anchoredShapeSources().join("|") + ")", flags);
+
+/**
+ * EVERY credential-shaped SPAN in a string, `[{start, end}]`, leftmost-first and
+ * non-overlapping.
+ *
+ * This exists because two callers need the POSITIONS, not just a yes/no: `redact.mjs`
+ * replaces each span with `[REDACTED]`, and the read ceiling (F-814) replaces each span
+ * inside a free-text field with `<masked:…>` instead of destroying the whole sentence.
+ * One scanner, so a shape can never be redacted by one of them and missed by the other.
+ */
+export const findCredentialSpans = (s) => {
+  if (typeof s !== "string" || s === "") return [];
+  const re = credentialValueRegex("g");
+  const out = [];
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (m[0] === "") { re.lastIndex++; continue; }
+    out.push({ start: m.index, end: m.index + m[0].length });
+  }
+  return out;
+};
+
+/** Replace every credential span with `fn(matchedText)`. The text between spans is untouched. */
+export const replaceCredentialSpans = (s, fn) => {
+  const spans = findCredentialSpans(s);
+  if (spans.length === 0) return s;
+  let out = "", at = 0;
+  for (const { start, end } of spans) { out += s.slice(at, start) + fn(s.slice(start, end)); at = end; }
+  return out + s.slice(at);
+};
+
+/** Does the string carry a credential shape anywhere? The `.test()` half of the same scanner. */
+export const hasCredentialShape = (s) => findCredentialSpans(s).length > 0;
 
 /**
  * The literal PREFIXES of the shapes above, for a caller that must decide whether an

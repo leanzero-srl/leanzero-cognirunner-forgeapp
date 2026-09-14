@@ -12119,12 +12119,25 @@ resolver.define("getAgentCapability", async ({ context }) => {
  * the ticket, the claim and the owner check; these wrappers own PERMISSION and the
  * ENQUEUE, which is all a resolver may own.
  *
- * THE GATE, once, in one helper: the Coder is an ADVANCED (Coder-edition) feature AND it
- * needs an agent-capable provider, and those are two different refusals with two
- * different remedies. `requireAdvanced` answers the first with `upgradeRequired("coder")`;
- * `agentCapability` answers the second, rendered through `agentCapabilityCopy` so the
- * sentence is the same one the Code tab and the action checklist already show. Neither is
- * a new refusal shape.
+ * THE GATE, once, in one helper, and it asks ONE question: `agentCapability` over
+ * `agentGateFacts`. The Coder is a CAPABILITY, not an edition (plan section 1, decision 1)
+ * - a BYOK site pays for its own tokens and is entitled to the toolset on Standard, which
+ * is exactly what the Code tab's status card, the agent-action checklist and every
+ * listener, job and Git-aware rule already tell that tenant.
+ *
+ * F-909 - this helper used to run `requireAdvanced(context, "coder")` FIRST, and
+ * `isFeatureAllowed` refuses on edition alone. So a Standard tenant on OpenAI (or
+ * Anthropic, OpenRouter, Azure, LM Studio) was told "The Coder toolset ... is part of
+ * CogniRunner Coder" on every turn, while `getAgentCapability` answered `byok` two
+ * inches above it and their Git-aware rules ran. One rule, one home: the predicate
+ * decides, and its `reason` carries the remedy, so a Standard + Forge LLM tenant still
+ * reads "needs the Coder edition" and a Coder + Haiku tenant reads "needs a frontier
+ * model". The edition is still IN the answer - `agentCapability` weighs it for the
+ * vendor-billed engines - it just is not asked first and alone.
+ *
+ * `isFeatureAllowed(edition, "coder")` keeps its row in ADVANCED_FEATURES because the
+ * admin panel's edition card lists what the Coder edition buys (checkLicense maps every
+ * ADVANCED_FEATURES row through it); it is no longer a GATE for anything.
  *
  * ADMIN-INDEPENDENT: a Coder thread belongs to the person who opened it, so the floor is
  * the EDITOR role plus ownership — not admin. Reading somebody else's thread is refused
@@ -12132,8 +12145,6 @@ resolver.define("getAgentCapability", async ({ context }) => {
  * read every rule in the registry.
  */
 const coderGate = async (context) => {
-  const adv = await requireAdvanced(context, "coder");
-  if (!adv.ok) return { refusal: adv.refusal };
   const facts = await agentGateFacts(context, { fresh: true });
   // FAILS TO THE RESTRICTIVE SIDE, like every other consumer of these facts: no provider
   // read means no capability, never an assumed one.

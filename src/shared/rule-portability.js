@@ -19,7 +19,16 @@
  *    unknown keys dropped, strings clamped, regex compile-checked.
  *  - resolveBindings never GUESSES: a field/workflow/transition/picker that doesn't
  *    match by exact value is marked needs-rebind for the user to pick.
+ *
+ * UNITS: every cap named *Chars is cut with `.slice()` (UTF-16 code units — the unit
+ * those caps were chosen in). The ONE cap named in BYTES, `maxStepCodeBytes`, is cut
+ * with `clampUtf8Bytes` from src/shared/text-clamp.js (F-889): `.slice()` there was both
+ * the wrong unit AND the lone-surrogate cut that module exists to prevent — a non-BMP
+ * character straddling the boundary would have put an unpaired surrogate into the
+ * JSON-serialised export file.
  */
+
+import { clampUtf8Bytes } from "./text-clamp.js";
 
 export const SCHEMA_VERSION = 1;
 export const EXPORT_KIND = "cognirunner-rules-export";
@@ -28,7 +37,7 @@ export const EXPORT_CAPS = {
   maxRules: 50,
   maxBytes: 1048576,          // 1 MB of import text
   maxSteps: 50,               // functions[] per static PF
-  maxStepCodeBytes: 24576,    // per-step code (matches the offload step cap)
+  maxStepCodeBytes: 24576,    // per-step code, UTF-8 BYTES (matches the offload step cap)
   maxPromptChars: 32768,      // whole-config editor cap
   maxStringChars: 8192,       // any other string field
   maxArrayItems: 200,
@@ -97,7 +106,8 @@ export const serializeRule = (input) => {
       if (f && typeof f.name === "string") step.name = clampStr(f.name, 300);
       if (f && typeof f.operationType === "string") step.operationType = clampStr(f.operationType, 120);
       if (f && typeof f.variableName === "string") step.variableName = clampStr(f.variableName, 120);
-      if (f && typeof f.code === "string") step.code = f.code.slice(0, EXPORT_CAPS.maxStepCodeBytes);
+      // F-889 — a BYTE cap, cut on a code-point boundary. See the UNITS note at the top.
+      if (f && typeof f.code === "string") step.code = clampUtf8Bytes(f.code, EXPORT_CAPS.maxStepCodeBytes).text;
       if (f && typeof f.description === "string") step.description = clampStr(f.description, EXPORT_CAPS.maxStringChars);
       if (Array.isArray(f && f.docNames)) step.docNames = f.docNames.slice(0, EXPORT_CAPS.maxArrayItems).map((s) => clampStr(String(s), 300));
       if (Array.isArray(f && f.skillNames)) step.skillNames = f.skillNames.slice(0, EXPORT_CAPS.maxArrayItems);
@@ -165,7 +175,9 @@ export const validateImportSchema = (parsed) => {
               if (typeof f.name === "string") step.name = f.name.slice(0, 300);
               if (typeof f.operationType === "string") step.operationType = f.operationType.slice(0, 120);
               if (typeof f.variableName === "string") step.variableName = f.variableName.slice(0, 120);
-              if (typeof f.code === "string") step.code = f.code.slice(0, EXPORT_CAPS.maxStepCodeBytes);
+              // F-889 — the import side re-checks the SAME cap, so it must use the same
+              // unit and the same cut as the export side above.
+              if (typeof f.code === "string") step.code = clampUtf8Bytes(f.code, EXPORT_CAPS.maxStepCodeBytes).text;
               if (typeof f.description === "string") step.description = f.description.slice(0, EXPORT_CAPS.maxStringChars);
               if (Array.isArray(f.docNames)) step.docNames = f.docNames.slice(0, EXPORT_CAPS.maxArrayItems).map((s) => String(s).slice(0, 300));
               if (Array.isArray(f.skillNames)) step.skillNames = f.skillNames.slice(0, EXPORT_CAPS.maxArrayItems);

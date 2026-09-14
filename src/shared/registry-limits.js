@@ -31,6 +31,8 @@
  * explicit human approval.
  */
 
+import { utf8ByteLength } from "./text-clamp.js";
+
 /** Hard row cap for the registry. A create/claim at or above this is refused. */
 export const REGISTRY_MAX_ROWS = 500;
 
@@ -63,10 +65,18 @@ export const REGISTRY_CREATE_MAX_BYTES = 200000;
  * that runs the Custom UI iframes, so backend and frontend measure a document
  * with the SAME function, not merely with the same intent. This is the whole
  * point: F-836 was a gate in characters guarding a ceiling in bytes.
+ *
+ * F-885 — THE IMPLEMENTATION IS NOT HERE ANY MORE. It used to be a second body
+ * of the same measure: `utf8ByteLength` in src/shared/text-clamp.js is the home
+ * F-874 consolidated on, and it must be, because the measure and the CLAMP that
+ * enforces the same budget (`clampUtf8Bytes`, next to it) have to agree exactly
+ * — two encoders that merely look alike are how a gate passes a string the
+ * clamp then cuts. `utf8Bytes` stays as the public NAME because the doc cap's
+ * callers (saveContextDoc, both DocRepository copies, the F-836 tests) speak it
+ * and renaming them would be a wider edit than the defect. Both modules are
+ * dependency-free, so importing one into the other keeps every bundle valid.
  */
-export function utf8Bytes(s) {
-  return new TextEncoder().encode(String(s ?? "")).length;
-}
+export const utf8Bytes = utf8ByteLength;
 
 /**
  * Content ceiling for ONE Documentation Library document (`saveContextDoc`).
@@ -412,6 +422,19 @@ export const memoryPlatformCapMessage = (bytesOver) => {
  * answers a whole budget, for the same reason an unknown audience falls to the smallest
  * row rather than the largest. If one of them ever grows a skills block, that number is
  * a decision to make, not a default to inherit.
+ *
+ *   runtime — F-886. The PER-TRANSITION surfaces: validators, conditions and semantic
+ *               post-functions, via `getRuntimeMemorySection` in src/index.js. 4 KB of
+ *               memories was a function-DEFAULT PARAMETER there (`capBytes = 4096`), which
+ *               is a fourth typed budget in exactly the shape F-868/F-873 removed from the
+ *               call sites — a default is a home too, and this one could drift from the
+ *               table without any caller changing. The number is unchanged: this audience
+ *               is doubly opt-in (`runtimeInjection`) and pays its tokens on EVERY
+ *               transition inside the 25 s resolver budget, so it sits at the async
+ *               review's 4 KB rather than codegen's 8 KB. Its `skills` column is the
+ *               SMALLEST row's value for the same reason `endpointAssistant` and
+ *               `configReview` carry one — runtime injects no skills at all, and a whole
+ *               row keeps `knowledgeBudget()` total.
  */
 export const KNOWLEDGE_BUDGET_BYTES = Object.freeze({
   codegen: Object.freeze({ skills: 24576, memories: 8192 }),
@@ -420,6 +443,7 @@ export const KNOWLEDGE_BUDGET_BYTES = Object.freeze({
   prReview: Object.freeze({ skills: 6144, memories: 2048 }),
   endpointAssistant: Object.freeze({ skills: 6144, memories: 2048 }),
   configReview: Object.freeze({ skills: 6144, memories: 4096 }),
+  runtime: Object.freeze({ skills: 6144, memories: 4096 }),
 });
 
 /**

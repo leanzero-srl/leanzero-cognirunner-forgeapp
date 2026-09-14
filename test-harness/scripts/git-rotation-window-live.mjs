@@ -52,7 +52,18 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+// F-686 — every driver that arms a harness fault goes through the ONE acknowledgement.
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { gitHookUrl } from "../lib/git-hook-url.mjs";
+
+/* F-686 — DEV-ONLY BY CONSTRUCTION: both hook calls below go to `env.TESTSTATE_URL`, and
+ * there is no staging trigger for this flow, so `--env` is decided FOR this driver and the
+ * acknowledgement is mandatory. `armHookPromoteFault` makes a secret rotation fail at its
+ * promote step, and the connection card shows "rotation failed" to anyone who opens it. */
+requireEnvAck([...process.argv.slice(2), "--env=dev"], {
+  faults: ["hookPromote"],
+  script: "git-rotation-window-live.mjs",   // count-bounded: one unit, no TTL to quote
+});
 
 const env = loadEnv();
 const REPO = process.env.GIT_REPO_ID || "leanzero-srl/cognirunner-forge-offshoot";

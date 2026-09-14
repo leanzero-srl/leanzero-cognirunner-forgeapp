@@ -23,17 +23,39 @@
  * never activates), so the active-provider slot is never written. The key slot is
  * fingerprinted (PRESENT/EMPTY — never the value, never its length) before and after.
  * The lever is TTL-bounded and disarmed in the `finally`, proven gone by a re-read.
+ *
+ * SHARED DEV TENANT (F-686). `--env` defaults to `staging`; `--env=dev` additionally needs
+ * `--i-know-dev-is-shared` (lib/shared-env-guard.mjs — the one home of that refusal). The
+ * arming TTL was 240s and is now 60s: this journey reads the card ONCE, and every extra
+ * second is a second in which a real admin on that site reads the planted refusal as a bad
+ * credential and rotates a working key.
+ *
+ *   node scripts/key-status-fault-ui-live.mjs [--env=staging|dev] [--i-know-dev-is-shared]
+ *     [--provider=openai] [--label=OpenAI] [--envid=<forge env id>]
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
-import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { requireEnv } from "../lib/env.mjs";
+// F-686 — one home for the shared-dev acknowledgement. This driver arms F-679's own lever
+// AND drives the real admin page, so it is the last one that should have been without it.
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { providerKeySlot } from "../../src/shared/provider-slots.js";
 
-const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const ENV_NAME = arg("env", "staging");
-const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
-const SECRET = requireEnv("HARNESS_SECRET");
 const PROVIDER = arg("provider", "openai");
+/* F-686 — THE WINDOW IS MEASURED, NOT GUESSED. The journey is: launch the browser, open
+ * Settings, pick the provider, READ THE CARD ONCE, screenshot. One page load and one read —
+ * the lever is not held across a human's session. 240s was 48x the guarded sibling's window
+ * for a journey that needs seconds, and every one of those seconds is a window in which a
+ * real admin reads "Couldn't read key status" and rotates a good key. 60s covers a cold
+ * iframe boot (the loop below waits up to 90s for the frame, and if it ever takes longer
+ * than 60s the fault expires and the check FAILS LOUDLY rather than lingering armed). */
+const ARM_TTL_SECONDS = 60;
+const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), {
+  faults: [`keyRead:${PROVIDER}`],
+  maxSeconds: ARM_TTL_SECONDS,
+  script: "key-status-fault-ui-live.mjs",
+});
+const SECRET = requireEnv("HARNESS_SECRET");
 const PROVIDER_LABEL = arg("label", "OpenAI");
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
@@ -67,7 +89,7 @@ const keySlotFingerprint = async () => {
   const v = r.json ? r.json.value : undefined;
   return v === null || v === undefined ? "EMPTY" : "PRESENT";
 };
-const arm = (mode, ttlSeconds = 240) => hook({ action: "armKeyReadFault", provider: PROVIDER, mode, ttlSeconds });
+const arm = (mode, ttlSeconds = ARM_TTL_SECONDS) => hook({ action: "armKeyReadFault", provider: PROVIDER, mode, ttlSeconds });
 const disarm = () => hook({ action: "disarmKeyReadFault", provider: PROVIDER });
 const readLever = () => hook({ action: "readKeyReadFault", provider: PROVIDER });
 

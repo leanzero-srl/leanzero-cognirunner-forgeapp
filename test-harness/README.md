@@ -126,6 +126,24 @@ Nothing in the evidence file or the terminal would ever tell the admin who just 
 good key that a harness lever was live at that moment. Schedule the run, or tell whoever is
 on the tenant — do not let them discover it afterwards.
 
+**The rule is on the directory, not on that one file (F-686).** That acknowledgement used to
+live inline in `harness-fault-expiry-live.mjs` and guarded only it, while three siblings
+armed the very same levers on the very same tenant: `key-status-fault-live.mjs` and
+`key-status-fault-ui-live.mjs` had nothing but `--env=dev` (and the UI one held the key-read
+refusal for **240 s** — since cut to 60 s, because its journey reads the card exactly once),
+and `user-search-fault-live.mjs` had no `--env` at all, dev being its only mode. The refusal
+now has one home, `lib/shared-env-guard.mjs`, exporting `requireEnvAck(argv, { faults,
+maxSeconds })`: it defaults `--env` to `staging`, refuses `dev` without
+`--i-know-dev-is-shared` while naming the harm of the faults *that driver* arms and its own
+longest TTL, and hands back the web-trigger URL for the chosen environment
+(`STAGING_TESTSTATE_URL` vs `TESTSTATE_URL`). It checks argv **before** it reads `.env`, so
+the refusal is not a courtesy reserved for machines that are already configured. Every driver
+that arms a fault goes through it — including `git-dispatch-drop-live.mjs` and
+`git-rotation-window-live.mjs`, which are dev-only by construction and therefore always
+require the flag — and `scripts/evidence-redaction.test.mjs` enforces it on the directory:
+any `*-live.mjs` that calls `arm{KeyRead,Jira,GitDispatch,HookPromote}Fault` and does not
+import `requireEnvAck` fails `npm run test:offline`.
+
 ### JSM & Assets prerequisites
 
 `test:jsm-assets` needs the API user to be a **service-desk agent AND project admin**

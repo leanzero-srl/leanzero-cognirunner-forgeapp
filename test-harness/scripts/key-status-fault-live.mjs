@@ -29,24 +29,38 @@
  * an operator can open Apps -> CogniRunner -> Settings and READ the card in the state F-603
  * is about. The fault expires on its own whatever happens.
  *
+ * SHARED DEV TENANT (F-686). `--env` defaults to `staging`; `--env=dev` additionally needs
+ * `--i-know-dev-is-shared`, because `armKeyReadFault` on the shared site makes an admin who
+ * happens to be in Settings read a PLANTED refusal as a bad credential and rotate a working
+ * key. The refusal and its wording live in lib/shared-env-guard.mjs — one home, four drivers.
+ *
  * Usage (from test-harness/):  node scripts/key-status-fault-live.mjs [--env=staging|dev]
- *   [--provider=openai] [--hold=0]
+ *   [--i-know-dev-is-shared] [--provider=openai] [--hold=0]
  * Env: STAGING_TESTSTATE_URL (or TESTSTATE_URL) + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID.
  * Nothing secret is printed: not the secret, not the trigger URL, not a key or its length.
  */
 import fs from "node:fs";
-import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { requireEnv } from "../lib/env.mjs";
+// F-686 — the shared-dev acknowledgement has ONE home; this driver arms the very lever
+// F-679's refusal was written about, so it goes through the same door.
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 // The slot NAME has ONE home (src/shared/provider-slots.js). A retyped
 // "COGNIRUNNER_KEY_openai" here would silently rot the day a helper changes.
 import { providerKeySlot } from "../../src/shared/provider-slots.js";
 
-const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const ENV_NAME = arg("env", "staging");
-const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
+const PROVIDER = arg("provider", "openai");
+/* THE LONGEST WINDOW THIS DRIVER ARMS is the family ceiling, not the 120s of step 1: step
+ * "TTL clamp" deliberately asks for 99999s and lets the server clamp it, so the honest
+ * number to put in front of an operator is the cap itself. `--hold=N` (≤300) can hold the
+ * refusing lever for an operator to read the card, which lands at the same place. */
+const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), {
+  faults: [`keyRead:${PROVIDER}`],
+  maxSeconds: 300,
+  script: "key-status-fault-live.mjs",
+});
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
-const PROVIDER = arg("provider", "openai");
 const OTHER = PROVIDER === "atlassian" ? "openai" : "atlassian";
 const HOLD = Math.max(0, Math.min(300, Number(arg("hold", "0")) || 0));
 const OUT = new URL("../results/key-status-fault", import.meta.url).pathname;

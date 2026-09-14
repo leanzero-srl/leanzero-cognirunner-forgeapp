@@ -79,7 +79,12 @@ import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 import { drainSweep, answerComplete, plantPopulation, plantLedgerRow, leverFacts } from "../lib/sweep-drain.mjs";
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -610,7 +615,7 @@ const cleanup = async () => {
 };
 
 main()
-  .catch((e) => { FAIL(`driver threw: ${String((e && e.message) || e).slice(0, 300)}`); })
+  .catch((e) => { crashed = e; FAIL(`driver threw: ${String((e && e.message) || e).slice(0, 300)}`); })
   /* F-761 — THE LEVER COMES DOWN BEFORE THE BALLAST GOES, and on every path. It must be
      first: the clear below deletes rows under the very prefix the lever refuses, so a
      cleanup that ran with the lever still up would be fighting it and could leave the
@@ -626,6 +631,6 @@ main()
     /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
     ev.provenance = runProvenance();
     fs.writeFileSync(`${OUT}/${EV_NAME}`, JSON.stringify(redactSecrets(ev), null, 2));
-    console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}  →  results/plant-sweep/${EV_NAME}  (${STALE ? "--stale arm: the re-POST trail" : "plain arm: plant + sweep"})`);
-    process.exit(fails > 0 ? 1 : 0);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `  →  results/plant-sweep/${EV_NAME}  (${STALE ? "--stale arm: the re-POST trail" : "plain arm: plant + sweep"})` }));
+    process.exit(resultExitCode({ fails, crashed }));
   });

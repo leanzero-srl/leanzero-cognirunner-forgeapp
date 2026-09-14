@@ -41,7 +41,12 @@ import { makeShot } from "../lib/roster-ui.mjs";
    BASE class on the email span too, so on a row carrying an address `.first()` is the
    address, and the segment comparison could only ever fail. */
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 /* F-734 — THIS DRIVER IS NOT READ-ONLY, AND FOR TWO YEARS OF FINDINGS IT SAID IT WAS.
    Step 2 above GRANTS AN APP ROLE on the shared dev tenant, and the whole proof rests on
@@ -418,6 +423,7 @@ async function main() {
     if (JSON.stringify(end) === beforeJson) { restored = true; granted = false; PASS("SECOND READ: `app_admins` is BYTE-IDENTICAL to the snapshot — the roster is restored", { rows: end.length }); }
     else FAIL("the roster did NOT return to its snapshot", { before, end });
   } catch (e) {
+    crashed = e;
     FAIL("the run aborted", { error: String(e && e.message || e) });
   } finally {
     if (!restored) {
@@ -458,8 +464,8 @@ async function main() {
     /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
     ev.provenance = runProvenance();
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
-    console.log(`\n  ${passes} PASS · ${fails} FAIL · ${unproven} N/V   -> ${OUT}/evidence.json\n`);
-    process.exit(fails ? 1 : 0);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `   -> ${OUT}/evidence.json\n` }));
+    process.exit(resultExitCode({ fails, crashed }));
   }
 }
 main();

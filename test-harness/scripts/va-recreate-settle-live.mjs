@@ -65,7 +65,12 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
    here, which is the same second-home defect F-776 closed for the flag and the verdict. */
 import { resolveFlipModel, judgeAgentCapability, applyVerdict, decideInstanceFlip } from "../lib/agent-capability-precondition.mjs";
 /* F-787 - the commit this run came from, recorded in the evidence file it writes. */
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -338,7 +343,7 @@ async function main() {
   ev.jobId = jobId;
 }
 
-try { await main(); } catch (e) { console.error("THREW", e.stack); fails += 1; }
+try { await main(); } catch (e) { crashed = e; console.error("THREW", e.stack); fails += 1; }
 finally {
   try {
     // The planted tombstone is cleared through the SAME door that planted it — it is the
@@ -365,6 +370,6 @@ finally {
      evidence produced from uncommitted edits is not reproducible from the commit it names. */
   ev.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
-  console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
-  process.exit(fails ? 1 : 0);
+  console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
+  process.exit(resultExitCode({ fails, crashed }));
 }

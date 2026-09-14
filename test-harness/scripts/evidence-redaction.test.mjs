@@ -2523,8 +2523,8 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
 }
 
 
-/* ── 4j. F-792 — A SUMMARY LINE IS PRINTED THROUGH `formatResultLine`, SO A CRASH
- *              CANNOT BE REPORTED AS `0 fail` ────────────────────────────────────
+/* ── 4j. F-792 / F-796 — EVERY SUMMARY LINE IS PRINTED THROUGH `formatResultLine`,
+ *              SO A CRASH CANNOT BE REPORTED AS `0 fail` ─────────────────────────
  *
  * F-784 found one driver printing `RESULT — 2 pass, 0 fail, 0 not verified` under a
  * TypeError stack. F-792 measured how wide that shape is: fifteen drivers print their
@@ -2538,56 +2538,87 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
  * Drivers with no summary line at all are not in scope: a driver that prints nothing on the
  * crash path tells no lie, and the rule is about lines that CLAIM a verdict.
  *
- * THE DETECTOR IS TEXTUAL AND ITS POSITIVE CONTROL IS THE OLD SHAPE. A regex that quietly
- * stopped matching would turn this rule green by finding nothing, so the old shape is
- * asserted to still be recognised, as a literal, below. The rule is FILE-LEVEL and coarse in
- * the permitting direction: a file that calls `formatResultLine` anywhere counts as wired,
- * which is stated rather than hidden, because the alternative is parsing every console.log.
+ * F-796 — IT IS NOW ABSOLUTE, AND IT IS LINE-LEVEL. Both of those were named defects of the
+ * rule, not of the drivers:
  *
- * AND IT IS A DEBT LEDGER, for exactly F-787's reason. 23 drivers still print the old shape;
- * turning 23 files red in one pass makes this the rule people delete. The named 23 are
- * permitted, THE COUNT MAY NOT GROW, and a driver NOT on the list must be wired — so the rule
- * bites on the next driver somebody writes, which is the one that would otherwise be copied
- * from a neighbour still carrying the defect. A converted entry must come OFF the list, and
- * the last assertion says so, because a warn-list nobody prunes is a permanent exemption. */
+ *   THE DEBT LIST IS GONE, because the debt is. All 23 named drivers were wired in one pass,
+ *   and a warn-list with nothing left on it is an exemption waiting to be re-used. There is
+ *   no longer a permitted set: a live driver that prints a verdict prints it through the
+ *   helper, full stop.
+ *
+ *   THE CHECK IS PER LINE, NOT PER FILE. The old form asked "does this file mention
+ *   `formatResultLine` anywhere", so a converted driver could keep a SECOND hand-rolled
+ *   summary — the likeliest way this defect comes back, because a driver with two arms or
+ *   two phases has two verdict lines and only one of them gets touched. Each matching LINE
+ *   must itself call the helper, and a failure names `file:line` so the reader goes to the
+ *   one that is wrong rather than to the file that contains it.
+ *
+ * THE DETECTOR IS TEXTUAL, AND ITS CONTROLS ARE THE SHAPES THAT REALLY SHIPPED. A regex that
+ * quietly stopped matching would turn an absolute rule green by finding nothing at all — so
+ * the cohort size is asserted, the OLD shape is asserted to still be recognised AND judged
+ * non-compliant, the WIRED shape to be recognised AND judged compliant, a per-check PASS/FAIL
+ * line to be no summary at all, and a two-line body carrying one of each is asserted to fail
+ * — which is the assertion that would have been green under the file-level form. */
 {
-  const SUMMARY_DEBT = [
-    "brakes-knowledge-live.mjs", "coder-pin-epoch-live.mjs", "coder-skills-live.mjs",
-    "config-view-provenance-live.mjs", "delete-fault-drain-live.mjs",
-    "git-rotation-window-live.mjs", "git-webhook-setup-live.mjs",
-    "harness-fault-expiry-live.mjs", "issue-key-live.mjs", "perm-namesake-ui-live.mjs",
-    "plant-sweep-live.mjs", "resolvers-live.mjs", "rules-api-roles-live.mjs",
-    "sandbox-confluence-live.mjs", "skills-knowledge-ui-live.mjs", "user-search-fault-live.mjs",
-    "va-capability-gate-live.mjs", "va-purge-on-delete-live.mjs", "va-receipt-copy-live.mjs",
-    "va-recreate-settle-live.mjs", "va-rest-doors-live.mjs", "va-shadow-live.mjs",
-    "web-search-live.mjs",
-  ];
-  /* A COUNTS SUMMARY: a console line that opens with a newline and carries a counter beside
-     the words a verdict is written in. Deliberately narrow on the opening `\n` — that leading
-     blank line is what separates a run's verdict from its per-check chatter, and per-check
-     PASS/FAIL lines (printed by helpers, never with a leading newline) must not be caught. */
-  const SUMMARY_LINE = /console\.(?:log|error)\(\s*(?:"\\n"\s*\+\s*)?[`"']\\n[^\n]*(?:\$\{[^\n]*\})?[^\n]*(?:pass|fail|FAILURE|not verified|N\/V)/;
-  ok(SUMMARY_LINE.test('console.log(`\\n${passes} pass, ${fails} fail, ${unproven} not verified`);'),
+  /* A COUNTS SUMMARY, IN THREE PARTS — and F-796 had to add the third.
+     (1) it opens a console line with a NEWLINE: that leading blank line is what separates a
+         run's verdict from its per-check chatter, and per-check PASS/FAIL lines (printed by
+         helpers, never with a leading newline) must not be caught;
+     (2) it carries a verdict WORD;
+     (3) F-796 — that word sits against a COUNTER. Without (3) the detector matched every
+         banner a driver prints: `console.log("\nSTEP 4 - the step-3-failure arm")` and
+         `console.log(`\nF-629 — the key-status failure, on ${ENV_NAME}`)` both contain
+         "fail" after a newline and neither claims a verdict. The old FILE-level rule never
+         noticed, because those files also contained a real summary; grading per LINE made
+         the false positives visible immediately, which is the argument for grading per line
+         in one sentence. A counter is an interpolation adjacent to the word, on either side
+         (`${passes} pass` and `PASS ${passes}` are both shapes that really shipped). */
+  const LEADING_NEWLINE = /console\.(?:log|error)\(\s*(?:"\\n"\s*\+\s*)?[`"']\\n/;
+  const COUNTED_VERDICT = /(?:\$\{[^}]*\}[\s·,:.]*(?:pass|fail|not verified|N\/V)|(?:PASS|FAIL|N\/V)[\s·,:.]*\$\{)/i;
+  const SUMMARY_LINE = {
+    test: (l) => LEADING_NEWLINE.test(l) && (/formatResultLine/.test(l) || COUNTED_VERDICT.test(l)),
+  };
+  /** Every offending LINE in a body, as `n: text` — the unit the rule now grades. */
+  const unwiredLines = (src) =>
+    src.split("\n")
+      .map((l, i) => ({ n: i + 1, l }))
+      .filter(({ l }) => SUMMARY_LINE.test(l) && !/formatResultLine/.test(l));
+  const summaryLines = (src) => src.split("\n").filter((l) => SUMMARY_LINE.test(l));
+
+  const OLD_SHAPE = 'console.log(`\\n${passes} pass, ${fails} fail, ${unproven} not verified`);';
+  const WIRED_SHAPE = '  console.log("\\n" + formatResultLine({ passes, fails, unproven, crashed }));';
+  ok(SUMMARY_LINE.test(OLD_SHAPE),
     "4j (F-792) POSITIVE CONTROL: the detector still recognises the OLD summary shape — a regex that matched nothing would make this rule green by finding no drivers at all");
-  ok(SUMMARY_LINE.test('  console.log("\\n" + formatResultLine({ passes, fails, unproven, crashed }));'),
+  ok(SUMMARY_LINE.test(WIRED_SHAPE),
     "4j (F-792) POSITIVE CONTROL: the detector also recognises the WIRED shape, so 'has a summary' and 'is compliant' are two independent questions");
   ok(!SUMMARY_LINE.test('  console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);'),
     "4j (F-792) NEGATIVE CONTROL: a per-check PASS/FAIL line is NOT a summary — without this the rule would demand formatResultLine of every driver that prints checks");
+  for (const banner of [
+    'console.log("\\nSTEP 4 - the step-3-failure arm");',
+    'console.log(`\\nF-629 — the key-status failure, on ${ENV_NAME.toUpperCase()}, provider ${PROVIDER}`);',
+    'if (NO_BREAK) { console.log("\\n--no-break: stopping before the failure arms."); return; }',
+  ]) {
+    ok(!SUMMARY_LINE.test(banner),
+      `4j (F-796) NEGATIVE CONTROL: a STEP BANNER that merely contains the word "fail" is not a verdict — ${banner.slice(0, 70)}…`);
+  }
+  ok(unwiredLines(OLD_SHAPE).length === 1 && unwiredLines(WIRED_SHAPE).length === 0,
+    "4j (F-796) POSITIVE CONTROL: the per-line grader calls the old shape offending and the wired shape clean");
+  /* THE ASSERTION THE FILE-LEVEL FORM COULD NOT MAKE: one wired line does not absolve the
+     hand-rolled one beside it. This is F-796's whole point, stated as a control. */
+  const MIXED = `${WIRED_SHAPE}\n${OLD_SHAPE}`;
+  ok(unwiredLines(MIXED).length === 1 && unwiredLines(MIXED)[0].n === 2,
+    "4j (F-796) POSITIVE CONTROL: a file carrying BOTH a wired line and a hand-rolled one is RED, and the red names line 2 — under the old file-level test this body passed because `formatResultLine` appeared somewhere in it");
 
-  const summarisers = liveFiles.filter((f) =>
-    readFileSync(path.join(here, f), "utf8").split("\n").some((l) => SUMMARY_LINE.test(l)));
-  const unwired = summarisers.filter((f) => !/formatResultLine/.test(readFileSync(path.join(here, f), "utf8")));
-
+  const summarisers = liveFiles.filter((f) => summaryLines(readFileSync(path.join(here, f), "utf8")).length > 0);
   ok(summarisers.length > 20,
     `4j (F-792): the summary-printing cohort is found, not assumed — ${summarisers.length} live drivers print a counts summary`);
-  ok(unwired.length <= SUMMARY_DEBT.length,
-    `4j (F-792): the summary debt did not GROW — ${unwired.length} drivers print a hand-rolled summary, ledger allows ${SUMMARY_DEBT.length}`);
-  const strangers = unwired.filter((f) => !SUMMARY_DEBT.includes(f));
-  ok(strangers.length === 0,
-    `4j (F-792): a driver that prints a verdict must print it through formatResultLine — ${strangers.join(", ")} hand-rolls a summary line, so a crash inside it reports the counters the throw froze instead of saying the run did not finish`);
-  const stale = SUMMARY_DEBT.filter((f) => !unwired.includes(f));
-  ok(stale.length === 0,
-    `4j (F-792): the debt list is PRUNED — ${stale.join(", ")} now uses formatResultLine (or prints no summary) and must come off SUMMARY_DEBT`);
+
+  const offenders = [];
+  for (const f of summarisers) {
+    for (const { n, l } of unwiredLines(readFileSync(path.join(here, f), "utf8"))) offenders.push(`${f}:${n} ${l.trim().slice(0, 90)}`);
+  }
+  ok(offenders.length === 0,
+    `4j (F-792/F-796): EVERY line that prints a verdict prints it through formatResultLine — ${offenders.join(" | ")} hand-rolls a summary, so a crash inside it reports the counters the throw froze instead of saying the run did not finish`);
 
   ok(/export function formatResultLine/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8"))
      && /export function resultExitCode/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8")),
@@ -2667,16 +2698,46 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
 
   /* The other half: the label a FAILING LINE prints must also bind to one rule. Assertion
      messages here open with `<label> (F-nnn)`, and that pairing is what a reader greps. */
+  /* THE MESSAGE SCAN READS CODE, NOT COMMENTS — and this rule's OWN docblock is why. The
+     paragraph above quotes the historical bad label verbatim (`a red 4i (F-787): ... sends
+     someone to a rule about credentials`) because naming the collision is how the reason
+     survives; a scan that read comments would grade that sentence as a live print site and
+     turn the rule red on the text explaining it. `maskComments` keeps string literals — the
+     assertion messages ARE string literals — and blanks the prose. The section-label parse
+     above deliberately does the opposite: a header IS a comment. */
+  const codeOnly = maskComments(selfSrc);
   const byLabel = new Map();
-  for (const m of selfSrc.matchAll(/(?<![\w-])(\d[0-9A-Za-z-]*) \(F-(\d+)/g)) {
+  for (const m of codeOnly.matchAll(/(?<![\w-])(\d[0-9A-Za-z-]*) \(F-(\d+)/g)) {
     if (!byLabel.has(m[1])) byLabel.set(m[1], new Set());
     byLabel.get(m[1]).add(m[2]);
   }
+  /* THE NEEDLE IS ASSEMBLED, NOT WRITTEN. Spelling the historical label as a literal inside
+     this control's own MESSAGE would put it back into the code-only view and fail the very
+     assertion it makes — the scan reads source text, and an assertion message is source. */
+  const HISTORIC = "4i " + "(F-787)";
+  ok(selfSrc.includes("a red `" + HISTORIC) && !new RegExp("(?<![\\w-])" + HISTORIC.replace(/[()]/g, "\\$&")).test(codeOnly),
+    `4l (F-795) POSITIVE CONTROL: the historical ${HISTORIC} quoted in this rule's own docblock is present in the file and ABSENT from the code-only view — the scan cannot be tripped by the sentence that explains it`);
+  ok(/4j \(F-796\) POSITIVE CONTROL/.test(codeOnly),
+    "4l (F-795) POSITIVE CONTROL: …and a real assertion message SURVIVES the mask, so the code-only view has not simply blanked everything");
   ok(byLabel.size > 0,
     `4l (F-795): the message-label cohort is found, not assumed — ${byLabel.size} labels appear in assertion messages`);
-  const split = [...byLabel].filter(([, fs]) => fs.size > 1).map(([l, fs]) => `${l}→F-${[...fs].join("/F-")}`);
-  ok(split.length === 0,
-    `4l (F-795): a label printed in a failing message names ONE finding — ${split.join(", ")} is printed against more than one F-number`);
+  /* A LABEL MAY CITE MORE THAN ONE FINDING — 4j was cut for F-792 and widened by F-796, and
+     its messages name both. What may NOT happen is a message citing a finding its own SECTION
+     HEADER does not, because then the header and the red line disagree about what the rule is
+     for. The headers are the declaration; the messages must stay inside it. */
+  const headerFindings = new Map();
+  for (const l of selfSrc.split("\n")) {
+    const m = /^(?:\/\*|\s\*) ── (\d[0-9A-Za-z-]*)\. (.*)$/.exec(l);
+    if (m) headerFindings.set(m[1], new Set([...m[2].matchAll(/F-(\d+)/g)].map((x) => x[1])));
+  }
+  const outside = [];
+  for (const [lab, fs] of byLabel) {
+    const declared = headerFindings.get(lab);
+    if (!declared) continue;                       // the undeclared-label assertion below owns this
+    for (const f of fs) if (!declared.has(f)) outside.push(`${lab} prints F-${f}, header declares F-${[...declared].join("/F-")}`);
+  }
+  ok(outside.length === 0,
+    `4l (F-795): a failing message may only cite a finding its own section header declares — ${outside.join(", ")}`);
   const undeclared = [...byLabel.keys()].filter((l) => !labels.includes(l));
   ok(undeclared.length === 0,
     `4l (F-795): a message label has a SECTION — ${undeclared.join(", ")} is printed by an assertion but no numbered section declares it, so the red line points at a rule that does not exist`);

@@ -58,6 +58,7 @@
 
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "issues"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -461,8 +462,8 @@ async function main() {
     else FAIL(`${PROJECT} changed: before ${JSON.stringify(before)} now ${JSON.stringify(finalCounts)}`);
   }
 
-  console.log(`\nRESULT — ${passes} pass, ${fails} fail, ${unproven} not verified`);
-  if (fails) process.exitCode = 1;
+  console.log("\n" + formatResultLine({ passes, fails, unproven }));
+  if (resultExitCode({ fails })) process.exitCode = 1;
 }
 
 /**

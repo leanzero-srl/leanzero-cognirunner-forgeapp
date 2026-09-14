@@ -56,6 +56,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { requireEnvAck, forgeEnvId, positionalArgs } from "../lib/shared-env-guard.mjs";
 import { gitHookUrl } from "../lib/git-hook-url.mjs";
 import { maskFaultKey } from "../lib/redact.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 /* F-686 — DEV-ONLY BY CONSTRUCTION: both hook calls below go to `env.TESTSTATE_URL`, and
  * there is no staging trigger for this flow, so `--env` is decided FOR this driver and the
@@ -203,8 +204,8 @@ async function main() {
   NV("the two-slot state cannot be planted either: plantHookSecret writes {secret, connId, repoId, createdAt} with no `pending` field, and the kvSet allow-list is deliberately not widened to git_conn_secret:* (\"secrets are never plantable\").");
   NV('so `hookState:"rotation-failed"` and the pending-secret acceptance window remain NOT VERIFIED by this run. The lever now exists (armHookPromoteFault, HARNESS_SECRET-gated, inert in production); driving it live is the next run, not this one.');
 
-  console.log(`\nRESULT - ${passes} pass, ${fails} fail, ${unproven} not verified`);
-  if (fails) process.exitCode = 1;
+  console.log("\n" + formatResultLine({ passes, fails, unproven, dash: "-" }));
+  if (resultExitCode({ fails })) process.exitCode = 1;
 }
 
 
@@ -559,8 +560,8 @@ async function faultPhase() {
 
   // Belt and braces: leave nothing armed even if a step above returned early.
   await hookAction({ action: "disarmHookPromoteFault", connectionId: connId, repoId: REPO }).catch(() => {});
-  console.log(`\nRESULT — ${passes} pass, ${fails} fail, ${unproven} not verified`);
-  if (fails) process.exitCode = 1;
+  console.log("\n" + formatResultLine({ passes, fails, unproven }));
+  if (resultExitCode({ fails })) process.exitCode = 1;
 }
 
 /*

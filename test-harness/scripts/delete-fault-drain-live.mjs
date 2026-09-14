@@ -105,12 +105,17 @@ import { fileURLToPath } from "node:url";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 import {
   drainSweep, answerComplete, decideSweepStep, newDrainState,
   IDENTICAL_ANSWER_LIMIT, DELETES_FAILING_BACKOFF_MS, plantPopulation,
   leverFacts,
 } from "../lib/sweep-drain.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 /* ═══════════════════════════════════════════════════════════════════════════════
  * THE PURE HALF — no I/O, no env, no network. Exported so `delete-fault-drain.test.mjs` can
@@ -848,6 +853,7 @@ if (isEntry) {
   try {
     await run(state);
   } catch (e) {
+    crashed = e;
     state.note("FAIL", `driver threw: ${String((e && e.message) || e).slice(0, 300)}`);
   }
   try {
@@ -860,6 +866,6 @@ if (isEntry) {
   /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
   state.ev.provenance = runProvenance();
   fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(state.ev), null, 2));
-  console.log(`\nPASS ${state.passes}  FAIL ${state.fails}  N/V ${state.unproven}  →  results/delete-fault-drain/evidence.json`);
-  process.exit(state.fails > 0 ? 1 : 0);
+  console.log("\n" + formatResultLine({ passes: state.passes, fails: state.fails, unproven: state.unproven, crashed, suffix: "  →  results/delete-fault-drain/evidence.json" }));
+  process.exit(resultExitCode({ fails: state.fails, crashed }));
 }

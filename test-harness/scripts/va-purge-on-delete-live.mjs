@@ -40,6 +40,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
 import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -256,8 +257,8 @@ async function main() {
   if (JSON.stringify(cAfter) === JSON.stringify(cBefore)) PASS(`no ${PROJECT} comment count changed: ${JSON.stringify(cAfter)}`);
   else FAIL(`comment counts CHANGED: before ${JSON.stringify(cBefore)} after ${JSON.stringify(cAfter)}`);
 
-  console.log(`\nRESULT - ${passes} pass, ${fails} fail, ${unproven} not verified`);
-  if (fails) process.exitCode = 1;
+  console.log("\n" + formatResultLine({ passes, fails, unproven, dash: "-" }));
+  if (resultExitCode({ fails })) process.exitCode = 1;
 }
 
 main()

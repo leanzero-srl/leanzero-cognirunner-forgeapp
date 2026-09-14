@@ -46,7 +46,12 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
 import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
 /* F-787 - the commit this run came from, recorded in the evidence file it writes. */
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 /* F-714 — the HOOK half and the BROWSER half must come from ONE guard row. This driver
    used to take `hookUrl` from `--env` while pinning `ADMIN_PAGE` to `forgeEnvId("staging")`,
@@ -345,7 +350,7 @@ async function main() {
   else FAIL("the project's comment total moved", { before: cBefore, after: cAfter });
 }
 
-try { await main(); } catch (e) { console.error("THREW", e.stack); fails += 1; }
+try { await main(); } catch (e) { crashed = e; console.error("THREW", e.stack); fails += 1; }
 finally {
   try {
     if (restore.agentId && !KEEP) {
@@ -362,6 +367,6 @@ finally {
      evidence produced from uncommitted edits is not reproducible from the commit it names. */
   ev.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
-  console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/`);
-  process.exit(fails ? 1 : 0);
+  console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/` }));
+  process.exit(resultExitCode({ fails, crashed }));
 }

@@ -41,7 +41,12 @@ import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
 import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 const { envName: ENV_NAME, hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -53,10 +58,15 @@ const SLOT = "COGNIRUNNER_AGENT_MODEL_atlassian";
 const OUT = new URL("../results/coder-skills", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 
+/* F-796 - THE PASSES ARE COUNTED, NOT INFERRED. This driver only ever counted FAILURES,
+   so a RESULT line through `formatResultLine` could have said `0 pass` over a run that
+   proved a dozen things. The counter is incremented in the same helper that records the
+   row, so the two can never disagree. */
 let failures = 0;
+let passes = 0;
 const evidence = { checks: [] };
 const check = (label, ok, data = {}) => {
-  if (!ok) failures += 1;
+  if (ok) passes += 1; else failures += 1;
   evidence.checks.push({ label, ok, ...data });
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
 };
@@ -238,7 +248,7 @@ const main = async () => {
   console.log(`  control   : ${control.taskId}`);
 };
 
-try { await main(); } catch (e) { console.error("THREW", e.stack); failures += 1; }
+try { await main(); } catch (e) { crashed = e; console.error("THREW", e.stack); failures += 1; }
 finally {
   /* RESTORE, on every path THIS RUN MUTATED. The slot was absent; absent is what it goes back
      to. F-782: a run that never flipped must not delete a slot somebody else set — deleting
@@ -267,6 +277,6 @@ finally {
   /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
   evidence.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(evidence, null, 2));
-  console.log(`\n${failures} failure(s). Evidence: ${OUT}/evidence.json`);
-  process.exit(failures ? 1 : 0);
+  console.log("\n" + formatResultLine({ passes, fails: failures, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
+  process.exit(resultExitCode({ fails: failures, crashed }));
 }

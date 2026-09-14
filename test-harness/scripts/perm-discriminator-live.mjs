@@ -23,6 +23,7 @@
  * RESTORE. The roster is snapshotted in memory, the grant is removed through the same
  * UI, and the restore is proven by a byte compare of the KVS value.
  * ═══════════════════════════════════════════════════════════════════════════════ */
+import { forgeEnvId } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
@@ -45,7 +46,7 @@ const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith
 const TARGET = arg("editor", "557058:653160a5-6112-470d-baea-333ac760364e");
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const ENV_ID = "989ecaa0-261b-406e-b444-78c01c0d7772";
+const ENV_ID = forgeEnvId("dev");
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/perm-discriminator", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
@@ -373,11 +374,25 @@ async function main() {
     const allShots = [...shot_.shots, ...uiShots()];
     ev.shots = allShots;
     const leaks = allShots.filter((s) => s.readable > 0);
+    /* F-700 — ONE FAIL PER EVENT, WITH THE CAUSE THE RESULT ACTUALLY HAS.
+       There used to be three arms here and a single leak during a repair fired TWO of
+       them: the capture FAIL, and then "the roster restore reports ok:false - the repair
+       did not complete cleanly" printing `verdict:"byte-identical"`, `failures:undefined`
+       and `reason:undefined`, because `leakVerdict()` overwrote `ok` on the clean early
+       return. An operator was told the repair broke and sent to inspect a roster that was
+       fine. The library now leaves `ok` to the roster diff; the leak is ONE FAIL, which
+       carries the repair-time detail when there is any, and the roster sentence is only
+       reached when the leak did not already explain the run.
+       (`restore.leaks` is a SUBSET of `uiShots()` — the restore's captures come from the
+       same roster-UI recorder — so the first arm cannot miss a leak the second would
+       have caught.) */
     if (shot_.leaked || uiLeaked()) {
-      FAIL("a screenshot capture was REFUSED because a readable email address survived the mask - the F-660 guarantee fired and this run FAILS on it regardless of the roster verdict", { paths: leaks.map((s) => s.path), leaks });
-    }
-    if (restore && restore.leaked) FAIL("the roster restore reports leaked:true - a capture taken during a repair was refused for a readable address", { paths: (restore.leaks || []).map((l) => l.path), leakInfo: restore.leakInfo });
-    if (restore && restore.ok === false) FAIL("the roster restore reports ok:false - the repair did not complete cleanly", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
+      FAIL("a screenshot capture was REFUSED because a readable email address survived the mask - the F-660 guarantee fired and this run FAILS on it regardless of the roster verdict", {
+        paths: leaks.map((s) => s.path),
+        leaks,
+        ...(restore && restore.leaked ? { duringRepair: restore.leakInfo, repairLeakPaths: (restore.leaks || []).map((l) => l.path) } : {}),
+      });
+    } else if (restore && restore.ok === false) FAIL("the roster restore reports ok:false - the repair did not complete cleanly", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
     /* F-693 — THE POSITIVE CONTROL FOR THE MASK ITSELF, ONCE PER RUN, OVER BOTH SOURCES.
        Every per-shot verdict above is "nothing readable was left", which a mask matching ZERO
        elements satisfies unconditionally — so a rename of `.perm-ident-email` makes this

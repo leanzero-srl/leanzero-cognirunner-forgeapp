@@ -587,11 +587,26 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
   async function restoreRosterToSnapshot(snapshot) {
     const actions = [];
     const failures = [];
-    /* F-681 — the leak verdict, folded into EVERY exit of this function. A leak refused
-       during a repair fails the restore even when the roster diff comes back clean. */
-    const leakVerdict = () => (shot.leaked
+    /* F-681 — the leak verdict, folded into EVERY exit of this function: a capture refused
+       during a repair must ride out of here whatever the roster diff says.
+     *
+     * F-700 — BUT IT NO LONGER OVERWRITES `ok` ON THE CLEAN PATH. It used to be spread
+     * LAST over every return, including the `plan.clean` early exit, so a leak on a roster
+     * that was byte-identical produced `{ ok:false, verdict:"byte-identical" }` with no
+     * `failures` key at all. Both drivers then fired TWO run-level FAILs for one event, and
+     * the second said "the repair did not complete cleanly" while printing
+     * `verdict:"byte-identical", failures:undefined, reason:undefined` — a cause asserted
+     * from a result that did not contain it. An operator reading `evidence.json` was sent
+     * to inspect a roster that was fine.
+     *
+     * `ok` now means ONE thing: "is the roster what the snapshot says". The leak is carried
+     * on `leaked`/`leaks`/`leakInfo`, which is what the drivers fail on first — `ok:false`
+     * is only reached when the leak did not already explain the failure. `ownsOk` is left
+     * true on the verdict path below, where `v.ok` is a real roster verdict and the leak
+     * forcing it false costs no diagnosis. */
+    const leakVerdict = ({ ownsOk = true } = {}) => (shot.leaked
       ? {
-        ok: false,
+        ...(ownsOk ? { ok: false } : {}),
         leaked: true,
         leaks: shot.leaks.map((l) => ({ path: l.path, readable: l.readable, spans: l.total, masked: l.masked })),
         leakInfo: shot.leaks.length + " screenshot capture(s) were REFUSED because a readable email address survived the mask - "
@@ -632,7 +647,10 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
 
     for (let pass = 0; pass < 4; pass++) {
       const plan = planRosterRestore(snapshot, await rosterRows());
-      if (plan.clean) return { ok: true, actions, verdict: "byte-identical", ...(failures.length ? { failures, info: failures.length + " repair(s) failed on the way, but the roster ended byte-identical" } : {}), ...leakVerdict() };
+      /* F-700 — `ownsOk: false`: a byte-identical roster stays `ok:true`. The leak is still
+         reported, and the driver still FAILS the run on it — but it is not dressed up as a
+         broken repair on a repair that was perfect. */
+      if (plan.clean) return { ok: true, actions, verdict: "byte-identical", ...(failures.length ? { failures, info: failures.length + " repair(s) failed on the way, but the roster ended byte-identical" } : {}), ...leakVerdict({ ownsOk: false }) };
       /* Strays first: a wrong grant is the thing that must not survive this process. */
       for (const r of plan.strays) {
         const id = rosterIdOf(r);

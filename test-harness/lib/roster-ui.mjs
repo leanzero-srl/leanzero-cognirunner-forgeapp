@@ -304,14 +304,30 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
            with it; for admin in particular the whole point is that the card renders its
            scope as "All rules (always)" with no control beside it. `.perm-admin-role` is
            `scopeLabel(role, scope)` — the one sentence the product shows for this row. */
-        let card = null;
-        const cards = await readRows(frame, ".perm-admin-card").catch(() => []);
-        const cardPick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
-        if (cardPick.index >= 0) {
+        /* F-671 — AN UNREADABLE CARD IS A FAILED READ, AND THE READ NAMES WHICH FAILURE.
+           `card` used to come back `null` for three unrelated reasons — `readRows` threw,
+           no card matched the discriminator, or `.perm-admin-role` was absent — and the
+           caller below then treated every one of them as AGREEMENT. The read now reports
+           its own failure, and it gets ONE retry after a settle: the first attempt follows
+           a bare sleep with no wait-for, so a slow render must not read as a regression. */
+        const readCard = async () => {
+          const cards = await readRows(frame, ".perm-admin-card").catch((e) => ({ readFailed: String((e && e.message) || e).slice(0, 120) }));
+          if (!Array.isArray(cards)) return { card: null, how: "the roster card list could not be read (" + cards.readFailed + ")" };
+          const cardPick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
+          if (cardPick.index < 0) return { card: null, how: "no roster card matched the target by its discriminator among " + cards.length + " card(s): " + (cardPick.reason || "no reason given") };
           const roleEl = frame.locator(".perm-admin-card").nth(cardPick.index).locator(".perm-admin-role");
-          card = (await roleEl.count()) > 0 ? (await roleEl.first().innerText()).trim() : null;
+          if ((await roleEl.count()) === 0) return { card: null, how: "the matched card renders no `.perm-admin-role` element - PermissionsTab's scopeLabel markup has moved or been renamed" };
+          return { card: (await roleEl.first().innerText()).trim(), how: cardPick.how || cardPick.reason };
+        };
+        let cardRead = await readCard();
+        if (cardRead.card === null) {
+          await sleep(1200);
+          const again = await readCard();
+          cardRead = again.card === null
+            ? { card: null, how: again.how + " (still, after a 1.2s settle and a second read)" }
+            : { card: again.card, how: (again.how || "") + " (read only on the second attempt, after a settle)" };
         }
-        return { clicked: true, rows: rows.length, how: pick.how, index: pick.index, shot: grantShot, card, cardHow: cardPick.how || cardPick.reason };
+        return { clicked: true, rows: rows.length, how: pick.how, index: pick.index, shot: grantShot, card: cardRead.card, cardHow: cardRead.how };
       });
       if (r.disabledHit) return { ok: true, alreadyPresent: true, query: q };
       if (r.clicked) {
@@ -327,8 +343,17 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
              reported, not swallowed: it means the grant landed but the UI shows something
              else, which is exactly what an operator reading a screenshot would be misled by. */
           const wantCard = role === "admin" ? "All rules (always)" : (wantScope === "all" ? "All rules" : "Own rules only");
-          const cardAgrees = r.card === null || r.card === wantCard;
-          return { ok: true, how: r.how, index: r.index, query: q, shot: r.shot, card: r.card, cardAgrees, ...(cardAgrees ? {} : { cardMismatch: "the roster card reads " + JSON.stringify(r.card) + " but the stored row is " + JSON.stringify({ role: row.role, scope: row.scope }) + " (expected the card to read " + JSON.stringify(wantCard) + ")" }) };
+          /* F-671 — A CARD THAT COULD NOT BE READ IS NOT A CARD THAT AGREES. `r.card === null`
+             used to satisfy this assertion outright, so moving or renaming `.perm-admin-role`
+             would have disarmed the F-666 check at every call site, in silence and forever —
+             F-668's shape, one commit later. An unreadable card FAILS the read-back, and
+             `cardHow` is the reason it gives. The stored row above remains the authority for
+             `ok`: this assertion is about whether the UI can be SHOWN to agree with it. */
+          const cardAgrees = r.card === wantCard;
+          const cardMismatch = r.card === null
+            ? "the roster card could not be read back, so the UI cannot be shown to agree with the stored row " + JSON.stringify({ role: row.role, scope: row.scope }) + " (expected the card to read " + JSON.stringify(wantCard) + "): " + (r.cardHow || "no reason given")
+            : "the roster card reads " + JSON.stringify(r.card) + " but the stored row is " + JSON.stringify({ role: row.role, scope: row.scope }) + " (expected the card to read " + JSON.stringify(wantCard) + ")";
+          return { ok: true, how: r.how, index: r.index, query: q, shot: r.shot, card: r.card, cardHow: r.cardHow, cardAgrees, ...(cardAgrees ? {} : { cardMismatch, ...(r.card === null ? { cardUnreadable: true } : {}) }) };
         }
         return { ok: false, reason: "the click landed but the roster row is " + JSON.stringify(row ? { role: row.role, scope: row.scope } : null) + " (wanted " + JSON.stringify({ role, scope: wantScope }) + ")" };
       }
@@ -421,7 +446,9 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
         if (r1.removed) {
           await attempt("readd-changed", c.accountId, async () => {
             const r2 = await grantRole(c.accountId, repro.role, repro.scope, [c.before.displayName, c.before.emailAddress].filter(Boolean));
-            return { ok: !!r2.ok, role: repro.role, scope: repro.scope, reason: r2.reason, card: r2.card };
+            /* F-671 - carry the card READ-BACK verdict, not just its text: `card:null` used to
+               arrive here indistinguishable from a card that agreed. */
+            return { ok: !!r2.ok, role: repro.role, scope: repro.scope, reason: r2.reason, card: r2.card, cardAgrees: r2.cardAgrees, ...(r2.cardMismatch ? { cardMismatch: r2.cardMismatch } : {}) };
           });
         }
       }
@@ -431,7 +458,7 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
         if (!repro.ok) { actions.push({ act: "readd-missing", id: idTail(id), ok: false, refused: true, reason: repro.reason }); failures.push({ act: "readd-missing", id: idTail(id), reason: repro.reason }); continue; }
         await attempt("readd-missing", id, async () => {
           const g = await grantRole(id, repro.role, repro.scope, [r.displayName, r.emailAddress].filter(Boolean));
-          return { ok: !!g.ok, role: repro.role, scope: repro.scope, reason: g.reason, card: g.card };
+          return { ok: !!g.ok, role: repro.role, scope: repro.scope, reason: g.reason, card: g.card, cardAgrees: g.cardAgrees, ...(g.cardMismatch ? { cardMismatch: g.cardMismatch } : {}) };
         });
       }
       if (plan.sameSet) break;   // F-659 - order only; no click can fix it, and it is a pass

@@ -46,6 +46,7 @@ import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict,
   describePlan, isReproducibleRosterRow,
 } from "./roster-restore.mjs";
+import { maskEmail } from "./redact.mjs";
 
 export const ROLE_LABEL = { viewer: /^Viewer/, editor: /^Editor/, admin: /^Admin/ };
 export const SCOPE_LABEL = { own: /^Own Rules/, all: /^All Rules/ };
@@ -100,6 +101,21 @@ export const SETTLE_MS = Object.freeze({
   grantApply: 4500,
   cardRetry: 1200,
 });
+
+/**
+ * F-670 — HOW MANY TIMES A RE-GRANT IS ATTEMPTED BEFORE A ROW IS DECLARED LOST.
+ *
+ * Only the DESTRUCTIVE fallback path uses it: `changed` rows repaired by REMOVE then
+ * RE-GRANT, which exists solely for a build whose roster card renders no in-place role
+ * picker. The remove has already landed by then, so the row is off the tenant and the
+ * ONLY thing that can put it back is a grant that works — one attempt was the difference
+ * between a transient people-picker miss and a real site admin deleted for the rest of the
+ * run. Three, because the failures this absorbs are the ones a settle fixes (a slow
+ * `/rest/api/3/user/search`, a roster re-render that had not landed); a grant that is
+ * refused for a REASON (F-658's unexpressible role, F-657's race) is not retried at all —
+ * retrying a refusal just spends the settle three times over and reports the same sentence.
+ */
+export const REGRANT_ATTEMPTS = 3;
 
 /**
  * The mask `lib/redact.mjs#maskEmail` produces, re-expressed for the BROWSER context.
@@ -460,6 +476,64 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
   }
 
   /**
+   * F-658/F-666 — CAN THE UI EXPRESS `{role, scope}` AT ALL? Returns a refusal, or null.
+   *
+   * A role or scope outside the product's own enums is REFUSED rather than rounded to a
+   * label (F-658's defect was a default click that demoted a real site admin), and Admin
+   * renders NO scope control and stores "all", so asking Admin for anything else cannot be
+   * expressed either (F-666). F-670 — one home, because the in-place role change below
+   * clicks the SAME two controls and must refuse on exactly the same grounds; a second
+   * copy is how "admin has no scope" becomes true in one function and not the other.
+   */
+  function expressibleOrRefusal(role, scope) {
+    const adminGrant = role === "admin";
+    if (!ROLE_LABEL[role] || (!adminGrant && !SCOPE_LABEL[scope])) {
+      return { ok: false, refused: true, reason: "refusing to click a default for role=" + JSON.stringify(role) + " scope=" + JSON.stringify(scope) + " - the UI cannot express it" };
+    }
+    if (adminGrant && scope !== undefined && scope !== "all") {
+      return { ok: false, refused: true, reason: "refusing to grant admin with scope=" + JSON.stringify(scope) + " - the UI renders no scope control for Admin and stores \"all\"; asking for anything else cannot be expressed" };
+    }
+    return null;
+  }
+
+  /** PermissionsTab#scopeLabel, transcribed: the one sentence a roster card shows. */
+  const cardTextFor = (role, scope) => (role === "admin" ? "All rules (always)" : (scope === "all" ? "All rules" : "Own rules only"));
+
+  /**
+   * F-671 — READ BACK THE ROSTER CARD THIS ACCOUNT OWNS, and say WHICH failure it was.
+   *
+   * `.perm-admin-role` is `scopeLabel(role, scope)` — the one sentence PermissionsTab shows
+   * for a row, and the only way to tell an operator whether the UI AGREES with the storage
+   * read. `card` used to come back `null` for three unrelated reasons (`readRows` threw, no
+   * card matched the discriminator, `.perm-admin-role` was absent) and every caller read
+   * that as AGREEMENT. It reports its own failure instead, and it gets ONE retry after a
+   * settle, because the first attempt follows a bare sleep with no wait-for and a slow
+   * render must not read as a regression.
+   *
+   * F-670 — AND IT HAS ONE HOME. It was written inside `grantRole`; the in-place role
+   * change below needs exactly the same read-back, and a second copy of a rule this ledger
+   * has already paid for twice (F-666's card assertion, F-671's null) is how the two drift.
+   */
+  async function readCardRole(frame, accountId) {
+    const once = async () => {
+      const cards = await readRows(frame, ".perm-admin-card").catch((e) => ({ readFailed: String((e && e.message) || e).slice(0, 120) }));
+      if (!Array.isArray(cards)) return { card: null, how: "the roster card list could not be read (" + cards.readFailed + ")" };
+      const cardPick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
+      if (cardPick.index < 0) return { card: null, how: "no roster card matched the target by its discriminator among " + cards.length + " card(s): " + (cardPick.reason || "no reason given") };
+      const roleEl = frame.locator(".perm-admin-card").nth(cardPick.index).locator(".perm-admin-role");
+      if ((await roleEl.count()) === 0) return { card: null, how: "the matched card renders no `.perm-admin-role` element - PermissionsTab's scopeLabel markup has moved or been renamed" };
+      return { card: (await roleEl.first().innerText()).trim(), how: cardPick.how || cardPick.reason };
+    };
+    const first = await once();
+    if (first.card !== null) return first;
+    await sleep(settle.cardRetry);
+    const again = await once();
+    return again.card === null
+      ? { card: null, how: again.how + " (still, after a " + (settle.cardRetry / 1000) + "s settle and a second read)" }
+      : { card: again.card, how: (again.how || "") + " (read only on the second attempt, after a settle)" };
+  }
+
+  /**
    * Grant `{role, scope}` to `accountId` — by DISCRIMINATOR, in ONE context.
    *
    * F-657 — THE READ AND THE CLICK ARE THE SAME CONTEXT, AND THE TITLE IS RE-READ
@@ -489,12 +563,8 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
    */
   async function grantRole(accountId, role, scope, queries) {
     const adminGrant = role === "admin";
-    if (!ROLE_LABEL[role] || (!adminGrant && !SCOPE_LABEL[scope])) {
-      return { ok: false, refused: true, reason: "refusing to click a default for role=" + JSON.stringify(role) + " scope=" + JSON.stringify(scope) + " - the UI cannot express it" };
-    }
-    if (adminGrant && scope !== undefined && scope !== "all") {
-      return { ok: false, refused: true, reason: "refusing to grant admin with scope=" + JSON.stringify(scope) + " - the UI renders no scope control for Admin and stores \"all\"; asking for anything else cannot be expressed" };
-    }
+    const refusal = expressibleOrRefusal(role, scope);
+    if (refusal) return refusal;
     const qs = (queries && queries.length ? queries : ["Mihai"]).concat([idTail(accountId)]);
     let lastReason = null;
     for (const q of qs) {
@@ -550,23 +620,7 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
            caller below then treated every one of them as AGREEMENT. The read now reports
            its own failure, and it gets ONE retry after a settle: the first attempt follows
            a bare sleep with no wait-for, so a slow render must not read as a regression. */
-        const readCard = async () => {
-          const cards = await readRows(frame, ".perm-admin-card").catch((e) => ({ readFailed: String((e && e.message) || e).slice(0, 120) }));
-          if (!Array.isArray(cards)) return { card: null, how: "the roster card list could not be read (" + cards.readFailed + ")" };
-          const cardPick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
-          if (cardPick.index < 0) return { card: null, how: "no roster card matched the target by its discriminator among " + cards.length + " card(s): " + (cardPick.reason || "no reason given") };
-          const roleEl = frame.locator(".perm-admin-card").nth(cardPick.index).locator(".perm-admin-role");
-          if ((await roleEl.count()) === 0) return { card: null, how: "the matched card renders no `.perm-admin-role` element - PermissionsTab's scopeLabel markup has moved or been renamed" };
-          return { card: (await roleEl.first().innerText()).trim(), how: cardPick.how || cardPick.reason };
-        };
-        let cardRead = await readCard();
-        if (cardRead.card === null) {
-          await sleep(settle.cardRetry);
-          const again = await readCard();
-          cardRead = again.card === null
-            ? { card: null, how: again.how + " (still, after a " + (settle.cardRetry / 1000) + "s settle and a second read)" }
-            : { card: again.card, how: (again.how || "") + " (read only on the second attempt, after a settle)" };
-        }
+        const cardRead = await readCardRole(frame, accountId);
         return { clicked: true, rows: rows.length, how: pick.how, index: pick.index, shot: grantShot, card: cardRead.card, cardHow: cardRead.how };
       });
       if (r.disabledHit) return { ok: true, alreadyPresent: true, query: q };
@@ -582,7 +636,7 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
              (always)" for admin, "All rules"/"Own rules only" otherwise. A disagreement is
              reported, not swallowed: it means the grant landed but the UI shows something
              else, which is exactly what an operator reading a screenshot would be misled by. */
-          const wantCard = role === "admin" ? "All rules (always)" : (wantScope === "all" ? "All rules" : "Own rules only");
+          const wantCard = cardTextFor(role, wantScope);
           /* F-671 — A CARD THAT COULD NOT BE READ IS NOT A CARD THAT AGREES. `r.card === null`
              used to satisfy this assertion outright, so moving or renaming `.perm-admin-role`
              would have disarmed the F-666 check at every call site, in silence and forever —
@@ -629,6 +683,126 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
     if (!r.removed) return r;
     const gone = !(await rosterIds()).includes(accountId);   // SECOND READ
     return { removed: gone, how: r.how, index: r.index, shot: r.shot, ...(gone ? {} : { reason: "the card was clicked but the row is still in app_admins" }) };
+  }
+
+  /**
+   * F-670 — CHANGE A ROSTER ROW'S ROLE **IN PLACE**, so repairing a `changed` row never
+   * deletes it first.
+   *
+   * THE DEFECT THIS EXISTS TO KILL. `restoreRosterToSnapshot` repaired a `changed` row —
+   * same account, different role/scope than the snapshot — by REMOVE then RE-GRANT. F-666
+   * bounded the damage to one row and made the run NAME it, which is where it stopped: a
+   * re-grant that fails on every pass leaves a REAL roster row deleted from `app_admins`,
+   * and nothing in the run can put it back. The row was on the tenant when the run started;
+   * the restore is the thing that took it off.
+   *
+   * GRANT-BEFORE-REMOVE IS NOT AVAILABLE, AND NOT BECAUSE OF THIS FILE. The roster keys by
+   * ACCOUNT (`app_admins` holds one row per accountId), and F-651's discriminator work
+   * settled the UI half: a search row for an account already on the roster renders
+   * `perm-search-disabled` and clicking it is a no-op — which is why `selectByDiscriminator`
+   * reports `disabledHit` rather than a click target. There is NO temporary discriminator
+   * under which a second row for the same account could be granted and then swapped. So
+   * "grant first, remove second" cannot be written, and the only safe repair is one that
+   * never removes at all.
+   *
+   * THE UI OFFERS ONE. PermissionsTab renders the roster CARD with its own role
+   * `CustomSelect` (`onChange={(newRole) => handleRoleChange(id, newRole, …)}`), and beside
+   * it a scope `CustomSelect` behind the same `{role !== "admin" && (` guard the search row
+   * uses. `handleRoleChange` calls the `updateUserRole` resolver, which REWRITES the row —
+   * the account never leaves `app_admins`. That is the door, and this function is the hand
+   * that opens it: role first, then scope, each with the settle the control needs, and then
+   * a read of the stored row plus a read of the card.
+   *
+   * WHY THE SCOPE CLICK COMES SECOND AND CANNOT BE SKIPPED. For a row that is currently
+   * ADMIN the scope select is UNMOUNTED (F-666, on the card this time). Choosing a
+   * non-admin role mounts it carrying the row's EXISTING scope — `handleRoleChange(id,
+   * newRole, newRole === "admin" ? "all" : scope)` passes the old scope through — so the
+   * role click alone can land `{editor, all}` where the snapshot said `{editor, own}`. Two
+   * clicks, two resolver round trips, and `settle.roleSelect` between them because
+   * `handleRoleChange` disables BOTH selects (`disabled={isChanging}`) while the first is
+   * in flight.
+   *
+   * IT REFUSES EXACTLY WHERE `grantRole` DOES (`expressibleOrRefusal`), it selects the card
+   * by DISCRIMINATOR and re-reads that discriminator immediately before the first click
+   * (F-657 — a re-render between the read and the click must not move a role change onto a
+   * namesake), and its verdict is a SECOND READ of `app_admins`, never the click's own
+   * return value.
+   *
+   * `noInPlaceControl` is the one answer a caller must branch on: the card rendered, it was
+   * matched by its discriminator, and it carries no `.dropdown` — the in-place door is not
+   * on this build, and the caller may fall back to the destructive path. Every OTHER
+   * failure is just a failure: falling back to remove→re-grant on one of those would
+   * reinstate the exact deletion this function exists to avoid.
+   */
+  async function changeRoleInPlace(accountId, role, scope) {
+    const refusal = expressibleOrRefusal(role, scope);
+    if (refusal) return refusal;
+    const wantScope = role === "admin" ? "all" : scope;
+
+    const r = await withAdminPanel(async (page, frame) => {
+      await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
+      await frame.locator(".perm-admin-card").first().waitFor({ state: "visible", timeout: 60000 });
+      await sleep(settle.rosterList);
+      const cards = await readRows(frame, ".perm-admin-card");
+      const pick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
+      if (pick.index < 0) return { changed: false, reason: pick.reason, cards: cards.length };
+
+      const card = frame.locator(".perm-admin-card").nth(pick.index);
+      /* F-657 — THE LAST READ BEFORE THE CLICK, on the card this time. */
+      const idEl = card.locator(".perm-ident-id");
+      const confirmCount = await idEl.count();
+      const confirmTitle = confirmCount > 0 ? await idEl.first().getAttribute("title") : null;
+      const confirmShown = confirmCount > 0 ? (await idEl.first().innerText()).trim() : null;
+      if (!(confirmTitle === accountId || (confirmTitle === null && confirmShown === idTail(accountId)))) {
+        return { changed: false, raced: true, reason: "the roster card at index " + pick.index + " no longer carries the target id when re-read immediately before the role click (chip: " + (confirmShown || "absent") + ") - refusing to click" };
+      }
+
+      const controls = await card.locator(".dropdown").count();
+      if (controls === 0) {
+        return { changed: false, noInPlaceControl: true, reason: "the roster card carries no `.dropdown` role picker - PermissionsTab's in-place `handleRoleChange` control is not on this build, so a `changed` row can only be repaired by removing and re-granting it" };
+      }
+
+      await card.locator(".dropdown").nth(0).click();
+      await frame.locator(".dropdown-item-name", { hasText: ROLE_LABEL[role] }).first().click();
+      await sleep(settle.roleSelect);
+
+      const afterRole = await card.locator(".dropdown").count();
+      if (role === "admin") {
+        /* F-666's product fact, on the card: choosing Admin UNMOUNTS the scope select and
+           `handleRoleChange` forces "all". Prove it rather than assume it - a second
+           control here means the guard changed and this branch is skipping a real one. */
+        if (afterRole !== 1) {
+          return { changed: false, reason: "expected the card's scope control to unmount for Admin, but the card carries " + afterRole + " dropdown(s) - PermissionsTab's `role !== \"admin\"` guard has changed and this path is now wrong" };
+        }
+      } else {
+        if (afterRole < 2) {
+          return { changed: false, reason: "the card carries " + afterRole + " dropdown(s) after choosing " + JSON.stringify(role) + ", so there is no scope control to set - PermissionsTab's `role !== \"admin\"` guard has changed" };
+        }
+        await card.locator(".dropdown").nth(1).click();
+        await frame.locator(".dropdown-item-name", { hasText: SCOPE_LABEL[scope] }).first().click();
+        await sleep(settle.scopeSelect);
+      }
+      /* The roster re-renders on the resolver's answer, exactly as it does after a grant. */
+      await sleep(settle.grantApply);
+      const changeShot = await shot(page, frame, out + "/02-roster-role-changed-" + idTail(accountId).slice(0, 8) + ".png");
+      const cardRead = await readCardRole(frame, accountId);
+      return { changed: true, how: pick.how, index: pick.index, shot: changeShot, card: cardRead.card, cardHow: cardRead.how };
+    });
+
+    if (!r.changed) return { ok: false, reason: r.reason, ...(r.noInPlaceControl ? { noInPlaceControl: true } : {}), ...(r.raced ? { raced: true } : {}) };
+
+    /* SECOND READ: the product's own storage. The row must STILL BE THERE - that is the
+       whole point of this path - and it must now carry the snapshot's permission. */
+    const row = (await rosterRows()).find((x) => rosterIdOf(x) === accountId);
+    if (!(row && row.role === role && (row.scope === wantScope || wantScope === undefined))) {
+      return { ok: false, inPlace: true, shot: r.shot, reason: "the in-place role change was driven but the stored row is " + JSON.stringify(row ? { role: row.role, scope: row.scope } : null) + " (wanted " + JSON.stringify({ role, scope: wantScope }) + ")" };
+    }
+    const wantCard = cardTextFor(role, wantScope);
+    const cardAgrees = r.card === wantCard;
+    const cardMismatch = r.card === null
+      ? "the roster card could not be read back, so the UI cannot be shown to agree with the stored row " + JSON.stringify({ role: row.role, scope: row.scope }) + " (expected the card to read " + JSON.stringify(wantCard) + "): " + (r.cardHow || "no reason given")
+      : "the roster card reads " + JSON.stringify(r.card) + " but the stored row is " + JSON.stringify({ role: row.role, scope: row.scope }) + " (expected the card to read " + JSON.stringify(wantCard) + ")";
+    return { ok: true, inPlace: true, how: r.how, index: r.index, shot: r.shot, card: r.card, cardHow: r.cardHow, cardAgrees, ...(cardAgrees ? {} : { cardMismatch, ...(r.card === null ? { cardUnreadable: true } : {}) }) };
   }
 
   /**
@@ -679,13 +853,20 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
        verdict below is computed from a fresh READ of the roster, so a lie here would be
        caught anyway — and a repair that crashed is exactly the thing the operator needs
        spelled out rather than replaced by a stack trace from row one. */
-    const attempt = async (act, id, fn) => {
+    const attempt = async (act, id, fn, opts = {}) => {
+      /* F-670 — `counts` lets ONE caller record an action WITHOUT calling it a failure: the
+         in-place role change, when its answer is "this build has no in-place control". That
+         is a PROBE whose negative answer routes the repair down the destructive path, not a
+         repair that went wrong, and listing it in `failures` would tell an operator a row
+         could not be put back on a run where it was. Every other caller counts everything,
+         which is the default and the pre-existing behaviour. */
+      const counts = opts.counts || (() => true);
       try {
         const r = await fn();
         const entry = { act, id: idTail(id), ...r };
         actions.push(entry);
-        if (r && r.ok === false) failures.push({ act, id: idTail(id), reason: r.reason || "refused" });
-        if (r && r.removed === false) failures.push({ act, id: idTail(id), reason: r.reason || "not removed" });
+        if (r && r.ok === false && counts(r)) failures.push({ act, id: idTail(id), reason: r.reason || "refused", ...(r.redo ? { redo: r.redo } : {}) });
+        if (r && r.removed === false && counts(r)) failures.push({ act, id: idTail(id), reason: r.reason || "not removed" });
         return entry;
       } catch (e) {
         const reason = "threw: " + String((e && e.message) || e).slice(0, 200);
@@ -707,6 +888,31 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
       }
     };
 
+    /* F-670 — THE SENTENCE AN OPERATOR CAN ACT ON WHEN A ROW IS GENUINELY LOST.
+       The destructive fallback can still end with the row off the tenant (the remove landed,
+       every re-grant failed). Naming the row was F-666's contribution and it is not enough:
+       an id tail does not tell anyone WHAT to put back. This carries the exact grant — role,
+       scope, and WHO — and it is PII-safe by construction (F-652): the address is passed
+       through `lib/redact.mjs#maskEmail`, the same mask the screenshots and the evidence JSON
+       use, and the display name is NOT included. The id tail is the discriminator the
+       Permissions tab renders on both the search row and the card, so the mask still leaves
+       the operator able to find the right namesake. */
+    const redoFor = (row, role, scope) => {
+      const raw = row && typeof row === "object" && row.emailAddress ? String(row.emailAddress) : null;
+      const email = raw ? maskEmail(raw) : null;
+      const tail = idTail(rosterIdOf(row));
+      return {
+        role,
+        scope: role === "admin" ? "all" : scope,
+        email,
+        id: tail,
+        sentence: "REDO BY HAND in Apps > CogniRunner > Permissions: grant "
+          + role + (role === "admin" ? ' (Admin has no scope control; the product stores "all")' : ' with scope "' + scope + '"')
+          + " to " + (email || "the account with no address on the snapshot row")
+          + " - match it by the id chip " + JSON.stringify(tail) + ", not by name",
+      };
+    };
+
     for (let pass = 0; pass < 4; pass++) {
       const plan = planRosterRestore(snapshot, await rosterRows());
       /* F-700 — `ownsOk: false`: a byte-identical roster stays `ok:true`. The leak is still
@@ -718,18 +924,62 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
         const id = rosterIdOf(r);
         await attempt("remove-stray", id, () => removeAccount(id));
       }
-      /* A changed row goes back by removing it and re-granting the role the PRODUCT reads
-         off the snapshot row (F-658), and is REFUSED if the UI cannot express it. */
+      /* A changed row goes back to the role the PRODUCT reads off the snapshot row (F-658),
+         and is REFUSED outright if the UI cannot express it.
+       *
+       * F-670 — AND IT IS CHANGED IN PLACE, NOT REMOVED AND RE-GRANTED. The destructive
+       * repair is what made a failed re-grant a DELETED roster row that nothing in the run
+       * could put back. `changeRoleInPlace` drives the card's own role/scope pickers through
+       * `updateUserRole`, so the account never leaves `app_admins` and a failure costs the
+       * run a red verdict instead of costing the tenant a permission.
+       *
+       * THE FALLBACK SURVIVES, FOR ONE ANSWER ONLY: `noInPlaceControl`, which means the card
+       * rendered and carries no picker — an older build of the admin panel, where remove and
+       * re-grant is the only door there is. Any other failure is retried by the NEXT PASS
+       * over an untouched roster; escalating it to a remove would reinstate the deletion. */
       for (const c of plan.changed) {
         const repro = isReproducibleRosterRow(c.before);
         if (!repro.ok) { actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: false, refused: true, reason: repro.reason }); failures.push({ act: "readd-changed", id: idTail(c.accountId), reason: repro.reason }); continue; }
+
+        const inPlace = await attempt("change-in-place", c.accountId, async () => {
+          const r0 = await changeRoleInPlace(c.accountId, repro.role, repro.scope);
+          return {
+            ok: !!r0.ok, role: repro.role, scope: repro.scope, reason: r0.reason,
+            card: r0.card, cardAgrees: r0.cardAgrees,
+            ...(r0.cardMismatch ? { cardMismatch: r0.cardMismatch } : {}),
+            ...(r0.noInPlaceControl ? { noInPlaceControl: true } : {}),
+          };
+        }, { counts: (r) => !r.noInPlaceControl });
+        if (inPlace.ok) continue;
+        if (!inPlace.noInPlaceControl) continue;   // a real failure: the next pass retries it, nothing is removed
+
+        /* THE DESTRUCTIVE FALLBACK. From here the row leaves the tenant, so the re-grant is
+           attempted `REGRANT_ATTEMPTS` times with the retry settle between tries before the
+           row is declared LOST — and the declaration carries the exact grant to redo. */
         const r1 = await attempt("remove-changed", c.accountId, () => removeAccount(c.accountId));
         if (r1.removed) {
           await attempt("readd-changed", c.accountId, async () => {
-            const r2 = await grantRole(c.accountId, repro.role, repro.scope, [c.before.displayName, c.before.emailAddress].filter(Boolean));
-            /* F-671 - carry the card READ-BACK verdict, not just its text: `card:null` used to
-               arrive here indistinguishable from a card that agreed. */
-            return { ok: !!r2.ok, role: repro.role, scope: repro.scope, reason: r2.reason, card: r2.card, cardAgrees: r2.cardAgrees, ...(r2.cardMismatch ? { cardMismatch: r2.cardMismatch } : {}) };
+            const queries = [c.before.displayName, c.before.emailAddress].filter(Boolean);
+            let last = null;
+            for (let tryNo = 1; tryNo <= REGRANT_ATTEMPTS; tryNo++) {
+              const r2 = await grantRole(c.accountId, repro.role, repro.scope, queries);
+              /* F-671 - carry the card READ-BACK verdict, not just its text: `card:null` used
+                 to arrive here indistinguishable from a card that agreed. */
+              if (r2.ok) return { ok: true, attempts: tryNo, role: repro.role, scope: repro.scope, card: r2.card, cardAgrees: r2.cardAgrees, ...(r2.cardMismatch ? { cardMismatch: r2.cardMismatch } : {}) };
+              last = r2;
+              /* A REFUSAL DOES NOT BECOME TRUER ON A SECOND TRY, and neither does a race the
+                 helper already refused to click through. Retrying either one spends the
+                 settle three times over and prints the same sentence. */
+              if (r2.refused || r2.raced) break;
+              if (tryNo < REGRANT_ATTEMPTS) await sleep(settle.cardRetry);
+            }
+            const redo = redoFor(c.before, repro.role, repro.scope);
+            return {
+              ok: false, lost: true, attempts: last && (last.refused || last.raced) ? 1 : REGRANT_ATTEMPTS,
+              role: repro.role, scope: repro.scope, redo,
+              reason: "the row was REMOVED and the re-grant failed on every attempt, so this account is no longer on the roster - "
+                + (last && last.reason ? last.reason : "no reason given") + " :: " + redo.sentence,
+            };
           });
         }
       }
@@ -757,5 +1007,5 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record, settleMs
   const shots = () => shot.shots.slice();
   const leaked = () => shot.leaked;
 
-  return { readRows, grantRole, removeAccount, restoreRosterToSnapshot, rosterIds, shots, leaked };
+  return { readRows, grantRole, changeRoleInPlace, removeAccount, restoreRosterToSnapshot, rosterIds, shots, leaked };
 }

@@ -45,7 +45,7 @@
  * `scripts/roster-restore.test.mjs` (auto-discovered by `run-offline.mjs`).
  */
 
-import { DEFAULT_ROSTER_SCOPE } from "../../src/shared/roster-roles.js";
+import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "../../src/shared/roster-roles.js";
 
 /** The account id of a roster row, which may be a bare string or a `{accountId,…}` object. */
 export function rosterIdOf(row) {
@@ -84,8 +84,15 @@ export function rosterRowRole(row) {
   return { role, scope };
 }
 
-const VALID_ROLES = ["viewer", "editor", "admin"];
-const VALID_SCOPES = ["own", "all"];
+/*
+ * F-844 — the vocabulary is the PRODUCT's, re-exported, never re-typed here. This mirror
+ * used to carry its own copy of both enums; a copy can only agree with the product by
+ * luck, and when the product gains a role this copy would start REFUSING rows the
+ * product accepts (a restore reporting "not reproducible" for an ordinary row). The
+ * offline suite asserts IDENTITY with the shared export, so a private copy cannot creep
+ * back in unnoticed.
+ */
+export { VALID_ROLES, VALID_SCOPES };
 
 /**
  * The permission-bearing shape of a roster row: a bare string becomes the object the

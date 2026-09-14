@@ -45,3 +45,33 @@
 
 /** The scope a roster row confers when it states a non-admin role but no scope. */
 export const DEFAULT_ROSTER_SCOPE = "own";
+
+/*
+ * F-844 — ONE HOME for the roster VOCABULARY too, not just its default.
+ *
+ * THE DEFECT THIS EXISTS TO KILL. `VALID_ROLES` and `VALID_SCOPES` were declared twice,
+ * verbatim: once in `src/index.js` (where `addAppAdmin` / `updateUserRole` clamp an
+ * incoming role and scope) and once in `test-harness/lib/roster-restore.mjs` (where
+ * `isReproducibleRosterRow` decides whether a restore may reproduce a row at all). Two
+ * copies of one enum is exactly the shape that produced F-840: the mirror is supposed to
+ * answer as the product answers, and a private copy can only stay right by luck. If a
+ * fourth role or a third scope is ever added to the product, the mirror silently starts
+ * REFUSING rows the product accepts — a restore that reports "not reproducible" for a
+ * perfectly ordinary row, which reads as a harness bug and costs a hunt.
+ *
+ * WHY AN ARRAY AND NOT A SET. Order is meaningful: the admin panel renders the role
+ * dropdown in this order (least reach first), and the refusal messages join it into
+ * "viewer/editor/admin". Callers only ever `.includes()` or `.map()`, so an array is the
+ * smaller contract.
+ *
+ * THESE ARE FROZEN because they are shared by reference across the backend, the admin
+ * panel and the offline harness — a caller that sorted or pushed in place would mutate
+ * every other reader's vocabulary. The harness parity assertion checks IDENTITY
+ * (`===`), not deep equality, precisely so that a re-typed private copy cannot pass.
+ */
+
+/** Every role a roster row may confer, widest reach LAST. */
+export const VALID_ROLES = Object.freeze(["viewer", "editor", "admin"]);
+
+/** Every scope a non-admin roster row may confer. Admin is "all" by construction. */
+export const VALID_SCOPES = Object.freeze(["own", "all"]);

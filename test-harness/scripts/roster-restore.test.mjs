@@ -32,8 +32,9 @@
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
   rosterRowRole, normaliseRosterRow, isReproducibleRosterRow,
+  VALID_ROLES as MIRROR_VALID_ROLES, VALID_SCOPES as MIRROR_VALID_SCOPES,
 } from "../lib/roster-restore.mjs";
-import { DEFAULT_ROSTER_SCOPE } from "../../src/shared/roster-roles.js";
+import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "../../src/shared/roster-roles.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -365,6 +366,46 @@ const searchRows = (ids, extra = {}) => ids.map((id, i) => row(id, { i, ...(extr
      set compare must catch it even though both shapes are "legacy-ish". */
   ok(rosterRestoreVerdict([ADMIN], [{ accountId: ADMIN, role: "viewer", scope: "own" }]).ok === false,
     "F-658 + F-659: a legacy admin row demoted to viewer is a FAIL, not a shape difference");
+}
+
+/* ── 8c. F-844 — THE MIRROR'S VOCABULARY *IS* THE PRODUCT'S, BY IDENTITY ───────
+   THE DEFECT. `VALID_ROLES` / `VALID_SCOPES` were declared verbatim in TWO places:
+   `src/index.js`, where `addAppAdmin` and `updateUserRole` clamp an incoming role and
+   scope, and `test-harness/lib/roster-restore.mjs`, where `isReproducibleRosterRow`
+   decides whether a restore may reproduce a row at all. That is the same two-copies-of-
+   one-rule shape that produced F-840 — and here it is worse than cosmetic: the moment
+   the product gains a role, the mirror starts REFUSING rows the product happily accepts,
+   and a perfectly good restore reports "not reproducible".
+
+   THE CUT. `src/shared/roster-roles.js` is the one home; the backend imports it and this
+   mirror RE-EXPORTS it.
+
+   WHY IDENTITY (`===`) AND NOT DEEP EQUALITY. A re-typed private copy passes a deep
+   compare on the day it is typed — that is exactly how the duplicate survived this long.
+   Only reference identity proves the mirror is reading the product's array rather than
+   its own lookalike, so only identity can stop the copy coming back. */
+{
+  ok(MIRROR_VALID_ROLES === VALID_ROLES,
+    "the mirror's VALID_ROLES IS the shared array (identity) — not a lookalike copy");
+  ok(MIRROR_VALID_SCOPES === VALID_SCOPES,
+    "the mirror's VALID_SCOPES IS the shared array (identity) — not a lookalike copy");
+
+  /* Frozen, because the array is shared BY REFERENCE across the backend, the admin panel
+     and this harness: an in-place sort or push here would rewrite everyone's vocabulary. */
+  ok(Object.isFrozen(VALID_ROLES) && Object.isFrozen(VALID_SCOPES),
+    "both vocabularies are frozen — a shared-by-reference enum no caller may mutate");
+
+  /* The vocabulary still says what the product's refusal messages promise. */
+  eq([...VALID_ROLES], ["viewer", "editor", "admin"], "the roles are viewer/editor/admin, widest LAST");
+  eq([...VALID_SCOPES], ["own", "all"], "the scopes are own/all");
+  ok(VALID_SCOPES.includes(DEFAULT_ROSTER_SCOPE),
+    "the shared default scope is a member of the shared scope vocabulary");
+
+  /* And the gate still bites: a role outside the vocabulary is REFUSED, not defaulted. */
+  ok(isReproducibleRosterRow({ accountId: TARGET, role: "superuser", scope: "all" }).ok === false,
+    "a role outside the shared vocabulary is REFUSED by the mirror");
+  ok(isReproducibleRosterRow({ accountId: TARGET, role: "editor", scope: "global" }).ok === false,
+    "a scope outside the shared vocabulary is REFUSED by the mirror");
 }
 
 console.log(`roster-restore.test.mjs: ${pass} passed, ${fail} failed`);

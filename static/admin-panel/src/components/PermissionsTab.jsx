@@ -10,18 +10,21 @@ import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
 import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 import { confirmDialog } from "../confirmDialog";
-import { DEFAULT_ROSTER_SCOPE } from "../../../../src/shared/roster-roles.js";
+import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "../../../../src/shared/roster-roles.js";
 
-const ROLE_OPTIONS = [
-  { value: "viewer", label: "Viewer" },
-  { value: "editor", label: "Editor" },
-  { value: "admin", label: "Admin" },
-];
+/* F-844 — the VALUES come from the shared vocabulary; only the LABELS are local. These
+   dropdowns used to re-type `"viewer"/"editor"/"admin"` and `"own"/"all"` verbatim — a
+   third copy of an enum the resolvers clamp against. A panel offering a value the
+   backend rejects (or silently omitting one it accepts) is a divergence nobody sees
+   until a grant fails. Order is the shared array's order: widest reach LAST. A value
+   with no label falls back to the raw value rather than rendering blank, so adding a
+   role in `src/shared/roster-roles.js` surfaces here immediately instead of vanishing. */
+const ROLE_LABELS = { viewer: "Viewer", editor: "Editor", admin: "Admin" };
+const SCOPE_LABELS = { own: "Own Rules", all: "All Rules" };
 
-const SCOPE_OPTIONS = [
-  { value: "own", label: "Own Rules" },
-  { value: "all", label: "All Rules" },
-];
+const ROLE_OPTIONS = VALID_ROLES.map((value) => ({ value, label: ROLE_LABELS[value] || value }));
+
+const SCOPE_OPTIONS = VALID_SCOPES.map((value) => ({ value, label: SCOPE_LABELS[value] || value }));
 
 const ROLE_DESCRIPTIONS = {
   viewer: "Can view rules and logs",

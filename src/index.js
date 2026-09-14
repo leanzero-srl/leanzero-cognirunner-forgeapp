@@ -52,7 +52,7 @@ import {
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { DEFAULT_ROSTER_SCOPE } from "./shared/roster-roles.js";
+import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "./shared/roster-roles.js";
 import { isKeyConflict, safeKeyPart } from "./shared/kvs-keys.js";
 import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js";
 // The project-key memo mechanics + the cap live with the leak table they serve (F-419).
@@ -379,8 +379,9 @@ const REGISTRY_MIGRATIONS_KEY = "registry_migrations";
 /**
  * Check if a user is an admin (Jira site admin OR app admin).
  */
-const VALID_ROLES = ["viewer", "editor", "admin"];
-const VALID_SCOPES = ["own", "all"];
+// F-844 — the role/scope vocabulary is imported, never re-typed. It lived here AND in
+// the harness mirror (test-harness/lib/roster-restore.mjs); src/shared/roster-roles.js
+// is now its one home, so the mirror cannot start refusing rows this file accepts.
 
 /**
  * Get a user's full permission entry: { role, scope }.

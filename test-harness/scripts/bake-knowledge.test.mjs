@@ -463,5 +463,70 @@ const secLit = JSON.stringify(sections);
   }
 }
 
+/* ---- the BAKE CLOCK and the PACK PURPOSE (F-933) ----
+   Two fields the Knowledge tab needs and the emitter did not write: a per-pack purpose
+   sentence (which already existed in knowledge/sources.json) and the moment the bytes were
+   written. The purpose is corpus metadata and may be hashed; the CLOCK may not be, or every
+   re-bake would report a metadata change it did not make and `npm run bake:check` would
+   fail on time passing. These assertions pin both halves. */
+{
+  const fs = await import("node:fs");
+  const indexPath = path.join(repoRoot, "src/shared/knowledge-index.js");
+  const sourcesPath = path.join(repoRoot, "knowledge/sources.json");
+  const idx = await import(pathToFileURL(indexPath).href);
+  const cfg = JSON.parse(fs.readFileSync(sourcesPath, "utf8"));
+
+  ok(typeof idx.KNOWLEDGE_BAKED_AT === "string" && !Number.isNaN(Date.parse(idx.KNOWLEDGE_BAKED_AT)),
+    `the committed index exports a parseable KNOWLEDGE_BAKED_AT (${idx.KNOWLEDGE_BAKED_AT})`);
+
+  const packs = idx.KNOWLEDGE_PACKS || [];
+  ok(packs.length > 0 && packs.every((p) => typeof p.purpose === "string" && p.purpose.trim().length > 0),
+    `every baked pack carries a purpose sentence (${packs.filter((p) => !p.purpose).map((p) => p.id).join(",") || "all present"})`);
+  ok(packs.every((p) => (p.purpose || "") === ((cfg.packs?.[p.id]?.purpose) || "")),
+    "and each one is knowledge/sources.json's sentence verbatim - ONE home for the text");
+
+  /* THE CLOCK IS NOT HASHED. Asserted on the function, not on the file: feed
+     indexMetaFingerprint the same packs with and without a bakedAt-shaped extra field and
+     the fingerprint must not move - it hashes ids, pins and audiences and nothing else. */
+  const fakePacks = packs.map((p) => ({ id: p.id, pinned: p.pinned || [] }));
+  const fpA = bake.indexMetaFingerprint([], fakePacks, idx.KNOWLEDGE_PINS || {});
+  const fpB = bake.indexMetaFingerprint([], fakePacks.map((p) => ({ ...p, bakedAt: new Date().toISOString(), purpose: "x" })), idx.KNOWLEDGE_PINS || {});
+  ok(fpA === fpB, `the metadata fingerprint ignores a clock and a purpose (${fpA} vs ${fpB})`);
+
+  /* AND `--check` SURVIVES THE CLOCK. `stripBakedAt` normalises exactly one line, so a
+     check run a day after the bake still passes - while any OTHER edit to the generated
+     file still fails, which is the whole point of the byte comparison. */
+  const withDate = (iso, tail) => `export const KNOWLEDGE_BAKED_AT = "${iso}";\nexport const X = ${tail};`;
+  ok(bake.stripBakedAt(withDate("2020-01-01T00:00:00.000Z", 1)) === bake.stripBakedAt(withDate("2031-05-05T05:05:05.000Z", 1)),
+    "stripBakedAt makes two bakes of the same corpus compare equal");
+  ok(bake.stripBakedAt(withDate("2020-01-01T00:00:00.000Z", 1)) !== bake.stripBakedAt(withDate("2020-01-01T00:00:00.000Z", 2)),
+    "and it masks NOTHING else - a hand edit beside it still differs");
+
+  const rawPresent = fs.existsSync(path.join(repoRoot, "knowledge/raw"))
+    && fs.existsSync(path.join(repoRoot, "knowledge/denylist.local"));
+  if (rawPresent) {
+    /* The live proof, on the real artefact: move the committed date a year and --check must
+       still pass; then restore the byte-for-byte original. */
+    const original = fs.readFileSync(indexPath, "utf8");
+    try {
+      fs.writeFileSync(indexPath, original.replace(/export const KNOWLEDGE_BAKED_AT = "[^"]*";/,
+        'export const KNOWLEDGE_BAKED_AT = "2020-01-01T00:00:00.000Z";'));
+      const stale = spawnSync(process.execPath, [bakePath, "--check"], { encoding: "utf8", cwd: repoRoot });
+      ok(stale.status === 0, `--check passes with a stale bake date on disk (exit ${stale.status})`);
+
+      // ...and a REAL hand edit in the same file still refuses.
+      fs.writeFileSync(indexPath, original.replace('"pinned": []', '"pinned": ["ghost#thing"]'));
+      const bad = spawnSync(process.execPath, [bakePath, "--check"], { encoding: "utf8", cwd: repoRoot });
+      ok(bad.status !== 0, `a hand edit elsewhere in the generated index still REFUSES (exit ${bad.status})`);
+    } finally {
+      fs.writeFileSync(indexPath, original);
+    }
+    const restored = spawnSync(process.execPath, [bakePath, "--check"], { encoding: "utf8", cwd: repoRoot });
+    ok(restored.status === 0, `the committed index is restored byte for byte (exit ${restored.status})`);
+  } else {
+    console.log("  (skipped the live clock --check arms: knowledge/raw or denylist.local absent)");
+  }
+}
+
 console.log(`\nbake-knowledge: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

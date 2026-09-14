@@ -3807,6 +3807,11 @@ const injectStyles = () => {
        700-weight heading, and a plain-language note under the corpus fingerprint saying
        what that hash identifies. No new hue, so no dark override is owed: both reuse
        --text-secondary / --text-color, which are already defined per theme. */
+    /* F-933 - THE PACK PURPOSE. One sentence, at body weight, sitting between the title and
+       the byte counts. No new hue and no fill, so no dark override is owed: --text-secondary
+       is already defined per theme. No rail, no tint. */
+    .kn-pack-purpose { display: block; max-width: 84ch; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+
     .kn-prov-head { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary); }
     .kn-version-note { display: block; margin-top: 4px; max-width: 76ch; font-size: 11px; font-weight: 500; line-height: 1.5; color: var(--text-secondary); }
 `;

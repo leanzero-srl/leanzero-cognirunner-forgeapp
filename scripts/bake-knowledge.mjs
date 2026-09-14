@@ -489,10 +489,37 @@ export const assertPinnedSectionsFitShare = (sections, byAudience = {}, { warnOn
   return true;
 };
 
-const emitIndex = (sections, packs, contentVersion, metaVersion, pins = {}) =>
+/**
+ * THE BAKE CLOCK (F-933).
+ *
+ * `KNOWLEDGE_BAKED_AT` is the one value in the generated index that does NOT come from the
+ * corpus: it is the wall clock at the moment the bytes were written, so the Knowledge tab
+ * can answer "when was this baked?" instead of showing an admin a bare hash. Two rules ride
+ * with it, and both are load-bearing:
+ *
+ *   1. It is NEVER hashed. `indexMetaFingerprint` does not see it and `KNOWLEDGE_CONTENT_VERSION`
+ *      does not either, or every bake would report a metadata change it did not make.
+ *   2. `--check` compares the emitted bytes against the file on disk, so the check NORMALISES
+ *      this one line away (`stripBakedAt`). Without that, `npm run bake:check` would fail on
+ *      the clock alone, on a repo where nothing had drifted.
+ *
+ * The date is honest precisely because it is not part of the identity: the FINGERPRINT says
+ * which corpus this is, the date says when it was last written.
+ */
+const BAKED_AT_LINE = /export const KNOWLEDGE_BAKED_AT = "[^"]*";/;
+export const stripBakedAt = (text) => String(text).replace(BAKED_AT_LINE, 'export const KNOWLEDGE_BAKED_AT = "<baked-at>";');
+
+const emitIndex = (sections, packs, contentVersion, metaVersion, pins = {}, bakedAt = new Date().toISOString()) =>
   `${GENERATED_HEADER("The knowledge INDEX: titles, tags, audiences and provenance — no bodies.\n *\n * This is the module the UI bundles import. Bodies live in the packs and are only ever\n * loaded by the backend, so a Knowledge tab costs kilobytes rather than megabytes.")}
 /** Content fingerprint of the baked corpus. Changes whenever any section changes. */
 export const KNOWLEDGE_CONTENT_VERSION = ${JSON.stringify(contentVersion)};
+
+/**
+ * When these bytes were written, ISO-8601. Deliberately OUTSIDE both fingerprints (F-933):
+ * a clock in a hash would make every re-bake look like a metadata change, and
+ * \`npm run bake:check\` normalises this line away before it compares.
+ */
+export const KNOWLEDGE_BAKED_AT = ${JSON.stringify(bakedAt)};
 
 /**
  * Fingerprint of this file's METADATA — pack pin lists, the pin map, section audiences.
@@ -674,7 +701,11 @@ export const checkIndexCurrent = (contentVersion, expectedIndexText = null) => {
   let metaVersion = null;
   if (expectedIndexText) {
     metaVersion = (/KNOWLEDGE_INDEX_META_VERSION = "([a-f0-9]+)"/.exec(expectedIndexText) || [])[1] || null;
-    if (current !== expectedIndexText) {
+    /* F-933 - the BAKE CLOCK is normalised out of both sides before they are compared. It
+       is the only line in this generated file that is not a function of the corpus, so a
+       byte comparison that included it would fail on every check that did not happen in the
+       same millisecond as the bake. Everything else still compares byte for byte. */
+    if (stripBakedAt(current) !== stripBakedAt(expectedIndexText)) {
       const onDisk = (/KNOWLEDGE_INDEX_META_VERSION = "([a-f0-9]+)"/.exec(current) || [])[1];
       die("src/shared/knowledge-index.js is NOT what the bake would write, though every section body is current.\n"
         + `  metadata fingerprint: on disk ${onDisk || "absent"}, corpus ${metaVersion}\n`
@@ -928,6 +959,10 @@ export const bake = ({ dryRun = false, check = false, tiers = null, write = fals
   const packSummaries = [...byPack.entries()].map(([pack, list]) => ({
     id: pack,
     title: (cfg.packs?.[pack]?.title) || pack,
+    // F-933 - the one plain sentence saying what this pack is FOR. It already lives in
+    // knowledge/sources.json beside the title; emitting it is what lets the Knowledge tab
+    // tell an admin what a switch turns off, without a second home for the text.
+    purpose: (cfg.packs?.[pack]?.purpose) || "",
     sections: list.length,
     bytes: list.reduce((n, s) => n + s.bytes, 0),
     pinned: cfg.packs?.[pack]?.pinned || [],
@@ -954,7 +989,7 @@ export const bake = ({ dryRun = false, check = false, tiers = null, write = fals
   const contentVersion = sha(sections.map((s) => `${s.id}:${sha(s.body)}`).join("\n")).slice(0, 16);
   const metaVersion = indexMetaFingerprint(sections, packSummaries, pins.byAudience);
   const sortedSections = sections.slice().sort((a, b) => a.id.localeCompare(b.id));
-  const indexText = emitIndex(sortedSections, packSummaries, contentVersion, metaVersion, pins.byAudience);
+  const indexText = emitIndex(sortedSections, packSummaries, contentVersion, metaVersion, pins.byAudience, new Date().toISOString());
   const titlesText = emitTitles(sortedSections, packSummaries, contentVersion);
   const titlesBytes = utf8(titlesText);
   const indexBytes = utf8(indexText);

@@ -41,9 +41,14 @@ import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 /* The packs and the budgets come from THEIR one home, never retyped here. A suite that
    hand-listed nine titles would pass forever against a corpus that had been re-baked. */
-import { KNOWLEDGE_PACKS, KNOWLEDGE_PINS, KNOWLEDGE_CONTENT_VERSION, KNOWLEDGE_INDEX } from "../../src/shared/knowledge-index.js";
+import { KNOWLEDGE_PACKS, KNOWLEDGE_PINS, KNOWLEDGE_CONTENT_VERSION, KNOWLEDGE_INDEX, KNOWLEDGE_BAKED_AT } from "../../src/shared/knowledge-index.js";
 import { KNOWLEDGE_VERSION } from "../../src/shared/knowledge-select.js";
 import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
+
+/* F-933 - the BAKE DATE as the tab must print it, derived here from the same generated
+   constant and the same explicit en-GB shape the component uses. Typing "14 September 2026"
+   into this file would pass forever against a corpus re-baked a year later. */
+const BAKED_DATE = new Date(KNOWLEDGE_BAKED_AT).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = process.argv.includes("--shots");
@@ -160,17 +165,38 @@ try {
           const ptxt = (await lcard.locator(".kn-pack-prov").innerText()).replace(/\s+/g, " ");
           ok(ptxt.includes(licensed.provenance.source), `F-917 ${packTitle} names its source (got "${ptxt.slice(0, 90)}")`);
           ok(ptxt.includes(licensed.provenance.licence), `F-917 ${packTitle} names its licence verbatim, NOTICE clause and all`);
+          /* F-933 - the whole sentence, in the order it is read: where the text came from,
+             what the licence is, and when it was baked. */
+          ok(new RegExp(`From ${licensed.provenance.source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\n]*, baked ${BAKED_DATE}`).test(ptxt),
+            `F-933 ${packTitle} reads "From <source>, <licence>, baked <date>" (got "${ptxt.slice(0, 140)}")`);
         }
       }
-      /* AND THE ABSENCES, asserted on purpose. The walk asked for a baked DATE and a
-         per-pack PURPOSE; the GENERATED index carries neither (KNOWLEDGE_PACKS has exactly
-         id/title/sections/bytes/pinned), and the fix is in scripts/bake-knowledge.mjs, not
-         here. This holds the line against a future "helpful" date invented from the build
-         clock — a number that looks like provenance and is not. */
-      ok(KNOWLEDGE_PACKS.every((x) => x.purpose === undefined),
-        "F-917 the generated index still carries no pack purpose — if this fails, render it");
-      ok(!/baked/i.test(await page.locator(".kn-tab").innerText()),
-        "F-917 nothing claims a bake DATE while the index has none to give");
+      /* F-933 - WHAT F-917 RECORDED AS ABSENT IS NOW PRESENT, and asserted from the index
+         rather than from prose. The old pair of assertions held the line against a date
+         invented from the build clock and a purpose re-typed in the component; the bake now
+         emits both, so the same two questions are asked the other way round: every pack
+         carries a purpose in the GENERATED index, and every purpose reaches the screen
+         verbatim. The date is asserted on the sentence above and on the foot line below.
+
+         The absence that REMAINS true: neither field feeds a fingerprint. That is proven by
+         `node scripts/bake-knowledge.mjs --check` in the bake suite, not by pixels. */
+      ok(KNOWLEDGE_PACKS.every((x) => typeof x.purpose === "string" && x.purpose.trim().length > 0),
+        "F-933 the generated index carries a purpose sentence for EVERY pack");
+      {
+        const rendered = await page.locator(".kn-pack").evaluateAll((els) => els.map((e) => ({
+          title: ((e.querySelector(".kn-pack-title") || {}).textContent || "").trim(),
+          purpose: ((e.querySelector(".kn-pack-purpose") || {}).textContent || "").trim(),
+        })));
+        ok(rendered.length === KNOWLEDGE_PACKS.length && rendered.every((r) => r.purpose.length > 0),
+          `F-933 every card prints a purpose line (${rendered.filter((r) => !r.purpose).map((r) => r.title).join(",") || "all present"})`);
+        for (const p of KNOWLEDGE_PACKS) {
+          const row = rendered.find((r) => r.title === p.title);
+          ok(!!row && row.purpose === p.purpose.replace(/\s+/g, " ").trim(),
+            `F-933 ${p.title} prints the index's own sentence, not a second copy (got "${(row || {}).purpose || ""}")`);
+        }
+      }
+      ok(/baked/i.test(await page.locator(".kn-tab").innerText()),
+        "F-933 the tab now says when the packs were baked");
 
       /* THE PINNED PACKS, DERIVED, NEVER COUNTED BY HAND (F-564). This read used to take the
          FIRST pack with pins and assert that exactly one chip existed on the page. That is a
@@ -342,7 +368,7 @@ try {
       const ink = await page.locator(".kn-switch.is-on").first().evaluate((el) => getComputedStyle(el).color);
       ok(theme === "light" ? ink === "rgb(255, 255, 255)" : ink === "rgb(42, 22, 2)", `K6 ${theme} the switch ink is legible on its fill, got ${ink}`);
 
-      await assertNoRailsOrTints(page, `K6 ${theme}`, ".kn-tab .card, .kn-tab .kn-switch, .kn-tab .kn-state, .kn-tab .kn-pack-fact");
+      await assertNoRailsOrTints(page, `K6 ${theme}`, ".kn-tab .card, .kn-tab .kn-switch, .kn-tab .kn-state, .kn-tab .kn-pack-fact, .kn-tab .kn-pack-purpose, .kn-tab .kn-prov-line");
 
       const version = await page.locator(".kn-version-line").innerText();
       ok(version.includes(KNOWLEDGE_VERSION), `K7 ${theme} the engine version is named, got "${version}"`);
@@ -352,7 +378,9 @@ try {
          screen says that is the question it answers. */
       const vnote = (await page.locator(".kn-version-note").innerText()).replace(/\s+/g, " ");
       ok(/identifies this bake/i.test(vnote), `F-917 ${theme} the fingerprint says what it identifies, got "${vnote.slice(0, 70)}"`);
-      ok(!/baked on|baked <|\d{4}-\d{2}-\d{2}/.test(vnote), `F-917 ${theme} and still claims no date`);
+      /* F-933 - and the foot line now carries the DATE beside the fingerprint. Two answers
+         to two questions: which corpus this is, and when it was last written. */
+      ok(vnote.includes(`baked on ${BAKED_DATE}`), `F-933 ${theme} the foot line names the bake date, got "${vnote.slice(-70)}"`);
 
       await shot(page, `kn-tab-${theme}`);
       ok(env.errors.length === 0, `K6 ${theme} no page errors (${env.errors[0] || ""})`);

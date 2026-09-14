@@ -62,7 +62,7 @@ import {
   PINNED_BUDGET_SHARE,
 } from "./shared/knowledge-select.js";
 import { fieldGuideBudget } from "./shared/registry-limits.js";
-import { KNOWLEDGE_PACKS, KNOWLEDGE_PINS, KNOWLEDGE_CONTENT_VERSION } from "./shared/knowledge-index.js";
+import { KNOWLEDGE_PACKS, KNOWLEDGE_PINS, KNOWLEDGE_CONTENT_VERSION, KNOWLEDGE_BAKED_AT } from "./shared/knowledge-index.js";
 
 import { SECTIONS as ADMINISTRATOR_PRACTICE } from "./shared/knowledge-packs/administrator-practice.js";
 import { SECTIONS as AUTOMATION_SEMANTICS } from "./shared/knowledge-packs/automation-semantics.js";
@@ -78,6 +78,9 @@ export {
   buildFieldGuideBlock,
   KNOWLEDGE_VERSION,
   KNOWLEDGE_CONTENT_VERSION,
+  // F-933 - when the packs in THIS bundle were baked. Re-exported here so every consumer
+  // of the knowledge layer reads one module, as they already do for the versions.
+  KNOWLEDGE_BAKED_AT,
   FIELD_GUIDE_MARKER,
   FIELD_GUIDE_GUARD_SENTENCE,
 };
@@ -387,6 +390,10 @@ export const describeKnowledgePacks = (settings) => {
     return {
       id: pack.id,
       title: pack.title,
+      /* F-933 - one plain sentence saying what the pack is for, straight from the generated
+         index (whose author is knowledge/sources.json). Never composed here: a second home
+         for this text would diverge on the next bake. */
+      purpose: typeof pack.purpose === "string" ? pack.purpose : "",
       sections: pack.sections,
       bytes: pack.bytes,
       pinned: Array.isArray(pack.pinned) ? pack.pinned.slice() : [],

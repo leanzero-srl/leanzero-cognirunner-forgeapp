@@ -208,7 +208,7 @@ async function main() {
 
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const DEV_ENV = "989ecaa0-261b-406e-b444-78c01c0d7772";
+const DEV_ENV = forgeEnvId("dev");
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 
 /** The dev hook, raw — the fault actions are not resolvers, they are hook actions. */

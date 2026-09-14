@@ -23,6 +23,7 @@
  * through `lib/redact.mjs` before it reaches a terminal or a file, because that header
  * sentence was a promise the code did not keep (F-646 is what a promise like it costs).
  * ═══════════════════════════════════════════════════════════════════════════════ */
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
@@ -38,16 +39,15 @@ import { makeShot } from "../lib/roster-ui.mjs";
    address, and the segment comparison could only ever fail. */
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
 
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "dev" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const ENV_NAME = arg("env", "dev");
-const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const TARGET = arg("target", "557058:653160a5-6112-470d-baea-333ac760364e");
 const NAME = arg("name", "Mihai Perdum");
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const ENV_ID = arg("envid", "989ecaa0-261b-406e-b444-78c01c0d7772");
+const ENV_ID = arg("envid", ENV_ID_DEFAULT);
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/perm-namesake-ui", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });

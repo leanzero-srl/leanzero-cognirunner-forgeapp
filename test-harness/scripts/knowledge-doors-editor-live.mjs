@@ -42,6 +42,7 @@
  *
  * No token, URL, secret or key value is ever printed.
  * ═══════════════════════════════════════════════════════════════════════════════ */
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
@@ -54,16 +55,15 @@ import {
    any `*-live.mjs` that mentions `perm-`. */
 import { makeRosterUI, makeShot, maskPositiveControl } from "../lib/roster-ui.mjs";
 
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "dev" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const ENV_NAME = arg("env", "dev");
-const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const EDITOR = arg("editor", "557058:653160a5-6112-470d-baea-333ac760364e");
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const ENV_ID = arg("envid", ENV_NAME === "dev" ? "989ecaa0-261b-406e-b444-78c01c0d7772" : "1abe9beb-537b-43c1-b94f-e877e251f779");
+const ENV_ID = arg("envid", ENV_ID_DEFAULT);
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/knowledge-doors-editor", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
@@ -542,11 +542,25 @@ async function main() {
     const allShots = [...shot_.shots, ...uiShots()];
     ev.shots = allShots;
     const leaks = allShots.filter((s) => s.readable > 0);
+    /* F-700 — ONE FAIL PER EVENT, WITH THE CAUSE THE RESULT ACTUALLY HAS.
+       There used to be three arms here and a single leak during a repair fired TWO of
+       them: the capture FAIL, and then "the roster restore reports ok:false — the repair
+       did not complete cleanly" printing `verdict:"byte-identical"`, `failures:undefined`
+       and `reason:undefined`, because `leakVerdict()` overwrote `ok` on the clean early
+       return. An operator was told the repair broke and sent to inspect a roster that was
+       fine. The library now leaves `ok` to the roster diff; the leak is ONE FAIL, which
+       carries the repair-time detail when there is any, and the roster sentence is only
+       reached when the leak did not already explain the run.
+       (`restore.leaks` is a SUBSET of `uiShots()` — the restore's captures come from the
+       same roster-UI recorder — so the first arm cannot miss a leak the second would
+       have caught.) */
     if (shot_.leaked || uiLeaked()) {
-      FAIL("a screenshot capture was REFUSED because a readable email address survived the mask — the F-660 guarantee fired and this run FAILS on it regardless of the roster verdict", { paths: leaks.map((s) => s.path), leaks });
-    }
-    if (restore && restore.leaked) FAIL("the roster restore reports leaked:true — a capture taken during a repair was refused for a readable address", { paths: (restore.leaks || []).map((l) => l.path), leakInfo: restore.leakInfo });
-    if (restore && restore.ok === false) FAIL("the roster restore reports ok:false — the repair did not complete cleanly", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
+      FAIL("a screenshot capture was REFUSED because a readable email address survived the mask — the F-660 guarantee fired and this run FAILS on it regardless of the roster verdict", {
+        paths: leaks.map((s) => s.path),
+        leaks,
+        ...(restore && restore.leaked ? { duringRepair: restore.leakInfo, repairLeakPaths: (restore.leaks || []).map((l) => l.path) } : {}),
+      });
+    } else if (restore && restore.ok === false) FAIL("the roster restore reports ok:false — the repair did not complete cleanly", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
     /* F-693 — the mask's run-level control is RECORDED here but is NOT a gate, and the
        distinction is deliberate. This driver's captures are of the roster-card and editor
        views, none of which is guaranteed to render an address, so demanding `spanTotal > 0`

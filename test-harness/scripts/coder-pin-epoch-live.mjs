@@ -49,9 +49,9 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 
+const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const URL_ = process.env.STAGING_TESTSTATE_URL || env.STAGING_TESTSTATE_URL || "";
 const SECRET = env.HARNESS_SECRET;
 const ACCT = process.env.HARNESS_ADMIN_ACCOUNT_ID || env.HARNESS_ADMIN_ACCOUNT_ID;
 const ISSUE = arg("issue", "LZPT-186");
@@ -62,7 +62,9 @@ const STAMP = Date.now().toString(36);
 const OUT = new URL("../results/coder-pin-epoch", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 
-if (!URL_ || !SECRET || !ACCT) { console.error("need STAGING_TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID"); process.exit(2); }
+/* F-699 — requireEnvAck already refused if the environment has no web-trigger URL, and it
+   names the variable to set; only the two credentials are left to check here. */
+if (!SECRET || !ACCT) { console.error("need HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID"); process.exit(2); }
 
 let failures = 0;
 const evidence = { issue: ISSUE, stamp: STAMP, checks: [], measurements: {} };

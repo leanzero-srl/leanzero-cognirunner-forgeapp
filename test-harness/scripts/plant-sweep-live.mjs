@@ -60,25 +60,26 @@
  *
  *   node scripts/plant-sweep-live.mjs --env=dev --i-know-dev-is-shared
  * ═══════════════════════════════════════════════════════════════════════════════ */
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const ENV_NAME = arg("env", "staging");
-/* Not `requireEnvAck`: that guard's contract is "name the FAULTS you arm", and this driver
- * arms none (see the blast-radius note). The shared tenant still deserves a deliberate act,
- * so dev is opt-in here too — but the refusal TEXT has one home and this is not a copy of
- * it: the harm sentences do not apply to inert ballast. */
-if (ENV_NAME === "dev" && !argv.includes("--i-know-dev-is-shared")) {
-  console.error("dev is the SHARED tenant. This driver plants inert ballast and sweeps EXPIRED fault rows there (never a live lever). Re-run with --i-know-dev-is-shared.");
-  process.exit(2);
-}
+/* This driver arms NO fault — it plants inert ballast and sweeps EXPIRED rows, never a
+ * live lever — so `faults` is empty and the harm sentences do not apply. The shared tenant
+ * still deserves a deliberate act, so `requireAck: true` asks the guard for the refusal
+ * anyway. It used to be an inline `console.error` here: one sentence of the F-679 text
+ * living in a second home, which is the whole shape F-686 was cut for. */
+const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(argv, {
+  faults: [],
+  requireAck: true,
+  defaultEnv: "staging",
+  script: "plant-sweep-live.mjs",
+});
 const env = loadEnv();
-const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
-if (!HOOK_URL) { console.error(`no web-trigger URL for environment "${ENV_NAME}"`); process.exit(2); }
 
 /** The plant size. 200 = two full sweep pages, inside the 25 s trigger, under the 500 cap. */
 const N = Math.max(1, Math.min(200, Number(arg("n", "200")) || 200));

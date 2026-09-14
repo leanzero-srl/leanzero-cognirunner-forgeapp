@@ -133,16 +133,51 @@ armed the very same levers on the very same tenant: `key-status-fault-live.mjs` 
 refusal for **240 s** — since cut to 60 s, because its journey reads the card exactly once),
 and `user-search-fault-live.mjs` had no `--env` at all, dev being its only mode. The refusal
 now has one home, `lib/shared-env-guard.mjs`, exporting `requireEnvAck(argv, { faults,
-maxSeconds })`: it defaults `--env` to `staging`, refuses `dev` without
-`--i-know-dev-is-shared` while naming the harm of the faults *that driver* arms and its own
-longest TTL, and hands back the web-trigger URL for the chosen environment
-(`STAGING_TESTSTATE_URL` vs `TESTSTATE_URL`). It checks argv **before** it reads `.env`, so
-the refusal is not a courtesy reserved for machines that are already configured. Every driver
-that arms a fault goes through it — including `git-dispatch-drop-live.mjs` and
-`git-rotation-window-live.mjs`, which are dev-only by construction and therefore always
-require the flag — and `scripts/evidence-redaction.test.mjs` enforces it on the directory:
-any `*-live.mjs` that calls `arm{KeyRead,Jira,GitDispatch,HookPromote}Fault` and does not
-import `requireEnvAck` fails `npm run test:offline`.
+maxSeconds, defaultEnv })`: it refuses `dev` without `--i-know-dev-is-shared` while naming
+the harm of the faults *that driver* arms and its own longest TTL. It checks argv **before**
+it reads `.env`, so the refusal is not a courtesy reserved for machines that are already
+configured. Every driver that arms a fault goes through it — including
+`git-dispatch-drop-live.mjs` and `git-rotation-window-live.mjs`, which are dev-only by
+construction and therefore always require the flag — and
+`scripts/evidence-redaction.test.mjs` enforces it on the directory: any `*-live.mjs` that
+calls `arm{KeyRead,Jira,GitDispatch,HookPromote}Fault` and does not call `requireEnvAck`
+fails `npm run test:offline`, and so does one that calls it with an empty `faults: []`.
+
+**`--env` is a closed set, and the environment table has one home (F-698, F-699).** The
+guard used to fork once, on `=== "dev"`, and accept every other string in silence — so
+`--env=production`, `--env=prod`, `--env=Dev` and `--env=devv` all ran against **staging**
+and then wrote the string they were given into `results/*/evidence.json` as the environment
+the run had used. `--env` now has to name a key of the frozen `ENVS` table, case-sensitively;
+anything else exits 2 listing the legal values, and `production` gets its own sentence
+(there is no production trigger in this directory and there will not be one). A legal
+environment whose URL variable is unset exits 2 too, naming the variable, instead of
+becoming an `undefined` that turns every hook call into an opaque fetch error.
+
+That table — `{ urlVar, forgeEnvId }` per environment — is the **only** place either fact
+lives. Seventeen drivers used to retype the env→URL ternary and **five of them had it
+inverted** (`ENV_NAME === "staging" ? STAGING : TESTSTATE_URL`), so an unrecognised `--env`
+there resolved to the **shared dev tenant**; the env→Forge-env-id fork sat byte-copied in
+eighteen more, which is eighteen hand-edits the day staging is redeployed. Drivers now take
+what they need from the one table:
+
+| need | use |
+|---|---|
+| one environment, settled and guarded | `requireEnvAck(argv, { faults: [], defaultEnv })` → `{ envName, hookUrl, envId }` |
+| the Forge env id alone (dev-only Playwright script, no web trigger, no `.env`) | `forgeEnvId("dev")` |
+| both environments in one run (`probes-1.5-live.mjs`) | `hookUrlFor(name)` / `hookUrlVar(name)` |
+
+`evidence-redaction.test.mjs` §4f fails any `*-live.mjs` whose **code** reads
+`STAGING_TESTSTATE_URL` or retypes an environment id UUID (docblock prose naming the
+variable an operator must set is exempt — the discriminator is a read, not a mention).
+`TESTSTATE_URL` on its own is fine: a dev-only driver naming the only environment it has is
+not deciding a mapping.
+
+A driver that arms **no** fault still goes through the guard for the mapping, with
+`faults: []`; `plant-sweep-live.mjs` adds `requireAck: true` to keep its shared-dev refusal
+without pretending to arm a lever. Six drivers legitimately **default to dev**
+(`knowledge-doors-editor`, `perm-namesake-ui`, `sandbox-confluence`, `va-capability-gate`,
+`va-rest-doors`, `va-shadow`), and the ack is not forced on them — making it unconditional
+would break every one of them, which is a larger change than F-698/F-699 asked for.
 
 ### JSM & Assets prerequisites
 

@@ -22,21 +22,21 @@
  * Restores the tombstone and the carrier job, and proves the restore by a second read
  * through the same resolver AND the same DOM.
  * ═══════════════════════════════════════════════════════════════════════════════ */
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
 
 const arg = (n, d) => { const p = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return p ? p.slice(n.length + 3) : d; };
 const flag = (n) => process.argv.slice(2).includes(`--${n}`);
-const ENV_NAME = arg("env", "staging");
-const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const PROJECT = arg("project", "LZPT");
 const KEEP = flag("keep");
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const ENV_ID = arg("envid", ENV_NAME === "dev" ? "989ecaa0-261b-406e-b444-78c01c0d7772" : "1abe9beb-537b-43c1-b94f-e877e251f779");
+const ENV_ID = arg("envid", ENV_ID_DEFAULT);
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/va-purge-panel-ui", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });

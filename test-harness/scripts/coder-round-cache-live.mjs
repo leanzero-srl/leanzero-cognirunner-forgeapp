@@ -22,9 +22,9 @@
  */
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
+const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const URL_ = env.STAGING_TESTSTATE_URL || "";
 const SECRET = env.HARNESS_SECRET;
 const ACCT = env.HARNESS_ADMIN_ACCOUNT_ID;
 const ISSUE = arg("issue", "LZPT-186");

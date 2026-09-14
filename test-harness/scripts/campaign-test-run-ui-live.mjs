@@ -1,4 +1,5 @@
 /* CogniRunner - Copyright (C) 2025 LeanZero. SPDX-License-Identifier: AGPL-3.0-or-later */
+import { forgeEnvId } from "../lib/shared-env-guard.mjs";
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import {chromium} from '../../static/_screenshot-harness/node_modules/playwright/index.mjs';
@@ -14,7 +15,7 @@ page.on('request',r=>{if((r.postData()||'').includes('"saveListener"'))evidence.
 const responseFor=name=>page.waitForResponse(r=>(r.request().postData()||'').includes('"'+name+'"'),{timeout:60000});
 const open=async()=>{await frame.getByRole('textbox',{name:'Search listeners',exact:true}).fill(state.tag+' L20 ');const row=frame.locator('.lst-name').filter({hasText:new RegExp('^'+state.tag+' L20 ')}).locator('..').locator('..');const pending=responseFor('getListener');await row.getByRole('button',{name:'Edit',exact:true}).click();const response=await pending;const config=(await response.json()).data.invokeExtension.response.body.listener;await frame.locator('.function-block').first().waitFor();assert.equal(config.id,item.id);return config;};
 try{
- await page.goto('https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772',{waitUntil:'domcontentloaded'});
+ await page.goto(`https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/${forgeEnvId("dev")}`,{waitUntil:'domcontentloaded'});
  await frame.locator('.tab-btn').filter({hasText:/^Listeners$/}).waitFor({timeout:60000});await frame.locator('.tab-btn').filter({hasText:/^Listeners$/}).click();
  evidence.before=await open();
  const block=frame.locator('.function-block').first(),editor=block.locator('.cm-content');

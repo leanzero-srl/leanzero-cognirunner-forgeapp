@@ -39,8 +39,8 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 
+const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
-const URL_ = process.env.STAGING_TESTSTATE_URL || env.STAGING_TESTSTATE_URL || "";
 const SECRET = env.HARNESS_SECRET;
 const ACCT = process.env.HARNESS_ADMIN_ACCOUNT_ID || env.HARNESS_ADMIN_ACCOUNT_ID;
 const ISSUE = process.env.CODER_ISSUE_KEY || "LZPT-186";

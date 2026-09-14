@@ -600,7 +600,26 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       "the stray WAS removed, so the roster genuinely ends byte-identical to the snapshot");
     ok(res && res.verdict === "byte-identical", `…and the roster verdict says so (got ${JSON.stringify(res && res.verdict)})`);
     ok(res && res.leaked === true, "F-681: …and the restore still reports `leaked`, because a clean roster does not make a leaking PNG acceptable");
-    ok(res && res.ok === false, "F-681: …and `ok` is FALSE — the run fails at the end on the leak, not on the roster diff");
+    /* F-700 — `ok` NO LONGER CARRIES THE LEAK ON THE CLEAN PATH. This assertion used to
+       read `res.ok === false`, and that was the defect: `leakVerdict()` was spread last
+       over the `plan.clean` early return, which has no `failures` key at all, so `ok:false`
+       stopped meaning "the roster is wrong" and started meaning "the roster is wrong OR a
+       capture leaked". The drivers read it as the former and printed "the repair did not
+       complete cleanly" next to `verdict:"byte-identical"`, `failures:undefined`. The leak
+       rides on `leaked`/`leaks`/`leakInfo` — which is what a driver must fail on — and `ok`
+       answers exactly one question again. */
+    ok(res && res.ok === true,
+      "F-700: …and `ok` is TRUE, because the ROSTER is byte-identical — `ok` answers the roster question and nothing else");
+    /* MEASURED, not assumed: in THIS fixture the refused capture threw under `attempt()`,
+       so a `failures` row does exist — it is the leak itself, not a broken repair. The
+       `failures:undefined` payload F-700 quotes is the OTHER shape, where the leak was
+       taken by the driver outside the restore and the clean return carries nothing at all;
+       it is constructed and asserted in the positive control below. Either way the second
+       FAIL diagnosed a repair from a row that says `byte-identical`. */
+    ok(res && res.verdict === "byte-identical",
+      "F-700: …and the verdict is byte-identical, which is what the second FAIL used to print while claiming the repair broke");
+    ok(res && Array.isArray(res.failures) && res.failures.every((f) => f.leak === true),
+      "F-700: …and every `failures` row on this clean return is the LEAK, not a repair that went wrong");
     ok(res && Array.isArray(res.leaks) && res.leaks.length >= 1 && /\.png$/.test(String(res.leaks[0].path)),
       `…and the verdict NAMES the PNG that was refused (got ${JSON.stringify(res && res.leaks)})`);
     ok(!!(res && res.leaks && res.leaks[0] && res.leaks[0].readable === 1), "…with the count of addresses that survived the mask");
@@ -616,10 +635,59 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       "…and the failure row carries the flag too, so a caller reading only `failures` still sees it");
 
     /* NEGATIVE CONTROL BY REVERT: the verdict this finding changed, computed the old way on
-       this very answer. It says the restore passed — which is the defect. */
-    const revertedVerdict = { ok: res.verdict === "byte-identical" };
-    ok(revertedVerdict.ok === true,
-      "NEGATIVE CONTROL: the pre-F-681 verdict (roster diff alone) calls this same leaking run a PASS");
+       this very answer. It says the restore passed — which is the defect. `leaked` is the
+       field that makes the difference now, and it is the one a driver reads. */
+    const revertedVerdict = { ok: res.verdict === "byte-identical" && !res.leaked };
+    ok(revertedVerdict.ok === false,
+      "NEGATIVE CONTROL: the pre-F-681 verdict (roster diff alone) would call this leaking run a PASS — `leaked` is what still fails it");
+
+    /* 7h-ii. F-700 — THE DRIVERS' RUN-LEVEL ARMS, RUN AGAINST THIS EXACT ANSWER.
+       One leak on a byte-identical roster used to fire BOTH run-level FAILs, and the
+       second asserted "the repair did not complete cleanly" from a payload that said
+       `verdict:"byte-identical"`, `failures:undefined`, `reason:undefined` — a cause read
+       off a result that did not contain it. The arms are transcribed from
+       `perm-discriminator-live.mjs` and `knowledge-doors-editor-live.mjs` (the two homes
+       are the same text modulo an em dash) and counted. */
+    const runArms = (restore, leakedNow) => {
+      const fails = [];
+      const FAIL = (s, d) => fails.push({ s, d });
+      if (leakedNow) {
+        FAIL("a screenshot capture was REFUSED because a readable email address survived the mask", {
+          ...(restore && restore.leaked ? { duringRepair: restore.leakInfo } : {}),
+        });
+      } else if (restore && restore.ok === false) {
+        FAIL("the roster restore reports ok:false - the repair did not complete cleanly",
+          { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
+      }
+      return fails;
+    };
+    const armed = runArms(res, true);
+    ok(armed.length === 1, `F-700: a leak on a CLEAN roster fires EXACTLY ONE run-level FAIL (got ${armed.length})`);
+    ok(/REFUSED/.test(armed[0].s) && !/did not complete cleanly/.test(armed[0].s),
+      "F-700: …and it is the LEAK sentence — the one cause the result actually carries");
+    ok(armed[0].d.duringRepair === res.leakInfo && /REFUSED/.test(String(res.leakInfo)),
+      "F-700: …carrying the repair-time detail, so nothing the second FAIL used to say is lost");
+
+    /* POSITIVE CONTROL — the pre-fix library answer (`ok` overwritten on the clean path)
+       through the pre-fix driver arms (two independent `if`s). Two FAILs, the second one
+       diagnosing a repair that was perfect. */
+    /* The clean early return as it looks when the leaking capture was taken by the DRIVER
+       rather than under `attempt()` — no `failures`, no `reason` — with `ok` overwritten
+       the way `leakVerdict()` used to overwrite it. This is the payload F-700 quotes. */
+    const preFixRestore = { ...res, ok: false, failures: undefined, info: undefined };
+    const preFixArms = (r, leakedNow) => {
+      const fails = [];
+      const FAIL = (s, d) => fails.push({ s, d });
+      if (leakedNow) FAIL("a screenshot capture was REFUSED …", {});
+      if (r && r.leaked) FAIL("the roster restore reports leaked:true …", {});
+      if (r && r.ok === false) FAIL("the roster restore reports ok:false - the repair did not complete cleanly", { verdict: r.verdict, failures: r.failures, reason: r.reason });
+      return fails;
+    };
+    const preFix = preFixArms(preFixRestore, true);
+    ok(preFix.length === 3,
+      `POSITIVE CONTROL (F-700): the pre-fix library answer through the pre-fix arms fires THREE FAILs for one leak (got ${preFix.length})`);
+    ok(preFix[2].d.verdict === "byte-identical" && preFix[2].d.failures === undefined && preFix[2].d.reason === undefined,
+      "POSITIVE CONTROL: …and the last one claims a broken repair while printing byte-identical and two undefined fields — the exact payload F-700 quotes");
   }
 }
 

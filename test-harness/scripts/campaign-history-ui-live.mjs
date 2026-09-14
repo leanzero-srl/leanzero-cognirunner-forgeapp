@@ -1,4 +1,5 @@
 /* CogniRunner - Copyright (C) 2025 LeanZero. SPDX-License-Identifier: AGPL-3.0-or-later */
+import { forgeEnvId } from "../lib/shared-env-guard.mjs";
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { chromium } from '../../static/_screenshot-harness/node_modules/playwright/index.mjs';
@@ -11,7 +12,7 @@ const context = await browser.newContext({ storageState: '/Users/mihaiperdum/Pro
 const page = await context.newPage(), frame = page.frameLocator('iframe').first();
 page.on('pageerror', error => evidence.errors.push(error.message));
 try {
-  await page.goto('https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772');
+  await page.goto(`https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/${forgeEnvId("dev")}`);
   await frame.locator('.tab-btn').filter({ hasText: /^Scheduled Jobs$/ }).waitFor({ timeout: 60000 });
   for (const theme of ['light', 'dark']) {
     await frame.locator('html').evaluate((node, theme) => { node.setAttribute('data-color-mode', theme); node.setAttribute('data-theme', `${theme}:${theme}`); }, theme);

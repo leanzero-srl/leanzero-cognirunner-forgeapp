@@ -34,6 +34,7 @@
  * Env: GH_TOKEN, test-harness/.env (TESTSTATE_URL, HARNESS_SECRET, HARNESS_ADMIN_ACCOUNT_ID,
  *      JIRA_ADMIN_EMAIL, JIRA_API_TOKEN).
  */
+import { forgeEnvId } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
@@ -44,7 +45,7 @@ import { readJobLog, assertLockRefusal } from "../lib/gh-job-log.mjs";
 const env = loadEnv();
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const DEV_ENV = "989ecaa0-261b-406e-b444-78c01c0d7772";
+const DEV_ENV = forgeEnvId("dev");
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const REPO = process.env.GIT_REPO_ID || "leanzero-srl/cognirunner-forge-offshoot";
 const ACCT = process.env.HARNESS_ADMIN_ACCOUNT_ID || env.HARNESS_ADMIN_ACCOUNT_ID;

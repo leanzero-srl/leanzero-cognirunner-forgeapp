@@ -1,4 +1,5 @@
 /* CogniRunner - Copyright (C) 2025 LeanZero. SPDX-License-Identifier: AGPL-3.0-or-later */
+import { forgeEnvId } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import assert from "node:assert/strict";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
@@ -20,7 +21,7 @@ try {
   browser = await chromium.launch({ headless: true });
   const ctx = await browser.newContext({ storageState: new URL("../../../forge-live-harness/.auth/storage-state.json", import.meta.url).pathname, viewport: { width: 1440, height: 1100 } });
   const page = await ctx.newPage();
-  await page.goto(`${BASE}/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${BASE}/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/${forgeEnvId("dev")}`, { waitUntil: "domcontentloaded" });
   const frame = page.frameLocator('iframe').first();
   await frame.getByRole("button", { name: "+ Add Rule", exact: true }).click({ timeout: 60000 });
   await frame.getByRole("button").filter({ hasText: /JT$/ }).click();

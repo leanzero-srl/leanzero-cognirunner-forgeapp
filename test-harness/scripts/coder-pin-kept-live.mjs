@@ -36,9 +36,9 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 
+const { hookUrl: URL_, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
-const URL_ = env.STAGING_TESTSTATE_URL || "";
 const SECRET = env.HARNESS_SECRET;
 const ACCT = env.HARNESS_ADMIN_ACCOUNT_ID;
 const ISSUE = arg("issue", "LZPT-186");
@@ -46,7 +46,7 @@ const SLOT = "COGNIRUNNER_AI_PROVIDER";
 const THREAD = `t_f631_${Date.now().toString(36)}`;
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const ENV_ID = arg("envid", "1abe9beb-537b-43c1-b94f-e877e251f779");
+const ENV_ID = arg("envid", ENV_ID_DEFAULT);
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/coder-pin-kept", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });

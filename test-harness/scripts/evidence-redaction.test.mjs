@@ -1636,7 +1636,14 @@ ok(guardedDrivers.length === liveFiles.length,
 /* The guard really is the home of the vocabulary, so a green rule above is not green
    because the words mean nothing. Every word any driver declares must exist there. */
 {
-  const VOCAB = new Set([...guardSrc.matchAll(/^\s{2}([a-zA-Z]+):\s*"/gm)].map((m) => m[1]));
+  /* The words IN DECLARATION ORDER, parsed out of MUTATION_HARMS — two-space indentation is
+     the discriminator (ENVS' rows sit at four, FAULT_HARMS' values are arrow functions and
+     never `: "`). `VOCAB` is the membership form; `MUTATION_WORDS` keeps the sequence, which
+     F-739's parity check below compares against the README's transcription. */
+  const MUTATION_WORDS = [...guardSrc.matchAll(/^\s{2}([a-zA-Z]+):\s*"/gm)].map((m) => m[1]);
+  const VOCAB = new Set(MUTATION_WORDS);
+  ok(MUTATION_WORDS.length === VOCAB.size && VOCAB.size >= 12,
+    `F-739: the guard's vocabulary parses to ${VOCAB.size} distinct words — a parse that collapsed or duplicated would make the parity below meaningless`);
   ok(VOCAB.has("agents") && VOCAB.has("providerSlot") && VOCAB.has("kvs"),
     "F-718: MUTATION_HARMS in the guard is readable from here and carries the words the drivers use");
   const unknown = [];
@@ -1646,6 +1653,48 @@ ok(guardedDrivers.length === liveFiles.length,
   }
   ok(unknown.length === 0,
     `F-718: every declared word is in the guard's CLOSED vocabulary (unknown: ${unknown.join(", ")})`);
+
+  /* ── F-739 — THE CLOSED VOCABULARY HAS TWO HOMES, AND ONLY ONE WAS CHECKED ──────
+     Everything above reads the words OUT of the guard, so the guard and the drivers cannot
+     drift. `README.md` retypes all twelve by hand in the F-718 paragraph, and nothing
+     asserted that copy — LAW 1's signature defect, sitting inside the very range that
+     folded `live-driver-scope`'s RULE 3 into 4f "because a rule about second homes is the
+     last rule that should have two".
+
+     The drift is not hypothetical in shape: the vocabulary is explicitly designed to GROW
+     ("add a word to MUTATION_HARMS with its sentence"), and the day a thirteenth word is
+     added the suite stays green — 4g parses the guard, so the new word is legal at once —
+     while the README still teaches twelve. The next driver author reads the README as the
+     closed set and either gets a THROW on a word that IS legal, or picks `kvs` as "the
+     honest catch-all" for a mutation that now has its own word, and the refusal then prints
+     a sentence describing the wrong blast radius. `rules` is already a word no driver uses,
+     so the list's accuracy was never self-evident from the drivers either.
+
+     ORDER IS ASSERTED TOO, not just membership. The README reads as a transcription of the
+     table; keeping the sequence identical is free, and it makes "which one is missing"
+     answerable from the diff rather than from a set subtraction. */
+  const README = readFileSync(path.join(here, "../README.md"), "utf8");
+  /** The backticked words inside the `closed vocabulary (…)` parenthesis, which wraps across
+   *  lines in the prose. `null` when the paragraph is gone — which is a failure, not a pass. */
+  function readmeVocabulary(md) {
+    const at = md.indexOf("closed vocabulary (");
+    if (at < 0) return null;
+    const close = md.indexOf(")", at);
+    if (close < 0) return null;
+    return [...md.slice(at, close).matchAll(/`([a-zA-Z]+)`/g)].map((m) => m[1]);
+  }
+  /* CONTROLS — the parser has to be able to FAIL, or the parity below is decorative. */
+  ok((readmeVocabulary("from a closed vocabulary (`roster`, `skills`,\n`kvs`); either array") || []).join(",") === "roster,skills,kvs",
+    "F-739: the README vocabulary parser reads a list that WRAPS across lines, which the real paragraph does");
+  ok(readmeVocabulary("no such paragraph here") === null,
+    "F-739: …and answers null when the paragraph is gone, so deleting the sentence fails the parity rather than satisfying it");
+  ok((readmeVocabulary("closed vocabulary (`roster`, `skills`)") || []).join(",") !== MUTATION_WORDS.join(","),
+    "F-739: …and a SHORT list is not equal to the guard's — the control that proves the comparison below can go red");
+
+  const readmeWords = readmeVocabulary(README);
+  ok(readmeWords !== null, "F-739: README.md still carries the closed-vocabulary paragraph the drivers are taught from");
+  ok(readmeWords !== null && readmeWords.join(", ") === MUTATION_WORDS.join(", "),
+    `F-739: README.md lists EXACTLY the words in MUTATION_HARMS, in order — guard: [${MUTATION_WORDS.join(", ")}] README: [${(readmeWords || []).join(", ")}]`);
 }
 
 /* ── 4f-2. F-713 — THE SCOPE RULE HAS MOVED OUT OF THIS FILE (F-728) ────────────

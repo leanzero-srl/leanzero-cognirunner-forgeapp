@@ -31,7 +31,7 @@
 
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
-  rosterRowRole, isReproducibleRosterRow,
+  rosterRowRole, normaliseRosterRow, isReproducibleRosterRow,
 } from "../lib/roster-restore.mjs";
 
 let pass = 0, fail = 0;
@@ -164,9 +164,12 @@ const searchRows = (ids, extra = {}) => ids.map((id, i) => row(id, { i, ...(extr
   const p2 = planRosterRestore(snapshot, rebuilt);
   eq([p2.strays.length, p2.missing.length, p2.changed.length], [0, 0, 0], "after apply, no account is stray, missing or changed");
   /* Honest about the residue: the UI appends, so the re-added row lands last. That is a
-     different stored VALUE and the verdict says so rather than calling it a pass. */
+     different stored VALUE, and the verdict NAMES it — but it is not a permission state,
+     so it is a PASS (F-659). It used to be `ok:false`, which made every re-add a
+     permanent red and sent an operator to hand-repair a correct tenant. */
   const v = rosterRestoreVerdict(snapshot, rebuilt);
-  ok(v.ok === false && v.verdict === "same rows, different order", `an order-only residue is reported, not swallowed (got: ${v.verdict})`);
+  ok(v.ok === true && v.verdict === "same set, different order", `an order-only residue is a PASS that still names itself (got: ${v.verdict})`);
+  ok(/ORDER/.test(String(v.info)), "...and the info line explains why no click can fix it");
   const v2 = rosterRestoreVerdict(snapshot, [snapshot[0], plan.missing[0], snapshot[2]]);
   ok(v2.ok === true, "re-inserting at the snapshot position is byte-identical and passes");
 }
@@ -252,6 +255,58 @@ const searchRows = (ids, extra = {}) => ids.map((id, i) => row(id, { i, ...(extr
   eq(plan.missing, [LEGACY_STRING], "the lost legacy row is planned for re-add");
   eq(isReproducibleRosterRow(plan.missing[0]), { ok: true, role: "admin", scope: "all" },
     "...and it is re-added as an ADMIN — the demotion is gone");
+}
+
+/* ── 9. F-659 — THE VERDICT IS A SET, BECAUSE `addAppAdmin` APPENDS ─────────────
+   `addAppAdmin` does `users.push`, so ANY restore that re-adds a row lands it at the
+   tail; an order-sensitive byte compare therefore makes a correct restore a PERMANENT
+   red, and the loudest assertion in the suite trains its reader to ignore it. The
+   verdict now compares the permission-bearing SET. Missing/extra/changed stay FAIL. */
+{
+  const snapshot = [
+    { accountId: ADMIN, displayName: "Mihai Perdum", emailAddress: "mihai@wolfaenpak.com", role: "admin", scope: "all" },
+    { accountId: NAMESAKE_A, displayName: "Mihai Perdum", role: "editor", scope: "own" },
+    { accountId: NAMESAKE_B, displayName: "Mihai Perdum", role: "viewer", scope: "own" },
+  ];
+  /* The shape a real restore produces: the re-added row is at the TAIL. */
+  const reordered = [snapshot[0], snapshot[2], snapshot[1]];
+  const v = rosterRestoreVerdict(snapshot, reordered);
+  ok(v.ok === true, `an order-only residue PASSES (got: ${v.verdict})`);
+  ok(/order/i.test(v.verdict), `...and the verdict says so rather than claiming byte-identity (got: ${v.verdict})`);
+  ok(typeof v.info === "string" && v.info.length > 0, "...with an info line the operator can read");
+  ok(v.plan.clean === false, "...while the plan still records honestly that the stored bytes differ");
+  ok(rosterRestoreVerdict(snapshot, snapshot).verdict === "byte-identical",
+    "an untouched roster is still reported as byte-identical, not merely set-identical");
+
+  /* POSITIVE CONTROL — the old verdict on the very same input. */
+  ok(JSON.stringify(reordered) !== JSON.stringify(snapshot),
+    "POSITIVE CONTROL: the old byte compare DID fail on this roster — the pass above is a change");
+
+  /* THE SET IS SHAPE-NORMALISED: addAppAdmin always pushes a full object, so a legacy
+     bare-string row can never be reproduced byte-for-byte. Re-adding it correctly must
+     pass, or the restore is red forever. */
+  const legacySnap = [ADMIN, { accountId: NAMESAKE_A, role: "editor", scope: "own" }];
+  const reAdded = [{ accountId: NAMESAKE_A, role: "editor", scope: "own" }, { accountId: ADMIN, displayName: "Mihai Perdum", role: "admin", scope: "all" }];
+  ok(rosterRestoreVerdict(legacySnap, reAdded).ok === true,
+    "a legacy bare-string row re-added as the object the product reads it as is a PASS");
+  eq(normaliseRosterRow(ADMIN), { accountId: ADMIN, role: "admin", scope: "all" }, "...because the compare normalises the shape first");
+
+  /* …AND IT IS STILL A FAIL FOR EVERYTHING THAT MATTERS. */
+  const demoted = [snapshot[0], { ...snapshot[1], role: "viewer" }, snapshot[2]];
+  ok(rosterRestoreVerdict(snapshot, demoted).ok === false, "a CHANGED role is still a FAIL");
+  ok(rosterRestoreVerdict(snapshot, [snapshot[0], { ...snapshot[1], scope: "all" }, snapshot[2]]).ok === false,
+    "a CHANGED scope is still a FAIL");
+  ok(rosterRestoreVerdict(snapshot, [...snapshot, { accountId: TARGET, role: "editor", scope: "own" }]).ok === false,
+    "a STRAY grant is still a FAIL");
+  ok(rosterRestoreVerdict(snapshot, [snapshot[0], snapshot[1]]).ok === false, "a MISSING row is still a FAIL");
+  ok(rosterRestoreVerdict(snapshot, [snapshot[0], snapshot[1], snapshot[2], snapshot[2]]).ok === false,
+    "a DUPLICATED row is a FAIL — the set compare counts, it does not dedupe");
+  ok(rosterRestoreVerdict(snapshot, []).ok === false, "an emptied roster is a FAIL");
+
+  /* A legacy row that is silently REWRITTEN to a lesser role is the F-658 damage, and the
+     set compare must catch it even though both shapes are "legacy-ish". */
+  ok(rosterRestoreVerdict([ADMIN], [{ accountId: ADMIN, role: "viewer", scope: "own" }]).ok === false,
+    "F-658 + F-659: a legacy admin row demoted to viewer is a FAIL, not a shape difference");
 }
 
 console.log(`roster-restore.test.mjs: ${pass} passed, ${fail} failed`);

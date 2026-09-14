@@ -310,10 +310,14 @@ async function restoreRosterToSnapshot(snapshot) {
       const r = await grantRole(id, repro.role, repro.scope, [row.displayName, row.emailAddress].filter(Boolean));
       actions.push({ act: "readd-missing", id: idTail(id), ok: !!r.ok, role: repro.role, scope: repro.scope, reason: r.reason });
     }
-    if (plan.sameSet) break;   // only the ORDER differs; no click can fix that
+    /* F-659 — only the ORDER (or a row's non-permission fields) differs. No click can fix
+       that: the Permissions tab has no reorder control, and `addAppAdmin` appends. It is
+       not a permission state either, so this is where the loop STOPS and the verdict
+       below calls it a pass with an info line, not a red. */
+    if (plan.sameSet) break;
   }
   const v = rosterRestoreVerdict(snapshot, await rosterRows());
-  return { ok: v.ok, actions, verdict: v.verdict, plan: describePlan(v.plan) };
+  return { ok: v.ok, actions, verdict: v.verdict, ...(v.info ? { info: v.info } : {}), plan: describePlan(v.plan) };
 }
 
 async function main() {
@@ -582,12 +586,21 @@ async function main() {
       /* The comparison is RAW on both sides — a redacted diff would pass while two
          different addresses sat behind the same mask. Only the FAIL payload is
          redacted, and it is redacted BEFORE the slice: cutting first can leave a
-         half-address under the 300-char boundary that no email pattern would match. */
-      const same = JSON.stringify(rosterEnd) === rosterBeforeJson;
-      if (same) PASS("SECOND READ: the app roster is byte-identical to the snapshot taken before this run", { rows: rosterEnd.length });
-      else FAIL("THE ROSTER IS NOT RESTORED — restore it by hand from roster-before.json", {
-        verdict: restore ? restore.verdict : "the restore never ran",
-        diff: restore ? restore.plan : describePlan(planRosterRestore(rosterBefore, rosterEnd)),
+         half-address under the 300-char boundary that no email pattern would match.
+
+         F-659 — THE VERDICT, NOT A BYTE COMPARE. `addAppAdmin` APPENDS, so any restore
+         that re-adds a row lands it at the tail: this line used to be a permanent red
+         after every re-add, telling an operator to hand-repair a tenant that was already
+         correct. `rosterRestoreVerdict` compares the {accountId, role, scope} SET and
+         keeps the hand-repair FAIL for strays, missing, changed and duplicated rows. */
+      const v = rosterRestoreVerdict(rosterBefore, rosterEnd);
+      if (v.verdict === "byte-identical") PASS("SECOND READ: the app roster is byte-identical to the snapshot taken before this run", { rows: rosterEnd.length });
+      else if (v.ok) {
+        PASS(`SECOND READ: the app roster carries EXACTLY the snapshot's accounts, roles and scopes (${v.verdict})`, { rows: rosterEnd.length, verdict: v.verdict });
+        info(`roster residue: ${v.info}`);
+      } else FAIL("THE ROSTER IS NOT RESTORED — restore it by hand from roster-before.json", {
+        verdict: v.verdict,
+        diff: restore ? restore.plan : describePlan(v.plan),
         before: redactString(rosterBeforeJson).slice(0, 300),
         now: redactString(JSON.stringify(rosterEnd)).slice(0, 300),
       });

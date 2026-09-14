@@ -831,8 +831,23 @@ process.env.HARNESS_SECRET = SECRET;
    * moment it was given one. Both actions now NAME it, and the docblock says outright that
    * deriving it is deprecated. */
   const hookSrc = readFileSync(path.join(here, "../../src/test-hook.js"), "utf8");
-  ok((hookSrc.match(/\.\.\.r, complete: r\.complete === true,?\s*\}\)/g) || []).length === 3,
-    "F-692.SOURCE: the sweep, the clear AND the plant (F-696) return `complete` explicitly, so a reshape of the library's answer cannot silently drop it");
+  /* F-779 — DERIVED, NOT COUNTED. This was `=== 3`, and a fourth drain (`stashSweep`) turned
+     it red for being correct: the F-694 defect in a test file, where the "fix" is to edit the
+     number instead of reading the rule. WHICH library functions answer a drain is a property
+     of the library — they are the ones that finish through `sweepAnswerTail` — so the count
+     is read from there, and every one of them the hook calls must NAME `complete`. */
+  const faultSrc692 = readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8");
+  const drainExports = [...faultSrc692.matchAll(/\nexport const ([A-Za-z_$][\w$]*) = async \(/g)]
+    .map((m, i, all) => ({
+      name: m[1],
+      body: faultSrc692.slice(m.index, i + 1 < all.length ? all[i + 1].index : faultSrc692.length),
+    }))
+    .filter((e) => /sweepAnswerTail\(/.test(e.body))
+    .map((e) => e.name);
+  const calledByHook = drainExports.filter((n) => new RegExp(`await ${n}\\(`).test(hookSrc));
+  ok(calledByHook.length >= 3, `F-692.SOURCE: the hook still drives the library's drains (${calledByHook.join(", ")})`);
+  ok((hookSrc.match(/\.\.\.r, complete: r\.complete === true,?\s*\}\)/g) || []).length === calledByHook.length,
+    `F-692.SOURCE: EVERY drain door returns \`complete\` explicitly, so a reshape of the library's answer cannot silently drop it (${calledByHook.length} drains: ${calledByHook.join(", ")})`);
   ok(/DEPRECATED: DERIVING FINISHEDNESS FROM `truncated`/.test(hookSrc),
     "F-692.SOURCE: …and the docblock marks the `truncated`-only derivation deprecated, naming `complete` as the ONE finished signal");
 

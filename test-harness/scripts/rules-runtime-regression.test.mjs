@@ -747,6 +747,197 @@ try {
     });
     assert.equal(read.statusCode, 404);
   });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-780 — ONE FINGERPRINT, ONE SERIALISATION, BOTH DOORS.
+   *
+   * Two homes for "the sha256-16 of this secret" in one file, disagreeing on the
+   * serialisation: `?what=kvs` hashed `JSON.stringify(value)` (a string arrives QUOTED)
+   * and the githooks URL mask hashed the raw string. A driver proving a hook still points
+   * at the same trigger compares `urlMasked.fingerprint` against the fingerprint of
+   * `webtrigger_url:git-webhook` — both documented as "the sha256-16 of this URL", both
+   * masked under the same doctrine — and got a guaranteed mismatch for a byte-identical
+   * URL. An equality check that always reports a change is worse than no check.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("a string fingerprints identically through BOTH doors (F-780)", async () => {
+    const URL_VALUE = "https://x.atlassian-dev.net/x1/zz-trigger-token-zz";
+    // DOOR ONE — the masked read of the stored capability URL.
+    storage.__seed("webtrigger_url:git-webhook", URL_VALUE);
+    const viaKvs = JSON.parse((await kvsRead("webtrigger_url:git-webhook")).body);
+    assert.equal(viaKvs.masked, true, "premise: a webtrigger_url row is masked");
+    assert.match(viaKvs.fingerprint, /^[0-9a-f]{16}$/);
+    // DOOR TWO — the helper both doors now share, asked on the same bytes.
+    const { credentialFingerprint, fingerprintInput } = await import("../../src/test-hook.js");
+    assert.equal(await credentialFingerprint(URL_VALUE), viaKvs.fingerprint,
+      "the SAME URL through the two doors is the SAME fingerprint — this is the finding");
+    // THE SERIALISATION, documented and asserted: a string is itself, never its JSON.
+    assert.equal(fingerprintInput(URL_VALUE), URL_VALUE, "a string fingerprints as ITSELF, not as a quoted JSON string");
+    assert.notEqual(await credentialFingerprint(URL_VALUE), await credentialFingerprint(JSON.stringify(URL_VALUE)),
+      "…which is a real distinction, not a no-op: the quoted form is a DIFFERENT value");
+    // …and an object is CANONICAL json, so key order cannot change a fingerprint.
+    assert.equal(fingerprintInput({ b: 1, a: 2 }), '{"a":2,"b":1}');
+    assert.equal(await credentialFingerprint({ url: "u", apiKey: "k" }), await credentialFingerprint({ apiKey: "k", url: "u" }),
+      "a row that came back from KVS with its keys in another order is the SAME row");
+    assert.notEqual(await credentialFingerprint({ url: "u", apiKey: "k" }), await credentialFingerprint({ url: "u", apiKey: "K" }),
+      "…while a changed value is still a changed fingerprint");
+    assert.equal(await credentialFingerprint(null), null, "absent is one answer, not a hash of the string null");
+  });
+  await check("the sha256-16 fingerprint has exactly ONE home in the hook (F-780)", async () => {
+    const code = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    const truncated = (code.match(/digest\("hex"\)\.slice\(0, 16\)/g) || []).length;
+    assert.equal(truncated, 1, `a second sha256-16 is a second serialisation waiting to disagree (found ${truncated})`);
+    assert.match(code, /createHmac\("sha256", await fingerprintKey\(\)\)\.update\(fingerprintInput\(value\)\)/,
+      "…and the one home keys the HMAC (F-781) over the DOCUMENTED serialisation, not a raw JSON.stringify");
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-781 — THE FINGERPRINT IS KEYED, BECAUSE AN UNSALTED HASH IS A GUESS ORACLE.
+   *
+   * 64 bits is far too little to brute a key back out of — true of a PREIMAGE search, and
+   * beside the point. The attack is a GUESS CHECK: hash your candidate, compare. The
+   * values behind these rows are not all high-entropy — `probe:webhook:secret` is an HMAC
+   * secret a TESTER types — so a reader holding the harness secret could recover one from
+   * a wordlist offline and then forge a signed request at the UNAUTHENTICATED
+   * `gitWebhookProbe` door. Keyed under `HARNESS_SECRET`, that wordlist is useless.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("the fingerprint is keyed per installation, so it is not a guess oracle (F-781)", async () => {
+    const { credentialFingerprint } = await import("../../src/test-hook.js");
+    const GUESSABLE = "s3cr3t";
+    const here781 = await credentialFingerprint(GUESSABLE);
+    // THE ORACLE, SHUT: the bare digest an attacker computes offline is NOT the answer.
+    const { createHash } = await import("node:crypto");
+    const bare = createHash("sha256").update(GUESSABLE).digest("hex").slice(0, 16);
+    assert.notEqual(here781, bare, "a wordlist candidate hashed offline no longer matches — this is the finding");
+    assert.match(here781, /^[0-9a-f]{16}$/, "…and the shape drivers parse is unchanged");
+    // EQUALITY SEMANTICS ARE UNTOUCHED, which is what the witness library compares.
+    assert.equal(await credentialFingerprint(GUESSABLE), here781, "same value, same run, same fingerprint");
+    assert.notEqual(await credentialFingerprint(GUESSABLE + "!"), here781, "a changed value still changes it");
+    // …AND THE KEY IS THE INSTALLATION'S. Rotate the secret and the fingerprint moves —
+    // the documented cost: fingerprints compare within ONE installation, and only while
+    // the secret is unchanged. Every use in this repo compares within a single run.
+    const secretNow = process.env.HARNESS_SECRET;
+    try {
+      process.env.HARNESS_SECRET = "a-different-installations-secret";
+      assert.notEqual(await credentialFingerprint(GUESSABLE), here781,
+        "another installation fingerprints the SAME value differently — that is the salt");
+    } finally { process.env.HARNESS_SECRET = secretNow; }
+    assert.equal(await credentialFingerprint(GUESSABLE), here781, "…and restoring the secret restores comparability");
+    // The secret is never the HMAC key directly, so no answer is computed under the bearer token.
+    const code781 = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    assert.match(code781, /createHash\("sha256"\)\.update\("cognirunner:test-hook:fingerprint:v1[\s\S]{0,40}process\.env\.HARNESS_SECRET/,
+      "the HMAC key is a domain-separated DERIVATION of HARNESS_SECRET, never the secret itself");
+    assert.equal(/createHmac\("sha256", (?:String\()?process\.env\.HARNESS_SECRET/.test(code781), false,
+      "…asserted against the shortcut, not just for today's spelling");
+  });
+  await check("a masked read still answers a keyed fingerprint end to end (F-781)", async () => {
+    const { credentialFingerprint } = await import("../../src/test-hook.js");
+    storage.__seed("probe:webhook:secret", "s3cr3t");
+    const read = JSON.parse((await kvsRead("probe:webhook:secret")).body);
+    assert.equal(read.masked, true);
+    assert.equal(read.fingerprint, await credentialFingerprint("s3cr3t"),
+      "the door answers the ONE helper's value — the keying is not a second home either");
+    const { createHash } = await import("node:crypto");
+    assert.notEqual(read.fingerprint, createHash("sha256").update("s3cr3t").digest("hex").slice(0, 16),
+      "…and what reaches the wire is not the bare digest a wordlist would produce");
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-779 — THE STASH TTL IS A GUARANTEE, AND SOMETHING FINALLY ENUMERATES THE KEYSPACE.
+   *
+   * The TTL was best-effort with a PERMANENT fallback: when `storage.set(..., ttl)` threw,
+   * the catch re-wrote the same row with no expiry and the 200 still said `ttlSeconds: 3600`.
+   * A driver that stashed the tenant's live BYOK key, got a refused TTL, and was then killed
+   * before its restore left that key in plaintext under `harness_stash:{id}` FOREVER — masked
+   * to `?what=kvs` (it is a credential family), unreachable by `sweepHarnessFaults` (a
+   * different prefix), and recorded in the driver's evidence as expiring in an hour.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  const listStashes = async () => JSON.parse((await POST({ action: "stashSweep", dryRun: true })).body).rows;
+  await check("a refused TTL is a REFUSED stash, and plants nothing (F-779)", async () => {
+    const SLOT = "COGNIRUNNER_KEY_openai";
+    const REAL = "zz-the-tenants-own-key-zz";
+    storage.__seed(SLOT, REAL);
+    // The platform refuses the TTL OPTION — the exact fault the old catch arm swallowed.
+    storage.__failSetWhen((key) => String(key).startsWith("harness_stash:"), Object.assign(new Error("ttl option rejected"), { name: "ForgeKvsError", code: "INVALID_TTL" }));
+    const res = await POST({ action: "kvStash", key: SLOT });
+    assert.equal(res.statusCode, 424, "a stash that cannot be given a TTL is REFUSED, not silently made permanent");
+    const body = JSON.parse(res.body);
+    assert.equal(body.ok, false);
+    assert.equal(body.stashed, false, "…and says so, so the driver does not go on to plant a fault it cannot undo");
+    assert.equal(body.error, "stash-ttl-unavailable");
+    assert.equal("ttlSeconds" in body, false, "no TTL was applied, so none is claimed");
+    assert.equal(body.reason, "INVALID_TTL", "the error CLASS, never its message");
+    assert.equal(JSON.stringify(body).includes(REAL), false, "the refusal carries no value either");
+    // AND NOTHING WAS LEFT BEHIND. This is the finding: the old code's fallback write.
+    const stashes = await listStashes();
+    assert.deepEqual(stashes, [], "no partial stash row survives the refusal");
+    assert.equal(storage.__raw(SLOT), REAL, "the tenant's own key is untouched — the stash never got as far as replacing anything");
+  });
+  await check("a stash that IS given a TTL reports the TTL it actually got (F-779)", async () => {
+    const SLOT = "COGNIRUNNER_KEY_openai";
+    storage.__seed(SLOT, "zz-key-zz");
+    const body = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    assert.equal(body.ok, true);
+    const { HARNESS_STASH_MAX_AGE_SECONDS } = await import("../../src/harness-fault.js");
+    assert.equal(body.ttlSeconds, HARNESS_STASH_MAX_AGE_SECONDS,
+      "the TTL claimed is the constant the reaper reaps at — one number, not two that can drift");
+    // Put it back so this check leaves no stash behind for the sweep checks below.
+    await POST({ action: "kvRestore", stashId: body.stashId });
+  });
+  await check("stashSweep LISTS harness_stash:* — the door that did not exist (F-779)", async () => {
+    storage.__seed("COGNIRUNNER_KEY_openai", "zz-key-zz");
+    const fresh = JSON.parse((await POST({ action: "kvStash", key: "COGNIRUNNER_KEY_openai" })).body);
+    // A row from a driver that died an hour ago: same shape, older stamp.
+    storage.__seed("harness_stash:abandoned", {
+      key: "COGNIRUNNER_KEY_azure", value: "zz-abandoned-tenant-key-zz", present: true,
+      stashedAt: new Date(Date.now() - 7200 * 1000).toISOString(),
+    });
+    const listed = JSON.parse((await POST({ action: "stashSweep", dryRun: true })).body);
+    assert.equal(listed.ok, true);
+    assert.equal(listed.dryRun, true);
+    assert.equal(listed.deleted, 0, "a dry run deletes nothing");
+    assert.equal(listed.prefix, "harness_stash:", "the prefix is the lever's, never the caller's");
+    const byKey = Object.fromEntries(listed.rows.map((r) => [r.key, r]));
+    assert.equal(byKey["harness_stash:abandoned"].expired, true, "the hour-old row is reapable");
+    assert.equal(byKey[`harness_stash:${fresh.stashId}`].expired, false, "a LIVE driver's stash is not — reaping it would destroy the key it protects");
+    assert.equal(listed.body === undefined && JSON.stringify(listed).includes("zz-abandoned-tenant-key-zz"), false,
+      "the census carries the key and the age, never the value");
+    assert.equal(typeof byKey["harness_stash:abandoned"].ageSeconds, "number");
+  });
+  await check("stashSweep reaps ONLY what is older than the age (F-779)", async () => {
+    const r = JSON.parse((await POST({ action: "stashSweep" })).body);
+    assert.equal(r.ok, true);
+    assert.equal(r.complete, true, "one page of a tiny keyspace drains in one call");
+    assert.equal(r.deleted, 1, "the abandoned row is gone");
+    assert.equal(storage.__raw("harness_stash:abandoned"), undefined);
+    const after = await listStashes();
+    assert.equal(after.length, 1, "…and the live driver's stash is still there");
+    // Its restore still works, which is the property the age rule exists to protect.
+    const live = after[0].key.slice("harness_stash:".length);
+    assert.equal(JSON.parse((await POST({ action: "kvRestore", stashId: live })).body).restored, true);
+  });
+  await check("stashSweep stays behind HARNESS_SECRET, and refuses a bad cursor (F-779)", async () => {
+    const res = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "stashSweep" }) });
+    assert.equal(res.statusCode, 404, "invisible without the secret, like every other lever here");
+    const bad = await POST({ action: "stashSweep", cursor: "x".repeat(5000) });
+    assert.equal(bad.statusCode, 400);
+    assert.equal(JSON.parse(bad.body).reason, "bad-cursor");
+  });
+  await check("the stash keyspace has ONE home, and the reaper is bound to it (F-779)", async () => {
+    // The door that WRITES the row and the lever that REAPS it read the same constant —
+    // a second copy is how a keyspace ends up unswept in the first place.
+    const hook = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    assert.equal(/harness_stash:/.test(hook.replace(/CREDENTIAL_KEY_FAMILIES[\s\S]*?\];/, "")), false,
+      "test-hook.js keeps no second copy of the stash prefix outside the credential census");
+    const { HARNESS_STASH_KEY_PREFIX, harnessStashKey } = await import("../../src/harness-fault.js");
+    assert.equal(HARNESS_STASH_KEY_PREFIX, "harness_stash:");
+    assert.equal(harnessStashKey("a/b"), "harness_stash:a-b", "the id is key-safed, not trusted");
+    // …and the census entry IS that prefix, so the row the sweeper reaps is the row the
+    // read ceiling masks. Two literals, one meaning — asserted rather than hoped.
+    assert.equal(isCredentialKey(HARNESS_STASH_KEY_PREFIX + "anything"), true);
+    // The reaper does not take the keyspace as a parameter (the clearPlantedFaults rule).
+    const faultCode779 = stripJsComments(readFileSync(new URL("../../src/harness-fault.js", import.meta.url), "utf8"));
+    const sweeper = faultCode779.slice(faultCode779.indexOf("export const sweepHarnessStashes"));
+    assert.match(sweeper, /values: \[HARNESS_STASH_KEY_PREFIX\]/, "the prefix is bound, not passed in");
+    assert.equal(/prefix\s*[:=]\s*(?!HARNESS_STASH_KEY_PREFIX)[a-z]/.test(sweeper.slice(0, sweeper.indexOf("return {"))), false,
+      "no caller gets to say which keyspace an unconditional delete walks");
+  });
   await check("the credential census has ONE home (F-769)", async () => {
     // The families list is asked by the READ ceiling and by the WRITE refusal
     // (`SECRET_VALUE_RE`). The write door used to keep its own retyped copy of
@@ -760,6 +951,205 @@ try {
     // Both doors still answer on the same family — the write refuses a body mentioning it.
     const plant = await POST({ action: "pipelineRow", op: "plant", connId: "c1", repoId: "acme/widget", note: "COGNIRUNNER_KEY_openai" });
     assert.equal(plant.statusCode, 400, "the write door still refuses a body that mentions a credential family");
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-778 — THE CENSUS ITSELF IS NOW DERIVED FROM `src/`, NOT REMEMBERED.
+   *
+   * `COGNIRUNNER_CONTEXT7_REMOTE` stores the admin's context7 API key as `apiKey`
+   * (index.js `saveContext7Remote`). It is the THIRD member of the MCP-remote triple;
+   * its two siblings are declared families and it was not, and its flattened name carries
+   * none of `SECRET_KEY_HINTS`, so the name catch-all could not save it either — the
+   * read ceiling answered `{key, value:{url, apiKey:"<plaintext>"}}`.
+   *
+   * Declaring one more name would leave the MECHANISM open: a family is remembered by
+   * whoever adds a write site, and the F-769 census was assembled by reading `src/` ONCE.
+   * So this reads `src/` EVERY RUN, the way the leak does — every KVS write call
+   * (`storage|kvs|store .set(key, value)`) whose stored object carries a field named like
+   * a secret must land on a key `isCredentialKey` already covers, or appear in the
+   * reviewed table below with the reason it is not a credential.
+   *
+   * HOW IT READS. Comments are stripped (a docblock naming `apiKey` is prose), key
+   * expressions are resolved through the file's own string constants and through the
+   * key-builder arrows the repo writes everywhere (`(id) => \`git_conn_secret:${id}\``,
+   * `assertKvsKey(\`...\`)`, `PREFIX + id`), and the stored object is read either inline
+   * or from the nearest preceding `const row = { … }` / `row.field =` for the identifier
+   * that is handed to `.set`. A VALUE that is a bare identifier named like a secret
+   * (`storage.set(providerKeySlot(p), key)`) counts too — a credential slot's value is a
+   * naked string with no field to read.
+   *
+   * WHAT IT DOES NOT DO, stated rather than hidden. It is a SOURCE scan, not a type
+   * checker: a secret that reaches storage through a helper two files away, or under a
+   * field whose name says nothing (`serperKey` only qualifies because it ends in `Key`),
+   * is invisible to it. It is a floor under the census, not a proof of its completeness.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  /* Every KVS write site in `src/` whose stored value carries a secret-looking field.
+     `sources` is a Map(name -> source) so the positive control can hand it a fake file. */
+  const scanSecretWriteSites = (sources, hints) => {
+    const flat = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const isSecretField = (n) => hints.some((h) => flat(n).includes(h)) || /key$/i.test(n);
+    /* Balanced argument text for a call whose "(" is at `openIdx`. A regex cannot do this:
+       an object literal argument nests braces, parens and strings. */
+    const argsOf = (src, openIdx) => {
+      let depth = 0, out = "", inS = null, esc = false;
+      for (let i = openIdx; i < src.length; i++) {
+        const c = src[i];
+        if (inS) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === inS) inS = null; out += c; continue; }
+        if (c === '"' || c === "'" || c === "`") { inS = c; out += c; continue; }
+        if (c === "(") { depth++; if (depth === 1) continue; }
+        if (c === ")") { depth--; if (depth === 0) return out; }
+        out += c;
+      }
+      return null;
+    };
+    const splitTop = (s) => {
+      const parts = []; let depth = 0, cur = "", inS = null, esc = false;
+      for (const c of s) {
+        if (inS) { cur += c; if (esc) esc = false; else if (c === "\\") esc = true; else if (c === inS) inS = null; continue; }
+        if (c === '"' || c === "'" || c === "`") { inS = c; cur += c; continue; }
+        if ("([{".includes(c)) depth++;
+        if (")]}".includes(c)) depth--;
+        if (c === "," && depth === 0) { parts.push(cur); cur = ""; continue; }
+        cur += c;
+      }
+      parts.push(cur); return parts;
+    };
+    const code = new Map();
+    for (const [name, raw] of sources) code.set(name, stripJsComments(raw));
+    /* Two cross-file dictionaries, because a key is almost never written at its write
+       site: SCREAMING_CASE string constants, and the key-BUILDER arrows. */
+    const constants = new Map(), builders = new Map(), ownConstants = new Map();
+    for (const [name, src] of code) {
+      const own = new Map();
+      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'`])([^"'`\n]*)\2\s*;/g)) if (!own.has(m[1])) own.set(m[1], m[3]);
+      ownConstants.set(name, own);
+      for (const [k, v] of own) if (/^[A-Z][A-Z0-9_]*$/.test(k) && !constants.has(k)) constants.set(k, v);
+      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*=>\s*(?:[A-Za-z_$][\w$]*\()?\s*`([^`]*)`/g)) if (!builders.has(m[1])) builders.set(m[1], m[2]);
+      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*=>\s*([A-Z_][\w$]*)\s*\+/g)) if (!builders.has(m[1])) builders.set(m[1], "${" + m[2] + "}");
+    }
+    const sites = [];
+    for (const [file, src] of code) {
+      const lines = src.split("\n");
+      const own = ownConstants.get(file);
+      const constOf = (n) => (own.has(n) ? own.get(n) : (constants.has(n) ? constants.get(n) : null));
+      /* The key PREFIX a write site lands on: interpolations become the end of the
+         prefix, which is what a family is — `git_conn_secret:${id}` -> `git_conn_secret:`. */
+      const resolveKey = (expr, win, depth = 0) => {
+        if (depth > 3) return null;
+        let e = expr.trim();
+        const tpl = e.match(/^`([\s\S]*)`$/);
+        if (!tpl) {
+          const lit = e.match(/^["']([^"']*)["']$/);
+          if (lit) return lit[1];
+          const call = e.match(/^([A-Za-z_$][\w$]*)\s*\(/);
+          if (call && builders.has(call[1])) e = builders.get(call[1]);
+          else {
+            const plus = e.match(/^([A-Za-z_$][\w$]*)\s*\+/);
+            if (plus && constOf(plus[1]) !== null) return constOf(plus[1]);
+            if (/^[A-Za-z_$][\w$]*$/.test(e)) {
+              if (constOf(e) !== null) return constOf(e);
+              /* a local `const key = gitHookSecretKey(a, b);` — follow it once */
+              const re = new RegExp("(?:const|let|var)\\s+" + e + "\\s*=\\s*([^;\\n]+);", "g");
+              let mm, last = null;
+              while ((mm = re.exec(win))) last = mm[1];
+              return last ? resolveKey(last, win, depth + 1) : null;
+            }
+            return null;
+          }
+        } else e = tpl[1];
+        e = e.replace(/\$\{([A-Za-z_$][\w$]*)\}/g, (_s, n) => (constOf(n) !== null ? constOf(n) : " "));
+        e = e.replace(/\$\{[\s\S]*?\}/g, " ");
+        return e.split(/\s/)[0] || null;
+      };
+      const WRITE_CALL = /\b(?:storage|kvs|store)\s*\.\s*set\s*\(/g;
+      let wm;
+      while ((wm = WRITE_CALL.exec(src))) {
+        const open = wm.index + wm[0].length - 1;
+        const argText = argsOf(src, open);
+        if (!argText) continue;
+        const parts = splitTop(argText);
+        if (parts.length < 2) continue;
+        const line = src.slice(0, wm.index).split("\n").length;
+        const keyExpr = parts[0].trim(), valueExpr = parts[1].trim();
+        const win = lines.slice(Math.max(0, line - 81), line).join("\n");
+        const fields = new Set();
+        const scanFields = (txt) => { for (const m of txt.matchAll(/(?:^|[{,\s])["']?([A-Za-z_$][\w$]*)["']?\s*[:=](?!=)/g)) if (isSecretField(m[1])) fields.add(m[1]); };
+        if (/^\{[\s\S]*\}$/.test(valueExpr)) scanFields(valueExpr);
+        const bare = valueExpr.match(/^([A-Za-z_$][\w$]*)$/);
+        if (bare) {
+          const name = bare[1];
+          if (isSecretField(name)) fields.add(name);
+          const re = new RegExp("(?:const|let|var)\\s+" + name + "\\s*=\\s*\\{", "g");
+          let mm, at = null;
+          while ((mm = re.exec(win))) at = mm.index;
+          if (at !== null) {
+            const braceStart = win.indexOf("{", at);
+            let depth = 0, j = braceStart;
+            for (; j < win.length; j++) { if (win[j] === "{") depth++; else if (win[j] === "}") { depth--; if (!depth) break; } }
+            scanFields(win.slice(braceStart, j + 1));
+          }
+          for (const m2 of win.matchAll(new RegExp("\\b" + name + "\\.([A-Za-z_$][\\w$]*)\\s*=(?!=)", "g"))) if (isSecretField(m2[1])) fields.add(m2[1]);
+        }
+        if (fields.size) sites.push({ file, line, keyExpr, key: resolveKey(keyExpr, win), fields: [...fields].sort() });
+      }
+    }
+    return sites;
+  };
+  /* REVIEWED AND NOT A CREDENTIAL — key prefix -> why the secret-looking field is not one.
+     Per KEY, so a NEW key carrying the same field name still fails: the judgement being
+     recorded is "this row is safe", never "this word is safe". */
+  const NOT_A_CREDENTIAL = new Map([
+    ["git_conn:", "the PUBLIC connection row: `hasToken` is a boolean and `tokenSlot` is the NAME of the git_conn_secret:* row, which is itself a declared family"],
+    ["COGNIRUNNER_AI_BUDGET", "`tokensPerMinute` is the TPM pacing number (src/shared/ai-budget.js), not an auth token"],
+    ["ai_cost:", "`tokens` is a usage COUNT for the cost meter"],
+    ["pf_exec:", "`issueKey` is a Jira issue key (LZPT-1), which is not secret and is in every log line"],
+    ["coder_ticket:", "`issueKey` — a Jira issue key"],
+    ["coder_pin:", "`issueKey` — a Jira issue key"],
+    ["coder_log:", "`issueKey` — a Jira issue key"],
+    ["va_item:", "`issueKey` — a Jira issue key"],
+    ["va_tick:", "`key` on a tick receipt is the receipt's own id, not a credential"],
+    ["va_effect:", "`issueKey`/`key` identify the issue the effect landed on"],
+  ]);
+  await check("every src/ write site that stores a secret is covered by the census (F-778)", async () => {
+    const SRC = new URL("../../src/", import.meta.url);
+    const sources = new Map();
+    for (const dir of ["", "shared/"]) {
+      for (const f of readdirSync(new URL(dir, SRC)).filter((n) => n.endsWith(".js")).sort()) {
+        sources.set(dir + f, readFileSync(new URL(dir + f, SRC), "utf8"));
+      }
+    }
+    /* The field words are the hook's OWN list, read from its one home — the same words the
+       write door refuses a FIELD for. Retyping them here would be the second home this
+       whole rule exists to prevent. */
+    const hookSrc = readFileSync(new URL("test-hook.js", SRC), "utf8");
+    const hints = [...(hookSrc.match(/const SECRET_KEY_HINTS\s*=\s*\[([\s\S]*?)\]/)?.[1] || "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(hints.length >= 10, `SECRET_KEY_HINTS must be READ from src/test-hook.js (got ${hints.length})`);
+
+    const sites = scanSecretWriteSites(sources, hints);
+    assert.ok(sites.length >= 20, `the scanner must still SEE the write sites (found ${sites.length})`);
+    /* Every site resolves to a key, or the scanner has stopped understanding how this repo
+       builds KVS keys — an unresolved key is a hole, not a pass. */
+    const unresolved = sites.filter((s) => !s.key);
+    assert.deepEqual(unresolved, [], "every secret-carrying write site must resolve to a key prefix");
+
+    const uncovered = sites.filter((s) => !isCredentialKey(s.key) && !NOT_A_CREDENTIAL.has(s.key));
+    assert.deepEqual(uncovered.map((s) => `${s.file}:${s.line} ${s.key} {${s.fields.join(",")}}`), [],
+      "a KVS row stores a secret-looking field under a key the read ceiling does not mask — declare the family in CREDENTIAL_KEY_FAMILIES, or add it to NOT_A_CREDENTIAL with the reason");
+
+    // THE FINDING ITSELF, named: the third MCP remote is in the census now.
+    const context7 = sites.find((s) => s.key === "COGNIRUNNER_CONTEXT7_REMOTE");
+    assert.ok(context7 && context7.fields.includes("apiKey"), "the scanner sees saveContext7Remote storing apiKey");
+    assert.equal(isCredentialKey("COGNIRUNNER_CONTEXT7_REMOTE"), true, "…and the read ceiling masks it (F-778)");
+
+    // POSITIVE CONTROL: a fake write site with an undeclared key must be REPORTED and UNCOVERED.
+    const fake = new Map([["fake.js", 'const SLOT = "cognirunner_new_thing";\nawait storage.set(SLOT, { url, apiKey: k });\n']]);
+    const found = scanSecretWriteSites(fake, hints);
+    assert.equal(found.length, 1, "POSITIVE CONTROL: the scanner finds a synthetic secret write site");
+    assert.equal(found[0].key, "cognirunner_new_thing");
+    assert.equal(isCredentialKey(found[0].key) || NOT_A_CREDENTIAL.has(found[0].key), false,
+      "POSITIVE CONTROL: …and it is UNCOVERED, so the rule above would fail on it");
+    // …and a comment that merely NAMES a credential field is prose, not a write site.
+    const prose = new Map([["prose.js", '/* the slot stores { apiKey } — see F-778 */\nawait storage.set("plain_row", { count: 1 });\n']]);
+    assert.deepEqual(scanSecretWriteSites(prose, hints), [], "POSITIVE CONTROL: a docblock naming apiKey is not a write site");
   });
   await check("kvSet stays behind HARNESS_SECRET", async () => {
     const response = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "kvSet", key: "COGNIRUNNER_AI_PROVIDER", value: null }) });

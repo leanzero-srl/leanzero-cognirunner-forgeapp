@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 import {
-  decideSweepStep, newDrainState, answerSignature, answerComplete,
+  decideSweepStep, newDrainState, answerSignature, answerComplete, madeProgress,
   DELETES_FAILING_BACKOFF_MS, IDENTICAL_ANSWER_LIMIT,
 } from "../lib/sweep-drain.mjs";
 
@@ -32,11 +32,15 @@ const drive = (answers) => {
   return steps;
 };
 
-const failing = (n) => ({
-  ok: true, dryRun: false, scanned: 100, deleted: 0, failed: 3,
+const failing = (n, failed = 3) => ({
+  ok: true, dryRun: false, scanned: 100, deleted: 0, failed,
   truncated: true, reason: "deletes-failing", rowsTruncated: false,
   complete: false, cursor: "page-" + n,
 });
+/* A page that keeps refusing but does not answer byte-identically: same page, same zero
+   deletes, a `failed` count that drifts. This — not a walk across different pages — is what
+   "the store is refusing" looks like, and it is what the try cap exists to stop (F-703). */
+const stuck = (failed) => failing(1, failed);
 const budget = (n) => ({
   ok: true, dryRun: false, scanned: 100, deleted: 40, failed: 0,
   truncated: true, reason: "budget", rowsTruncated: false, complete: false, cursor: "page-" + n,
@@ -63,9 +67,10 @@ assert.equal(answerComplete({ truncated: false }), true);
 assert.equal(answerComplete({ truncated: true }), false);
 assert.equal(answerComplete({ truncated: false, complete: false }), false);
 
-/* ── 2 · deletes-failing: paced back-off, capped, then not-converging ─────────────────── */
-// Distinct cursors each time, so the byte-identical rule is NOT what stops it - the try cap is.
-const paced = drive([failing(1), failing(2), failing(3), failing(4)]);
+/* ── 2 · deletes-failing: paced back-off, capped on CONSECUTIVE non-progress ──────────── */
+/* The cap fires on the SAME page refusing over and over. Distinct `failed` counts each time,
+   so the byte-identical rule is NOT what stops it - the try cap is. */
+const paced = drive([stuck(3), stuck(2), stuck(1), stuck(4)]);
 assert.deepEqual(paced.slice(0, 3).map((s) => s.action), ["resume", "resume", "resume"]);
 /* The LITERALS, not the constant. Comparing the steps against `DELETES_FAILING_BACKOFF_MS`
    alone is a tautology: setting the table to `[0, 0, 0]` — an unpaced hammer, which is the
@@ -74,11 +79,56 @@ assert.deepEqual(paced.slice(0, 3).map((s) => s.sleepMs), [500, 1000, 2000],
   "the first three `deletes-failing` resumes must sleep 500ms, 1s, 2s - the whole point of the reason");
 assert.deepEqual(DELETES_FAILING_BACKOFF_MS, [500, 1000, 2000]);
 assert.ok(DELETES_FAILING_BACKOFF_MS.every((ms) => ms > 0), "a back-off of zero is not a back-off");
-assert.deepEqual(paced.slice(0, 3).map((s) => s.cursor), ["page-1", "page-2", "page-3"]);
-assert.equal(paced[3].action, "stop", "a fourth refusing page must not be resumed");
+assert.deepEqual(paced.slice(0, 3).map((s) => s.cursor), ["page-1", "page-1", "page-1"]);
+assert.equal(paced[3].action, "stop", "a fourth refusal of the SAME page must not be resumed");
 assert.match(paced[3].stopReason, /not-converging/);
 assert.match(paced[3].stopReason, /refusing/);
+/* The sentence may only claim what the answers contained: these three retries really were
+   consecutive, really landed no delete and really never advanced. */
+assert.match(paced[3].stopReason, /CONSECUTIVE/);
+assert.match(paced[3].stopReason, /did not advance the cursor/);
 assert.equal(paced.length, 4, "the loop must stop at the cap, not run on");
+
+/* ── 2b · F-703 · A DRAIN THAT IS PROGRESSING IS NOT "not-converging" ─────────────────────
+ * `failingTries` used to be per-DRAIN and never reset, so three refusing pages ANYWHERE in a
+ * long drain exhausted it. THE BREAKER'S EXACT MEASURED SEQUENCE: three DIFFERENT refusing
+ * pages with healthy deleting pages between them, fifteen rows deleted — it stopped as
+ * `not-converging` and blamed "3 paced retries of a page", a cause the answers contradict. */
+const progressing = [
+  failing(1), budget(2), failing(3), budget(4), failing(5), budget(6), failing(7),
+];
+const walked = drive(progressing);
+assert.equal(walked.length, progressing.length,
+  "a drain deleting rows between refusing pages must consume every answer, not stop early");
+assert.ok(walked.every((s) => s.action === "resume"),
+  `every step of a progressing drain must resume (got ${JSON.stringify(walked.map((s) => s.action))})`);
+assert.ok(walked.every((s) => s.stopReason === null), "and none of them may carry a stop reason");
+/* Each refusing page is still PACED — the reset clears the cap, never the back-off. */
+assert.deepEqual(walked.filter((s) => s.sleepMs > 0).map((s) => s.sleepMs), [500, 500, 500, 500],
+  "each refusing page after a converging one starts the back-off afresh, and still pauses");
+assert.deepEqual(walked.map((s) => s.cursor),
+  ["page-1", "page-2", "page-3", "page-4", "page-5", "page-6", "page-7"]);
+
+/* A DELETE resets the cap even on the SAME page: the store started answering again, so the
+   two refusals before it are no longer "consecutive". `budget(1)` deletes 40 rows off the
+   very page `stuck` refuses, which is why the cursor cannot be what clears it here. */
+const recovered = drive([stuck(3), stuck(2), budget(1), stuck(1), stuck(2)]);
+assert.equal(recovered.length, 5, "an answer that landed deletes clears the consecutive count");
+assert.ok(recovered.every((s) => s.action === "resume"),
+  `...so the two refusals that follow it are the first two of a fresh cap, not the fourth and fifth (got ${JSON.stringify(recovered.map((s) => s.action))})`);
+/* ...and the reset is not infinite forgiveness: go quiet again for three consecutive
+   non-progress answers on one page and it stops. */
+const relapse = drive([stuck(3), budget(2), stuck(3), stuck(2), stuck(1), stuck(4)]);
+assert.equal(relapse[relapse.length - 1].action, "stop", "three CONSECUTIVE refusals after a recovery still stop");
+assert.match(relapse[relapse.length - 1].stopReason, /not-converging/);
+assert.equal(relapse.length, 6);
+
+/* The predicate itself, directly: deletes or a moved cursor, nothing else. */
+assert.equal(madeProgress({ deleted: 0, cursor: "page-1" }, "page-1"), false, "the same page, nothing deleted, is not progress");
+assert.equal(madeProgress({ deleted: 0, cursor: "page-2" }, "page-1"), true, "the cursor moved on");
+assert.equal(madeProgress({ deleted: 5, cursor: "page-1" }, "page-1"), true, "rows actually left the store");
+assert.equal(madeProgress({ deleted: 0, cursor: "page-1" }, null), false, "the first answer of a drain has moved off nothing");
+assert.equal(madeProgress({ deleted: 0, cursor: null }, "page-1"), false, "a vanished cursor is not an advance");
 
 /* ── 3 · the byte-identical answer is the spin, and it stops sooner than the cap ──────── */
 const same = drive([failing(9), failing(9), failing(9), failing(9)]);
@@ -127,4 +177,4 @@ assert.notEqual(answerSignature(failing(1)), answerSignature(failing(2)));
 assert.notEqual(answerSignature(failing(1)), answerSignature({ ...failing(1), deleted: 1 }));
 assert.notEqual(answerSignature(failing(1)), answerSignature({ ...failing(1), reason: "budget" }));
 
-console.log("sweep drain decision: deletes-failing backs off and stops not-converging, deletes-failed resumes once, complete is read not derived");
+console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived");

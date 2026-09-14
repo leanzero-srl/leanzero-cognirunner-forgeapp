@@ -57,6 +57,13 @@ function serve(root) {
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
 
+/* PNGs only with --shots, the same contract as every other journey in this harness.
+   (`openEditor`'s third PARAMETER is also called `shot` — it is the __SHOT__ fixture key,
+   not this. It shadows this helper inside that function only, which uses neither.) */
+const SHOTS = process.argv.includes("--shots");
+const OUT = path.join(__dirname, "out"); if (SHOTS) fs.mkdirSync(OUT, { recursive: true });
+const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
+
 async function openEditor(browser, app, shot, theme = "light", extraInit = null) {
   const root = ensureFreshBuildShot(app); // F-125: never serve a bundle older than src/
   const { s, port } = await serve(root);
@@ -2204,6 +2211,113 @@ try {
         "E4c a transport failure is NOT mistold as an access refusal");
     } catch (e) { fail++; console.log("  ✗ E4c threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
+  }
+
+  /* ---------------- E4d — F-896: the Add-Document size hint, in BOTH of its homes --------
+   * The whole finding is that there were TWO Add-Document forms measuring DIFFERENT things.
+   * config-ui's DocRepository.jsx counted UTF-8 bytes with `utf8Bytes` and gated Save on the
+   * cap (F-836 fixed it there). admin-panel's DocsTab.jsx carried its own two-line
+   * `formatSize` fed with `newContent.length` — UTF-16 code units labelled "B" — with no cap
+   * gate at all. Measured live in dev: 100 rocket emoji is 200 characters and 400 UTF-8
+   * bytes, and that form read "200 B".
+   *
+   * So this case drives BOTH forms with the SAME non-ASCII fixture and the same over-cap
+   * fixture and demands the same answer from each. Asserting only the fixed form would let
+   * the pair drift apart again, which is precisely how the defect survived F-836.
+   *
+   * The emoji is written as a surrogate PAIR on purpose: it is the difference between the
+   * two measures (2 code units, 4 bytes), so a hint that answers 200 for this input has
+   * been caught counting the wrong thing. */
+  {
+    const { DOC_CONTENT_MAX_BYTES, DOC_CONTENT_MAX_LABEL, utf8Bytes } =
+      await import("../../src/shared/registry-limits.js");
+    const ROCKETS = "\u{1F680}".repeat(100);
+    const OVER = "x".repeat(DOC_CONTENT_MAX_BYTES + 1);
+    // The harness states the arithmetic itself rather than trusting the number it expects.
+    ok(ROCKETS.length === 200, `E4d fixture is 200 UTF-16 code units (got ${ROCKETS.length})`);
+    ok(utf8Bytes(ROCKETS) === 400, `E4d fixture is 400 UTF-8 bytes (got ${utf8Bytes(ROCKETS)})`);
+
+    /* Open the Add-Document form in whichever home this page is, and answer the two
+       locators that differ between them. Everything asserted after this is identical. */
+    const openAddForm = async (page, home) => {
+      if (home === "config-ui") {
+        const kp = page.locator(".knowledge-panel").first();
+        if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+        await kp.locator(".knowledge-tab-docs").click();
+        await kp.locator(".btn-add-doc").first().click();
+        return { scope: kp, textarea: kp.locator("textarea.doc-content-input").first(), title: kp.locator(".doc-add-form input.input").first() };
+      }
+      await page.locator(".tab-btn", { hasText: /^\s*Documentation\s*$/ }).first().click();
+      await page.locator(".docs-tab").waitFor({ timeout: 10000 });
+      await page.locator(".docs-tab .section-actions button", { hasText: "+ Add Document" }).first().click();
+      const scope = page.locator(".docs-tab").first();
+      return { scope, textarea: scope.locator("textarea").first(), title: scope.locator("input.doc-input").first() };
+    };
+
+    for (const theme of ["light", "dark"]) {
+      for (const home of ["config-ui", "admin-panel"]) {
+        console.log(`E4d Add-Document size hint — ${home}, ${theme}`);
+        const env = home === "config-ui"
+          ? await openEditor(browser, "config-ui", "cfg-static", theme)
+          : await openEditor(browser, "admin-panel", "admin", theme);
+        const { page } = env;
+        try {
+          const { scope, textarea, title } = await openAddForm(page, home);
+          await textarea.waitFor({ timeout: 10000 });
+          await title.fill("Byte counting");
+
+          // 1. THE DEFECT. Bytes, not characters.
+          await textarea.fill(ROCKETS);
+          await page.waitForTimeout(200);
+          const hint = scope.locator(".doc-size-hint").last();
+          const txt = (await hint.innerText()).trim();
+          ok(txt === "400 B",
+            `E4d ${home}/${theme} 100 emoji reads 400 B, the UTF-8 byte count (got "${txt}")`);
+          ok(txt !== "200 B",
+            `E4d ${home}/${theme} and is NOT the character count the backend does not gate on`);
+          ok(await hint.evaluate((el) => el.classList.contains("is-over")) === false,
+            `E4d ${home}/${theme} a 400 byte document is not flagged too large`);
+          await shot(page, `E4d-doc-size-bytes-${home}-${theme}`);
+
+          // 2. THE CAP. Same element, same sentence, Save dead, in both homes.
+          await textarea.fill(OVER);
+          await page.waitForTimeout(250);
+          const overTxt = (await hint.innerText()).replace(/\s+/g, " ").trim();
+          ok(overTxt.includes(`too large, max ${DOC_CONTENT_MAX_LABEL}`),
+            `E4d ${home}/${theme} the too-large clause names the cap from the one home (got "${overTxt}")`);
+          /* ONE UNIT IN ONE SENTENCE. `formatSize` used to divide by 1024 while the cap
+             label divides by 1000, so a draft one byte over rendered
+             "195.3 KB (too large, max 200 KB)" - a refusal arguing with itself. The
+             number now has to be at least the cap it is being refused against. */
+          const shownKb = parseFloat(overTxt);
+          ok(shownKb >= parseFloat(DOC_CONTENT_MAX_LABEL),
+            `E4d ${home}/${theme} the size shown is not SMALLER than the cap it exceeds (got "${overTxt}")`);
+          ok(!overTxt.includes("—") && !overTxt.includes("–"),
+            `E4d ${home}/${theme} no em/en dash in the hint`);
+          ok(await hint.evaluate((el) => el.classList.contains("is-over")) === true,
+            `E4d ${home}/${theme} the hint carries the over-cap state`);
+          const st = await hint.evaluate((el) => {
+            const c = getComputedStyle(el);
+            return { fg: c.color, w: c.fontWeight, bl: c.borderLeftWidth, bt: c.borderTopWidth, op: c.opacity };
+          });
+          const want = theme === "dark" ? [239, 68, 68] : [220, 38, 38];
+          const rgb = st.fg.match(/\d+/g).map(Number);
+          ok(rgb.slice(0, 3).every((v, i) => Math.abs(v - want[i]) <= 2),
+            `E4d ${home}/${theme} the over-cap hint is the solid red ${want.join(",")} (got ${st.fg})`);
+          ok(Number(st.w) >= 700, `E4d ${home}/${theme} 700 weight on the refusal (got ${st.w})`);
+          ok(st.op === "1", `E4d ${home}/${theme} solid, not a faded tint (opacity ${st.op})`);
+          ok(st.bl === st.bt, `E4d ${home}/${theme} no left accent rail`);
+
+          const save = home === "config-ui"
+            ? scope.locator(".btn-save-doc").first()
+            : scope.locator("button", { hasText: /^Save$/ }).first();
+          ok(await save.isDisabled(),
+            `E4d ${home}/${theme} Save is disabled over the cap, so the form cannot reach a backend refusal`);
+          await shot(page, `E4d-doc-size-too-large-${home}-${theme}`);
+        } catch (e) { fail++; console.log(`  ✗ E4d ${home}/${theme} threw: ` + e.message.split("\n")[0]); }
+        await closeEditor(env);
+      }
+    }
   }
 
   /* ---------------- E1 — no provider key → amber warning on the form ---------------- */

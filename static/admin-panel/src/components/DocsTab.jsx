@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
+import DocSizeHint, { formatSize, isDocContentTooLarge } from "./DocSizeHint";
 import { confirmDialog } from "../confirmDialog";
 import {
   isPermissionRefusal, permissionRefusalText,
@@ -192,7 +193,15 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
     fetchExpandedContent(id);
   };
 
-  const formatSize = (len) => len < 1024 ? `${len} B` : `${(len / 1024).toFixed(1)} KB`;
+  /* F-896 - `formatSize` and the draft measure come from ./DocSizeHint now. This tab
+     used to define its own, fed with `newContent.length`: UTF-16 code units labelled
+     "B". 100 rocket emoji is 200 characters and 400 UTF-8 bytes and this form read
+     "200 B" (measured live in dev), against no cap at all, on the way to a backend
+     refusal naming a limit the admin was never shown. The doc rows' `contentLength` is
+     genuinely bytes (every writer in src/index.js uses `utf8Bytes`), so the size COLUMN
+     was always right and only this form's draft hint was not. */
+  const contentTooLarge = isDocContentTooLarge(newContent);
+  const saveDisabled = saving || !newTitle.trim() || !newContent.trim() || contentTooLarge;
 
   /** Detect content type and auto-format/indent. */
   const autoFormat = (text) => {
@@ -300,7 +309,7 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
           />
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{newContent.length > 0 ? formatSize(newContent.length) : ""}</span>
+              <DocSizeHint content={newContent} />
               {newContent.trim() && (
                 <button
                   className="btn-small"
@@ -312,7 +321,11 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
                 </button>
               )}
             </div>
-            <button className={`btn-small${saving ? " is-busy busy-solid" : ""}`} onClick={handleSave} disabled={saving || !newTitle.trim() || !newContent.trim()} style={{ background: "var(--primary-color)", color: "white", border: "none" }}>
+            {/* F-896 - the inline `background` beats `.btn-small:disabled` in the cascade,
+                so this button stayed full primary blue while genuinely disabled. A control
+                that looks live and does nothing is the same lie as a hint in the wrong
+                unit, so the inline style answers the disabled flag too. */}
+            <button className={`btn-small${saving ? " is-busy busy-solid" : ""}`} onClick={handleSave} disabled={saveDisabled} style={{ background: "var(--primary-color)", color: "white", border: "none", opacity: saveDisabled ? 0.45 : 1, cursor: saveDisabled ? "not-allowed" : "pointer" }}>
               Save
             </button>
           </div>

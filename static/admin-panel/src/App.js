@@ -4636,6 +4636,11 @@ const injectCopiedComponentStyles = () => {
     }
 
     .doc-size-hint { font-size: 11px; color: var(--text-muted); }
+    /* F-896 - over the cap this hint stops being a readout and becomes the refusal:
+       it is the only thing on screen that explains why Save went dead. Solid saturated
+       red and 700, never a faded tint, with the dark override one shade lighter. */
+    .doc-size-hint.is-over { color: #dc2626; font-weight: 700; }
+    html[data-color-mode="dark"] .doc-size-hint.is-over { color: #ef4444; }
 
     .btn-save-doc {
       padding: 6px 14px;

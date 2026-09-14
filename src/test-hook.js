@@ -590,6 +590,11 @@ export async function testStateTrigger(req) {
      * take 17–18 s, so the documented 500 was ~45 s against a trigger killed at 25 s, and a
      * plant that timed out answered NOTHING while having written an unknown number of rows.
      * `maxMs` (clamped in the lever to 20 s) bounds the call; a `budget` break answers
+     * F-724 — AND THE ANSWER SAYS HOW IT IS RESUMED. `resume: "start-index"` means carry on
+     * from `nextIndex`; `resume: "repost"` (only `reason: "clearing"`) means send this SAME
+     * body again — `nextIndex` deliberately does not advance there, and `clearedSoFar` /
+     * `remainingStale` are the progress to watch instead. The mapping is the lever's
+     * `plantResumeMode` and is never re-derived here.
      * `{ planted, failed, truncated, reason: "budget", nextIndex }` and the caller POSTs the
      * SAME `n` back with `startIndex: nextIndex` until `complete: true`. `maxN` is what THIS
      * call may ask for — one call's worth for a fresh plant, the full population for a resumed

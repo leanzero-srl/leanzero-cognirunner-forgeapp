@@ -334,6 +334,8 @@ export const HARNESS_UNGATED_EXPORTS = Object.freeze([
   "plantPopulationClamped",
   "plantStartIndexClamped",
   "plantStartRefusal",
+  "PLANT_REPOST_REASONS",
+  "plantResumeMode",
   "plantMaxForCall",
   "plantTtlSeconds",
   "plantedFaultKey",
@@ -1501,12 +1503,17 @@ const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
     cursor = (result && result.nextCursor) || null;
     if (!cursor) break;
   }
-  if (doomed.length === 0) return { cleared: 0, failed: 0, done: true };
+  /* F-724 — `condemned` IS REPORTED, not inferred. It is the size of the job this clear was
+   * handed, and it is what lets the caller's answer say how much of it is left: without it a
+   * re-POST contract is "try again and hope", with it the caller can watch `remainingStale`
+   * fall and tell PROGRESS from a SPIN. */
+  if (doomed.length === 0) return { cleared: 0, failed: 0, done: true, condemned: 0 };
+  const condemned = doomed.length;
   const deleteFault = await loadDeleteFault();
   let cleared = 0, failed = 0;
   for (let i = 0; i < doomed.length; i += KVS_DELETE_BATCH) {
     if (i > 0) {
-      if (overBudget()) return { cleared, failed, done: false };
+      if (overBudget()) return { cleared, failed, done: false, condemned };
       await sweepPause(KVS_DELETE_PAUSE_MS);
     }
     const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
@@ -1514,16 +1521,55 @@ const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
     let landed = 0;
     for (const outcome of settled) { if (outcome.status === "fulfilled") { cleared++; landed++; } else failed++; }
     // A batch in which nothing landed shrinks nothing (F-682's rule, same words): stop, say so.
-    if (landed === 0 && settled.length > 0) return { cleared, failed, done: false };
+    if (landed === 0 && settled.length > 0) return { cleared, failed, done: false, condemned };
   }
-  return { cleared, failed, done: true };
+  return { cleared, failed, done: true, condemned };
+};
+
+/*
+ * F-724 — HOW A STOPPED PLANT IS RESUMED IS A FIELD, NOT A PARAGRAPH.
+ *
+ * The plant has two different resume contracts and only one of them was machine-readable.
+ * `budget` / `call-max` / `writes-failed` all mean "POST the same `n` back with
+ * `startIndex: nextIndex`", and `nextIndex` advances, so a driver's "did it move?" check is
+ * the whole protocol. `clearing` means the OPPOSITE: the stale clear did not finish, nothing
+ * was planted, and the caller must re-POST the request IDENTICALLY — which is why that answer
+ * carries `nextIndex: startIndex`, deliberately NOT advancing.
+ *
+ * That contract lived in prose. Both live drivers (`plant-sweep-live.mjs`,
+ * `delete-fault-drain-live.mjs`) implement exactly one rule — a `nextIndex` that does not
+ * advance is a stuck plant, stop — so the `clearing` answer was, to every consumer this repo
+ * ships, indistinguishable from a spin. It is now a FIELD, and this is its one home:
+ *
+ *   · `"start-index"` — carry on from `nextIndex` (it has moved).
+ *   · `"repost"`      — send the SAME body again; `nextIndex` has NOT moved and is not meant
+ *                       to. Progress is reported in `clearedSoFar` / `remainingStale`
+ *                       instead, and it is strictly monotonic: the rows a clearing call did
+ *                       remove are gone for good, so an identical retry converges.
+ *   · `null`          — nothing to resume (finished, or a no-op).
+ *
+ * A consumer that cannot tell the two apart must treat `repost` as a stop; one that can
+ * watches `remainingStale` fall and only calls it stuck when it does not.
+ */
+export const PLANT_REPOST_REASONS = Object.freeze(["clearing"]);
+
+/** The ONE mapping from a plant's stop `reason` to how the caller resumes it. Pure. */
+export const plantResumeMode = (reason, complete) => {
+  if (complete === true || !reason) return null;
+  return PLANT_REPOST_REASONS.includes(reason) ? "repost" : "start-index";
 };
 
 /**
  * Plant INERT rows under `harness_fault:plant:`, so the sweep's multi-page path can be
  * exercised on a real tenant. Returns
  * `{ ok, planted, failed, n, startIndex, nextIndex, expired, ttlSeconds, budgetMs, keys,
- *    cleared, truncated, reason, complete }`, or `{ ok: false, reason: "bad-start" }`.
+ *    cleared, truncated, reason, complete, resume }`, or `{ ok: false, reason: "bad-start" }`.
+ *
+ * F-724 — `resume` IS THE ANSWER'S OWN INSTRUCTION, from `plantResumeMode` and nowhere else:
+ * `"start-index"` = carry on from `nextIndex`, `"repost"` = send the SAME body again, `null`
+ * = nothing to resume. Only `reason: "clearing"` is a `"repost"`, it is the one answer whose
+ * `nextIndex` deliberately does NOT advance, and it carries `clearedSoFar` / `remainingStale`
+ * so a caller can tell converging progress from a spin without an advancing index.
  *
  * F-708/F-723 — `startIndex` IS JUDGED AGAINST THE POPULATION, RAW, BEFORE IT IS CLAMPED
  * (`plantStartRefusal`). Past it is a REFUSAL (`bad-start`),
@@ -1608,6 +1654,7 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
       ok: true, planted: 0, failed: 0, n: population, startIndex: from, nextIndex: population,
       expired: past, ttlSeconds, budgetMs, keys: [], cleared: 0, noop: true,
       truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
+      resume: plantResumeMode(tail.reason, tail.complete),
     };
   }
   /* F-708 — a FRESH call owns the whole keyspace, so it removes any older, LARGER population
@@ -1619,10 +1666,19 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
     cleared = stale.cleared;
     if (!stale.done) {
       const tail = sweepAnswerTail({ truncated: true, reason: "clearing", cursor: null, unresolved: stale.failed > 0, failedResume: null });
+      /* F-724 — THE RE-POST CONTRACT, STATED IN FIELDS. `nextIndex: from` does not advance
+       * and is not meant to: nothing was planted, so the caller must send the SAME body
+       * again. `resume: "repost"` says so in a word a driver can switch on, and the two
+       * counts are the progress a non-advancing `nextIndex` cannot show — `remainingStale`
+       * falling call over call is "this is working", `remainingStale` standing still is the
+       * spin the drivers were right to fear. The rows this call removed are gone for good,
+       * so an identical retry strictly converges. */
       return {
         ok: true, planted: 0, failed: stale.failed, n: population, startIndex: from, nextIndex: from,
         expired: past, ttlSeconds, budgetMs, keys: [], cleared,
+        clearedSoFar: cleared, remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
         truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
+        resume: plantResumeMode(tail.reason, tail.complete),
       };
     }
   }
@@ -1719,6 +1775,8 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
     truncated: tail.truncated,
     reason: failureFirst ? "writes-failed" : tail.reason,
     complete: tail.complete,
+    // F-724: every plant answer says HOW it is resumed, from the one mapping.
+    resume: plantResumeMode(failureFirst ? "writes-failed" : tail.reason, tail.complete),
   };
 };
 

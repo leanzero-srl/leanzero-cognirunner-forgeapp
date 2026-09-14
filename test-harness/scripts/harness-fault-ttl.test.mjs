@@ -1697,6 +1697,81 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   }
 
 
+  /* ═════ 7k-ter. F-724 — THE `clearing` ANSWER'S RE-POST CONTRACT WAS PROSE ═════
+   *
+   * A fresh plant whose stale clear runs out of budget answers `truncated: true,
+   * reason: "clearing", planted: 0, nextIndex: startIndex` — deliberately NOT advancing,
+   * because nothing was planted and the caller must send the SAME body again. That contract
+   * lived only in a comment, and BOTH live drivers (`plant-sweep-live.mjs` ~:233,
+   * `delete-fault-drain-live.mjs` ~:443) implement exactly one rule — "a `nextIndex` that
+   * does not advance is a stuck plant, stop" — so the answer was, to every consumer this repo
+   * ships, indistinguishable from a spin.
+   *
+   * The producer half: say it in FIELDS. `resume: "repost"` is the instruction, and
+   * `clearedSoFar` / `remainingStale` are the progress a non-advancing index cannot show. ── */
+  {
+    await purge();
+    const PLANT724 = fault.HARNESS_FAULT_PLANT_PREFIX;
+    const big = await fault.plantHarnessFaults({ n: 30, expired: false, maxMs: 20_000 });
+    ok(big.planted === 30 && (await countPrefix(PLANT724)) === 30,
+      `(fixture) a 30-row population to be shrunk (planted ${big.planted})`);
+    ok(big.resume === null && big.complete === true,
+      `F-724: a FINISHED plant has nothing to resume (resume ${JSON.stringify(big.resume)})`);
+
+    /* The shrink: 30 → 2 condemns 28 rows, and a 1 ms budget cannot finish them. */
+    const clearing = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1 });
+    ok(clearing.ok === true && clearing.truncated === true && clearing.reason === "clearing"
+      && clearing.planted === 0 && clearing.complete === false,
+      `(fixture) the stale clear ran out of budget and answered \`clearing\` (got ${JSON.stringify({ reason: clearing.reason, planted: clearing.planted, complete: clearing.complete })})`);
+    ok(clearing.nextIndex === clearing.startIndex,
+      "F-724 (unchanged): `clearing` still does NOT advance `nextIndex` — that is the contract, not the defect");
+    ok(clearing.resume === "repost",
+      `F-724: …and the answer now SAYS so, in a field a driver can switch on (resume ${JSON.stringify(clearing.resume)})`);
+    ok(clearing.clearedSoFar === clearing.cleared && clearing.clearedSoFar > 0,
+      `F-724: …naming the progress it DID make (clearedSoFar ${clearing.clearedSoFar})`);
+    ok(Number.isInteger(clearing.remainingStale) && clearing.remainingStale > 0
+      && clearing.clearedSoFar + clearing.remainingStale === 28,
+      `F-724: …and how much of the condemned 28 is left, so "converging" is measurable without an index (cleared ${clearing.clearedSoFar}, remaining ${clearing.remainingStale})`);
+
+    /* THE CONTRACT, DRIVEN VERBATIM: the SAME body, again, until it is not `repost`. It must
+     * CONVERGE — the rows a clearing call removed are gone for good. */
+    let last = clearing, hops = 0, previousRemaining = clearing.remainingStale;
+    while (last.resume === "repost" && hops < 40) {
+      hops++;
+      last = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1 });
+      if (last.resume === "repost") {
+        ok(last.remainingStale < previousRemaining,
+          `F-724: every re-POST strictly SHRINKS the remaining stale set (${previousRemaining} → ${last.remainingStale})`);
+        previousRemaining = last.remainingStale;
+      }
+    }
+    ok(last.resume !== "repost" && last.planted === 2 && (await countPrefix(PLANT724)) === 2,
+      `F-724: …and the identical re-POST loop terminates on a real plant of the population it asked for (hops ${hops}, planted ${last.planted}, rows ${await countPrefix(PLANT724)})`);
+
+    /* THE NEGATIVE CONTROL: a plant that is merely TRUNCATED resumes the other way, and its
+     * index really does move. If this also said `repost` the field would say nothing. */
+    await purge();
+    const cut = await fault.plantHarnessFaults({ n: 500, expired: true, maxMs: 20_000 });
+    ok(cut.reason === "call-max" && cut.resume === "start-index" && cut.nextIndex > cut.startIndex,
+      `F-724 (negative control): a call-max truncation resumes from an ADVANCING \`nextIndex\` (got ${JSON.stringify({ reason: cut.reason, resume: cut.resume, nextIndex: cut.nextIndex })})`);
+    await purge();
+
+    ok(fault.plantResumeMode("clearing", false) === "repost"
+      && fault.plantResumeMode("budget", false) === "start-index"
+      && fault.plantResumeMode("call-max", false) === "start-index"
+      && fault.plantResumeMode("writes-failed", false) === "start-index"
+      && fault.plantResumeMode(null, true) === null,
+      "F-724: `plantResumeMode` is the ONE mapping from a stop reason to how it is resumed");
+    ok(fault.PLANT_REPOST_REASONS.length === 1 && fault.PLANT_REPOST_REASONS[0] === "clearing",
+      "F-724: …and `clearing` is the only re-POST answer the plant has");
+    ok(fault.HARNESS_UNGATED_EXPORTS.includes("plantResumeMode")
+      && fault.HARNESS_UNGATED_EXPORTS.includes("PLANT_REPOST_REASONS"),
+      "F-724: …both on the UNGATED census, because neither reaches storage");
+    ok((faultCode.match(/resume: plantResumeMode\(/g) || []).length === 3,
+      "F-724.SOURCE: every plant answer takes `resume` from the mapping — none of them hand-writes one");
+  }
+
+
   /* ═════ 7l. F-710 — A SILENT CLAMP IS A LIE THE LOOP BELIEVES ═════
    *
    * MEASURED: `plantHarnessFaults({ n: 500 })` answered `{n:150, planted:150, nextIndex:150,

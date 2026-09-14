@@ -25,9 +25,9 @@ const eq = (a, b, msg) => { assert.deepEqual(a, b, `${msg} — got ${JSON.string
 /* ===================== the binding ===================== */
 
 eq(MAX_RULE_SKILL_IDS, 4, "a rule may bind at most 4 skills");
-eq(normalizeAgentKnowledge({}), { skillIds: [], useMemories: false }, "the default binding is empty and memories are OFF");
-eq(normalizeAgentKnowledge(undefined), { skillIds: [], useMemories: false }, "a missing agent block degrades, never throws");
-eq(normalizeAgentKnowledge({ skillIds: "nope" }), { skillIds: [], useMemories: false }, "a non-array skillIds is dropped");
+eq(normalizeAgentKnowledge({}), { skillIds: [], useMemories: false, connectionId: null }, "the default binding is empty, memories are OFF and no Git connection is named");
+eq(normalizeAgentKnowledge(undefined), { skillIds: [], useMemories: false, connectionId: null }, "a missing agent block degrades, never throws");
+eq(normalizeAgentKnowledge({ skillIds: "nope" }), { skillIds: [], useMemories: false, connectionId: null }, "a non-array skillIds is dropped");
 eq(normalizeAgentKnowledge({ skillIds: ["a", "b", "c", "d", "e", "f"] }).skillIds, ["a", "b", "c", "d"], "CLAMPED to 4, server-side");
 eq(normalizeAgentKnowledge({ skillIds: ["b", "a", "b", "a"] }).skillIds, ["b", "a"], "duplicates are dropped, the author's ORDER is kept");
 eq(normalizeAgentKnowledge({ skillIds: ["  sk_1  "] }).skillIds, ["sk_1"], "ids are trimmed");
@@ -36,6 +36,16 @@ eq(normalizeAgentKnowledge({ skillIds: ["../../etc/passwd", "a b", "", null, "ok
 eq(normalizeAgentKnowledge({ skillIds: ["x".repeat(200)] }).skillIds, [], "an absurdly long id is dropped");
 ok(normalizeAgentKnowledge({ useMemories: true }).useMemories === true, "useMemories can be turned on");
 for (const v of ["true", 1, {}, null]) ok(normalizeAgentKnowledge({ useMemories: v }).useMemories === false, `useMemories is strict-true only (${JSON.stringify(v)})`);
+
+/* F-852 — `connectionId`, the Git connection the rule ACTS AS. Clamped exactly like a
+   skill id (the same shape, the same 80-character bound) because it is the same kind of
+   thing: an opaque id that becomes part of a KVS key. It is deliberately NOT validated
+   here — a connection can be deleted or its credential can die long after the rule was
+   saved, so `getConnection` is what answers, at run time, inside the git executor. */
+eq(normalizeAgentKnowledge({ connectionId: "  gc_1  " }).connectionId, "gc_1", "a connection id is trimmed");
+eq(normalizeAgentKnowledge({ connectionId: "../../secret" }).connectionId, null, "an id that is not an id is dropped — it becomes a KVS key");
+eq(normalizeAgentKnowledge({ connectionId: "x".repeat(200) }).connectionId, null, "an absurdly long connection id is dropped");
+for (const v of [null, undefined, "", 0, {}, []]) eq(normalizeAgentKnowledge({ connectionId: v }).connectionId, null, `a non-id connectionId degrades to null (${JSON.stringify(v)})`);
 
 /* ===================== budgets, one home ===================== */
 

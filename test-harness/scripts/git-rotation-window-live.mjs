@@ -382,14 +382,47 @@ async function faultPhase() {
   if (!JSON.stringify(after1.row || {}).includes("secret")) PASS("the connection's public shape still contains no secret of any kind");
   else FAIL("the connection's public shape mentions a secret");
 
+  /* ── F-762 — THE BANNER, READ THROUGH THE RESOLVER THAT EXISTS FOR IT ──────
+   * This used to end in an N/V saying `listGitWebhooks` was not on the dev hook's
+   * allow-list. It IS now, admitted through a MASKING PROJECTION, so the sentence was
+   * false and the assertion below is real: the F-481 banner is finally read against what
+   * the PROVIDER has on the repo rather than only against our own row.
+   *
+   * The masking is asserted too, and asserted as an ABSENCE. `hooks[].url` is this
+   * installation's `gitWebhook` webtrigger url, whose path token is the only thing between
+   * the open internet and our inbound delivery path; a harness that prints it into a log
+   * has published it. The hook drops it and substitutes `urlMasked`. A regression that
+   * restores the raw field would be invisible to a check that only looked for `urlMasked`
+   * being present, so BOTH halves are checked — and `url` absent is not the same claim as
+   * `url` null, which is why `"url" in h` is the predicate. */
   const lw = await invoke("listGitWebhooks", { connectionId: connId, repo: REPO });
   info(`listGitWebhooks through the dev hook -> HTTP ${lw.status} ${JSON.stringify(lw.body || lw.raw).slice(0, 220)}`);
   if (lw.body && lw.body.success) {
     const recorded = lw.body.recorded;
-    if (recorded && recorded.hookState === "rotation-failed") PASS("listGitWebhooks reports the same hookState as listGitConnections");
+    if (recorded && recorded.hookState === "rotation-failed") PASS("listGitWebhooks reports the same hookState as listGitConnections — the F-481 banner agrees across both reads");
     else FAIL(`listGitWebhooks.recorded does not carry the state: ${JSON.stringify(recorded)}`);
+
+    const hooks = Array.isArray(lw.body.hooks) ? lw.body.hooks : null;
+    if (!hooks) {
+      FAIL(`listGitWebhooks returned no hooks array: ${JSON.stringify(lw.body).slice(0, 200)}`);
+    } else {
+      const leaking = hooks.filter((h) => h && Object.prototype.hasOwnProperty.call(h, "url"));
+      if (!leaking.length) PASS(`no hook carries a raw \`url\` field — the dev hook's masking projection held across ${hooks.length} hook(s)`);
+      else FAIL(`${leaking.length} of ${hooks.length} hook(s) carry a raw \`url\` — the webtrigger token has just been written to this log`);
+
+      const masked = hooks.filter((h) => h && h.urlMasked && h.urlMasked.fingerprint);
+      if (masked.length === hooks.length) PASS(`every hook carries \`urlMasked\` with a fingerprint instead (host=${JSON.stringify(masked[0] && masked[0].urlMasked.host)}, conn/repo echoed back)`);
+      else FAIL(`only ${masked.length} of ${hooks.length} hook(s) carry a usable urlMasked — the projection dropped the url without replacing it`);
+
+      if (lw.body.urlsMasked === true) PASS("the answer is FLAGGED `urlsMasked: true`, so a reader of this evidence knows the urls were withheld rather than absent upstream");
+      else FAIL(`urlsMasked is ${JSON.stringify(lw.body.urlsMasked)} — an unflagged masking reads as "the provider had no url"`);
+
+      const mine = hooks.find((h) => h && String(h.hookId) === String(hookId));
+      if (mine) PASS(`the borrowed GitHub hook ${hookId} is among them (events=${JSON.stringify(mine.events)}, active=${mine.active}) — the resolver is answering about THIS repo`);
+      else FAIL(`the borrowed hook ${hookId} is not in listGitWebhooks' answer: ${JSON.stringify(hooks.map((h) => h && h.hookId))}`);
+    }
   } else {
-    NV(`listGitWebhooks is not on the dev hook's invokeResolver allow-list, so the state is read through listGitConnections instead (same row, same field): ${JSON.stringify(lw.body || lw.raw).slice(0, 160)}`);
+    FAIL(`listGitWebhooks failed: HTTP ${lw.status} ${JSON.stringify(lw.body || lw.raw).slice(0, 200)} — it is on the dev hook's allow-list now (F-762), so this is a real failure and not a missing door`);
   }
 
   const consumed = await hookAction({ action: "readHookPromoteFault", connectionId: connId, repoId: REPO });

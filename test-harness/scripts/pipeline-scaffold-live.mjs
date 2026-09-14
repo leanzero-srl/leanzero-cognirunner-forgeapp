@@ -41,6 +41,7 @@ import { chromium } from "../../static/_screenshot-harness/node_modules/playwrig
 import { loadEnv } from "../lib/env.mjs";
 import { testState } from "../lib/rules-api.mjs";
 import { readJobLog, assertLockRefusal } from "../lib/gh-job-log.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -65,8 +66,11 @@ const STATE = OUT + "/state.json";
 const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, "utf8")) : { checks: [] };
 const save = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
 let failures = 0;
+let passes = 0;
+let crashed = null;   /* F-792 — set by the phase wrapper below; the RESULT line reads it */
 const check = (label, ok, data = {}) => {
-  if (!ok) failures += 1;
+  if (ok) passes += 1;
+  else failures += 1;
   state.checks.push({ label, ok, ...data, at: new Date().toISOString() });
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
   save();
@@ -328,6 +332,14 @@ const PHASES = { setup: phaseSetup, workflow: phaseWorkflow, run: phaseRun, drif
    refusal above prints can sit in slot 2 without being read as a phase. */
 const which = positionalArgs(process.argv.slice(2))[0];
 if (!PHASES[which]) { console.error("usage: pipeline-scaffold-live.mjs <" + Object.keys(PHASES).join("|") + ">"); process.exit(2); }
-await PHASES[which]();
-console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURE(S)"} — phase ${which}`);
-process.exit(failures === 0 ? 0 : 1);
+/* F-792 — a phase that THROWS must not be summarised by counters frozen at the throw. The
+   catch is what lets the line below say the phase did not finish; `state.json` is already
+   saved after every check, so the partial trail survives either way. */
+try {
+  await PHASES[which]();
+} catch (e) {
+  crashed = e;
+  console.error("\nDRIVER ERROR:", e && e.stack);
+}
+console.log("\n" + formatResultLine({ passes, fails: failures, unproven: 0, crashed, suffix: ` — phase ${which}` }));
+process.exit(resultExitCode({ fails: failures, crashed }));

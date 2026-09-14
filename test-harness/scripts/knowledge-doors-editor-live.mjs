@@ -54,6 +54,7 @@ import {
    redactor will ever see. `evidence-redaction.test.mjs` refuses a raw `.screenshot(` in
    any `*-live.mjs` that mentions `perm-`. */
 import { makeRosterUI, makeShot, maskPositiveControl } from "../lib/roster-ui.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["roster", "skills", "docs"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -70,6 +71,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
+let crashed = null;   /* F-792 — set by main()'s catch; the RESULT line reads it */
 const ev = { at: new Date().toISOString(), env: ENV_NAME, editorAccount: EDITOR, checks: [] };
 /* F-646 — EVERY evidence payload is redacted ONCE, here, before it reaches the
    console or `ev` (which is what gets written to results/evidence.json). Call sites
@@ -457,6 +459,14 @@ async function main() {
     const namesBefore = JSON.stringify(skillsBefore.filter((s) => s.builtin).map((s) => [s.id, s.enabled !== false]));
     if (namesNow === namesBefore) PASS("…and NO builtin skill anywhere on the instance changed its enabled flag during this run");
     else FAIL("a builtin skill's enabled flag moved during this run", { before: namesBefore.slice(0, 200), now: namesNow.slice(0, 200) });
+  } catch (e) {
+    /* F-792 — the RESULT line below prints from the `finally`, so the RESTORE block can report
+       its own residue after it. That also means it prints on the CRASH path, with the counters
+       frozen wherever the throw left them — which is how a dead run says "0 fail". Catching
+       here is what lets the line SAY it crashed. Deliberately no rethrow: the finally's restore
+       and its residue assertions must still run and still be the last word. */
+    crashed = e;
+    console.error("\nDRIVER ERROR:", e && e.stack);
   } finally {
     /* ── RESTORE (F-639: everything this run made, unmade, and proven) ───────── */
     console.log("\nRESTORE");
@@ -586,8 +596,8 @@ async function main() {
     ev.maskPositiveControl = { ...maskPositiveControl(allShots), gated: false, why: "no view this driver captures is guaranteed to render an email span" };
     ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length, maskSpans: ev.maskPositiveControl.spanTotal };
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
-    console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
-    if (fails > 0) process.exitCode = 1;
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
+    process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;
   }
 }
 

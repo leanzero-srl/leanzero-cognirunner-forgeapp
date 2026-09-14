@@ -37,6 +37,7 @@ import { makeRosterUI, makeShot, maskPositiveControl } from "../lib/roster-ui.mj
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
 } from "../lib/roster-restore.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -74,6 +75,7 @@ const J = (d) => JSON.stringify(redactSecrets(d));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
+let crashed = null;   /* F-792 — set by main()'s catch; the RESULT line reads it */
 const ev = { at: new Date().toISOString(), env: "dev", target: TARGET, checks: [] };
 const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  PASS  ${redactString(s)}${d ? " " + J(d) : ""}`); };
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  FAIL  ${redactString(s)}${d ? " " + J(d) : ""}`); };
@@ -339,6 +341,14 @@ async function main() {
       }
       }
     }
+  } catch (e) {
+    /* F-792 — the RESULT line below prints from the `finally`, so the RESTORE block can report
+       its own residue after it. That also means it prints on the CRASH path, with the counters
+       frozen wherever the throw left them — which is how a dead run says "0 fail". Catching
+       here is what lets the line SAY it crashed. Deliberately no rethrow: the finally's restore
+       and its residue assertions must still run and still be the last word. */
+    crashed = e;
+    console.error("\nDRIVER ERROR:", e && e.stack);
   } finally {
     console.log("\nRESTORE");
     /* F-657 — UNCONDITIONAL, AND BY DIFF. This used to be `if (granted)`, which is a
@@ -433,8 +443,8 @@ async function main() {
     else FAIL(mask.sentence, { spans: mask.spanTotal, captures: mask.captures, expected: "the user-search dropdown renders at least one `.perm-ident-email`" });
     ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length, maskSpans: mask.spanTotal };
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2)); // F-656/F-662: the shared redactor is the ONLY gate
-    console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
-    if (fails > 0) process.exitCode = 1;
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
+    process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;
   }
 }
 await main();

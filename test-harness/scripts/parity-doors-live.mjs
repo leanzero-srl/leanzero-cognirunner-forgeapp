@@ -38,6 +38,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -48,6 +49,7 @@ const OUT = new URL("../results/parity-doors", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 
 let passes = 0, fails = 0, unproven = 0;
+let crashed = null;   /* F-792 — set by main()'s catch; the RESULT line reads it */
 const ev = { at: new Date().toISOString(), env: ENV_NAME, checks: [] };
 /* F-646 — EVERY evidence payload is redacted ONCE, here, before it reaches the
    console or `ev` (which is what gets written to results/evidence.json). Call sites
@@ -226,6 +228,14 @@ async function main() {
       const foreign = await invoke(fk, payloadFor(foreignId), ownEditor.accountId);
       assertIdentical(`${finding}: ${fk} as a scope-"own" editor (foreign row ${foreignId})`, unknown, foreign);
     }
+  } catch (e) {
+    /* F-792 — the RESULT line below prints from the `finally`, so the RESTORE block can report
+       its own residue after it. That also means it prints on the CRASH path, with the counters
+       frozen wherever the throw left them — which is how a dead run says "0 fail". Catching
+       here is what lets the line SAY it crashed. Deliberately no rethrow: the finally's restore
+       and its residue assertions must still run and still be the last word. */
+    crashed = e;
+    console.error("\nDRIVER ERROR:", e && e.stack);
   } finally {
     console.log("\nRESTORE");
     if (adminTok && adminTok.token) {
@@ -252,9 +262,9 @@ async function main() {
     /* F-646 — redacted AGAIN at the file boundary: `ev` also carries fields assigned
        outside PASS/FAIL/NV, and the file is the artefact that outlives the terminal. */
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(redactSecrets(ev), null, 2));
-    console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
   }
 }
 
 await main();
-process.exit(fails === 0 ? 0 : 1);
+process.exit(resultExitCode({ fails, crashed }));

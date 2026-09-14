@@ -1098,8 +1098,12 @@ for (const f of captureDrivers) {
      about spelling. */
   ok(leakFailNamesArtefacts(code),
     `${f}: the leak FAIL NAMES the artefacts it refused (paths: or leaks:) — an operator has to know which PNGs to destroy`);
-  ok(/process\.exit(Code)?\s*(=|\()\s*/.test(code) && /fails\s*(>|\?)/.test(code),
-    `${f}: …and a FAIL still drives a non-zero exit, or the run-level leak FAIL buys nothing`);
+  /* F-792 — `resultExitCode({ fails, crashed })` is the OTHER spelling of "a FAIL exits
+     non-zero", and it is the one a driver wired to lib/driver-report.mjs uses. The rule is
+     about the PROPERTY, never about the literal `fails >`: reading only the old spelling
+     would fail exactly the drivers that fixed the crash-reports-zero defect. */
+  ok(/process\.exit(Code)?\s*(=|\()\s*/.test(code) && (/fails\s*(>|\?)/.test(code) || /resultExitCode\(\s*\{[^}]*\bfails\b/.test(code)),
+    `${f}: …and a FAIL still drives a non-zero exit (\`fails >\` or resultExitCode({ fails })), or the run-level leak FAIL buys nothing`);
 }
 
 /* ── 4c-iii. F-657 — NO PERMISSION DRIVER PICKS AN ACCOUNT ITS OWN WAY ──────────
@@ -2519,6 +2523,89 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
   /* And the helper really is in the lib, so this rule points at a home that exists. */
   ok(/export function runProvenance/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8")),
     "4i (F-787): lib/driver-report.mjs exports runProvenance — ONE home, so `commit`/`dirty`/`at` cannot come to mean different things in different evidence files");
+}
+
+
+/* ── 4j. F-792 — A SUMMARY LINE IS PRINTED THROUGH `formatResultLine`, SO A CRASH
+ *              CANNOT BE REPORTED AS `0 fail` ────────────────────────────────────
+ *
+ * F-784 found one driver printing `RESULT — 2 pass, 0 fail, 0 not verified` under a
+ * TypeError stack. F-792 measured how wide that shape is: fifteen drivers print their
+ * summary from a `finally` — correct, because the RESTORE block must report its residue
+ * AFTER the verdict — and ten of them had no catch, so the counters printed frozen at the
+ * throw and the run read as clean. `lib/driver-report.mjs` is the one place that knows how
+ * to say CRASHED in the FIRST WORD, which is the only part a grep or a tired reader takes.
+ *
+ * WHAT THIS RULE POLICES. A `*-live.mjs` that prints a COUNTS SUMMARY — a leading-newline
+ * console line carrying pass/fail/N-V counters — must build it with `formatResultLine`.
+ * Drivers with no summary line at all are not in scope: a driver that prints nothing on the
+ * crash path tells no lie, and the rule is about lines that CLAIM a verdict.
+ *
+ * THE DETECTOR IS TEXTUAL AND ITS POSITIVE CONTROL IS THE OLD SHAPE. A regex that quietly
+ * stopped matching would turn this rule green by finding nothing, so the old shape is
+ * asserted to still be recognised, as a literal, below. The rule is FILE-LEVEL and coarse in
+ * the permitting direction: a file that calls `formatResultLine` anywhere counts as wired,
+ * which is stated rather than hidden, because the alternative is parsing every console.log.
+ *
+ * AND IT IS A DEBT LEDGER, for exactly F-787's reason. 23 drivers still print the old shape;
+ * turning 23 files red in one pass makes this the rule people delete. The named 23 are
+ * permitted, THE COUNT MAY NOT GROW, and a driver NOT on the list must be wired — so the rule
+ * bites on the next driver somebody writes, which is the one that would otherwise be copied
+ * from a neighbour still carrying the defect. A converted entry must come OFF the list, and
+ * the last assertion says so, because a warn-list nobody prunes is a permanent exemption. */
+{
+  const SUMMARY_DEBT = [
+    "brakes-knowledge-live.mjs", "coder-pin-epoch-live.mjs", "coder-skills-live.mjs",
+    "config-view-provenance-live.mjs", "delete-fault-drain-live.mjs",
+    "git-rotation-window-live.mjs", "git-webhook-setup-live.mjs",
+    "harness-fault-expiry-live.mjs", "issue-key-live.mjs", "perm-namesake-ui-live.mjs",
+    "plant-sweep-live.mjs", "resolvers-live.mjs", "rules-api-roles-live.mjs",
+    "sandbox-confluence-live.mjs", "skills-knowledge-ui-live.mjs", "user-search-fault-live.mjs",
+    "va-capability-gate-live.mjs", "va-purge-on-delete-live.mjs", "va-receipt-copy-live.mjs",
+    "va-recreate-settle-live.mjs", "va-rest-doors-live.mjs", "va-shadow-live.mjs",
+    "web-search-live.mjs",
+  ];
+  /* A COUNTS SUMMARY: a console line that opens with a newline and carries a counter beside
+     the words a verdict is written in. Deliberately narrow on the opening `\n` — that leading
+     blank line is what separates a run's verdict from its per-check chatter, and per-check
+     PASS/FAIL lines (printed by helpers, never with a leading newline) must not be caught. */
+  const SUMMARY_LINE = /console\.(?:log|error)\(\s*(?:"\\n"\s*\+\s*)?[`"']\\n[^\n]*(?:\$\{[^\n]*\})?[^\n]*(?:pass|fail|FAILURE|not verified|N\/V)/;
+  ok(SUMMARY_LINE.test('console.log(`\\n${passes} pass, ${fails} fail, ${unproven} not verified`);'),
+    "4j (F-792) POSITIVE CONTROL: the detector still recognises the OLD summary shape — a regex that matched nothing would make this rule green by finding no drivers at all");
+  ok(SUMMARY_LINE.test('  console.log("\\n" + formatResultLine({ passes, fails, unproven, crashed }));'),
+    "4j (F-792) POSITIVE CONTROL: the detector also recognises the WIRED shape, so 'has a summary' and 'is compliant' are two independent questions");
+  ok(!SUMMARY_LINE.test('  console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);'),
+    "4j (F-792) NEGATIVE CONTROL: a per-check PASS/FAIL line is NOT a summary — without this the rule would demand formatResultLine of every driver that prints checks");
+
+  const summarisers = liveFiles.filter((f) =>
+    readFileSync(path.join(here, f), "utf8").split("\n").some((l) => SUMMARY_LINE.test(l)));
+  const unwired = summarisers.filter((f) => !/formatResultLine/.test(readFileSync(path.join(here, f), "utf8")));
+
+  ok(summarisers.length > 20,
+    `4j (F-792): the summary-printing cohort is found, not assumed — ${summarisers.length} live drivers print a counts summary`);
+  ok(unwired.length <= SUMMARY_DEBT.length,
+    `4j (F-792): the summary debt did not GROW — ${unwired.length} drivers print a hand-rolled summary, ledger allows ${SUMMARY_DEBT.length}`);
+  const strangers = unwired.filter((f) => !SUMMARY_DEBT.includes(f));
+  ok(strangers.length === 0,
+    `4j (F-792): a driver that prints a verdict must print it through formatResultLine — ${strangers.join(", ")} hand-rolls a summary line, so a crash inside it reports the counters the throw froze instead of saying the run did not finish`);
+  const stale = SUMMARY_DEBT.filter((f) => !unwired.includes(f));
+  ok(stale.length === 0,
+    `4j (F-792): the debt list is PRUNED — ${stale.join(", ")} now uses formatResultLine (or prints no summary) and must come off SUMMARY_DEBT`);
+
+  ok(/export function formatResultLine/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8"))
+     && /export function resultExitCode/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8")),
+    "4j (F-792): lib/driver-report.mjs exports formatResultLine AND resultExitCode — the line and the exit code come from ONE place, because a run that says CRASHED and exits 0 is the same lie twice");
+
+  /* THE OTHER HALF OF F-792: a driver whose summary prints from a `finally` needs a `catch`
+     that records the throw, or `crashed` is never set and the wired line prints the frozen
+     counters anyway — wiring the helper without the catch looks fixed and is not. */
+  const wiredFromFinally = summarisers.filter((f) => {
+    const s = readFileSync(path.join(here, f), "utf8");
+    return /formatResultLine/.test(s) && /crashed/.test(s);
+  });
+  const noRecord = wiredFromFinally.filter((f) => !/crashed\s*=\s*e\b/.test(readFileSync(path.join(here, f), "utf8")));
+  ok(noRecord.length === 0,
+    `4j (F-792): a driver that reads \`crashed\` must also SET it in a catch — ${noRecord.join(", ")} passes crashed to formatResultLine but never assigns it, so the line can only ever print the clean shape`);
 }
 
 

@@ -51,6 +51,7 @@ import { providerKeySlot } from "../../src/shared/provider-slots.js";
 // ceiling". The copy that used to live in this file read `r.json.value`, a field the
 // ceiling no longer answers for a credential-family key.
 import { readKeySlotWitness, describeKeySlot, sameKeySlot } from "../lib/key-slot-witness.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const PROVIDER = arg("provider", "openai");
@@ -73,6 +74,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
+let crashed = null;   /* F-792 — set by main()'s catch; the RESULT line reads it */
 const ev = { at: new Date().toISOString(), env: ENV_NAME, provider: PROVIDER, checks: [] };
 const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
@@ -208,6 +210,14 @@ async function main() {
     if (clamped.json && clamped.json.ttlSeconds === clamped.json.maxTtlSeconds) {
       PASS("a TTL above the cap is clamped server-side", { ttlSeconds: clamped.json.ttlSeconds, cap: clamped.json.maxTtlSeconds });
     } else FAIL("the TTL was not clamped", { body: JSON.stringify(clamped.json).slice(0, 200) });
+  } catch (e) {
+    /* F-792 — the RESULT line below prints from the `finally`, so the RESTORE block can report
+       its own residue after it. That also means it prints on the CRASH path, with the counters
+       frozen wherever the throw left them — which is how a dead run says "0 fail". Catching
+       here is what lets the line SAY it crashed. Deliberately no rethrow: the finally's restore
+       and its residue assertions must still run and still be the last word. */
+    crashed = e;
+    console.error("\nDRIVER ERROR:", e && e.stack);
   } finally {
     /* ── RESTORE — and the SECOND read, which is what proves the first one ── */
     console.log("\nRESTORE");
@@ -234,9 +244,9 @@ async function main() {
     }
 
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
-    console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
   }
 }
 
 await main();
-process.exit(fails === 0 ? 0 : 1);
+process.exit(resultExitCode({ fails, crashed }));

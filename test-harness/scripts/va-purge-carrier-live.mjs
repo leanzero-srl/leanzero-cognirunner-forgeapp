@@ -35,6 +35,7 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -49,6 +50,7 @@ const OUT = new URL("../results/va-purge-carrier", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 
 let passes = 0, fails = 0, unproven = 0;
+let crashed = null;   /* F-792 — set by main()'s catch; the RESULT line reads it */
 const ev = { at: new Date().toISOString(), env: ENV_NAME, checks: [] };
 const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
@@ -202,6 +204,14 @@ async function main() {
     if (leak.status === 400 && leak.json && leak.json.harnessRefusal === "secret-field") {
       PASS("a plant body carrying a token is refused secret-field", { field: leak.json.field });
     } else FAIL("the secret guard did not refuse", { status: leak.status, body: JSON.stringify(leak.json).slice(0, 200) });
+  } catch (e) {
+    /* F-792 — the RESULT line below prints from the `finally`, so the RESTORE block can report
+       its own residue after it. That also means it prints on the CRASH path, with the counters
+       frozen wherever the throw left them — which is how a dead run says "0 fail". Catching
+       here is what lets the line SAY it crashed. Deliberately no rethrow: the finally's restore
+       and its residue assertions must still run and still be the last word. */
+    crashed = e;
+    console.error("\nDRIVER ERROR:", e && e.stack);
   } finally {
     /* ── RESTORE — and the SECOND read, which is what proves the first one ── */
     console.log("\nRESTORE");
@@ -222,9 +232,9 @@ async function main() {
     }
     if (rest && rest.id) { await invoke("revokeApiToken", { id: rest.id }); info("the minted REST token was revoked"); }
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
-    console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
   }
 }
 
 await main();
-process.exit(fails === 0 ? 0 : 1);
+process.exit(resultExitCode({ fails, crashed }));

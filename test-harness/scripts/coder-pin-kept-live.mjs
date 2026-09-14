@@ -36,6 +36,7 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: URL_, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "skills", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -54,6 +55,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
+let crashed = null;   /* F-792 — set by main()'s catch; the RESULT line reads it */
 const ev = { at: new Date().toISOString(), issue: ISSUE, thread: THREAD, checks: [], turns: {} };
 const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
@@ -225,6 +227,14 @@ async function main() {
     else if (backInReceipt) NV("the skill returned, but the pin now holds it too — that is a rebuild, not the extra-block path", ev.pinAfterTurn4);
     if (t4.first > 0) PASS("turn 4's first round STILL read cached tokens — the extra block sits after the prefix and does not move it", { firstRoundCacheReadTokens: t4.first });
     else FAIL("turn 4 read nothing from cache", { firstRoundCacheReadTokens: t4.first });
+  } catch (e) {
+    /* F-792 — the RESULT line below prints from the `finally`, so the RESTORE block can report
+       its own residue after it. That also means it prints on the CRASH path, with the counters
+       frozen wherever the throw left them — which is how a dead run says "0 fail". Catching
+       here is what lets the line SAY it crashed. Deliberately no rethrow: the finally's restore
+       and its residue assertions must still run and still be the last word. */
+    crashed = e;
+    console.error("\nDRIVER ERROR:", e && e.stack);
   } finally {
     console.log("\nRESTORE");
     if (disabled && skillB) {
@@ -240,8 +250,8 @@ async function main() {
     if (JSON.stringify(now) === JSON.stringify(providerBefore)) PASS(`${SLOT} restored to its recorded value`, { now: mask(now) });
     else FAIL(`${SLOT} NOT restored`, { now: mask(now), before: mask(providerBefore) });
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(ev, null, 2));
-    console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
-    if (fails > 0) process.exitCode = 1;
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
+    process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;
   }
 }
 await main();

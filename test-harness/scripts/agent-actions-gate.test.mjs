@@ -3,6 +3,7 @@
 // Covers: catalogue integrity, the 13 Jira ids frozen by snapshot, the arity-1 vs
 // arity-2 return shapes (GOTCHAS trap 3) and one BLOCK + one ALLOW per gating flag.
 import assert from "node:assert/strict";
+import { maskComments } from "../lib/js-source-scan.mjs";
 import {
   AGENT_ACTIONS, AGENT_ACTION_IDS, AGENT_ACTION_NAMESPACES, AGENT_ACTION_NAMESPACE_IDS,
   agentActionNamespace, normalizeAllowedActions, assertAllowedActions, toolDefinitionsFor, hasWriteActions, getAgentAction,
@@ -137,8 +138,15 @@ eq(normalizeAllowedActions(LEDGER_SNAPSHOT), LEDGER_SNAPSHOT, "ledger.ALLOW_unde
 // exists to remove, so its absence is asserted rather than assumed.
 {
   const { readFileSync } = await import("node:fs");
-  const vsrc = readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8");
+  const vsrc = maskComments(readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8"));
+  // F-805 — read CODE, not prose. `VA_SPEECH_ACTIONS = …` is exactly what a comment
+  // recording WHERE the catalogue moved to would write, and this ban would then fire on
+  // the sentence documenting it. maskComments blanks comments and keeps string literals,
+  // so the shape-matching assertions below still see the code they are about.
   ok(!/VA_SPEECH_ACTIONS\s*=/.test(vsrc), "ledger.BLOCK_second_definition — VA_SPEECH_ACTIONS is deleted, not duplicated");
+  ok(!/VA_SPEECH_ACTIONS\s*=/.test(maskComments("// moved: VA_SPEECH_ACTIONS = [...] now lives in agent-actions.js\nconst x = 1;\n"))
+    && /VA_SPEECH_ACTIONS\s*=/.test(maskComments("const VA_SPEECH_ACTIONS = [];\n")),
+    "…and the ban reads code only: the same name in a COMMENT passes, in CODE fails");
   ok(/executors: \{ ledger: ledgerExecutor \}/.test(vsrc) || /ledger: ledgerExecutor/.test(vsrc),
     "the item turn reaches the ledger actions through the dispatcher's namespace delegation");
 }
@@ -301,8 +309,8 @@ n++;
 // The RUN sites accept a caller-supplied context and default to the restrictive one.
 {
   const { readFileSync } = await import("node:fs");
-  const lsrc = readFileSync(new URL("../../src/listeners.js", import.meta.url), "utf8");
-  const jsrc = readFileSync(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
+  const lsrc = maskComments(readFileSync(new URL("../../src/listeners.js", import.meta.url), "utf8"));
+  const jsrc = maskComments(readFileSync(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8"));
   ok(/gateFacts = null, executors = \{\}/.test(lsrc) && /gateFacts = null, executors = \{\}/.test(jsrc),
     "both run sites take gateFacts + executors, defaulting to the restrictive context");
   // F-448 — assert the PROPERTIES the gate context carries, not their position in the

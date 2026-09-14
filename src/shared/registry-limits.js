@@ -11,8 +11,11 @@
  * panel's meter. Pure and dependency-free. Imported by the backend only
  * (registerConfig / registerPostFunction / registerDiscoveredRulesCore /
  * commitImportCore / getConfigs); the admin-panel frontend renders the
- * pressure object the getConfigs resolver returns — it does NOT import this
- * module, so cap changes reach the UI without a frontend rebuild.
+ * pressure object the getConfigs resolver returns without importing anything.
+ * Several frontend components DO import this module directly across the bundle
+ * boundary (AgentConfig.jsx, JobsTab.jsx, FunctionBlock.jsx, DocRepository.jsx),
+ * so a cap those cite needs a frontend REBUILD to reach the UI; a cap that only
+ * rides the getConfigs pressure object does not.
  *
  * Why these numbers exist at all: the whole registry lives in ONE KVS value
  * with a hard ~240KiB platform ceiling. There is no eviction — the caps are a

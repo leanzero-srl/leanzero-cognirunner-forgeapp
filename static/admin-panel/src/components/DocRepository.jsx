@@ -373,7 +373,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
           )}
           <div className="doc-add-actions">
             <span className="doc-size-hint">
-              {newContent.length > 0 ? formatSize(newContent.length) : ""}{newContent.length > DOC_CONTENT_MAX_CHARS ? ` (too large — max ${DOC_CONTENT_MAX_LABEL})` : ""}
+              {newContent.length > 0 ? formatSize(newContent.length) : ""}{newContent.length > DOC_CONTENT_MAX_CHARS ? ` (too large, max ${DOC_CONTENT_MAX_LABEL})` : ""}
             </span>
             <button
               className={`btn-save-doc${saving ? " is-busy busy-solid" : ""}`}

@@ -65,6 +65,7 @@ import { resolveFlipModel, judgeAgentCapability, applyVerdict } from "../lib/age
 import fs from "node:fs";
 import { redactSecrets } from "../lib/redact.mjs";
 import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { createTokenLease } from "../lib/api-token-lease.mjs";
 
 /* F-752 — `envId` is NOT destructured: this driver's browser half is pinned to staging by
    construction (see STAGING_ENV below), so the settled row's id has no reader here, and a
@@ -200,7 +201,14 @@ const writeEvidence = () => {
 };
 
 let createdJobId = null;
-const cleanupTokens = [];
+/* F-812 — THE ADMIN BEARER THIS DRIVER MINTS IS A LEASE, NOT A SIDE EFFECT.
+   This file used to mint `createApiToken { role: "admin" }` and release it by calling
+   `invoke("deleteApiToken", …)` under a `.catch(() => null)` — a resolver that does not
+   exist, so every release was an error the catch ate, and staging accumulated seven live
+   admin bearers on the Rules REST API while the driver reported 23 pass. The pair now
+   lives in `lib/api-token-lease.mjs` (one home for the door NAMES), and the RESTORE block
+   below GRADES the revoke answer instead of assuming it. */
+const tokenLease = createTokenLease(invoke);
 
 /* ── transports ─────────────────────────────────────────────────────────────── */
 
@@ -420,10 +428,14 @@ async function main() {
 
   /* ── STEP 3 — F-508: a long watch is STORED and NAMED, never silently cut ── */
   console.log("\nSTEP 3 — F-508: PUT {va:{status:{shadowUntilTick:500}}} through the REST door");
-  const tok = await invoke("createApiToken", { name: `shadow-door ${Date.now()}`, role: "admin" });
-  if (!(tok.body && tok.body.success && tok.body.token)) { FAIL(`createApiToken refused: ${JSON.stringify(tok.body).slice(0, 300)}`); return; }
-  cleanupTokens.push(tok.body.row.id);
-  const TOKEN = tok.body.token;
+  /* F-812 — minted THROUGH THE LEASE, so the id is registered before the token is used
+     and the finally releases it on every path including the crash one. F-646: the mint
+     answer is never stringified here — the lease throws with the `error` field alone,
+     because a SUCCESSFUL body carries the plaintext at its top level. */
+  let tok;
+  try { tok = await tokenLease.mint({ name: `shadow-door ${Date.now()}`, role: "admin" }); }
+  catch (e) { FAIL(String((e && e.message) || e).slice(0, 300)); return; }
+  const TOKEN = tok.token;
   PASS("an ADMIN api token was minted for the REST door (never printed)");
 
   const stBefore = (await invoke("getScheduledJob", { id: jobId })).body?.job?.va?.status;
@@ -540,9 +552,24 @@ main()
       console.log(`        second read getScheduledJob ${createdJobId}: ${survives ? "STILL PRESENT" : "gone"}`);
       if (survives) left.push(`the Virtual Administrator ${createdJobId} is still on the instance`);
     }
-    for (const id of cleanupTokens) {
-      await invoke("deleteApiToken", { id }).catch(() => null);
+    /* F-812 — THE REVOKE IS AN ASSERTION, like the restore above it. A live admin bearer
+       left on a shared tenant is damage of exactly the kind this block exists to refuse,
+       and the old silent `.catch(() => null)` is what let a call to a NON-EXISTENT door
+       look like cleanup. The answer is graded, and a token that did not come back revoked
+       is named in `left[]` so the run exits 1 and says which id to chase. */
+    const revokes = await tokenLease.revokeAll();
+    for (const r of revokes) {
+      if (r.revoked === true) PASS(`the ADMIN api token ${r.id} minted for the REST door is REVOKED (revokeApiToken answered revoked:true)`);
+      else {
+        /* F-650 — the REASON is built OUTSIDE the template hole. A substitution hole whose
+           text contains "tok" is what the writer net flags, and it is right to: that is the
+           shape a live bearer arrives in. */
+        const why = r.error || "the revoke door answered revoked:false";
+        FAIL(`the ADMIN api token ${r.id} was NOT revoked: ${why}`);
+        left.push(`the ADMIN api token ${r.id} is still LIVE on the Rules REST API`);
+      }
     }
+    if (revokes.length === 0) info("no api token was minted this run — nothing to revoke");
     if (agentModelSlotBefore !== undefined) {
       await hook({ action: "kvSet", key: AGENT_MODEL_SLOT, value: agentModelSlotBefore });
       const back = await kvs(AGENT_MODEL_SLOT);

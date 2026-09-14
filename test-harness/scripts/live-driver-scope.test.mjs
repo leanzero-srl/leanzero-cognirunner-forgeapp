@@ -655,6 +655,105 @@ export function capabilityHandoffViolations(src) {
     "NEGATIVE CONTROL (F-783): PROSE may quote the defect — this docblock and the ledger row both do, and a rule that could not be described in its own file would be unmaintainable");
 }
 
+/* ── RULE 5 (F-812) · A DRIVER THAT MINTS A REST TOKEN RELEASES IT ──────────────────
+ *
+ * `va-shadow-door-live.mjs` minted `createApiToken { role: "admin" }` on every run and
+ * released it by calling `invoke("deleteApiToken", { id })` under a `.catch(() => null)`.
+ * There is no `deleteApiToken` resolver — the door is `revokeApiToken` (src/index.js) —
+ * so every release was an error the catch ate. Staging held SEVEN live admin bearers on
+ * the Rules REST API, each one a full-power key on a shared tenant marching toward
+ * `MAX_TOKENS`, while the driver reported 23 pass and a `finally` that LOOKED like
+ * cleanup. That is the harm: not a missing block, a block that reads as present.
+ *
+ * SO THE RULE IS ABOUT THE PAIR, AND ABOUT THE NAME.
+ *
+ * 5a — A MINT IMPLIES A RELEASE. A driver whose source mints (`createApiToken`, or the
+ * dev hook's `mintApiToken` action) must also carry the revoke door — `revokeApiToken` —
+ * or go through `lib/api-token-lease.mjs`, which spells the door once for all of them.
+ * This is a TEXT rule and says so: it cannot prove the release is reached, only that the
+ * driver knows the word. What it DOES catch is the whole of F-812, because the shadow
+ * door's release named a door that does not exist.
+ *
+ * 5b — AND `deleteApiToken` IS NOT A DOOR. Named on its own, because 5a alone would have
+ * been satisfied by nothing (the shadow door had no `revokeApiToken` anywhere) but the
+ * NEXT copy of this mistake is a driver that has both, uses the dead one, and passes 5a.
+ * A resolver name is not a guess: the two that exist are `createApiToken` and
+ * `revokeApiToken`, and a third spelling in live code is a call that can only ever throw.
+ *
+ * WHAT IT DELIBERATELY DOES NOT POLICE: the resolver-name STRINGS in prose. This file,
+ * the lease library and three drivers' docblocks all quote `deleteApiToken` to explain
+ * the finding, and a rule that could not be described in its own comment would be
+ * unmaintainable — so the scan masks COMMENTS and keeps STRINGS (the resolver name only
+ * ever appears as a string argument, which is the thing being policed).
+ */
+const TOKEN_LEASE_LIB = "api-token-lease.mjs";
+/** A resolver/hook-action name quoted DIRECTLY as a call argument, not inside prose. */
+const quoted = (name) => new RegExp(`["'\`]${name}["'\`]`);
+export function tokenReleaseViolations(src) {
+  const code = maskComments(src);
+  const out = [];
+  if (quoted("deleteApiToken").test(code)) {
+    out.push("calls `deleteApiToken`, which is not a resolver — the revoke door is `revokeApiToken`");
+  }
+  const mints = quoted("createApiToken").test(code) || quoted("mintApiToken").test(code);
+  if (!mints) return out;
+  const releases = quoted("revokeApiToken").test(code)
+    || code.includes(TOKEN_LEASE_LIB)
+    || /\b(?:withApiToken|createTokenLease)\s*\(/.test(code);
+  if (!releases) {
+    out.push("mints a REST api token and names no revoke door — every run leaves a live bearer on the tenant");
+  }
+  return out;
+}
+
+for (const f of drivers) {
+  const v = tokenReleaseViolations(fs.readFileSync(path.join(here, f), "utf8"));
+  ok(v.length === 0, "RULE 5 (F-812) " + f + ": " + v.join("; "));
+}
+{
+  /* THE COHORT HAS A SUBJECT. A rule whose predicate no file in the directory triggers is
+     green because it asked nothing — and the minting cohort is exactly three files today,
+     so it is small enough that an accidental emptying would go unnoticed. */
+  const minters = drivers.filter((f) => {
+    const code = maskComments(fs.readFileSync(path.join(here, f), "utf8"));
+    return quoted("createApiToken").test(code) || quoted("mintApiToken").test(code);
+  });
+  ok(minters.length >= 3,
+    "F-812: the rule has real subjects — " + minters.length + " live driver(s) mint a REST api token (" + minters.join(", ") + ")");
+
+  /* POSITIVE CONTROL — va-shadow-door-live.mjs's own lines, as they read before the fix.
+     An empty offender list above is not evidence until the scan is shown to fire on the
+     defect it was written for. */
+  const F812_ORIGINAL = [
+    'const tok = await invoke("createApiToken", { name: `shadow-door ${Date.now()}`, role: "admin" });',
+    "cleanupTokens.push(tok.body.row.id);",
+    "for (const id of cleanupTokens) {",
+    '  await invoke("deleteApiToken", { id }).catch(() => null);',
+    "}",
+  ].join("\n");
+  const fired = tokenReleaseViolations(F812_ORIGINAL);
+  ok(fired.length === 2,
+    "POSITIVE CONTROL (F-812): the pre-fix shadow-door lines fire BOTH arms — a dead door name AND no real release (" + fired.join(" | ") + ")");
+
+  /* …and the three shapes it must not fire on, or the drivers become unwritable. */
+  ok(tokenReleaseViolations([
+    'const tok = await invoke("createApiToken", { name: "x", role: "admin" });',
+    'await invoke("revokeApiToken", { id: tok.body.row.id });',
+  ].join("\n")).length === 0,
+    "NEGATIVE CONTROL (F-812): a hand-rolled pair that names the REAL door is clean — the rule is about the release, not about the library");
+  ok(tokenReleaseViolations([
+    'import { createTokenLease } from "../lib/api-token-lease.mjs";',
+    "const tokenLease = createTokenLease(invoke);",
+    'const tok = await tokenLease.mint({ name: "x", role: "admin" });',
+    "await tokenLease.revokeAll();",
+  ].join("\n")).length === 0,
+    "NEGATIVE CONTROL (F-812): …and so is a driver that goes through the lease, which never spells either door");
+  ok(tokenReleaseViolations('/* the old line called invoke("deleteApiToken", { id }) and leaked */\n').length === 0,
+    "NEGATIVE CONTROL (F-812): PROSE may quote the dead door — this file, the lease and three docblocks all do, and a rule undescribable in its own comment is unmaintainable");
+  ok(tokenReleaseViolations('const r = await call("getApiTokens", {});').length === 0,
+    "NEGATIVE CONTROL (F-812): a driver that only READS the token list mints nothing and is not in this rule's world");
+}
+
 /* RULE 3 (F-715) HAS MOVED. It lived here only because `evidence-redaction.test.mjs` was
  * held by another hand the day it was written, and its own comment said so: "it belongs in
  * 4f and should be folded there". F-718 folded it. The env-id cohort - every `lib/*.mjs`

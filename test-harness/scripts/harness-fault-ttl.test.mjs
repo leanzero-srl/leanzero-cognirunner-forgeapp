@@ -2057,6 +2057,80 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   globalThis.setTimeout = realTimeout;
 }
 
+/* ═════ N. THE LIVE DRIVER'S EXPECTATIONS, HELD AGAINST src ═══════════════════════
+ *
+ * `scripts/delete-fault-drain-live.mjs` carries three numbers it calls EXPECTATIONS —
+ * `KVS_DELETE_BATCH_EXPECTED`, `HARNESS_FAULT_SWEEP_MAX_ROWS_EXPECTED` and
+ * `HARNESS_FAULT_SWEEP_SCAN_CEILING_EXPECTED` — because a live driver cannot import from
+ * `src/`. Its own docblocks say each is "an EXPECTATION, not a second home: the run PROVES
+ * it from the tenant's own answer". That is true of a run that REACHES the proof, and the
+ * whole shape of the driver is that the numbers are used BEFORE it does: `ARM_COUNT =
+ * drainableArmCount(IDENTICAL_ANSWER_LIMIT, KVS_DELETE_BATCH_EXPECTED)` sizes the arm that
+ * the drain is then judged against. If `KVS_DELETE_BATCH` moves in src, the driver arms the
+ * wrong size and reports a finding about a drain it mis-sized itself — and nothing offline
+ * says a word, because until now NOTHING compared the two files.
+ *
+ * This suite already imports `src/harness-fault.js`. So it is the one place where both
+ * numbers exist at once, and the drift check costs an import that is already paid for.
+ *
+ * WHY THE DRIVER IS PARSED AND NOT IMPORTED. It self-executes: the module-scope block at the
+ * bottom builds `state` and calls `run(state)`, whose first move is `requireEnvAck` — which
+ * REFUSES, writes an evidence file and calls `process.exit`. Importing it would end this
+ * suite. The constants are therefore read out of its SOURCE, and the parse is asserted to
+ * have found something before anything is compared to it — a regex that silently matches
+ * nothing would otherwise turn this whole section into three vacuous passes, which is the
+ * F-772 failure (a check that reads the wrong thing and announces a pass).
+ */
+{
+  const driverPath = path.join(here, "delete-fault-drain-live.mjs");
+  const driverSrc = readFileSync(driverPath, "utf8");
+
+  /* The self-execution, asserted rather than assumed — if this driver ever stops running on
+     import, this section should be rewritten to import it, and the comment above is wrong. */
+  ok(/\bawait run\(state\);/.test(driverSrc) && !/^\s*(export\s+)?async function main/m.test(driverSrc),
+    "the drain driver self-executes at module scope (so its constants are PARSED, not imported)");
+
+  const driverConst = (name) => {
+    const m = driverSrc.match(new RegExp("export const " + name + "\\s*=\\s*([0-9_]+)\\s*;"));
+    return m ? Number(m[1].replace(/_/g, "")) : undefined;
+  };
+
+  const expectations = [
+    ["KVS_DELETE_BATCH_EXPECTED", fault.KVS_DELETE_BATCH, "KVS_DELETE_BATCH",
+      "it sizes the armed fault (drainableArmCount) before any tenant answer can correct it"],
+    ["HARNESS_FAULT_SWEEP_MAX_ROWS_EXPECTED", fault.HARNESS_FAULT_SWEEP_MAX_ROWS, "HARNESS_FAULT_SWEEP_MAX_ROWS",
+      "it is the cap a truncated row list is judged against"],
+    ["HARNESS_FAULT_SWEEP_SCAN_CEILING_EXPECTED",
+      fault.HARNESS_FAULT_SWEEP_PAGE_SIZE * fault.HARNESS_FAULT_SWEEP_MAX_PAGES,
+      "HARNESS_FAULT_SWEEP_PAGE_SIZE x HARNESS_FAULT_SWEEP_MAX_PAGES",
+      "past it, `scanned` is a floor and the plant delta stops being exact"],
+  ];
+  for (const [name, srcValue, srcName, why] of expectations) {
+    const got = driverConst(name);
+    /* THE PARSE FIRST. A `undefined === undefined` comparison would pass while reading
+       nothing at all, and a renamed constant in the driver is exactly how that happens. */
+    ok(typeof got === "number",
+      `the drain driver's ${name} is READ from its source (got ${got}) — a parse that found nothing must not be mistaken for agreement`);
+    ok(typeof srcValue === "number",
+      `…and src/harness-fault.js really exports ${srcName} (got ${srcValue})`);
+    ok(got === srcValue,
+      `DRIFT: delete-fault-drain-live.mjs expects ${name} = ${got}, src/harness-fault.js says ${srcName} = ${srcValue} — ${why}`);
+  }
+
+  /* POSITIVE CONTROL — the parse really reads THIS file's numbers, and a drifted driver is
+     caught. The mutation is done on the source TEXT, so nothing on disk is touched. */
+  {
+    const drifted = driverSrc.replace("export const KVS_DELETE_BATCH_EXPECTED = 3;",
+      "export const KVS_DELETE_BATCH_EXPECTED = 4;");
+    ok(drifted !== driverSrc, "(fixture) the positive control really mutated the driver's source text");
+    const m = drifted.match(/export const KVS_DELETE_BATCH_EXPECTED\s*=\s*([0-9_]+)\s*;/);
+    ok(m && Number(m[1]) === 4 && Number(m[1]) !== fault.KVS_DELETE_BATCH,
+      "POSITIVE CONTROL: a driver whose expected batch size drifts from src is caught by this parse");
+  }
+  ok(driverConst("KVS_DELETE_BATCH_EXPECTED_NOT_A_REAL_NAME") === undefined,
+    "NEGATIVE CONTROL: the parser answers `undefined` for a name the driver does not declare — which the assertions above treat as a FAILURE, not as agreement");
+}
+
 kvs.set = realSet;
 delete process.env.HARNESS_SECRET;
 

@@ -345,6 +345,13 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       forceScopeControl: opts.forceScopeControl === true,
       throwFor: opts.throwFor || null,
       maskLeaks: opts.maskLeaks === true,
+      /* F-717 — the repair that CANNOT succeed: the confirm dialog is driven, it closes,
+         and the row is still in `app_admins`. This is the real shape of a stray grant four
+         repair passes cannot clear (a stale frame, a server-side refusal, a role the UI
+         will not let go of), and it is what makes `removeAccount`'s SECOND READ report
+         `removed:false` instead of a throw. Nothing is stubbed: the library runs its own
+         plan, its own retries and its own verdict against this roster. */
+      stickyRemove: opts.stickyRemove === true,
       /* F-671 — the product moved or renamed `scopeLabel`'s wrapper, so the card still
          renders but `.perm-admin-role` no longer matches anything on it. */
       noRoleClass: opts.noRoleClass === true,
@@ -421,7 +428,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
         }
         if (sel === ".perm-search-item") { const rs = searchRows(); return node({ count: rs.length, nth: (i) => rowNode(rs[i]) }); }
         if (sel === ".perm-admin-card") { const rs = st.roster; return node({ count: rs.length, nth: (i) => cardNode(rs[i]) }); }
-        if (sel === ".cr-confirm-actions button") return node({ onClick: async () => { st.roster = st.roster.filter((r) => r.accountId !== st.pendingRemove); st.pendingRemove = null; } });
+        if (sel === ".cr-confirm-actions button") return node({ onClick: async () => { if (!st.stickyRemove) st.roster = st.roster.filter((r) => r.accountId !== st.pendingRemove); st.pendingRemove = null; } });
         return node({ count: 1 });
       },
     };
@@ -569,6 +576,31 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       "…with the reason the repair gave, not a bare 'restore failed'");
   }
 
+  /* THE DRIVERS' RUN-LEVEL ARMS, TRANSCRIBED ONCE.
+     `perm-discriminator-live.mjs` and `knowledge-doors-editor-live.mjs` carry the same
+     text modulo an em dash, and 7h (clean roster) and 7i (unrestored roster) must be
+     judged by the SAME arms or neither result means anything — a second copy here would
+     be the third home of a rule this ledger has already paid for twice. */
+  const runArms = (restore, leakedNow) => {
+    const fails = [];
+    const FAIL = (s, d) => fails.push({ s, d });
+    if (leakedNow) {
+      FAIL("a screenshot capture was REFUSED because a readable email address survived the mask", {
+        ...(restore && restore.leaked ? { duringRepair: restore.leakInfo } : {}),
+      });
+    }
+    /* F-717 — a SECOND, INDEPENDENT `if`, gated on the VERDICT rather than on the leak.
+       F-700's `else if` was right about the clean roster and wrong about the dirty one:
+       it silenced the only report of state left behind on a shared tenant whenever a
+       capture also leaked. `ok:false` with `verdict:"byte-identical"` is the leak's own
+       doing and stays quiet; anything else is a roster that was not restored. */
+    if (restore && restore.ok === false && restore.verdict !== "byte-identical") {
+      FAIL("the roster restore reports ok:false - the repair did not complete cleanly and the roster is NOT what the snapshot says",
+        { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
+    }
+    return fails;
+  };
+
   /* 7h. F-681 — A LEAK UNDER `attempt()` FAILS THE RUN, EVEN ON A CLEAN ROSTER.
      `attempt` exists so one broken repair cannot cancel the rest, and it converts a throw
      into an `actions[]` entry. That is right for a timeout; it is WRONG for the F-660 PII
@@ -647,20 +679,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
        `verdict:"byte-identical"`, `failures:undefined`, `reason:undefined` — a cause read
        off a result that did not contain it. The arms are transcribed from
        `perm-discriminator-live.mjs` and `knowledge-doors-editor-live.mjs` (the two homes
-       are the same text modulo an em dash) and counted. */
-    const runArms = (restore, leakedNow) => {
-      const fails = [];
-      const FAIL = (s, d) => fails.push({ s, d });
-      if (leakedNow) {
-        FAIL("a screenshot capture was REFUSED because a readable email address survived the mask", {
-          ...(restore && restore.leaked ? { duringRepair: restore.leakInfo } : {}),
-        });
-      } else if (restore && restore.ok === false) {
-        FAIL("the roster restore reports ok:false - the repair did not complete cleanly",
-          { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
-      }
-      return fails;
-    };
+       are the same text modulo an em dash) and counted above, once. */
     const armed = runArms(res, true);
     ok(armed.length === 1, `F-700: a leak on a CLEAN roster fires EXACTLY ONE run-level FAIL (got ${armed.length})`);
     ok(/REFUSED/.test(armed[0].s) && !/did not complete cleanly/.test(armed[0].s),
@@ -688,6 +707,84 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       `POSITIVE CONTROL (F-700): the pre-fix library answer through the pre-fix arms fires THREE FAILs for one leak (got ${preFix.length})`);
     ok(preFix[2].d.verdict === "byte-identical" && preFix[2].d.failures === undefined && preFix[2].d.reason === undefined,
       "POSITIVE CONTROL: …and the last one claims a broken repair while printing byte-identical and two undefined fields — the exact payload F-700 quotes");
+  }
+
+  /* 7i. F-717 — THE CASE F-700's `else if` SWALLOWED: A LEAK **AND** A ROSTER THAT WAS
+     NOT RESTORED.
+     7h proves the clean-roster half. This is the other half, and it is the one that costs
+     something real: the run leaks a capture AND `restoreRosterToSnapshot` finishes with a
+     stray editor grant still on the tenant. Under the `else if`, the roster arm was never
+     reached — `evidence.json` carried one FAIL about a PNG and not one sentence naming the
+     grant that is still live, so the operator destroys the artefact, closes the run and
+     leaves an editor role granted on a shared site.
+
+     IT IS BUILT, NOT STUBBED. `stickyRemove` makes the confirm dialog close without the
+     row leaving `app_admins` — the real shape of a repair that cannot succeed — and the
+     library then runs its own plan, its own passes and its own verdict over that roster.
+     The only thing this block asserts about the DRIVERS is `runArms`, which is transcribed
+     from both of them. */
+  {
+    const snapshot = [{ accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own" }];
+    const live = [
+      { accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own" },
+      { accountId: DIR[2].accountId, displayName: "Cid Namesake", role: "editor", scope: "all" },   // the stray that will NOT go
+    ];
+    const { st, deps } = makeFakeUI({ roster: live, maskLeaks: true, stickyRemove: true });
+    let threw = null, res = null;
+    try { res = await makeRosterUI(deps).restoreRosterToSnapshot(snapshot); }
+    catch (e) { threw = String(e.message); }
+
+    ok(threw === null, `F-717: the unrepairable roster does not crash the restore (got: ${threw})`);
+    ok(st.roster.length === 2 && st.roster.some((r) => r.accountId === DIR[2].accountId),
+      "F-717: the stray grant is STILL on the roster — this is a real unresolved repair, not a simulated verdict");
+    ok(res && res.ok === false, `F-717: …so \`ok\` is false (got ${JSON.stringify(res && res.ok)})`);
+    ok(res && res.verdict !== "byte-identical",
+      `F-717: …and the verdict is NOT byte-identical, which is the gate the driver gets to read (got ${JSON.stringify(res && res.verdict)})`);
+    /* MEASURED, not assumed: the verdict this fixture produces is
+       `"1 stray, 0 missing, 0 changed"` — it NAMES the row still on the tenant, which is
+       the sentence the `else if` denied the operator. */
+    ok(res && /stray/.test(String(res.verdict)),
+      `F-717: …and the verdict NAMES the stray that is still there (got ${JSON.stringify(res && res.verdict)})`);
+    ok(res && Array.isArray(res.failures) && res.failures.length >= 1
+      && res.failures.every((f) => f.act === "remove-stray" && String(f.id) === DIR[2].accountId),
+      "F-717: …and every `failures` row is the repair of THAT row, attempted on every pass and never completed");
+    ok(res && res.leaked === true, "F-717: …while the capture also leaked — both things are true at once, which is the whole finding");
+
+    /* THE ARMS, POST-FIX: both FAILs, each with the cause its own result carries. */
+    const armed = runArms(res, true);
+    ok(armed.length === 2, `F-717: a leak on an UNRESTORED roster fires BOTH run-level FAILs (got ${armed.length})`);
+    ok(/REFUSED/.test(armed[0].s), "F-717: …the leak, first, so the artefact is still named");
+    ok(/roster is NOT what the snapshot says/.test(armed[1].s),
+      "F-717: …and the roster, second, in a sentence that says the state is still on the tenant");
+    ok(armed[1].d.verdict === res.verdict && Array.isArray(armed[1].d.failures) && armed[1].d.failures.length >= 1,
+      `F-717: …carrying the verdict and the repair failures the operator has to act on (got ${JSON.stringify(armed[1].d.verdict)})`);
+
+    /* POSITIVE CONTROL — the F-700 `else if`, verbatim, over this exact answer. ONE FAIL,
+       about a PNG, and the stray grant is never mentioned. */
+    const elseIfArms = (r, leakedNow) => {
+      const fails = [];
+      const FAIL = (s, d) => fails.push({ s, d });
+      if (leakedNow) FAIL("a screenshot capture was REFUSED …", { ...(r && r.leaked ? { duringRepair: r.leakInfo } : {}) });
+      else if (r && r.ok === false) FAIL("the roster restore reports ok:false - the repair did not complete cleanly", { verdict: r.verdict, failures: r.failures, reason: r.reason });
+      return fails;
+    };
+    const swallowed = elseIfArms(res, true);
+    ok(swallowed.length === 1 && /REFUSED/.test(swallowed[0].s),
+      `POSITIVE CONTROL (F-717): the pre-fix \`else if\` reports ONLY the screenshot (got ${swallowed.length})`);
+    ok(!swallowed.some((f) => f.d && f.d.verdict !== undefined),
+      "POSITIVE CONTROL: …and no arm carries `verdict`/`failures`, so nothing in evidence.json names the grant still on the tenant");
+
+    /* NEGATIVE CONTROL — the same post-fix arms on the CLEAN roster of 7h must still fire
+       exactly ONE FAIL, or this fix has simply reinstated the F-700 double-report. */
+    const cleanish = { ok: false, verdict: "byte-identical", leaked: true, leakInfo: "1 screenshot capture(s) were REFUSED" };
+    ok(runArms(cleanish, true).length === 1,
+      "NEGATIVE CONTROL (F-700 must stay fixed): `ok:false` with a byte-identical verdict still fires the leak FAIL alone");
+    /* …and the third combination, so the gate is the VERDICT and not "always two": an
+       unrestored roster with NO leak must still fire exactly the roster FAIL. */
+    const dirtyNoLeak = { ok: false, verdict: res.verdict, failures: res.failures, leaked: false };
+    const only = runArms(dirtyNoLeak, false);
+    ok(only.length === 1 && /roster is NOT what the snapshot says/.test(only[0].s),
+      `an unrestored roster with no leak fires the roster FAIL alone (got ${only.length})`);
   }
 }
 

@@ -433,6 +433,45 @@ ok(normalizeJob({ name: "j", schedule: { cron: "0 9 * * *" }, functions: [{ code
   && normalizeJob({ name: "j", schedule: { cron: "0 9 * * *" }, functions: [{ code: "1" }] }, { savedByRole: "admin" }).savedByRole === "admin",
   "a scheduled job records the saver's role the same way, from the same normaliser");
 
+// F-882 — ONE ROLE PER SAVE. `savedByRole` used to be TWO fields wearing one name: a
+// sibling option that only stamped the row, and `gate.savedByRole`, which is what
+// `assertAllowedActions` actually read. A save whose argument said admin and whose gate
+// said editor stamped an admin row with an editor's verdict (or the reverse). The role is
+// now resolved once and written into BOTH, so the pair cannot disagree.
+{
+  const confirmSeed = { ...base5c, agent: { instructions: "go", allowedActions: ["get_issue", "commit_files"] } };
+  const gateFor = (role) => ({ capability: true, products: ["jira"], triggerSource: null, savedByRole: role });
+  // The ARGUMENT wins when it is given: the resolvers and the REST door compute it.
+  const argAdmin = normalizeListener(confirmSeed, { gate: gateFor("editor"), savedByRole: "admin" });
+  ok(argAdmin.savedByRole === "admin" && argAdmin.agent.allowedActions.includes("commit_files"),
+    "F-882: argument admin + gate editor — the ARGUMENT gates AND stamps, the confirm action is kept");
+  // …and the other direction refuses, rather than stamping editor on an admin verdict.
+  throws(() => normalizeListener(confirmSeed, { gate: gateFor("admin"), savedByRole: "editor" }), /only an ADMIN/,
+    "F-882: argument editor + gate admin — the confirm action is REFUSED, not silently armed");
+  // No argument: the gate's own role is the role, for the callers that build a context
+  // and nothing else (src/index.js's premade path, premade-parity.mjs).
+  const gateOnly = normalizeListener(confirmSeed, { gate: gateFor("admin") });
+  ok(gateOnly.savedByRole === "admin" && gateOnly.agent.allowedActions.includes("commit_files"),
+    "F-882: no argument — the gate's role both gates and stamps");
+  // The stored stamp IS the gating role, on both rule kinds, both directions.
+  // The stored stamp IS the gating role, on both rule kinds, both directions. An editor
+  // never reaches a stamp with a confirm action on the row: the save fails closed first.
+  const jobSeed = { name: "j", schedule: { cron: "0 9 * * *" }, mode: "agent", agent: { instructions: "go", allowedActions: ["get_issue"] } };
+  for (const role of ["admin", "editor"]) {
+    const plain = normalizeListener(base5c, { gate: gateFor(role) });
+    ok(plain.savedByRole === role, `F-882: a listener stored as ${role} was gated as ${role}`);
+    const j = normalizeJob(jobSeed, { gate: gateFor(role), savedByRole: role });
+    ok(j.savedByRole === role, `F-882: a job stored as ${role} was gated as ${role}`);
+  }
+  ok(normalizeListener(confirmSeed, { gate: gateFor("admin") }).savedByRole === "admin",
+    "F-882: the admin row that holds the confirm action is stamped admin");
+  throws(() => normalizeListener(confirmSeed, { gate: gateFor("editor") }), /only an ADMIN/,
+    "F-882: an editor gate refuses the confirm action instead of storing an editor row that holds it");
+  // The verdict switch reads the SAME one value: a gate-only admin arms it.
+  ok(normalizeListener({ ...base5c, gitReview: { allowVerdictActions: true } }, { gate: gateFor("admin") }).gitReview.allowVerdictActions === true,
+    "F-882: gitReview.allowVerdictActions follows the one resolved role, not a second argument");
+}
+
 // F-409 — THE ARMING STAMP: role AND acting account move TOGETHER, from one helper, for
 // listeners and jobs exactly as for post-functions. `createdBy` is the account whose
 // authority the rule runs under, not the first author; `firstCreatedBy` is the author.

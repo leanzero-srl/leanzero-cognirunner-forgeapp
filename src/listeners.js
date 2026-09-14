@@ -131,6 +131,23 @@ export const SAVED_BY_ROLES = ["admin", "editor"];
 export const normalizeSavedByRole = (role) => (role === "admin" ? "admin" : "editor");
 
 /**
+ * F-882 - ONE ROLE PER SAVE. `savedByRole` used to exist TWICE on a normalize call: as a
+ * sibling option (which only stamped the stored row) and inside `gate` (which is what
+ * `assertAllowedActions` actually read). Two fields, one name, different meanings - a
+ * caller that passed `savedByRole: "admin"` beside a gate built without it stamped the
+ * row admin and got the NON-admin verdict on every `confirm` action, or the reverse.
+ *
+ * There is now ONE value. This resolver picks it: an EXPLICIT option wins (the resolvers
+ * in src/index.js and the REST door compute the authoritative role and pass it), and when
+ * the option is omitted the gate's own role is used (the premade-parity path, which
+ * builds a context and nothing else). The resolved role is then written BACK into the
+ * gate context AND into the arming stamp, so the role that gated the actions is by
+ * construction the role stored on the row.
+ */
+export const resolveSavedByRole = ({ gate = undefined, savedByRole = undefined } = {}) =>
+  normalizeSavedByRole(savedByRole !== undefined ? savedByRole : (gate && typeof gate === "object" ? gate.savedByRole : undefined));
+
+/**
  * F-409 — THE ARMING STAMP. ONE home for "who armed this rule", used by post-functions,
  * listeners and scheduled jobs alike (`registerPostFunction` / `commitImportCore` in
  * src/index.js call it through `stampArming`, which resolves the role first).
@@ -173,7 +190,9 @@ export const armingStamp = ({ accountId = null, savedByRole = "editor", existing
  * Validate + clamp a listener config. Throws Error(message) on hard errors.
  * `existing` (previous full record) preserves identity/stats on update.
  */
-export const normalizeListener = (input = {}, { existing = null, accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
+export const normalizeListener = (input = {}, { existing = null, accountId = null, gate = undefined, savedByRole = undefined } = {}) => {
+  // F-882 - resolved ONCE, here, and used for BOTH the gate and the stamp below.
+  const role = resolveSavedByRole({ gate, savedByRole });
   const src = input && typeof input === "object" ? input : {};
   const id = existing ? existing.id : (typeof src.id === "string" && /^[A-Za-z0-9_.-]{3,80}$/.test(src.id) ? src.id : newListenerId());
   const name = clampStr(src.name, 120).trim();
@@ -223,7 +242,7 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     // premade wizard and the import path each had to remember it, and the one that forgot
     // would be the hole. It rides ON the caller's gate rather than replacing it, so the
     // capability, product and role arms keep the answer the instance's facts gave them.
-    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), surface: "listener" }),
+    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), savedByRole: role, surface: "listener" }),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
     // Knowledge binding — ONE normalizer, shared with scheduled jobs (1.4 commit 13b).
     ...normalizeAgentKnowledge(a),
@@ -232,7 +251,6 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
   if (mode === "agent" && String(a.instructions || "").length > 6000) throw new Error("agent.instructions exceeds 6000 characters");
   if (mode === "script" && functions.length === 0) throw new Error("functions must contain at least one code step in script mode");
   if (String(src.aiCondition || "").length > 1500) throw new Error("aiCondition exceeds 1500 characters");
-  const role = normalizeSavedByRole(savedByRole);
   // Which engine an agentless instance runs for this listener. Only the deterministic
   // PR-review engine exists (taskType "gitreview", src/git-review.js); the id is the
   // premade catalogue's own `agentlessTaskType`, validated here so an arbitrary string
@@ -448,7 +466,7 @@ export const buildAgentKnowledge = async (agent, { projectKey = null, audience =
   return out;
 };
 
-export const saveListener = async (input, { accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
+export const saveListener = async (input, { accountId = null, gate = undefined, savedByRole = undefined } = {}) => {
   const existing = input && input.id ? await getListener(input.id) : null;
   // The role belongs to THIS save, not to the row's history: an admin-armed rule that
   // an editor edits is re-recorded as editor and loses its verdict actions. That is the

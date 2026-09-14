@@ -210,8 +210,33 @@ export const carryVerdict = (answer) => {
       : { verdict: "ok", kind: "clean", why: "no unresolved failure, and the token carries no `f`" };
   }
   const here = innerC(cursor), mess = innerC(failedResume);
+  /* F-727 — THE ANSWER'S OWN CURSOR IS GUARDED TOO, AND THE ASYMMETRY WAS THE DEFECT.
+   *
+   * `mess.readable` was checked and `here.readable` never was, so a cursor that decodes but
+   * carries NO `c` key became `c: null` and was then COMPARED as if it had been read. A token
+   * that carries no resume position at all could therefore be graded `ahead-of-failure` — a
+   * PASS, and one that also satisfies this driver's `some(kind === "ahead-of-failure")`
+   * positive control — for an answer that can resume nothing. The mirror case is just as bad:
+   * against a page-0 `failedResume` (`c: null`) a `c`-less cursor grades `at-failure`, also a
+   * PASS.
+   *
+   * It is N/V and not FAIL because this is a grader refusing to grade: the app's own
+   * `sweepAnswerTail` always mints through `encodeSweepCursor`, so I could not prove the
+   * input is reachable today. What is certain is that F-691's identity rule is a statement
+   * about WHICH PAGE the answer resumes at, and an unreadable cursor does not name one — so
+   * the honest verdict is "not verified", never "correct".
+   *
+   * It is checked AFTER `mess`, deliberately: an unreadable `failedResume` is a stated
+   * REQUIREMENT of F-691 and stays the harder `bad` verdict when both are unreadable. */
   if (!mess.readable) {
     return { verdict: "bad", kind: "opaque-failedresume", why: "`failedResume` is not one of our tokens — F-691 requires it to be reported as a TOKEN so that null means 'none' and nothing else" };
+  }
+  if (!here.readable) {
+    return {
+      verdict: "n/v",
+      kind: "opaque-cursor",
+      why: `the answer's OWN resume token decodes but names no page (hasCKey ${facts.hasCKey === true}) — F-691's identity rule is about which page the answer resumes AT, so a cursor that carries no \`c\` cannot be graded against \`failedResume\` and is not evidence either way`,
+    };
   }
   if (here.c === mess.c) {
     return facts.carriesF
@@ -283,6 +308,11 @@ export const judgeRefuseDrain = ({ answers, drained, pausedMs, deleteBatch }) =>
     const v = carryVerdict(list[i]);
     if (v.verdict === "bad") add("FAIL", `call ${i + 1}: ${v.why}`);
     else if (v.verdict === "ok") add("PASS", `call ${i + 1}: ${v.why}`);
+    /* F-727 — an ungradeable cursor is REPORTED, not dropped. `finished` (no token on a
+       complete answer) is the one n/v that is routine and stays quiet; anything else means
+       the grader could not read the thing it is meant to judge, and silence there is how a
+       PASS gets manufactured out of a token nobody could decode. */
+    else if (v.kind !== "finished") add("N/V", `call ${i + 1}: ${v.why}`);
   }
   if (!list.some((a) => carryVerdict(a).kind === "ahead-of-failure")) {
     add("N/V", "no answer resumed AHEAD of an unresolved failure, so the `f`-PRESENT half of F-691 is NOT exercised by this run: 60 rows fit one 100-row page, so no budget break can land past a failed page. The `f`-ABSENT half above IS the live proof; the other half stays offline-only until a plant bigger than one page is drained under a fault");

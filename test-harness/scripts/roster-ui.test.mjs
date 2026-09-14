@@ -153,18 +153,73 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     "a mask that could not RUN is a refusal too — an unknown page is not a safe page");
 }
 
-/* ── 6. F-668 — makeShot RECORDS the answer, and still lets a LEAK abort ────────── */
+/* ── 6. F-668/F-681 — makeShot RECORDS EVERY capture, and still lets a LEAK abort ── */
 {
   const frameOf = (result) => ({ evaluate: async () => result });
   let shots = 0;
   const page = { screenshot: async () => { shots++; } };
   const okPage = { screenshot: async () => { shots++; throw new Error("ENOSPC"); } };
 
-  /* The happy path is SILENT: a captured shot is not an N/V. */
+  /* F-681 — THE SUCCESSFUL CAPTURE IS THE ONE THAT CARRIES THE PROOF, AND IT IS RECORDED
+     WITH ITS NUMBERS. This is the branch F-668's fix left silent: `{total, masked,
+     readable}` IS the F-660 DOM assertion, and before this it existed only in a return
+     value every caller dropped. */
+  const wrote = { pass: [], nv: [], fail: [] };
+  const W = {
+    pass: (s, d) => wrote.pass.push({ s, d }),
+    nv: (s, d) => wrote.nv.push({ s, d }),
+    fail: (s, d) => wrote.fail.push({ s, d }),
+  };
+  const shotW = makeShot(W);
+  const cap = await shotW(page, frameOf({ total: 3, masked: 2, readable: 0 }), "/tmp/cr-p.png");
+  ok(cap.captured === true && wrote.pass.length === 1 && wrote.nv.length === 0 && wrote.fail.length === 0,
+    "F-681: a SUCCESSFUL capture is recorded, through the PASS writer — not silence, and not an N/V");
+  ok(/cr-p\.png/.test(wrote.pass[0].s), "…and the record names the PNG it is about");
+  ok(wrote.pass[0].d && wrote.pass[0].d.total === 3 && wrote.pass[0].d.masked === 2
+    && wrote.pass[0].d.readable === 0 && wrote.pass[0].d.captured === true,
+    `…and carries the mask's NUMBERS, which are the F-660 assertion itself (got: ${JSON.stringify(wrote.pass[0].d)})`);
+  ok(shotW.shots.length === 1 && shotW.shots[0].path === "/tmp/cr-p.png" && shotW.shots[0].captured === true,
+    "…and the same record lands on the binding's ledger, so a driver folds ONE array into its evidence");
+  ok(shotW.leaked === false && shotW.leaks.length === 0, "…and a clean capture leaves the leak flag down");
+
+  /* THE LEAK IS A FAIL, WRITTEN BEFORE THE THROW LEAVES makeShot — so no seam downstream
+     can re-label it. It is NOT an N/V: a missing artefact and a PII refusal are different
+     verdicts, and F-681 is exactly the case where the second wore the first's clothes. */
+  shots = 0;
+  let leakThrew = null;
+  try { await shotW(page, frameOf({ total: 4, masked: 1, readable: 3 }), "/tmp/cr-q.png"); }
+  catch (e) { leakThrew = e; }
+  ok(leakThrew !== null && shots === 0, "F-681: a LEAK still ABORTS — recording did not soften the refusal");
+  ok(wrote.fail.length === 1 && /REFUSED/.test(wrote.fail[0].s) && /cr-q\.png/.test(wrote.fail[0].s),
+    "…and it is recorded as a FAIL, naming the PNG, through the driver's FAIL writer");
+  ok(wrote.fail[0].d && wrote.fail[0].d.readable === 3 && wrote.fail[0].d.spans === 4,
+    `…with the counts that justify the refusal (got: ${JSON.stringify(wrote.fail[0].d)})`);
+  ok(wrote.nv.length === 0, "…and NOT as an N/V — a PII refusal is a failure, not an unproven");
+  ok(shotW.leaked === true && shotW.leaks.length === 1 && shotW.leaks[0].path === "/tmp/cr-q.png",
+    "…and the binding's leak flag is up, set SYNCHRONOUSLY so it survives a caller that swallows the throw");
+  ok(leakThrew.leak === true && leakThrew.shotPath === "/tmp/cr-q.png",
+    "…and the ERROR itself is tagged `leak` with its path, so a catcher need not parse English");
+
+  /* A mask that could not RUN is a different animal: it is a missing artefact (N/V), not a
+     proven leak (FAIL). Without this the leak flag would fire on every detached frame. */
+  const blindThrow = await shotW(page, { evaluate: async () => { throw new Error("frame detached"); } }, "/tmp/cr-r.png")
+    .then(() => null, (e) => e);
+  ok(blindThrow !== null && blindThrow.leak === false && blindThrow.maskUnrunnable === true,
+    "a mask that could not RUN throws too, but it is not tagged as a leak");
+  ok(wrote.nv.length === 1 && /was not captured/.test(wrote.nv[0].s) && wrote.fail.length === 1,
+    "…and it is an N/V, not a FAIL — an unknown page is unproven, not proven to be leaking");
+  ok(shotW.leaks.length === 1, "…and it does not raise the leak count");
+
+  /* The F-668 shape still works. A single function is the N/V writer; with no PASS writer
+     offered, a driver's PROOFS must not be written into its unproven column — so the
+     success lands on the ledger only. */
   const noted = [];
   const shot = makeShot((s, d) => noted.push({ s, d }));
   const good = await shot(page, frameOf({ total: 2, masked: 2, readable: 0 }), "/tmp/cr-a.png");
-  ok(good.captured === true && noted.length === 0, "a captured shot records NOTHING — makeShot is not a narrator");
+  ok(good.captured === true && noted.length === 0,
+    "the single-function (F-668) form is unchanged: with no PASS writer, a captured shot writes no check");
+  ok(shot.shots.length === 1 && shot.shots[0].total === 2 && shot.shots[0].masked === 2 && shot.shots[0].captured === true,
+    "…but F-681 still records it on the ledger, with its numbers — the success is never lost");
 
   /* The failure that is NOT a leak: the mask passed, the shutter failed. Recorded, and
      the run carries on — this is the case the nine `.catch(() => {})`s were hiding. */
@@ -219,6 +274,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       clicks: [], scopeDropdownClicks: 0, shots: 0, pendingRemove: null,
       forceScopeControl: opts.forceScopeControl === true,
       throwFor: opts.throwFor || null,
+      maskLeaks: opts.maskLeaks === true,
       /* F-671 — the product moved or renamed `scopeLabel`'s wrapper, so the card still
          renders but `.perm-admin-role` no longer matches anything on it. */
       noRoleClass: opts.noRoleClass === true,
@@ -266,7 +322,9 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     const frame = {
       /* The mask pass is proven against a real DOM in block 1; here it only has to
          ANSWER, so the captures in grantRole/removeAccount behave as they do live. */
-      async evaluate(src) { return /\brestored\b/.test(src) ? { restored: 0 } : { total: 0, masked: 0, readable: 0 }; },
+      /* F-681 — `maskLeaks` makes the mask pass report a survivor, which is the one thing
+         that must take a run down no matter which seam it happens under. */
+      async evaluate(src) { return /\brestored\b/.test(src) ? { restored: 0 } : { total: 2, masked: 1, readable: st.maskLeaks ? 1 : 0 }; },
       locator(sel, op) {
         const has = op && op.hasText;
         if (sel === ".perm-search-wrap .dropdown") {
@@ -439,6 +497,59 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       "…and ONLY Ann is listed: Bob and Cid succeeded and are not tarred with her failure");
     ok(res.failures.some((f) => /Timeout/.test(String(f.reason))),
       "…with the reason the repair gave, not a bare 'restore failed'");
+  }
+
+  /* 7h. F-681 — A LEAK UNDER `attempt()` FAILS THE RUN, EVEN ON A CLEAN ROSTER.
+     `attempt` exists so one broken repair cannot cancel the rest, and it converts a throw
+     into an `actions[]` entry. That is right for a timeout; it is WRONG for the F-660 PII
+     refusal, which is the guarantee firing. Live, `grantRole`'s and `removeAccount`'s
+     captures both sit under this seam, so a readable address became a `threw` string in a
+     run that ended green and byte-identical — and nothing named which PNG was refused.
+
+     The setup is the mildest possible: ONE stray to remove, whose removal SUCCEEDS, and a
+     mask that reports a survivor. The roster therefore ends byte-identical to the snapshot
+     — the strongest version of the old false pass — and the restore must still FAIL. */
+  {
+    const snapshot = [{ accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own" }];
+    const live = [
+      { accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own" },
+      { accountId: DIR[2].accountId, displayName: "Cid Namesake", role: "editor", scope: "all" },   // the stray
+    ];
+    const wrote = { pass: [], nv: [], fail: [] };
+    const { st, deps } = makeFakeUI({ roster: live, maskLeaks: true });
+    const ui = makeRosterUI({
+      ...deps,
+      record: { pass: (s, d) => wrote.pass.push({ s, d }), nv: (s, d) => wrote.nv.push({ s, d }), fail: (s, d) => wrote.fail.push({ s, d }) },
+    });
+    let threw = null, res = null;
+    try { res = await ui.restoreRosterToSnapshot(snapshot); }
+    catch (e) { threw = String(e.message); }
+
+    ok(threw === null, `the leak does not crash the restore — attempt() still absorbs the throw (got: ${threw})`);
+    ok(st.roster.length === 1 && st.roster[0].accountId === DIR[0].accountId,
+      "the stray WAS removed, so the roster genuinely ends byte-identical to the snapshot");
+    ok(res && res.verdict === "byte-identical", `…and the roster verdict says so (got ${JSON.stringify(res && res.verdict)})`);
+    ok(res && res.leaked === true, "F-681: …and the restore still reports `leaked`, because a clean roster does not make a leaking PNG acceptable");
+    ok(res && res.ok === false, "F-681: …and `ok` is FALSE — the run fails at the end on the leak, not on the roster diff");
+    ok(res && Array.isArray(res.leaks) && res.leaks.length >= 1 && /\.png$/.test(String(res.leaks[0].path)),
+      `…and the verdict NAMES the PNG that was refused (got ${JSON.stringify(res && res.leaks)})`);
+    ok(!!(res && res.leaks && res.leaks[0] && res.leaks[0].readable === 1), "…with the count of addresses that survived the mask");
+
+    ok(wrote.fail.length >= 1 && /REFUSED/.test(wrote.fail[0].s),
+      "…and the refusal was written as a FAIL through the driver's own writer, BEFORE the seam saw the throw");
+    ok(wrote.pass.length === 0, "…and no capture was recorded as a PASS in this run — nothing reached disk");
+
+    const leakActions = (res ? res.actions : []).filter((a) => a.leak === true);
+    ok(leakActions.length >= 1 && typeof leakActions[0].shotPath === "string",
+      "…and the `attempt` entry carries `leak:true` with its path, instead of hiding as an ordinary `threw` string");
+    ok(res.failures && res.failures.some((f) => f.leak === true),
+      "…and the failure row carries the flag too, so a caller reading only `failures` still sees it");
+
+    /* NEGATIVE CONTROL BY REVERT: the verdict this finding changed, computed the old way on
+       this very answer. It says the restore passed — which is the defect. */
+    const revertedVerdict = { ok: res.verdict === "byte-identical" };
+    ok(revertedVerdict.ok === true,
+      "NEGATIVE CONTROL: the pre-F-681 verdict (roster diff alone) calls this same leaking run a PASS");
   }
 }
 

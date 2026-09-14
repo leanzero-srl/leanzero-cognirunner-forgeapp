@@ -141,7 +141,22 @@ export async function shotMasked(page, frame, path, opts = {}) {
     const msg = m.readable < 0
       ? "refusing to capture " + path + ": the email mask could not run (" + m.maskFailed + ")"
       : "refusing to capture " + path + ": " + m.readable + " email span(s) still render a readable address";
-    if (strict) throw new Error(msg);
+    if (strict) {
+      /* F-681 — THE REFUSAL IS TAGGED, SO A SEAM CANNOT LAUNDER IT INTO A STRING.
+         `restoreRosterToSnapshot`'s `attempt()` deliberately converts a throw into a
+         recorded failure and carries on, which is right for a repair that could not run
+         and WRONG for a PII refusal: a leak became an `actions[].threw` sentence and the
+         run stayed green. The error carries `leak` (true when a readable address survived
+         the mask, false when the mask could not RUN at all) and the `path` it refused, so
+         every catcher between here and the driver can tell the two apart without parsing
+         English. */
+      const err = new Error(msg);
+      err.leak = m.readable > 0;
+      err.maskUnrunnable = m.readable < 0;
+      err.shotPath = path;
+      err.shotCounts = { total: m.total, masked: m.masked, readable: m.readable };
+      throw err;
+    }
     return { path, ...m, captured: false, reason: msg };
   }
   let captured = true;
@@ -151,7 +166,8 @@ export async function shotMasked(page, frame, path, opts = {}) {
 }
 
 /**
- * THE ONE HOME OF "A CAPTURE THAT DID NOT HAPPEN IS RECORDED".
+ * THE ONE HOME OF "EVERY CAPTURE IS RECORDED" — the one that happened as much as the one
+ * that did not.
  *
  * F-668 — THE GUARANTEE WAS ARMED AT ZERO CALL SITES. `strict` defaulted to true, and
  * every one of the nine live call sites passed `{ strict: false }` and then wrote
@@ -161,26 +177,117 @@ export async function shotMasked(page, frame, path, opts = {}) {
  * nothing in the evidence said why — while this file's own docblock told a reader the
  * answer "should be recorded".
  *
- * Fixing the nine sites one at a time would schedule the tenth. This wrapper is the fix:
- * a driver hands it its own N/V writer ONCE, and every capture in that driver is then
- * recorded on failure, with no `.catch` to remember to omit and no `strict` to remember
- * to set. A LEAK still throws out — that is the F-660 promise, and softening it is not
- * this function's job.
+ * F-681 — AND THE SUCCESS BRANCH WAS STILL SILENT, WHICH IS THE BRANCH THAT CARRIES THE
+ * PROOF. F-668's fix recorded only `captured:false`; the success branch returned `r` and
+ * wrote nothing, and no caller kept the `{total, masked, readable}` it returned. That
+ * object IS the F-660 DOM assertion — the only record of how many addresses were on the
+ * page and how many the mask took. MEASURED on dev 381199f: 13 PNGs across four drivers,
+ * and exactly 3 shot records in all their `evidence.json` files — all three from
+ * `removeAccount` (the one operation that carried `shot` into its result), all three
+ * reading `{total:0, masked:0, readable:0}`, the roster-card view where there was nothing
+ * to mask. The ONE capture that had a real address to mask
+ * (`perm-discriminator/01-search-rows.png`, `{total:1, masked:1, readable:0}`) recorded
+ * NOTHING. So "no PNG on this tenant is unmasked" could not be READ off the artefact set;
+ * it could only be ARGUED from the absence of a throw — and that argument is not even
+ * uniformly sound, because `grantRole`'s capture sits under `restoreRosterToSnapshot`'s
+ * `attempt()` seam, which converts a throw into a recorded sentence and carries on, so a
+ * PII refusal became an `actions[].threw` string in a green run.
  *
- * @param record  the driver's N/V writer, `(sentence, detail) => void`.
+ * SO: EVERY call records. A capture that happened is a PASS carrying its numbers; a
+ * capture that did not is an N/V carrying its reason; a capture REFUSED because a readable
+ * address survived the mask is a FAIL, written HERE — before the throw leaves this
+ * function — so no seam downstream can re-label it as a failed repair. A LEAK still throws
+ * out on top of being recorded: recording is not a substitute for refusing, and softening
+ * the refusal is not this function's job.
+ *
+ * @param record  the driver's writers. Either a single N/V function `(sentence, detail) =>
+ *   void` (the F-668 shape — still accepted, and then a SUCCESSFUL capture is recorded only
+ *   on the ledger below, because a driver that offered no PASS writer must not have its
+ *   proofs written into its unproven column), or `{ pass, nv, fail }`, which is the shape
+ *   that closes F-681 end to end.
+ *
+ * The returned function additionally carries:
+ *   `shot.shots`   every `{path, total, masked, readable, captured}` this binding produced,
+ *                  in order, refusals included — the machine-readable form of the record, so
+ *                  a driver folds ONE array into its evidence instead of N call sites.
+ *   `shot.leaks`   the subset refused for a readable address.
+ *   `shot.leaked`  true once any leak has been refused. This is the flag a run fails on, and
+ *                  it is set SYNCHRONOUSLY here, so it survives a caller that swallowed the
+ *                  throw — which is exactly what `attempt()` does.
  */
 export function makeShot(record) {
-  const note = typeof record === "function" ? record : () => {};
-  return async function shot(page, frame, path, opts = {}) {
-    const r = await shotMasked(page, frame, path, opts);
-    if (!r.captured) {
-      note("a screenshot was not captured: " + path, {
+  const fn = (f) => (typeof f === "function" ? f : null);
+  const w = typeof record === "function"
+    ? { pass: null, nv: record, fail: record }
+    : (record && typeof record === "object"
+      ? { pass: fn(record.pass), nv: fn(record.nv) || fn(record.fail), fail: fn(record.fail) || fn(record.nv) }
+      : { pass: null, nv: null, fail: null });
+  const note = w.nv || (() => {});
+  const bad = w.fail || note;
+  const good = w.pass;
+
+  /** The FAIL sentence and the N/V sentence, in one place, so the two branches agree. */
+  const refusedSentence = (path) =>
+    "a screenshot was REFUSED because a readable email address survived the mask: " + path;
+  const missingSentence = (path) => "a screenshot was not captured: " + path;
+
+  const shot = async function shot(page, frame, path, opts = {}) {
+    let r;
+    try {
+      r = await shotMasked(page, frame, path, opts);
+    } catch (e) {
+      /* THE REFUSAL IS RECORDED AT THE DRIVER, THEN RE-THROWN. Whatever `attempt()` or a
+         driver-level `.catch` does with the throw afterwards, the FAIL line and the ledger
+         entry already exist and `shot.leaked` is already true. */
+      const counts = (e && e.shotCounts) || { total: 0, masked: 0, readable: -1 };
+      const leak = !!(e && e.leak);
+      const entry = {
+        path, total: counts.total, masked: counts.masked, readable: counts.readable,
+        captured: false, refused: true, leak,
+        reason: String((e && e.message) || e).slice(0, 300),
+      };
+      shot.shots.push(entry);
+      if (leak) {
+        shot.leaks.push(entry);
+        shot.leaked = true;
+        bad(refusedSentence(path), { readable: entry.readable, spans: entry.total, masked: entry.masked, reason: entry.reason });
+      } else {
+        note(missingSentence(path), { reason: entry.reason, readable: entry.readable, spans: entry.total, masked: entry.masked });
+      }
+      throw e;
+    }
+
+    const entry = { path: r.path, total: r.total, masked: r.masked, readable: r.readable, captured: r.captured };
+    if (r.captured) {
+      /* F-681 — THE PROOF, WRITTEN DOWN. Without this line the DOM assertion that makes the
+         PNG safe to attach exists only in a variable nobody kept. */
+      shot.shots.push(entry);
+      if (good) good("a Permissions-tab screenshot was captured with every email masked: " + path, entry);
+      return r;
+    }
+    /* Not captured. Two different failures, and they are not the same verdict: a readable
+       address is a PII refusal (FAIL), a dead shutter is a missing artefact (N/V). This is
+       the `strict:false` path — no driver takes it, and it must still agree with the throw
+       path above rather than drift from it. */
+    entry.refused = r.readable !== 0;
+    entry.leak = r.readable > 0;
+    shot.shots.push(entry);
+    if (entry.leak) {
+      shot.leaks.push(entry);
+      shot.leaked = true;
+      bad(refusedSentence(path), { readable: r.readable, spans: r.total, masked: r.masked, reason: r.reason });
+    } else {
+      note(missingSentence(path), {
         reason: r.reason || "page.screenshot() failed (the mask itself passed: nothing readable was left)",
         readable: r.readable, spans: r.total, masked: r.masked,
       });
     }
     return r;
   };
+  shot.shots = [];
+  shot.leaks = [];
+  shot.leaked = false;
+  return shot;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -192,9 +299,12 @@ export function makeShot(record) {
  * @param deps.withAdminPanel  (fn(page, frame)) => result — opens the panel, closes it
  * @param deps.rosterRows      () => the raw `app_admins` array, straight from KVS
  * @param deps.out             the results directory screenshots are written to
- * @param deps.record          (F-668) the driver's N/V writer. Its captures are recorded
- *   through it exactly as the driver's own are; omitted, the answer still rides out on
- *   the returned `shot` field, which `restoreRosterToSnapshot` folds into `actions`.
+ * @param deps.record          (F-668/F-681) the driver's writers — an N/V function, or
+ *   `{pass, nv, fail}`. EVERY capture this module takes is recorded through them, and the
+ *   whole set also rides out on `ui.shots()` / `ui.leaked()` for a driver that would rather
+ *   fold one array into its evidence than read N call sites.
+ *   Omitted entirely, the answer still rides out on the returned `shot` field, which
+ *   `restoreRosterToSnapshot` folds into `actions`.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
   const rosterIds = async () => (await rosterRows()).map(rosterIdOf);
@@ -409,6 +519,17 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
   async function restoreRosterToSnapshot(snapshot) {
     const actions = [];
     const failures = [];
+    /* F-681 — the leak verdict, folded into EVERY exit of this function. A leak refused
+       during a repair fails the restore even when the roster diff comes back clean. */
+    const leakVerdict = () => (shot.leaked
+      ? {
+        ok: false,
+        leaked: true,
+        leaks: shot.leaks.map((l) => ({ path: l.path, readable: l.readable, spans: l.total, masked: l.masked })),
+        leakInfo: shot.leaks.length + " screenshot capture(s) were REFUSED because a readable email address survived the mask - "
+          + "the roster state is reported separately, but this run FAILS on the F-660 guarantee",
+      }
+      : {});
     /* The one seam that turns a throw into a recorded failure. It never rethrows: the
        verdict below is computed from a fresh READ of the roster, so a lie here would be
        caught anyway — and a repair that crashed is exactly the thing the operator needs
@@ -423,15 +544,27 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
         return entry;
       } catch (e) {
         const reason = "threw: " + String((e && e.message) || e).slice(0, 200);
-        actions.push({ act, id: idTail(id), ok: false, threw: true, reason });
-        failures.push({ act, id: idTail(id), reason });
-        return { ok: false, threw: true, removed: false, reason };
+        /* F-681 — A PII REFUSAL IS NOT A FAILED REPAIR, AND THIS SEAM MUST NOT FLATTEN IT
+           INTO ONE. `attempt` exists to keep a broken repair from cancelling the rest, and
+           that is right for a timeout or a detached frame. A capture refused because a
+           readable email address survived the mask is a different animal: it is the F-660
+           guarantee firing, and swallowing it turned it into an `actions[].threw` sentence
+           inside a run that still ended green. The flag rides OUT on the entry, on the
+           failure row, and on the return value, and the run fails on it at the end
+           regardless of what the roster diff says — a byte-identical roster does not make a
+           leaking screenshot acceptable. `shotMasked` tags the error; `shot.leaked` is the
+           belt to this braces, set before the throw ever reached here. */
+        const leak = !!(e && e.leak);
+        const extra = leak ? { leak: true, shotPath: e.shotPath || null } : {};
+        actions.push({ act, id: idTail(id), ok: false, threw: true, reason, ...extra });
+        failures.push({ act, id: idTail(id), reason, ...extra });
+        return { ok: false, threw: true, removed: false, reason, ...extra };
       }
     };
 
     for (let pass = 0; pass < 4; pass++) {
       const plan = planRosterRestore(snapshot, await rosterRows());
-      if (plan.clean) return { ok: true, actions, verdict: "byte-identical", ...(failures.length ? { failures, info: failures.length + " repair(s) failed on the way, but the roster ended byte-identical" } : {}) };
+      if (plan.clean) return { ok: true, actions, verdict: "byte-identical", ...(failures.length ? { failures, info: failures.length + " repair(s) failed on the way, but the roster ended byte-identical" } : {}), ...leakVerdict() };
       /* Strays first: a wrong grant is the thing that must not survive this process. */
       for (const r of plan.strays) {
         const id = rosterIdOf(r);
@@ -468,8 +601,13 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
        byte-identical (a row another pass fixed), and so a failed restore names every
        broken repair rather than only the first one that threw (F-666). */
     const v = rosterRestoreVerdict(snapshot, await rosterRows());
-    return { ok: v.ok, actions, verdict: v.verdict, ...(v.info ? { info: v.info } : {}), ...(failures.length ? { failures } : {}), plan: describePlan(v.plan) };
+    return { ok: v.ok, actions, verdict: v.verdict, ...(v.info ? { info: v.info } : {}), ...(failures.length ? { failures } : {}), plan: describePlan(v.plan), ...leakVerdict() };
   }
 
-  return { readRows, grantRole, removeAccount, restoreRosterToSnapshot, rosterIds };
+  /* F-681 — the whole capture record, for a driver that would rather fold ONE array into
+     its evidence than remember to keep the return value of every `shot` call. */
+  const shots = () => shot.shots.slice();
+  const leaked = () => shot.leaked;
+
+  return { readRows, grantRole, removeAccount, restoreRosterToSnapshot, rosterIds, shots, leaked };
 }

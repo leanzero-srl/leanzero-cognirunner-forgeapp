@@ -398,7 +398,16 @@ async function main() {
     keyStash = stash.body;
     PASS(`the tenant's ${BROKEN_KEY_SLOT} row is STASHED server-side (present:${keyStash.present}) — the value never crossed the wire, and the finally restores it by id`);
   } else {
-    FAIL(`kvStash refused ${BROKEN_KEY_SLOT} (status ${stash.status}) — refusing to plant a dead key this script could not put back`);
+    /* F-779/F-790 — 424 `stash-ttl-unavailable` is the ONE refusal with a specific cause worth
+       naming: the platform would not apply the stash TTL, so the hook deleted its partial row
+       and refused rather than leaving a permanent plaintext credential behind. The behaviour
+       here was already right (any non-200 refuses to plant), but a bare "status 424" reads as
+       a harness bug; naming it tells the operator this is the hook failing CLOSED, correctly,
+       and that nothing was planted and nothing needs putting back. */
+    const why = stash.body && stash.body.error === "stash-ttl-unavailable"
+      ? "the hook could not apply the stash TTL and refused rather than leave a permanent plaintext credential (F-779) — nothing was stashed and nothing was planted"
+      : `status ${stash.status}`;
+    FAIL(`kvStash refused ${BROKEN_KEY_SLOT} (${why}) — refusing to plant a dead key this script could not put back`);
     return;
   }
   if (keyStash.present !== (keySlotBefore.state === "PRESENT")

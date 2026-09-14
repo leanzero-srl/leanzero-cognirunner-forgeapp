@@ -60,7 +60,7 @@ const masked = (present, fingerprint) => ({ key: SLOT, present, fingerprint, mas
   const r = reader(200, masked(true, "0123456789abcdef"));
   const w = await readKeySlotWitness(r, SLOT);
   ok(w.state === "PRESENT", "a masked present:true row is PRESENT (got " + w.state + ")");
-  ok(w.fingerprint === "0123456789abcdef", "…and carries the row's sha256-16 identity");
+  ok(w.fingerprint === "0123456789abcdef", "…and carries the row's 16-hex keyed identity");
   ok(w.why === null, "…with no reason-it-is-unreadable");
   ok(describeKeySlot(w) === "PRESENT#0123456789abcdef", "the printable form carries the identity, never the value");
   ok(r.seen[0] === `?what=kvs&key=${encodeURIComponent(SLOT)}`,
@@ -126,9 +126,9 @@ const masked = (present, fingerprint) => ({ key: SLOT, present, fingerprint, mas
     ["a non-200", reader(404, null), /answered 404/],
     ["a body that did not parse", reader(200, null), /not JSON/],
     ["an answer not marked masked", reader(200, { key: SLOT, present: true, fingerprint: "0123456789abcdef" }), /not marked masked/],
-    ["present:true with no fingerprint", reader(200, { key: SLOT, present: true, fingerprint: null, masked: true }), /no sha256-16 fingerprint/],
-    ["present:true with a short fingerprint", reader(200, masked(true, "abc")), /no sha256-16 fingerprint/],
-    ["present:true with a non-hex fingerprint", reader(200, masked(true, "ZZZZZZZZZZZZZZZZ")), /no sha256-16 fingerprint/],
+    ["present:true with no fingerprint", reader(200, { key: SLOT, present: true, fingerprint: null, masked: true }), /no 16-hex keyed fingerprint/],
+    ["present:true with a short fingerprint", reader(200, masked(true, "abc")), /no 16-hex keyed fingerprint/],
+    ["present:true with a non-hex fingerprint", reader(200, masked(true, "ZZZZZZZZZZZZZZZZ")), /no 16-hex keyed fingerprint/],
   ];
   for (const [name, r, why] of cases) {
     const w = await readKeySlotWitness(r, SLOT);

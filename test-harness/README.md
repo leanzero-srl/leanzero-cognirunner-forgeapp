@@ -272,7 +272,11 @@ it used to hand back the tenant's BYOK key in plain text, and `lib/redact.mjs` m
 there because a bare provider key has no `sk-`/`ghp_` prefix and the field is called `value`,
 so it landed in a committed evidence file verbatim. Every other key is untouched and still
 returns its value. A driver therefore asks `present` for PRESENT/EMPTY and compares
-`fingerprint` (a sha256 truncated to 16 hex) for identity, through the one home,
+`fingerprint` (an HMAC-SHA256 keyed from `HARNESS_SECRET`, truncated to 16 hex — so it is
+comparable **only within one installation and only while that secret is unchanged**; rotate
+the secret and two identical rows answer different fingerprints, which is why a fingerprint
+carried out of an old evidence file must never be compared against a later run's) for
+identity, through the one home,
 `lib/key-slot-witness.mjs` — never `.value`, which after the ceiling is `undefined` and turns
 a before/after check into `EMPTY === EMPTY`, a green assertion that can no longer fail. A
 driver that must **replace** a credential and put the tenant's own back uses the **`kvStash`

@@ -18,8 +18,13 @@
  *
  * So the witness is built from what the ceiling DOES answer:
  *   `present`     → PRESENT / EMPTY, which is what the census of these drivers wanted.
- *   `fingerprint` → a sha256-16 of the stored row, the IDENTITY half. Two reads of the
- *                   same bytes fingerprint the same; one byte's difference does not.
+ *   `fingerprint` → a KEYED fingerprint of the stored row, the IDENTITY half: an HMAC-SHA256
+ *                   under a key derived from `HARNESS_SECRET`, truncated to 16 hex
+ *                   characters. Two reads of the same bytes fingerprint the same; one
+ *                   byte's difference does not. (F-781/F-790 — it was an unkeyed sha256-16,
+ *                   which a reader holding the harness secret could run a wordlist against
+ *                   for a low-entropy row; the key removes that without changing any
+ *                   equality this module depends on.)
  *
  * ANTI-VACUITY IS THE POINT, so every way of NOT getting an answer is `UNREADABLE`, and
  * `sameKeySlot` refuses an UNREADABLE pair rather than calling it unchanged:
@@ -29,9 +34,9 @@
  *   - a `value` field on a credential answer, which is the F-769 leak itself;
  *   - a PRESENT row with no 16-hex fingerprint, which is an identity we cannot compare.
  *
- * The VALUE is never read, never logged and never returned — a fingerprint is 64 bits,
- * far too little to brute a key out of and far more than enough that two rows in one
- * test run do not collide.
+ * The VALUE is never read, never logged and never returned — a fingerprint is 16 hex
+ * characters of a KEYED HMAC, far too little to recover a key from and far more than
+ * enough that two rows in one test run do not collide.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
 /** A PRESENT slot must answer this shape, or its identity is not comparable. */
@@ -60,7 +65,7 @@ export async function readKeySlotWitness(readKvs, key) {
   if (j.masked !== true) return unreadable("the answer is not marked masked — this key is not being treated as a credential, so present/fingerprint are not being answered");
   if (j.present !== true) return { key, state: "EMPTY", fingerprint: null, why: null };
   if (typeof j.fingerprint !== "string" || !FINGERPRINT_RE.test(j.fingerprint)) {
-    return unreadable(`present:true with no sha256-16 fingerprint (${JSON.stringify(j.fingerprint)}) — the identity is not comparable`);
+    return unreadable(`present:true with no 16-hex keyed fingerprint (${JSON.stringify(j.fingerprint)}) — the identity is not comparable`);
   }
   return { key, state: "PRESENT", fingerprint: j.fingerprint, why: null };
 }
@@ -76,6 +81,16 @@ export const describeKeySlot = (w) =>
  * EMPTY→EMPTY is a real yes (the ceiling answered `present:false` twice, on the same
  * key, and that is the state the run found). UNREADABLE on either side is a no, which
  * is what stops the assertion passing vacuously when the ceiling or the hook moves.
+ *
+ * THE CEILING, STATED (F-781/F-790). Because the fingerprint is an HMAC keyed from
+ * `HARNESS_SECRET`, it is comparable ONLY within one installation and only while that
+ * secret is unchanged: rotate the secret, or compare against a fingerprint recorded on
+ * another installation, and two IDENTICAL rows answer DIFFERENT fingerprints — so
+ * `sameKeySlot` says "not the same one" about a slot that never moved. That is not a
+ * limitation this function can detect, and it is safe for everything it exists for,
+ * because a restore assertion compares a before and an after FROM THE SAME RUN. What it
+ * forbids is carrying a fingerprint out of an evidence file and comparing it to a later
+ * run's: across a rotation that comparison is meaningless, not merely stale.
  *
  * @returns {{same: boolean, why: string|null}}
  */

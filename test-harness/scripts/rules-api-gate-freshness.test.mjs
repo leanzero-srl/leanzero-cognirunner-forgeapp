@@ -6,135 +6,192 @@
  */
 
 /*
- * F-819 — THE REST DOOR READS THE INSTANCE'S FACTS FRESH, LIKE THE TAB'S DOOR.
+ * F-850 — THE TWO TEST DOORS AND THE RUN ANSWER THE SAME THING.
  *
- * `restGateContext` (src/rules-api.js) is the REST skin over the SAME save doors the
- * resolvers expose, and it read `agentGateFacts(null)` MEMOISED while F-811 had just
- * made `saveListener` / `testListener` / `saveScheduledJob` `{fresh:true}`. One capability
- * question, two doors, one of them 30 s behind the instance.
+ * `POST ?resource=listeners&id=…&action=test` called `listeners.testListener` with NO
+ * `gateFacts`, while the resolver's `testListener` (src/index.js) passed them. The run
+ * site then built no gate context at all and `normalizeAllowedActions` fell to its
+ * arity-1 restrictive default, so a REST test of an ADMIN-armed listener reported
+ * `commit_files` gone — a rule that cannot do what its own queued delivery (F-842) now
+ * does. F-302's rule is that a test must never disagree with the run, and a test that
+ * disagrees with the OTHER test door breaks it twice.
  *
- * THE SHAPE, reproduced here end to end: the provider memo still holds `managed` after
- * the provider row is deleted (`_cachedProvider` is cleared only in the container that
- * served `saveProvider`), so the stale facts describe an instance that no longer exists
- * while the fresh ones say `atlassian` + Haiku.
+ * The property asserted here is an IDENTITY, not three separate expectations: the
+ * allowed/refused sets the agent is handed must be byte-identical across
+ *   1. the resolver test door       (src/index.js `testListener`)
+ *   2. the REST test door           (src/rules-api.js `action=test`)
+ *   3. the QUEUED run               (src/async-handler.js `executeQueuedListener`)
+ * for ONE saved row. Every set is read off the gate the RUN handed `runAgentTask`,
+ * through the SHIPPED predicate — nothing about capability is re-implemented here.
  *
- * WHICH DIRECTION THE SPLIT RUNS DEPENDS ON WHAT THE MEMO HAPPENS TO HOLD, and BOTH are
- * defects. Against the pre-fix file this suite fails three assertions, the sharp one
- * being the PERMISSIVE-to-RESTRICTIVE direction: with a BYOK row on the instance, the
- * stale `managed` memo (no managed key in this harness) made the REST door refuse
- * `managed-key-missing` a git action the tab's own save door ACCEPTS — a rule that is
- * legitimately editable in the UI and permanently 400 over REST, which is F-480's defect
- * one door down. On staging the memo ran the other way (permissive), and the refusal
- * reason under the stale memo differs from the real one either way, which the
- * `refused[].reason` assertion below catches.
+ * Everything goes through the REAL `rulesApiHandler`, the REAL resolver `handler`, the
+ * REAL `src/listeners.js` and the REAL `agentGateFacts`; only the platform (KVS, Jira,
+ * the model) is mocked. The queued arm executes the SOURCE of the async wrapper, exactly
+ * as rules-runtime-regression.test.mjs does, because src/async-handler.js cannot be
+ * imported offline.
  *
- * THE PROPERTY IS AGREEMENT, exactly as in agent-capability-seams.test.mjs: the REST
- * door and the resolver door must give the SAME verdict and the SAME reason for the same
- * body on the same instance — and the reason this instance earns is asserted too, so
- * "they agree because both broke open" cannot pass.
- *
- * ONE PROCESS ON PURPOSE. The 30 s memo has no test seam, but this suite does not need
- * to flip it: it primes it ONCE with `managed` and then deletes the row underneath, which
- * is the staging shape. Both doors are asked afterwards, against that one stale memo.
- *
- * Auto-discovered by run-offline.mjs (test:offline), which supplies the loader.
- * Run alone: node --import ./lib/register-mocks.mjs scripts/rules-api-gate-freshness.test.mjs
+ * Run: node --import ./lib/register-mocks.mjs scripts/rules-api-gate-freshness.test.mjs
+ * (auto-discovered by run-offline.mjs, which supplies the loader.)
  */
 
 import "../lib/register-mocks-index.mjs";
+import { register } from "node:module";
+import { readFileSync } from "node:fs";
 import storage from "../lib/mock-kvs.mjs";
+
+// The agent runner is the OBSERVATION POINT: it is the last thing that sees the gate the
+// run built, which is precisely what the three doors must agree on. Stubbed only for
+// src/listeners.js, so index.js keeps the real module and nothing else is displaced.
+register("data:text/javascript," + encodeURIComponent(`
+export async function resolve(spec, ctx, next) {
+  if (String(ctx.parentURL || "").endsWith("/src/listeners.js") && spec === "./agent-runner.js") {
+    return { url: "cogni-f850:agent", shortCircuit: true };
+  }
+  return next(spec, ctx);
+}
+export async function load(url, ctx, next) {
+  if (url === "cogni-f850:agent") return { format: "module", shortCircuit: true, source:
+    "export const runAgentTask = async (args) => globalThis.__f850.agent(args);"
+    + "export const evaluateAiCondition = async () => ({ match: true, reason: 'matched' });" };
+  return next(url, ctx);
+}`));
+
 const { default: forgeApi } = await import("@forge/api");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
-const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`);
 
 const ADMIN = "acct-admin";
+const UPDATE = "avi:jira:updated:issue";
+const ISSUE = {
+  id: "200", key: "LZPT-2",
+  fields: { summary: "Selected issue", project: { id: "10", key: "LZPT" }, issuetype: { id: "2", name: "Bug" } },
+};
+// One capability-gated action next to two plain Jira ones, so "the gate refused it" can
+// never be confused with "the rule held nothing".
+const ACTIONS = ["get_issue", "add_comment", "commit_files"];
 
-forgeApi.__respond(() => forgeApi.__response(200, {}));
-
-// A Coder-edition instance, so nothing but the PROVIDER facts can decide the git
-// capability here — that is the fact this finding is about.
-await storage.set("COGNIRUNNER_EDITION_SNAPSHOT", { active: true, edition: "advanced", at: new Date().toISOString() });
-await storage.set("COGNIRUNNER_SEAT_SNAPSHOT", { seats: 10, at: new Date().toISOString() });
-await storage.set("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
-
-// THE PRIME: a real `managed` row, read through the resolver that resolves the ACTIVE
-// provider's model — which goes through `getProviderConfig()` and stamps the 30 s memo.
-await storage.set("COGNIRUNNER_AI_PROVIDER", "managed");
-const { handler, readProviderConfigFresh } = await import("../../src/index.js");
-await handler({ call: { functionKey: "getAgentModel", payload: {} }, context: {} }, { principal: { accountId: ADMIN } });
-
-// …and THE DELETION underneath it. From here the memo describes an instance that no
-// longer exists; an absent row defaults to `atlassian`, whose default model is Haiku.
-await storage.delete("COGNIRUNNER_AI_PROVIDER");
-eq((await readProviderConfigFresh()).provider, "atlassian",
-  "F-819: the row really is gone — a fresh read says atlassian");
-
-const { createApiTokenInternal, rulesApiHandler } = await import("../../src/rules-api.js");
-// The REST layer saves as an EDITOR (`REST_SAVED_BY_ROLE`), so the action under test is
-// a git READ: a git WRITE would be refused `needs-admin` by the role arm and would tell
-// us nothing about the capability arm, which is the one that rode the memo.
-const token = (await createApiTokenInternal({ name: "f819", accountId: ADMIN, role: "admin" })).token;
-
-const listenerBody = (name) => ({
-  name, events: ["avi:jira:created:issue"], mode: "agent",
-  agent: { instructions: "read the PR", allowedActions: ["get_pull_request"] },
+forgeApi.__respond((path) => {
+  const p = String(path);
+  if (p.startsWith("/rest/api/3/issue/")) return forgeApi.__response(200, ISSUE);
+  if (p.startsWith("/rest/api/3/search/jql")) return forgeApi.__response(200, { issues: [ISSUE] });
+  if (p.startsWith("/rest/api/3/project/")) return forgeApi.__response(200, { key: "LZPT" });
+  return forgeApi.__response(200, {});
 });
 
-const viaRest = async (name) => {
+// A BYOK provider on Standard: `commit_files` is genuinely ALLOWED for an admin-saved
+// rule here, which is what makes the arity-1 default visible as a LOSS rather than as a
+// capability the instance never had.
+await storage.set("COGNIRUNNER_AI_PROVIDER", "openai");
+await storage.set("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
+
+const { createApiTokenInternal, rulesApiHandler } = await import("../../src/rules-api.js");
+const { handler, agentGateFacts } = await import("../../src/index.js");
+const L = await import("../../src/listeners.js");
+const { buildAgentGateContext, normalizeAllowedActions } = await import("../../src/shared/agent-actions.js");
+
+const adminToken = (await createApiTokenInternal({ name: "admin", accountId: ADMIN, role: "admin" })).token;
+
+const resolverCall = (functionKey, payload = {}, accountId = ADMIN) =>
+  handler({ call: { functionKey, payload }, context: {} }, { principal: { accountId } });
+
+const rest = async ({ method = "POST", query = {}, body } = {}) => {
   const res = await rulesApiHandler({
-    method: "POST",
-    headers: { authorization: `Bearer ${token}` },
-    queryParameters: { resource: ["listeners"] },
-    body: JSON.stringify(listenerBody(name)),
+    method,
+    headers: { authorization: `Bearer ${adminToken}` },
+    queryParameters: Object.fromEntries(Object.entries({ resource: "listeners", ...query }).map(([k, v]) => [k, [String(v)]])),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   return { status: res.statusCode, body: JSON.parse(res.body) };
 };
 
-const viaResolver = (name, accountId = ADMIN) =>
-  handler({ call: { functionKey: "saveListener", payload: { listener: listenerBody(name) } }, context: {} },
-    { principal: { accountId } });
+// The verdict is read off the gate the run handed the agent, through the SHIPPED
+// predicate — exactly what src/agent-runner.js does with it. `gate === undefined` is the
+// defect's own signature: no context at all, hence the arity-1 restrictive default.
+const verdictOf = (args) => (args.gate === undefined
+  ? { allowed: normalizeAllowedActions(args.allowedActions), refused: [{ id: "(arity-1 default)", reason: "no-gate-context" }] }
+  : normalizeAllowedActions(args.allowedActions, args.gate));
 
-/* ═════ THE TWO DOORS, ON THE STALE-MEMO INSTANCE ═════ */
+const capture = async (fn) => {
+  const calls = [];
+  globalThis.__f850 = { agent: (args) => { calls.push(args); return { success: true, outcome: "finished", summary: "simulated", changes: [], logs: [] }; } };
+  const out = await fn();
+  return { calls, out };
+};
+
+/* ═════ the ONE row: an agent listener an ADMIN armed with a git action ═════ */
+
+const saved = await resolverCall("saveListener", {
+  listener: {
+    name: "F-850 parity", events: [UPDATE], enabled: true, mode: "agent",
+    agent: { instructions: "go", allowedActions: ACTIONS },
+  },
+});
+ok(saved.success === true && saved.listener && saved.listener.savedByRole === "admin",
+  `the row is saved by an ADMIN and keeps its git action (got ${JSON.stringify(saved).slice(0, 220)})`);
+const listenerId = saved.listener && saved.listener.id;
+ok(Array.isArray(saved.listener && saved.listener.agent.allowedActions) && saved.listener.agent.allowedActions.includes("commit_files"),
+  "…and the save door did not strip `commit_files` — the gate is the RUN's question here, not the save's");
+
+/* ── 1. the resolver test door ── */
+const viaResolver = await capture(() => resolverCall("testListener", { id: listenerId, issueKey: ISSUE.key, eventType: UPDATE }));
+ok(viaResolver.out.success === true && viaResolver.calls.length === 1,
+  `the resolver test door runs the agent once (got ${JSON.stringify(viaResolver.out).slice(0, 200)})`);
+const resolverVerdict = verdictOf(viaResolver.calls[0]);
+
+/* ── 2. the REST test door ── */
+const viaRest = await capture(() => rest({ query: { id: listenerId, action: "test" }, body: { issueKey: ISSUE.key, eventType: UPDATE } }));
+ok(viaRest.out.status === 200 && viaRest.calls.length === 1,
+  `the REST test door runs the agent once (got ${viaRest.out.status} ${JSON.stringify(viaRest.out.body).slice(0, 200)})`);
+const restVerdict = verdictOf(viaRest.calls[0]);
+
+/* ── 3. the queued run (the wrapper's own source, F-842) ── */
+const asyncSource = readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8");
+const wiring = asyncSource.slice(asyncSource.indexOf("const withFreshGateFacts = async (opts)"), asyncSource.indexOf("const resolveFreshCoderGate"));
+const queued = new Function("resolveFreshGateFacts", "executeListenerTask", "executeScheduledJobTask",
+  `${wiring} return { executeQueuedListener, executeQueuedScheduledJob };`)(
+  () => agentGateFacts(undefined, { fresh: true }), L.executeListenerTask, L.executeScheduledJobTask);
+const viaQueue = await capture(() => queued.executeQueuedListener(
+  { listenerId, eventType: UPDATE, event: { issue: ISSUE }, ctx: { issueKey: ISSUE.key, projectKey: "LZPT" } }, "task-f850"));
+ok(viaQueue.calls.length === 1, `the queued delivery runs the agent once (got ${viaQueue.calls.length})`);
+const queueVerdict = verdictOf(viaQueue.calls[0]);
+
+/* ═════ THE IDENTITY ═════ */
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+ok(same(restVerdict, resolverVerdict),
+  `F-850: the REST test door and the resolver test door allow and refuse the SAME actions (REST ${JSON.stringify(restVerdict)} vs resolver ${JSON.stringify(resolverVerdict)})`);
+ok(same(restVerdict, queueVerdict),
+  `F-850: …and both agree with the QUEUED run, which is the thing a test stands in for (REST ${JSON.stringify(restVerdict)} vs queue ${JSON.stringify(queueVerdict)})`);
+
+// The SHARP end: the agreed set must be the CAPABLE one. Three doors agreeing on a
+// stripped set would satisfy the identity above and still be the defect, so the content
+// is asserted too — `commit_files` survives on an instance whose facts permit it.
+ok(same(restVerdict, { allowed: ACTIONS, refused: [] }),
+  `F-850: the agreed verdict is the CAPABLE one — the admin's git action survives a REST test (got ${JSON.stringify(restVerdict)})`);
+ok(viaRest.calls[0].gate !== undefined && viaRest.calls[0].gate.savedByRole === "admin"
+  && viaRest.calls[0].gate.triggerSource === "external",
+  `F-850: the REST door crosses FACTS, not a context — the run builds it with triggerSource "external" and the ROW's savedByRole (got ${JSON.stringify(viaRest.calls[0].gate)})`);
+
+// THE BAN, in the file itself: the REST test door must never call `testListener` again
+// without facts. A comment naming `gateFacts` cannot satisfy this — the call is matched.
 {
-  const rest = await viaRest("F-819 REST");
-  const res = await viaResolver("F-819 resolver");
-
-  const restRefused = rest.status >= 400;
-  eq(restRefused, res.success === false,
-    `F-819: the REST door and the resolver door agree on the VERDICT for the same body (REST ${rest.status} ${JSON.stringify(rest.body).slice(0, 200)} / resolver ${JSON.stringify(res).slice(0, 200)})`);
-  eq(String(rest.body.reason || ""), String(res.reason || ""),
-    "F-819: …and on the REASON");
-
-  // The verdict this instance actually earns: no provider row, so `atlassian` + Haiku,
-  // so the git capability is off for want of a frontier agent model.
-  eq(rest.status, 400, "F-819: the REST save of a git action is REFUSED on an atlassian+Haiku instance");
-  eq(rest.body.reason, "action-not-allowed", "F-819: …in the ONE refusal shape");
-  ok(Array.isArray(rest.body.refused) && rest.body.refused[0] && rest.body.refused[0].reason === "needs-frontier-model",
-    `F-819: …naming the real cause the tab names (got ${JSON.stringify(rest.body.refused)})`);
-  ok(res.success === false && Array.isArray(res.refused) && res.refused[0].reason === "needs-frontier-model",
-    `F-819: …and the resolver refuses it the same way (got ${JSON.stringify(res).slice(0, 220)})`);
+  const src = readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8");
+  const call = (src.match(/await L\.testListener\(\{[\s\S]*?\}\);/) || [""])[0];
+  ok(/gateFacts:/.test(call), "F-850: the REST `action=test` call site passes `gateFacts` (source gate)");
+  ok(/restGateFacts\(\)/.test(call),
+    "F-850: …read FRESH through the file's ONE fact reader, because the run it stands in for reads fresh too");
+  ok((src.match(/agentGateFacts\(/g) || []).length === 1,
+    `F-850: src/rules-api.js reads the facts in exactly ONE place (got ${(src.match(/agentGateFacts\(/g) || []).length})`);
 }
 
-/* ═════ THE OTHER DIRECTION: a fresh read must still ALLOW a capable instance ═════
- *
- * `{fresh:true}` must not have turned the REST door into a door that refuses everything.
- * Put a BYOK provider row back — `agentCapability` answers `byok` for any non-Atlassian
- * provider — and the same body must now be ACCEPTED at both doors. This is the assertion
- * that would fail if the cut had simply broken the fact read.
- */
+// F-851 — the resolver door's note used to say the threading did not exist. A stale
+// comment that contradicts the wiring is how the next reader re-opens a closed defect.
 {
-  await storage.set("COGNIRUNNER_AI_PROVIDER", "openai");
-  await storage.set("COGNIRUNNER_OPENAI_KEY", "sk-test-key");
-  const rest = await viaRest("F-819 REST byok");
-  const res = await viaResolver("F-819 resolver byok");
-  eq(rest.status, 201, `F-819: a BYOK instance ACCEPTS the same git read over REST (got ${JSON.stringify(rest.body).slice(0, 200)})`);
-  ok(rest.body.listener && Array.isArray(rest.body.listener.agent.allowedActions)
-    && rest.body.listener.agent.allowedActions.includes("get_pull_request"),
-    "F-819: …and the action survives normalisation rather than being silently stripped");
-  ok(res.success === true, `F-819: …and the resolver door agrees (got ${JSON.stringify(res).slice(0, 200)})`);
+  const idxSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  ok(!/TODO\(F-302\): `listeners\.testListener` does not thread/.test(idxSrc),
+    "F-851: the stale TODO claiming testListener drops gateFacts is gone from src/index.js");
 }
 
-console.log(`rules-api gate freshness (F-819): ${pass} passed, ${fail} failed`);
+console.log(`\nrules-api-gate-freshness: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1882,5 +1882,33 @@ await check("F-841: the summary line is empty when nothing failed and counts onl
     "Workspace: 2 of 3 writes failed (log: storage, artifact: unknown)");
 });
 
+/* ───────── F-829 — the engine's gate is only as fresh as the facts handed to it ─────────
+ *
+ * `runCoderTurn` re-runs the PREDICATE (`agentCapability`) over `gateFacts`; it reads no
+ * fact itself and it never will — that is what makes it a pure gate. So the guarantee is
+ * the CALLER's: the queue consumer must hand in facts read at EXECUTION time, not the ones
+ * the producer serialised into the payload minutes earlier. The consumer used to pass
+ * `p.gateFacts` straight through, which is why "the engine re-runs the gate" bought
+ * nothing. This is the ban that keeps that line from coming back.
+ */
+await check("F-829: the consumer hands the engine FRESH facts, never the queued payload's", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const consumerSrc = readFileSync(fileURLToPath(new URL("../../src/async-handler.js", import.meta.url)), "utf8");
+  const at = consumerSrc.indexOf("const executeCoderTurn = async (params, taskId) => {");
+  assert.ok(at > 0, "executeCoderTurn exists");
+  const body = consumerSrc.slice(at, consumerSrc.indexOf("\n};\n", at));
+  assert.ok(!/gateFacts:\s*p\.gateFacts/.test(body),
+    "the queued facts must not be the ones the engine gates on — they are advisory (F-829)");
+  assert.match(body, /gateFacts:\s*gateNow\.facts/,
+    "the engine receives the facts re-derived at execution time");
+  assert.ok(consumerSrc.includes("const resolveFreshCoderGate = async (p) => {"),
+    "the fresh derivation has ONE home in the consumer");
+  // …and the engine itself still reads nothing: no fact-reader may appear in its gate.
+  const engineSrc = readFileSync(fileURLToPath(new URL("../../src/coder-engine.js", import.meta.url)), "utf8");
+  assert.ok(!/agentGateFacts|readProviderConfigFresh|readForgeLlmAllowance/.test(engineSrc),
+    "the engine stays a pure predicate — a second fact-reader here is the split F-302 closed");
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -16,6 +16,9 @@ import forgeApi, { pushed } from "../lib/mock-forge-api.mjs";
 import { normalizeListener, testListener, executeListenerTask, matchListenerStatic, listenerTrigger, readListenerIndex, toIndexRow } from "../../src/listeners.js";
 import { normalizeJob, runJob, executeScheduledJobTask, scheduledTick } from "../../src/scheduled-jobs.js";
 import { JIRA_EVENTS } from "../../src/shared/jira-events.js";
+// F-842 — the SHIPPED gate predicate and context builder; this suite never re-implements
+// either, it only asks them what the run's gate allows.
+import { buildAgentGateContext, normalizeAllowedActions } from "../../src/shared/agent-actions.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { testStateTrigger } from "../../src/test-hook.js";
 // F-770 — the platform's key predicate, imported from its ONE home so these checks
@@ -1893,5 +1896,89 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
   assert.equal(result.issues[0].agentSummary, "No action needed");
   assert.ok(result.issues.slice(1).every(r => r.agentOutcome === undefined && r.agentSummary === undefined));
 });
+
+/* ════ F-842 — a QUEUED listener/job run is gated on the instance's facts, like its test run ════
+ *
+ * `TASK_HANDLERS` invokes a handler as `(params, taskId)`. Registering the bare
+ * `executeListenerTask` / `executeScheduledJobTask` therefore left the THIRD argument —
+ * the F-302 seam that carries `gateFacts` — undefined on every queued delivery, so
+ * `runListener` / `runJob` built no gate context and `normalizeAllowedActions` fell to its
+ * arity-1 restrictive default: every capability-gated action AND every `confirm` action
+ * refused as `needs-admin`, on a rule an ADMIN saved, while the same rule's "Test with an
+ * issue" (which does thread facts) ran it. The consumer now reads the facts fresh.
+ *
+ * The wrappers live in src/async-handler.js, which cannot be imported offline (it pulls
+ * src/index.js), so their SOURCE is executed here against the REAL listener and job
+ * modules and the REAL gate predicate. Nothing about capability is re-implemented.
+ */
+{
+  const asyncSource = readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8");
+  const wiring = asyncSource.slice(asyncSource.indexOf("const withFreshGateFacts = async (opts)"), asyncSource.indexOf("const resolveFreshCoderGate"));
+  const handlers = (facts) => new Function("resolveFreshGateFacts", "executeListenerTask", "executeScheduledJobTask",
+    `${wiring} return { executeQueuedListener, executeQueuedScheduledJob };`)(async () => facts, executeListenerTask, executeScheduledJobTask);
+
+  const BYOK = { provider: "openai", edition: "standard", agentModel: "gpt-5.4", allowanceLevel: null };
+  const FORGE_STANDARD = { provider: "atlassian", edition: "standard", agentModel: "claude-haiku-4.5", allowanceLevel: null };
+  // One capability-gated `confirm` action alongside two plain Jira ones, so a refusal can
+  // be told apart from "the rule had nothing".
+  const ACTIONS = ["get_issue", "add_comment", "commit_files"];
+  const saveGate = buildAgentGateContext({ ...BYOK, savedByRole: "admin" });
+  // The verdict is read off the gate the RUN handed the agent, through the shipped
+  // predicate — exactly what src/agent-runner.js does with it.
+  const verdictOf = (args) => args.gate === undefined
+    ? { allowed: normalizeAllowedActions(args.allowedActions), refused: [{ id: "(arity-1 default)", reason: "no-gate-context" }] }
+    : normalizeAllowedActions(args.allowedActions, args.gate);
+  const queuedRun = async ({ kind, facts, savedByRole, id }) => {
+    const state = reset();
+    if (kind === "listener") {
+      const config = normalizeListener({ id, name: id, events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: ACTIONS } }, { gate: saveGate, savedByRole });
+      storage.__seed(`listener:${id}`, config);
+      await handlers(facts).executeQueuedListener({ listenerId: id, eventType: UPDATE, event: { issue: ISSUE }, ctx: { issueKey: ISSUE.key, projectKey: "LZPT" } }, `task-${id}`);
+    } else {
+      const config = normalizeJob({ id, name: id, schedule: { cron: "*/5 * * * *" }, mode: "agent", agent: { instructions: "go", allowedActions: ACTIONS } }, { gate: saveGate, savedByRole });
+      storage.__seed(`job:${id}`, config);
+      await handlers(facts).executeQueuedScheduledJob({ jobId: id, manual: true }, `task-${id}`);
+    }
+    assert.equal(state.runs.length, 1);
+    return verdictOf(state.runs[0]);
+  };
+
+  for (const kind of ["listener", "job"]) {
+    await check(`F-842: an admin-saved ${kind} runs its capability-gated action on the ASYNC path`, async () => {
+      const v = await queuedRun({ kind, facts: BYOK, savedByRole: "admin", id: `f842-${kind}-admin` });
+      assert.deepEqual(v.allowed, ACTIONS);
+      assert.deepEqual(v.refused, []);
+    });
+    await check(`F-842: a viewer-saved ${kind} is refused needs-admin, and keeps its plain actions`, async () => {
+      const v = await queuedRun({ kind, facts: BYOK, savedByRole: "viewer", id: `f842-${kind}-viewer` });
+      assert.deepEqual(v.allowed, ["get_issue", "add_comment"]);
+      assert.deepEqual(v.refused, [{ id: "commit_files", reason: "needs-admin" }]);
+    });
+    await check(`F-842: the capability off AT EXECUTION refuses the ${kind}'s git action with the capability reason`, async () => {
+      const v = await queuedRun({ kind, facts: FORGE_STANDARD, savedByRole: "admin", id: `f842-${kind}-cap` });
+      assert.deepEqual(v.allowed, ["get_issue", "add_comment"]);
+      assert.deepEqual(v.refused, [{ id: "commit_files", reason: "needs-coder-edition" }]);
+    });
+    await check(`F-842: no facts at all still gates the ${kind} restrictively — a fault is never the way past`, async () => {
+      const v = await queuedRun({ kind, facts: null, savedByRole: "admin", id: `f842-${kind}-nofacts` });
+      assert.deepEqual(v.allowed, ["get_issue", "add_comment"]);
+    });
+  }
+  await check("F-842: facts supplied by the caller are preferred over the consumer's own read", async () => {
+    const state = reset();
+    const id = "f842-explicit";
+    storage.__seed(`listener:${id}`, normalizeListener({ id, name: id, events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: ACTIONS } }, { gate: saveGate, savedByRole: "admin" }));
+    const h = new Function("resolveFreshGateFacts", "executeListenerTask", "executeScheduledJobTask",
+      `${wiring} return { executeQueuedListener };`)(async () => { throw new Error("the consumer must not read facts a caller already supplied"); }, executeListenerTask, executeScheduledJobTask);
+    await h.executeQueuedListener({ listenerId: id, eventType: UPDATE, event: { issue: ISSUE }, ctx: { issueKey: ISSUE.key, projectKey: "LZPT" } }, "task-explicit", { gateFacts: BYOK });
+    assert.deepEqual(verdictOf(state.runs[0]).allowed, ACTIONS);
+  });
+  await check("F-842: the wrappers are what TASK_HANDLERS registers", async () => {
+    const registry = (asyncSource.match(/const TASK_HANDLERS = \{[\s\S]*?\n\};/) || [""])[0];
+    assert.match(registry, /"listener": executeQueuedListener,/);
+    assert.match(registry, /"scheduledjob": executeQueuedScheduledJob,/);
+  });
+}
+
 console.log(`RULES RUNTIME REGRESSION: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

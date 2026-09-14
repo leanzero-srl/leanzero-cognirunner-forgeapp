@@ -696,8 +696,16 @@ export const claimJobRun = (job, params, taskId) => {
   return claimRuleExecution(storage, claimKey, EXEC_CLAIM_TTL, "job");
 };
 
-/** Queue consumer entry: taskType "scheduledjob" (polled by "Run now"). */
-export const executeScheduledJobTask = async (params, taskId) => {
+/**
+ * Queue consumer entry: taskType "scheduledjob" (polled by "Run now").
+ *
+ * The third argument is the SAME seam `executeListenerTask` carries (F-302): the caller
+ * owns the instance's facts and the namespace executors, because neither can be read from
+ * here. OMITTED still means the most restrictive gate — F-842 is what happens when the
+ * caller forgets, so the consumer reads them fresh and passes them (async-handler.js
+ * `withFreshGateFacts`). `savedByRole` is NOT part of it: it comes from the job row.
+ */
+export const executeScheduledJobTask = async (params, taskId, { gateFacts = null, executors = {} } = {}) => {
   const m = await idx();
   const { jobId, scheduledFor, missed, manual } = params || {};
   const job = await getJob(jobId);
@@ -718,7 +726,7 @@ export const executeScheduledJobTask = async (params, taskId) => {
   const started = Date.now();
   let out;
   try {
-    out = await runJob({ job, scheduledFor, missed, manual, deadline: Date.now() + JOB_RUN_BUDGET_MS, cancelToken: taskId, source: "async" });
+    out = await runJob({ job, scheduledFor, missed, manual, deadline: Date.now() + JOB_RUN_BUDGET_MS, cancelToken: taskId, source: "async", gateFacts, executors });
   } catch (e) {
     console.error(`[job] ${job.id} run crashed:`, e);
     out = { success: false, issues: [], log: { type: "scheduledjob", source: "async", issueKey: "(no issue)", fieldId: `${job.schedule.cron} ${job.schedule.timeZone}`, isValid: false, reason: `Run crashed: ${String((e && e.message) || e).slice(0, 400)}`, recommendation: "Open the job and use 'Run now' to reproduce; check the AI provider settings if the job uses agent mode.", executionTimeMs: Date.now() - started, ruleId: job.id, ruleName: job.name, ruleWorkflow: null, mode: job.mode, scheduledFor, manual, missed } };

@@ -3086,6 +3086,57 @@ reset();
   eq(receipt.postedBefore, 1, "F-925: …and how many had gone out");
 }
 
+/* ══ F-949 — THE POST WINDOW IS ASKED PER COMMENT, NOT ONCE PER PASS ══════
+ *
+ * The window was evaluated once, above the scan, and a post pass has 120 seconds: a pass
+ * that started at 16:59 on a window closing at 17:00 delivered every remaining draft into
+ * the quiet hours the operator had bought. It is folded into F-921's predicate, so it
+ * STOPS the pass — the rest stay staged, unattempted, and the receipt names the reason.
+ */
+reset();
+{
+  await stageThree();
+  // The window is open when the pass starts and closed three minutes later. The clock is
+  // the dep's, so this is the real boundary the pass crosses, not a stubbed answer.
+  let clock = T0;                                        // 2026-09-13T12:00Z
+  const live = vaJob();
+  live.va.cadence.timeZone = "UTC";
+  live.va.cadence.postWindow = { days: [], from: "11:00", to: "12:01" };
+  const d = postDeps({ getJob: async () => live, now: () => clock });
+  const inner = d.addComment;
+  d.addComment = async (k, body, opts) => {
+    const written = await inner(k, body, opts);
+    clock = T0 + 3 * MIN;                                // 12:03 — past the window's end
+    return written;
+  };
+  const r = await V.runVaPost({ agent: live, tickId: "t-window-close", deps: d });
+  eq(d.__commented.length, 1, "F-949.BLOCK_past_the_boundary — the draft that was inside the window went out, and nothing after it did");
+  eq(r.reason, "window_closed", "F-949: …and the pass names the window as what stopped it, not a pause or a cap");
+  const held = r.skipped.filter((x) => String(x.reason || "") === "held.window_closed");
+  eq(held.length, 2, "F-949: the two drafts left are NAMED as held (F-925's complete counts)");
+  eq((await stillStaged(THREE)).length, 2, "F-949: …still staged, so the next pass inside the hours posts them");
+  eq((await attemptsOf(THREE)).join(","), "0,0,0", "F-949: …and the window cost them no attempt");
+  const receipt = (await L.readTick(kvs, AG, "t-window-close", "post")).receipt;
+  eq(receipt.reason, "window_closed", "F-949: the receipt an operator reads names the reason too");
+  eq(receipt.postedBefore, 1, "F-949: …and how many had already gone out");
+  ok(receipt.skipped.some((x) => x.key === "(agent)" && x.reason === "stopped.window_closed"), "F-949: the stop itself is a row on the receipt");
+}
+
+/* — …and a pass that is outside the window from the very first instant still reads no
+ *   item row at all: the cheap agent-level gate above the scan is unchanged. — */
+reset();
+{
+  await stageThree();
+  const shut = vaJob();
+  shut.va.cadence.timeZone = "UTC";
+  shut.va.cadence.postWindow = { days: [], from: "18:00", to: "23:00" };
+  const d = postDeps({ getJob: async () => shut });
+  const r = await V.runVaPost({ agent: shut, tickId: "t-window-shut", deps: d });
+  eq(d.__commented.length, 0, "F-949: a pass outside the window posts nothing");
+  ok(r.skipped.some((x) => x.key === "(agent)" && x.reason === "gate.outside_post_window_hours"), "F-949: …and it is refused at the agent gate, by name");
+  eq((await stillStaged(THREE)).length, 3, "F-949: every draft is left staged");
+}
+
 reset();
 {
   // HEALTH. The agent has failed twice; the admin pauses it mid-pass. That pass must not

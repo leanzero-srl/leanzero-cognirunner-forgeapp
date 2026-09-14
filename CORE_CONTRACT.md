@@ -131,9 +131,10 @@ Verified against: `src/index.js` (~13.7k lines), `src/async-handler.js`, `src/sk
   `MemoriesTab.jsx`, `components/editor/*`. Deliberately DIVERGED (never blind-copy):
   `CustomSelect.jsx`, `Tooltip.jsx`, `ReviewPanel.jsx`, `IssuePicker.jsx`, `Skeleton.jsx`.
   Shared components stay self-contained (no imports from App.js).
-- **CSS reality.** `App.js injectStyles()` is the LIVE CSS source in each app (`styles.css` is a
-  convention mirror, not imported); `public/index.html` holds only the pre-mount bootstrap subset;
-  admin-panel additionally has `injectCopiedComponentStyles()` mirroring config-ui component CSS.
+- **CSS reality.** `App.js injectStyles()` is the LIVE CSS source in each app and the ONLY one
+  (F-509 deleted the `src/styles.css` convention mirrors; nothing imported them, so do not
+  reintroduce one); `public/index.html` holds only the pre-mount bootstrap subset; admin-panel
+  additionally has `injectCopiedComponentStyles()` mirroring config-ui component CSS.
 - **Module-level state refs in config-ui** exist because `onConfigure` captures its closure at
   registration — kept in sync via `useEffect`. **Do not refactor away.**
 - **MLS motion contract:** all new UI uses the shared loading/animation classes (`.is-busy`,
@@ -179,7 +180,7 @@ Verified against: `src/index.js` (~13.7k lines), `src/async-handler.js`, `src/sk
 | `createApi()` sandbox surface | Update `SANDBOX_API_METHODS` (incl. `promptDoc`) in `src/shared/sandbox-api-spec.js` in the SAME diff; rebuild all three UI apps; never hand-edit `KNOWN_API_MEMBERS` (derived) |
 | `manifest.yml` (anything) | STOP — explicit human approval first; then `forge deploy` (+ `forge install --upgrade` if modules/scopes changed) |
 | A byte-identical duplicated component (§1.8 list) | Edit in config-ui, copy to admin-panel, prove with `diff -q`, rebuild BOTH apps |
-| Component CSS | Update `App.js injectStyles()` (live), mirror in `src/styles.css`, and sync admin-panel `injectCopiedComponentStyles()` |
+| Component CSS | Update `App.js injectStyles()` (the only live home) and sync admin-panel `injectCopiedComponentStyles()`; `test-harness/scripts/css-parity.test.mjs` holds the two equal |
 | Any new accent color | Add the dark-mode override for that hue in the same diff |
 | Any backend `.js` file | `node --check` every touched file (index.js, async-handler.js, skills.js, memories.js, shared/*) |
 | Any frontend `src/` file | `npm run build` in that app; commit rebuilt content-hashed bundles (old-hash deletions + additions together) with the source |

@@ -43,8 +43,8 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-// Files holding LIVE CSS. App.js `injectStyles()` is the real source in each app
-// (styles.css is a convention mirror and is not imported anywhere).
+// Files holding LIVE CSS. App.js `injectStyles()` is the only source in each app
+// (F-509 deleted the src/styles.css mirrors; nothing imported them).
 const CSS_SOURCES = [
   "static/admin-panel/src/App.js",
   "static/config-ui/src/App.js",

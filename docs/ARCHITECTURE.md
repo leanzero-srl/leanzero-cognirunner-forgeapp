@@ -82,7 +82,6 @@ CogniRunner/
 │   │   │   │   ├── Post-function type selector (semantic/static)
 │   │   │   │   ├── Provider detection for cost notice
 │   │   │   │   └── injectStyles() — ALL CSS (~800 lines)
-│   │   │   ├── styles.css                # Minimal (mostly superseded by injectStyles)
 │   │   │   ├── data/
 │   │   │   │   └── jira-endpoints.js     # 45+ Jira REST API endpoint definitions
 │   │   │   └── components/

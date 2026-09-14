@@ -6090,12 +6090,13 @@ const injectCopiedComponentStyles = () => {
        F-222 — but the home buys no guarantee, and the sentence that used to stand here
        ("so the duplication convention carries it") was false. The diff -q convention covers
        the copied COMPONENT FILES only; App.js is not one of them, and no diff has ever
-       compared these two injectors. What actually holds the four copies together is
+       compared these two injectors. What actually holds the two copies together is
        test-harness/scripts/css-parity.test.mjs, which asserts that .hard-stop,
        .step-busy-note, .async-error-note and .memory-card have byte-identical declaration
-       blocks in all FOUR homes: config-ui App.js injectStyles(), admin-panel App.js
-       injectCopiedComponentStyles(), and both src/styles.css mirrors. Edit this block and
-       you must edit the other three, or that test fails. Do not trust the home; trust the
+       blocks in BOTH rendering homes: config-ui App.js injectStyles() and admin-panel
+       App.js injectCopiedComponentStyles(). (F-509 deleted the two src/styles.css
+       mirrors: nothing imported them.) Edit this block and you must edit the other,
+       or that test fails. Do not trust the home; trust the
        gate. (No backticks anywhere in this comment: it lives inside a template literal,
        and one of them ends the CSS string mid-file.)
 
@@ -6494,9 +6495,9 @@ const injectCopiedComponentStyles = () => {
        dead-credential block. Same visual language as the admin Code tab's .code-* rules;
        separate class NAMES because PremadeRuleForm is byte-copied into admin-panel, where
        .code-dead / .code-kind already have a home in injectStyles() and a second copy
-       would be one rule living in two places. FOUR HOMES, kept equal by
-       css-parity.test.mjs on the .pr-git and .pr-seg tokens: config-ui injectStyles(),
-       admin-panel injectCopiedComponentStyles(), and both styles.css mirrors. */
+       would be one rule living in two places. TWO HOMES, kept equal by
+       css-parity.test.mjs on the .pr-git and .pr-seg tokens: config-ui injectStyles()
+       and admin-panel injectCopiedComponentStyles(). */
     .pr-git-chosen { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     .pr-git-chosen-label { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
     .pr-git-kind { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }

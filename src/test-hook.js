@@ -195,19 +195,6 @@ export async function runJsmCommentProbe({ issueKey, mode, calls }) {
   return out;
 }
 
-/* F-676 — the `sweepHarnessFaults` resume-token grammar. Opaque on purpose: base64 (the
- * shape of our own F-674 token) plus the URL-safe alphabet and the separators a real KVS
- * cursor can carry. 2 KB is a ceiling, not a measurement — no legitimate cursor is close
- * to it, and an unbounded string is a body this door has no reason to accept. */
-const SWEEP_CURSOR_PATTERN = /^[A-Za-z0-9+/=_.:-]+$/;
-const SWEEP_CURSOR_MAX_BYTES = 2048;
-/* `.` and `/` both belong to the grammar (a raw KVS key cursor carries the first, base64 the
- * second), which on its own would admit `../../` — a shape no token ever has and the one an
- * operator reading a 500 would most regret. A doubled dot is refused outright. */
-const sweepCursorWellFormed = (value) =>
-  typeof value === "string" && value.length <= SWEEP_CURSOR_MAX_BYTES
-  && SWEEP_CURSOR_PATTERN.test(value) && !value.includes("..");
-
 export async function testStateTrigger(req) {
   const secret = process.env.HARNESS_SECRET;
   if (!secret) return notFound();
@@ -448,21 +435,46 @@ export async function testStateTrigger(req) {
      * other refusal here is a 400 with a reason. A resume loop then cannot tell "bad token"
      * from "the tenant is down".
      *
-     * So: an opaque-token grammar (base64 plus the URL-safe and separator characters real
-     * KVS cursors and our own F-674 tokens use), a 2 KB ceiling, and a try/catch that turns
-     * any throw from the sweep into JSON. This is a DOOR guard, not a tightening of a
-     * fail-open: `sweepHarnessFaults` still applies its own `BEGINS_WITH` prefix predicate
-     * (the key shape has ONE home, in harness-fault.js, and is not retyped here) and still
-     * deletes only expired rows, so a cursor that slips through the grammar can no more
-     * reach a live lever than one that does not. */
+     * So: an opaque-token grammar, a 2 KB ceiling, and a try/catch that turns any throw from
+     * the sweep into JSON. This is a DOOR guard, not a tightening of a fail-open:
+     * `sweepHarnessFaults` still applies its own `BEGINS_WITH` prefix predicate (the key
+     * shape has ONE home, in harness-fault.js, and is not retyped here) and still deletes
+     * only expired rows, so a cursor that slips through the grammar can no more reach a live
+     * lever than one that does not.
+     *
+     * F-685: the grammar itself is not retyped here either. It is
+     * `sweepCursorWellFormed` in harness-fault.js, next to the encoder that produces the
+     * only tokens it admits — the door used to hold a WIDER-charactered but narrower-in-
+     * effect copy while the library accepted any string as a legacy raw cursor, which is two
+     * answers to one question. Legacy raw cursors are refused now; see that docblock.
+     *
+     * F-684 — THE DIAGNOSIS IS THE ERROR'S, NOT THE SHAPE OF THE REQUEST.
+     * Every throw with a cursor in play used to be answered `400 bad-cursor`, purely because
+     * a cursor had been supplied — a cause the failure never carried. A resume loop that hit
+     * `RATE_LIMIT_EXCEEDED` on call 4 was told its valid token was bad, dropped it and
+     * re-swept from the top, doubling the load on the KVS already refusing it; the identical
+     * platform fault on call 1 answered `500 sweep-failed`. The door now discriminates on
+     * the ERROR: `decodeSweepCursor` refuses a token SYNCHRONOUSLY, before the sweep touches
+     * KVS at all, and only that refusal (`BAD_SWEEP_CURSOR_CODE`) is `bad-cursor`. Anything
+     * thrown from the query or the deletes is `sweep-failed`, carrying the platform error's
+     * own `code` when it has one, so a caller can back off rather than restart.
+     *
+     * F-683 — THE ANSWER CONTRACT, which this door passes through verbatim: `complete` is
+     * computed in ONE place (the library) as `!truncated && failed === 0`. A caller loops
+     * while `cursor !== null`; `cursor === null` now means swept AND every delete landed.
+     * `reason: "deletes-failed"` carries the cursor of the page whose deletes failed so the
+     * caller retries it, and `reason: "deletes-failing"` says the call is NOT converging —
+     * a whole batch landed nothing — so a loop must back off instead of spinning. */
     if (body.action === "sweepHarnessFaults") {
+      const { sweepHarnessFaults, sweepCursorWellFormed, BAD_SWEEP_CURSOR_CODE } = await import("./harness-fault.js");
       const rawCursor = body.cursor;
       let cursor = null;
       if (rawCursor !== undefined && rawCursor !== null) {
+        // The same predicate the library applies, run early so an over-long or non-string
+        // body is refused before anything else looks at it.
         if (!sweepCursorWellFormed(rawCursor)) return json(400, { ok: false, reason: "bad-cursor" });
         cursor = rawCursor;
       }
-      const { sweepHarnessFaults } = await import("./harness-fault.js");
       let r;
       try {
         r = await sweepHarnessFaults({
@@ -471,13 +483,13 @@ export async function testStateTrigger(req) {
           cursor,
         });
       } catch (e) {
-        // A cursor the grammar accepts can still be one KVS itself refuses (a token from a
-        // different query, a stale one). That is the caller's input, so it is a 400 with a
-        // reason — never a bodyless 500. Anything thrown with NO cursor in play is not the
-        // caller's doing, and says so in its own shape.
-        const message = String((e && e.message) || e);
-        if (cursor !== null) return json(400, { ok: false, reason: "bad-cursor", error: message.slice(0, 300) });
-        return json(500, { ok: false, reason: "sweep-failed", error: message.slice(0, 300) });
+        const message = String((e && e.message) || e).slice(0, 300);
+        const code = (e && typeof e.code === "string" && e.code) || null;
+        // The ONLY `bad-cursor` is the library's own pre-KVS refusal of the token.
+        if (code === BAD_SWEEP_CURSOR_CODE) return json(400, { ok: false, reason: "bad-cursor", error: message });
+        // Everything else is the platform's, with its code when it carries one — never a
+        // bodyless 500, and never the caller's token blamed for the tenant's state.
+        return json(500, { ok: false, reason: "sweep-failed", code, error: message });
       }
       // A refusal from the lever overrides the optimistic ok, exactly like the arm actions.
       return json(r.ok === false ? 400 : 200, { ok: true, ...r });

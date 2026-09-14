@@ -409,10 +409,20 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
    * own users: "batches of ~3 with ~200 ms pauses between rounds". A throttled delete is
    * counted `failed` and the ROW SURVIVES, so the un-paced sweep answered ok:true over a
    * keyspace it had not cleared. Asserted here against the pack text itself, so the two
-   * cannot drift apart without a suite saying so. */
+   * cannot drift apart without a suite saying so.
+   *
+   * F-687 - THE NUMBERS ARE THE INTERFACE; THE PROSE IS NOT. This read the pack's exact
+   * markdown, emphasis included ("batches of **~3 with ~200 ms pauses**"), out of a file
+   * whose own header says GENERATED - DO NOT EDIT, produced by scripts/bake-knowledge.mjs
+   * from living source markdown on an allow-list. Re-word the source, drop the bold or write
+   * "200ms" without the space and this suite FAILS on a line labelled "(fixture)" while
+   * src/harness-fault.js is byte-identical and perfectly correct - a failure pointing at a
+   * knowledge pack rather than at the sweep. The drift worth catching is someone changing
+   * KVS_DELETE_BATCH, and that is asserted on the constants directly one line below. So the
+   * pack is read for its NUMBERS only, through a matcher tolerant of formatting. */
   const packText = readFileSync(new URL("../../src/shared/knowledge-packs/forge-app-builder.js", import.meta.url), "utf8");
-  ok(packText.includes("batches of **~3 with ~200 ms pauses**"),
-    "(fixture) the pack really does publish batches of ~3 with ~200 ms pauses - the source this rate is derived from");
+  ok(/batches of \*{0,2}~?3\b[\s\S]{0,60}?~?200 ?ms/.test(packText),
+    "(fixture) the pack really does publish batches of ~3 with ~200 ms pauses - the source this rate is derived from (numbers matched, wording not)");
   ok(fault.KVS_DELETE_BATCH === 3 && fault.KVS_DELETE_PAUSE_MS === 200,
     `deletes are paced at exactly that rate (got ${fault.KVS_DELETE_BATCH}/${fault.KVS_DELETE_PAUSE_MS})`);
   ok(fault.HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY === fault.KVS_DELETE_BATCH,
@@ -434,8 +444,30 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   // THE TOKEN ROUND-TRIPS, including the one value a raw KVS cursor cannot express.
   ok(fault.decodeSweepCursor(first.cursor) === null,
     "the resume token for \"the beginning of the keyspace\" decodes to a null KVS cursor - the value that used to be indistinguishable from \"finished\"");
-  ok(fault.decodeSweepCursor("harness_fault:git:x") === "harness_fault:git:x",
-    "…and a legacy RAW cursor from an older caller is still accepted verbatim");
+  /* F-685 - ONE CURSOR GRAMMAR, AND THE LEGACY RAW CURSOR IS NOT IN IT.
+   * `decodeSweepCursor` used to accept ANY non-empty string verbatim as a raw KVS cursor,
+   * while the web trigger admitted a narrower alphabet - two answers to "what may a resume
+   * cursor be", with the narrow one at the only door there is. The token has shipped for one
+   * deploy and the only callers are this repo's drivers, so the raw path is gone: the
+   * predicate lives here, the door imports it, and anything that is not one of our tokens is
+   * REFUSED (not silently turned into a fresh sweep from the top). */
+  ok(typeof fault.sweepCursorWellFormed === "function" && fault.sweepCursorWellFormed(first.cursor) === true,
+    "the grammar is exported from harness-fault.js and admits our own token");
+  for (const [why, value] of [
+    ["a legacy RAW KVS cursor", "harness_fault:git:x"],
+    ["a traversal shape", "../../etc/passwd"],
+    ["a string outside the alphabet", "abc def"],
+    ["over the 2 KB ceiling", "A".repeat(2100)],
+    ["not a string at all", 42],
+    ["base64 that is not one of ours", "dGhpcy1pcy1ub3QteW91cnM="],
+  ]) {
+    let code = null;
+    try { fault.decodeSweepCursor(value); } catch (e) { code = e && e.code; }
+    ok(code === fault.BAD_SWEEP_CURSOR_CODE,
+      `…and ${why} is REFUSED with ${fault.BAD_SWEEP_CURSOR_CODE}, before any KVS call (got ${JSON.stringify(code)})`);
+  }
+  ok(fault.decodeSweepCursor(null) === null && fault.decodeSweepCursor(undefined) === null,
+    "…while an absent cursor is a fresh sweep, which is the only thing that may mean \"start at the top\"");
 
   latencyMs = 0;
   for (const key of keys) await storage.delete(key);
@@ -453,9 +485,10 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     drainKeys.push(key);
     await storage.set(key, { count: 1, armedAt: stale, until: stale });
   }
-  let token = null, calls = 0, drained = 0, ran = true;
+  let token = null, calls = 0, drained = 0, ran = true, last = null;
   while (ran) {
     const r = await fault.sweepHarnessFaults({ maxMs: 500, cursor: token });
+    last = r;
     drained += r.deleted;
     token = r.cursor;
     calls++;
@@ -468,6 +501,74 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   for (const key of drainKeys) if ((await storage.get(key)) !== undefined) stillThere++;
   ok(stillThere === 0 && drained === DRAIN,
     `…with the whole ${DRAIN}-row keyspace actually EMPTY when it stops (deleted ${drained}, still there ${stillThere})`);
+  // F-683 - and the FINISHED answer says so in one field, not by the caller re-deriving it.
+  ok(last.complete === true && last.failed === 0 && last.truncated === false,
+    `…and only THAT answer is \`complete\` (got ${JSON.stringify({ complete: last.complete, failed: last.failed, truncated: last.truncated })})`);
+
+  /* F-682/F-683 - A STORE THAT REFUSES EVERY DELETE.
+   *
+   * `progressed` was set after `Promise.allSettled` whatever the outcomes, so an all-failed
+   * batch armed the gate the whole termination argument rests on: the budget was then free
+   * to break MID-PAGE with that page's own cursor, and the resumed call re-fetched the same
+   * page, failed the same way, and answered the same token - forever. And even when the walk
+   * DID reach the end of the keyspace, a sweep whose deletes all failed answered
+   * `truncated: false, cursor: null`: the finished signal, over rows it had condemned and
+   * left standing.
+   *
+   * The offline mock deletes instantly and never refuses, which is exactly why no suite
+   * could see either one. Refuse every delete and both answers become readable: the call
+   * ENDS with `reason: "deletes-failing"`, `failed > 0` and a cursor, and a loop that treats
+   * that as "not converging" terminates instead of spinning. */
+  const failKeys = [];
+  for (let i = 0; i < 9; i++) {
+    const key = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_682", `d-${String(i).padStart(4, "0")}`);
+    failKeys.push(key);
+    await storage.set(key, { count: 1, armedAt: stale, until: stale });
+  }
+  const okDelete = kvs.delete;
+  kvs.delete = async function refusingDelete(key) {
+    if (failKeys.includes(key)) { const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e; }
+    return okDelete.call(this, key);
+  };
+  let failToken = null, failCalls = 0, spun = 0, lastFail = null;
+  while (failCalls < 50) {
+    const r = await fault.sweepHarnessFaults({ maxMs: 5_000, cursor: failToken });
+    lastFail = r; failCalls++;
+    spun += r.deleted;
+    // The contract a caller writes: keep going while there is a cursor, but STOP when the
+    // answer says the deletes are not landing. Without F-682 this loop never exits.
+    if (r.reason === "deletes-failing") break;
+    failToken = r.cursor;
+    if (failToken === null) break;
+  }
+  ok(failCalls === 1 && lastFail.reason === "deletes-failing",
+    `an all-failed batch ENDS the call as "deletes-failing" rather than counting as progress (calls ${failCalls}, reason ${JSON.stringify(lastFail.reason)})`);
+  ok(lastFail.truncated === true && lastFail.failed > 0 && spun === 0,
+    `…with failed > 0 and nothing deleted, so a caller can see it is NOT converging (got ${JSON.stringify({ truncated: lastFail.truncated, failed: lastFail.failed, deleted: spun })})`);
+  ok(lastFail.complete === false && typeof lastFail.cursor === "string" && lastFail.cursor.length > 0,
+    "…never `complete`, and still carrying the cursor of the page that failed so a retry resumes there");
+  // The rows are all still present — a refused delete must leave the row, which is the whole
+  // reason `failed > 0` may not share an answer shape with "finished".
+  let survivors = 0;
+  for (const key of failKeys) if ((await storage.get(key)) !== undefined) survivors++;
+  ok(survivors === failKeys.length, `…and every refused row is still there (${survivors}/${failKeys.length})`);
+
+  /* THE PARTIAL CASE: some deletes land, some do not, and the walk reaches the end of the
+   * keyspace. That used to be `truncated: false, cursor: null, ok: true, failed: n`. */
+  const stubborn = new Set(failKeys.slice(0, 2));
+  kvs.delete = async function partlyRefusingDelete(key) {
+    if (stubborn.has(key)) { const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e; }
+    return okDelete.call(this, key);
+  };
+  const partial = await fault.sweepHarnessFaults({ maxMs: 5_000 });
+  ok(partial.failed > 0 && partial.deleted > 0,
+    `(fixture) a sweep where some deletes land and some are refused (deleted ${partial.deleted}, failed ${partial.failed})`);
+  ok(partial.truncated === true && partial.reason === "deletes-failed" && partial.complete === false,
+    `a sweep that could not delete what it condemned is NOT finished - it says "deletes-failed" (got ${JSON.stringify({ truncated: partial.truncated, reason: partial.reason, complete: partial.complete })})`);
+  ok(typeof partial.cursor === "string" && partial.cursor.length > 0,
+    "…and carries the cursor of the page the failures started on, so a retry resumes at the mess");
+  kvs.delete = okDelete;
+  for (const key of failKeys) await storage.delete(key);
 
   // THE BUDGET ITSELF: a default, a ceiling no caller may raise past the 25 s trigger, and a
   // floor, so "maxMs: 0" is one check-and-stop rather than a loop that never checks.

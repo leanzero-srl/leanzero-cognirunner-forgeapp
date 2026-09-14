@@ -35,7 +35,7 @@
  */
 
 import "../lib/register-mocks-index.mjs";
-import storage, { kvs } from "../lib/mock-kvs.mjs";
+import storage, { kvs, KVS_INVALID_CURSOR_CODE } from "../lib/mock-kvs.mjs";
 const { default: forgeApi } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -472,6 +472,11 @@ process.env.HARNESS_SECRET = SECRET;
     ["over the 2 KB ceiling", "A".repeat(2100)],
     ["whitespace, which is not a token", "   "],
     ["not a string at all", 42],
+    // F-685 — the library's back-compat path accepted this verbatim while this door refused
+    // it, which was two answers to one question. There is one grammar now and it says no.
+    ["a legacy RAW KVS cursor, which is no longer a grammar", "harness_fault:git:x"],
+    // In the grammar, but not one of our tokens: refused by the LIBRARY, before any KVS call.
+    ["base64 that is not one of our tokens", "dGhpcy1pcy1ub3QteW91cnM="],
   ];
   for (const [why, value] of badCursors) {
     const r = await post({ action: "sweepHarnessFaults", cursor: value, dryRun: true });
@@ -488,16 +493,33 @@ process.env.HARNESS_SECRET = SECRET;
     await storage.delete(victim);
   }
 
-  /* THE OTHER HALF: a cursor the GRAMMAR accepts that KVS ITSELF throws on. The offline
-   * mock's cursor was a plain key string that never rejected anything, which is exactly why
-   * no suite could answer this — `__rejectCursor` is the fixture that can. */
-  kvs.__rejectCursor("dGhpcy1pcy1ub3QteW91cnM=");
-  const rejected = await post({ action: "sweepHarnessFaults", cursor: "dGhpcy1pcy1ub3QteW91cnM=" });
+  /* F-684 — THE OTHER HALF: a VALID token that KVS ITSELF throws on.
+   *
+   * Every throw with a cursor in play was labelled `bad-cursor`, purely because a cursor had
+   * been supplied — a cause the failure never carried. A resume loop mid-drain when the
+   * tenant starts throttling was told its perfectly good token was bad; written to the
+   * door's own grammar it would drop the token and re-sweep from the top, doubling the load
+   * on the KVS already refusing it. The SAME platform fault on call 1 (no cursor) answered
+   * `500 sweep-failed`: one fault, two diagnoses, chosen by call number.
+   *
+   * So the token here is a REAL one, and the mock is armed to refuse the KVS cursor inside
+   * it — the only way to reach a throw from `getMany()` now that a malformed token is
+   * refused synchronously, before any KVS call, as `bad-cursor`. */
+  const liveToken = fault.encodeSweepCursor("harness_fault:git:zzz");
+  kvs.__rejectCursor("harness_fault:git:zzz");
+  const rejected = await post({ action: "sweepHarnessFaults", cursor: liveToken });
   kvs.__rejectCursor(null);
-  ok(rejected.status === 400 && rejected.body && rejected.body.ok === false && rejected.body.reason === "bad-cursor",
-    `when KVS itself THROWS on the cursor the door answers 400 bad-cursor with a body (got ${JSON.stringify({ status: rejected.status, body: rejected.body })})`);
+  ok(rejected.status === 500 && rejected.body && rejected.body.ok === false && rejected.body.reason === "sweep-failed",
+    `a throw from KVS on a well-formed token is "sweep-failed", NOT the caller's cursor blamed (got ${JSON.stringify({ status: rejected.status, reason: rejected.body && rejected.body.reason })})`);
+  ok(rejected.body.code === KVS_INVALID_CURSOR_CODE,
+    `…carrying the platform error's own code, so a caller can back off on a throttle instead of restarting (got ${JSON.stringify(rejected.body.code)})`);
   ok(typeof rejected.body.error === "string" && rejected.body.error.length > 0,
-    "…carrying the platform's message, so a resume loop can tell a bad token from a dead tenant");
+    "…and the platform's message, so a resume loop can tell a bad token from a dead tenant");
+  /* …while the LIBRARY's own refusal of a token — the one thing that cannot have come from
+   * the platform, because it happens before any KVS call — is the ONLY `bad-cursor`. */
+  const notOurs = await post({ action: "sweepHarnessFaults", cursor: "dGhpcy1pcy1ub3QteW91cnM=" });
+  ok(notOurs.status === 400 && notOurs.body.reason === "bad-cursor" && !notOurs.body.code,
+    `…and only a pre-KVS refusal of the token is bad-cursor (got ${JSON.stringify({ status: notOurs.status, reason: notOurs.body && notOurs.body.reason })})`);
   // A NULL or ABSENT cursor is not a bad one — the fresh-sweep case must keep working.
   ok((await post({ action: "sweepHarnessFaults", cursor: null, dryRun: true })).status === 200
     && (await post({ action: "sweepHarnessFaults", dryRun: true })).status === 200,

@@ -528,6 +528,10 @@ export const jiraFaultStatus = async (path) => {
  *
  * BEST-EFFORT ON EACH DELETE, like every other cleanup in this module: a key that refuses to
  * go is counted in `failed`, never thrown out of a sweep that cleaned up everything else.
+ * But best-effort is about not THROWING, not about calling the result finished (F-683): any
+ * `failed > 0` makes the answer `truncated: true, reason: "deletes-failed"` with a cursor to
+ * retry from, and `complete: false`. `complete = !truncated && failed === 0` is the ONLY
+ * definition of a finished sweep, and it is computed in `sweepHarnessFaults` and nowhere else.
  */
 export const HARNESS_FAULT_KEY_PREFIX = "harness_fault:";
 
@@ -621,22 +625,71 @@ const sweepPause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * `null` is already spoken for as "finished". So the token the sweep RETURNS and ACCEPTS is
  * its own: base64 JSON carrying the KVS cursor, which may legitimately be `null`. The token
  * is therefore ALWAYS a non-empty string while work remains, and `cursor === null` means
- * finished and nothing else. Raw KVS cursors from an older caller are still accepted
- * verbatim, so nothing that already holds one is broken by this.
+ * finished and nothing else. (F-685: raw KVS cursors from a pre-token caller were accepted
+ * verbatim for one deploy and are NOT any more - the grammar below admits our token only.)
  */
-const encodeSweepCursor = (kvsCursor) =>
+export const encodeSweepCursor = (kvsCursor) =>
   Buffer.from(JSON.stringify({ c: kvsCursor === undefined ? null : kvsCursor }), "utf8").toString("base64");
 
+/*
+ * F-685 - THE CURSOR GRAMMAR HAS ONE HOME, AND IT IS THIS ONE.
+ *
+ * There were two readings of "what a resume cursor may be": the web trigger admitted
+ * `[A-Za-z0-9+/=_.:-]+` under 2 KB with no doubled dot, while `decodeSweepCursor` accepted
+ * ANY non-empty string verbatim as a legacy raw KVS cursor. The narrow one sat at the door,
+ * so the library's back-compat path could never be reached through the only caller there is
+ * - and a raw cursor carrying a space or a `#` (both legal in a KVS key) was refused
+ * `bad-cursor` at the door by the same build that went out of its way to support it.
+ *
+ * LEGACY RAW CURSORS ARE NO LONGER ACCEPTED. The base64 token has shipped for exactly one
+ * deploy, the only callers are this repo's own drivers, and a raw KVS cursor presented today
+ * is refused as `bad-cursor` like any other string that is not one of our tokens. That is a
+ * deliberate narrowing of an input, not of a fail-open: the grammar admits our own token and
+ * nothing else needs admitting, and every refusal is a 400 with a reason.
+ *
+ * The 2 KB ceiling stays (an unbounded string is a body no door has reason to accept) and so
+ * does the doubled-dot refusal: `.` and `/` are both in base64's neighbourhood, our tokens
+ * never contain `..`, and defence-in-depth on a value bound for a storage API is free.
+ */
+export const SWEEP_CURSOR_MAX_BYTES = 2048;
+const SWEEP_CURSOR_PATTERN = /^[A-Za-z0-9+/=_-]+$/;
+export const sweepCursorWellFormed = (value) =>
+  typeof value === "string" && value.length > 0 && value.length <= SWEEP_CURSOR_MAX_BYTES
+  && SWEEP_CURSOR_PATTERN.test(value) && !value.includes("..");
+
+/*
+ * F-684 - A REFUSAL THE DOOR CAN TELL APART FROM A DEAD TENANT.
+ *
+ * `decodeSweepCursor` REFUSES by throwing this, and it does so synchronously, before the
+ * sweep has touched KVS at all. That ordering is the whole point: the door names
+ * `bad-cursor` only for an error that could not possibly have come from the platform, and
+ * every other throw - a rejected query, a throttle, an outage - is `sweep-failed`.
+ */
+export const BAD_SWEEP_CURSOR_CODE = "BAD_SWEEP_CURSOR";
+const badSweepCursor = (detail) => {
+  const error = new Error(`bad sweep cursor: ${detail}`);
+  error.code = BAD_SWEEP_CURSOR_CODE;
+  return error;
+};
+
+/**
+ * A caller's token -> the KVS cursor inside it. `null`/`undefined`/absent is a FRESH sweep
+ * (and so is our own token for "the beginning of the keyspace", which is the value a raw KVS
+ * cursor cannot express). Anything else that is not one of our tokens THROWS
+ * `BAD_SWEEP_CURSOR_CODE` - it never silently becomes a fresh sweep, because a resume loop
+ * that quietly restarts from the top is the failure this token was introduced to end.
+ */
 export const decodeSweepCursor = (token) => {
-  if (typeof token !== "string" || !token) return null;
+  if (token === null || token === undefined) return null;
+  if (!sweepCursorWellFormed(token)) throw badSweepCursor("outside the token grammar");
+  let parsed;
   try {
-    const parsed = JSON.parse(Buffer.from(token, "base64").toString("utf8"));
-    if (parsed && typeof parsed === "object" && "c" in parsed) {
-      return typeof parsed.c === "string" && parsed.c ? parsed.c : null;
-    }
-  } catch { /* not one of ours - fall through to the back-compat reading */ }
-  // Back-compat: a raw KVS cursor handed back by a caller that predates the token.
-  return token;
+    parsed = JSON.parse(Buffer.from(token, "base64").toString("utf8"));
+  } catch {
+    throw badSweepCursor("not a decodable token");
+  }
+  if (!parsed || typeof parsed !== "object" || !("c" in parsed)) throw badSweepCursor("not one of ours");
+  return typeof parsed.c === "string" && parsed.c ? parsed.c : null;
 };
 
 /**
@@ -665,6 +718,34 @@ export const sweepBudgetMs = (maxMs) => {
  * already deleted are GONE, so re-fetching the same page returns the remainder and nothing
  * is re-deleted. No skip count is needed and none is kept - the deletes themselves are the
  * progress the cursor does not have to encode.
+ *
+ * F-682 - A BATCH THAT LANDED NOTHING IS NOT PROGRESS.
+ *
+ * `progressed` was set after `Promise.allSettled` regardless of outcome, so a batch in which
+ * EVERY delete was rejected armed the gate the termination argument rests on. Under
+ * throttling - the exact condition the pacing above exists for - batch 0 of a page failed
+ * three times, set `progressed`, and the budget was then free to break MID-PAGE with
+ * `cursor = resume`: the page's own token. The resumed call re-fetched the identical page,
+ * built the identical `doomed` list, failed identically, and answered with the identical
+ * token, forever, burning a trigger per turn and deleting nothing. Only a FULFILLED delete
+ * or an advanced page counts now.
+ *
+ * And an all-failed batch ENDS THE CALL, with `reason: "deletes-failing"` and the same
+ * cursor: a caller that sees a byte-identical answer has no way to tell a converging sweep
+ * from a stuck one, but `deletes-failing` beside `failed > 0` says outright "this is not
+ * converging, back off". That is what makes a `while (cursor)` loop against a permanently
+ * refusing store terminate instead of spin.
+ *
+ * F-683 - `cursor === null` MEANS SWEPT *AND* CLEARED.
+ *
+ * A sweep whose deletes failed still advanced its cursor and, at the end of the keyspace,
+ * answered `truncated: false, cursor: null, ok: true, failed: 63` - the "finished" signal,
+ * for a call that left 63 rows it had itself condemned. F-677 changed the RATE; it did not
+ * change the ANSWER. There is now ONE definition of finished, computed here and nowhere
+ * else: `complete = !truncated && failed === 0`, returned as a field so no caller has to
+ * re-derive it. When any delete failed, the answer is `truncated: true,
+ * reason: "deletes-failed"` carrying the cursor of the FIRST page whose deletes failed, so
+ * retrying resumes where the mess is rather than at the top.
  */
 export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startCursor = null } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
@@ -676,9 +757,13 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
   const rows = [];
   let scanned = 0, deleted = 0, failed = 0, rowsTruncated = false;
   let truncated = false, reason = null;
-  // Anything the caller hands back - our token, a legacy raw cursor, or nothing at all.
-  let cursor = decodeSweepCursor(typeof startCursor === "string" && startCursor ? startCursor : null);
+  /* Our token, or nothing at all. VALIDATED FIRST, SYNCHRONOUSLY (F-684): this throws
+   * `BAD_SWEEP_CURSOR_CODE` before a single KVS call is made, which is what lets the door
+   * name `bad-cursor` from the error itself instead of from "a cursor was supplied". */
+  let cursor = decodeSweepCursor(startCursor === undefined ? null : startCursor);
   let progressed = false;
+  // The resume point of the FIRST page a delete failed on - where a retry should pick up.
+  let failedResume = null;
   for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
     // The cursor that re-fetches THIS page - the resume point for anything that stops inside it.
     const resume = cursor;
@@ -720,21 +805,44 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
         if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
         const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
         const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
-        for (const outcome of settled) { if (outcome.status === "fulfilled") deleted++; else failed++; }
-        progressed = true;
+        let landed = 0;
+        for (const outcome of settled) { if (outcome.status === "fulfilled") { deleted++; landed++; } else failed++; }
+        if (landed < settled.length && failedResume === null) failedResume = resume;
+        // F-682: ONLY a delete that actually landed is progress. A batch of pure rejections
+        // shrinks nothing, so it must not license a mid-page break with this page's cursor.
+        if (landed > 0) progressed = true;
+        else if (settled.length > 0) {
+          // Nothing landed: this call is not converging. Stop HERE, with this page's cursor
+          // and a reason that says so, rather than pacing on into a budget break that would
+          // be indistinguishable from a healthy partial sweep.
+          truncated = true; reason = "deletes-failing"; cursor = resume; break;
+        }
       }
       if (truncated) break;
     }
     cursor = (result && result.nextCursor) || null;
+    // The page MOVED, which is the other half of the progress guarantee (F-682): a page
+    // that deleted nothing because there was nothing to delete has still gone forward.
     progressed = true;
     if (!cursor) break;
     if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) { truncated = true; reason = "pages"; }
   }
+  /* F-683: a delete that did not land is NOT a finished sweep. If the loop otherwise ran to
+   * the end, say `deletes-failed` and hand back the page where the failures started, so a
+   * retry resumes at the mess instead of re-walking the keyspace. A break that already has a
+   * reason (budget, pages, deletes-failing) keeps it - it is the more specific answer and it
+   * already carries a resumable cursor. */
+  if (failed > 0 && !truncated) { truncated = true; reason = "deletes-failed"; cursor = failedResume; }
   return {
     ok: true, dryRun: dry, scanned, deleted, failed,
     truncated, reason, budgetMs, rows, rowsTruncated,
-    // Carried ONLY when there is more to do, so a `truncated: false` answer with a null
-    // cursor is the one unambiguous way a caller reads "finished" rather than "stopped".
+    /* THE ANSWER CONTRACT, in ONE place (F-683): the whole keyspace was walked and every
+     * delete landed. Anything else is a stop, not a finish - including a sweep that reached
+     * the end with `failed > 0`, which used to answer `truncated: false, cursor: null`. */
+    complete: !truncated && failed === 0,
+    // Carried ONLY when there is more to do, so a null cursor is the one unambiguous way a
+    // caller reads "finished" rather than "stopped" - and since F-683 forces `truncated` on
+    // any failed delete, null now agrees with `complete` rather than contradicting it.
     // NEVER null while work remains (F-674): the token encodes a null KVS cursor too.
     cursor: truncated ? encodeSweepCursor(cursor) : null,
   };

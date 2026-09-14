@@ -1253,5 +1253,112 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   });
 }
 
+/* ===== F-612 — A CLEARED BINDING SURVIVES A CONSENT-TICKET RESUME =================
+ *
+ * F-610 taught `startCoderTurn` that an explicit `[]` means UNBIND, and F-630 made the
+ * re-pin path obey it. The resume was left out: `confirmCoderTicket` pushed
+ * `skillIds: prior.skillIds` and NOTHING else, so the cleared `[]` arrived on the queue
+ * without `skillIdsExplicit` — indistinguishable from "this turn sent no selection" —
+ * and `buildCoderKnowledge`'s F-594 arm handed the PINNED skills straight back. Answering
+ * a confirmation dialog resurrected skills the owner had deliberately cleared.
+ *
+ * The cut is a `skillsCleared` marker written by the unbind path onto the same per-thread
+ * row, read through ONE predicate (`coderSkillBindingFrom`) by both paths that rebuild a
+ * binding from the row. These drive the REAL resolvers and read the PUSHED params.
+ */
+{
+  const T = "t_f612";
+  const build = (params) => __coderKnowledgeInternals.buildCoderKnowledge(params);
+  const pinFrom = (thread, k) => storage.set(coder.coderPinKey(ISSUE, thread), {
+    issueKey: ISSUE, threadId: thread,
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [], requestedSkillIds: k.requestedSkillIds || k.skillIds || [],
+    memoryCount: k.memoryCount || 0, memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch,
+    at: new Date().toISOString(),
+  });
+  const seedTicketFor = async (id, thread) => {
+    await storage.set(coder.coderTicketKey(id), {
+      ticketId: id, issueKey: ISSUE, threadId: thread, ownerAccountId: OWNER,
+      action: "commit_files", args: {}, argsPreview: {}, status: "pending",
+      simulation: true, connectionId: "conn-3",
+    });
+    await storage.set(coder.coderThreadKey(ISSUE, thread), {
+      issueKey: ISSUE, threadId: thread, ownerAccountId: OWNER, messages: [],
+      simulation: true, connectionId: "conn-3", pendingTicketId: id,
+    });
+  };
+
+  /* BLOCK — clear the skills, answer a ticket, and the resume's pin carries none. */
+  await call("startCoderTurn", {
+    issueKey: ISSUE, threadId: T, message: "turn one", simulation: true,
+    skillIds: ["skill_house", "skill_adf"],
+  });
+  // The thread really is pinned with both, so the resurrection has something to resurrect.
+  await pinFrom(T, await build(lastCoderPush()));
+  await call("startCoderTurn", { issueKey: ISSUE, threadId: T, message: "clear them", simulation: true, skillIds: [] });
+  {
+    const row = await storage.get(`coder_turn:${ISSUE}:${T}`);
+    ok(row && row.skillsCleared === true,
+      `F-612: the unbind writes the marker that makes its \`[]\` readable later (${JSON.stringify(row && row.skillsCleared)})`);
+  }
+  await seedTicketFor("tkt_f612", T);
+  const answered = await call("confirmCoderTicket", { ticketId: "tkt_f612", decision: "skip" });
+  ok(answered && answered.success === true, `F-612: the ticket is answerable (${JSON.stringify(answered).slice(0, 160)})`);
+  {
+    const p = lastCoderPush();
+    ok(Array.isArray(p.skillIds) && p.skillIds.length === 0, "the resume carries no skill ids");
+    ok(p.skillIdsExplicit === true,
+      `THE FINDING: …and says it MEANS the empty list, so the pin cannot refill it (${JSON.stringify(p.skillIdsExplicit)})`);
+    const k = await build(p);
+    ok(!k.skillsBlock && !k.skillsExtraBlock,
+      `…and no skills reach the model on the resumed turn, in the prefix or after it (${String(k.skillsBlock || k.skillsExtraBlock || "").slice(0, 60)})`);
+    ok(!(k.skillIds || []).length, `…and the receipt's pin names none (${JSON.stringify(k.skillIds)})`);
+    const row = await storage.get(`coder_turn:${ISSUE}:${T}`);
+    ok(row && row.skillsCleared === true && (row.skillIds || []).length === 0,
+      `…and the row the NEXT resume reads still says cleared (${JSON.stringify(row && row.skillsCleared)})`);
+  }
+  // A silent turn after the resume is still unbound — the marker is not consumed.
+  await call("startCoderTurn", { issueKey: ISSUE, threadId: T, message: "later", simulation: true });
+  {
+    const p = lastCoderPush();
+    ok(p.skillIds.length === 0 && p.skillIdsExplicit === true,
+      `F-612: a later silent turn keeps the cleared binding EXPLICIT (${JSON.stringify(p.skillIds)}, ${p.skillIdsExplicit})`);
+  }
+
+  /* ALLOW — a row with NO marker and an empty list still INHERITS (the F-610 meaning of
+   * an absent selection, and the shape of every row written before this finding). */
+  {
+    const T2 = "t_f612_legacy";
+    await storage.set(`coder_turn:${ISSUE}:${T2}`, {
+      simulation: true, connectionId: "conn-3", maxRounds: 4, savedByRole: null,
+      skillIds: [], updatedAt: new Date().toISOString(),
+    });
+    await seedTicketFor("tkt_f612_legacy", T2);
+    await call("confirmCoderTicket", { ticketId: "tkt_f612_legacy", decision: "skip" });
+    const p = lastCoderPush();
+    ok(Array.isArray(p.skillIds) && p.skillIds.length === 0 && p.skillIdsExplicit === false,
+      `F-612: an unmarked \`[]\` resumes NON-explicit, so the pin's ids remain the fallback (${JSON.stringify(p.skillIdsExplicit)})`);
+    // …and it really does inherit: pin this thread with a skill and watch the replay keep it.
+    const pinned = await build({ issueKey: ISSUE, threadId: T2, message: "go", skillIds: ["skill_house"], skillIdsExplicit: true });
+    await pinFrom(T2, pinned);
+    const k = await build(p);
+    ok(/### Skill: House style/.test(String(k.skillsBlock || "")),
+      `…and the resumed turn replays the thread's pinned skill rather than losing it (${String(k.skillsBlock || "").slice(0, 60)})`);
+  }
+
+  /* ALLOW — a row that HOLDS ids resumes with them, explicit, and the marker stays off. */
+  {
+    const T3 = "t_f612_bound";
+    await call("startCoderTurn", { issueKey: ISSUE, threadId: T3, message: "one", simulation: true, skillIds: ["skill_house"] });
+    await seedTicketFor("tkt_f612_bound", T3);
+    await call("confirmCoderTicket", { ticketId: "tkt_f612_bound", decision: "skip" });
+    const p = lastCoderPush();
+    ok(p.skillIds.join(",") === "skill_house" && p.skillIdsExplicit !== true,
+      `F-612: a bound thread resumes with its own skills, non-explicit so the pin stays the fallback (${JSON.stringify(p.skillIds)}, ${p.skillIdsExplicit})`);
+    const row = await storage.get(`coder_turn:${ISSUE}:${T3}`);
+    ok(row && row.skillsCleared !== true, "…and nothing marks a bound thread as cleared");
+  }
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

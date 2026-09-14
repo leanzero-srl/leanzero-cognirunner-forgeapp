@@ -16,7 +16,7 @@ import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 import { readBearerToken } from "./shared/http-headers.js";
 // F-803: "what does a credential VALUE look like" has ONE home, shared with the harness
 // evidence redactor — the two used to disagree about this app's own Rules-API bearer.
-import { SECRET_VALUE_SHAPES, SECRET_FIELD_NAME_HINTS, anchoredShapeSources } from "./shared/secret-shapes.js";
+import { SECRET_FIELD_NAME_HINTS, findCredentialSpans } from "./shared/secret-shapes.js";
 // F-770: "is this a legal KVS key" has ONE home, and it is not this file. Same module the
 // key BUILDERS assert against, so this door and the builders cannot drift apart again.
 import { isKvsKey, safeKeyPart, KVS_KEY_PATTERN, KVS_KEY_MAX_CHARS } from "./shared/kvs-keys.js";
@@ -89,7 +89,7 @@ const jsonOf = async (res) => { try { return JSON.parse(String(await res.text())
  * ═══════════════════════════════════════════════════════════════════════════════════ */
 /* F-803 — the hints are NOT this file's list. They are one half of the one answer to
  * "what does a credential look like" (src/shared/secret-shapes.js); the other half is the
- * VALUE shapes spliced into `SECRET_VALUE_RE` below. `test-harness/lib/redact.mjs` reads
+ * VALUE shapes spliced into the family regex below. `test-harness/lib/redact.mjs` reads
  * the same module, because the two used to disagree about this app's own bearer. */
 const SECRET_KEY_HINTS = SECRET_FIELD_NAME_HINTS;
 
@@ -101,7 +101,7 @@ const SECRET_KEY_HINTS = SECRET_FIELD_NAME_HINTS;
  * not two regexes:
  *
  *   1. `isCredentialKey`, the READ CEILING on the GET `?what=kvs` (see its call site).
- *   2. `SECRET_VALUE_RE` below, the WRITE refusal (`findPlantedSecret`), which used to
+ *   2. `secretSpansInText` below, the WRITE refusal (`findPlantedSecret`), which used to
  *      keep its own retyped copy of `COGNIRUNNER_KEY_` and `git_conn_secret:` — two
  *      homes for one census, so a family added to one was missing from the other.
  *
@@ -310,7 +310,7 @@ export const credentialFingerprint = async (value) => {
   return createHmac("sha256", await fingerprintKey()).update(fingerprintInput(value)).digest("hex").slice(0, 16);
 };
 
-/** Regex-escape a literal so a family prefix can be spliced into `SECRET_VALUE_RE`. */
+/** Regex-escape a literal so a family prefix can be spliced into `familyRe`. */
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
@@ -318,37 +318,47 @@ const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  * key family can describe (GitHub/GitLab/OpenAI/Atlassian/Slack/AWS tokens, JWTs, Forge
  * web-trigger URLs).
  *
- * BOTH halves are DERIVED — neither is retyped here:
- *   · the FAMILY half from `CREDENTIAL_KEY_FAMILIES` above, since F-769;
- *   · the SHAPE half from `src/shared/secret-shapes.js`, since F-803. It used to be an
+ * BOTH halves are DERIVED — neither is retyped here — and they are now two functions
+ * rather than one spliced alternation, because the shape half grew a hand scanner (F-815)
+ * a regex alternation cannot hold. `secretSpansInText` below is where they meet:
+ *   · the FAMILY half is `familyRe`, from `CREDENTIAL_KEY_FAMILIES` above, since F-769;
+ *   · the SHAPE half is `findCredentialSpans` from `src/shared/secret-shapes.js`, since
+ *     F-803 (and anchored since F-814). It used to be an
  *     inline alternation that knew `gh[pousr]_`, `github_pat_`, `sk-`, `xoxb-` and the dev
  *     web-trigger host — and NOT `cgr_`, this app's own Rules-API bearer, nor `ATATT`,
  *     `glpat-`, `AKIA`, `xoxp-` or a JWT, all of which the evidence redactor at the file
  *     boundary already knew. Two lists, one question, and the door was the weaker of them.
  */
-const secretValueRe = (flags = "") => new RegExp(
-  "(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|") + "|" + anchoredShapeSources().join("|") + ")",
-  flags,
-);
-const SECRET_VALUE_RE = secretValueRe();
+const familyRe = (flags = "") => new RegExp("(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|") + ")", flags);
 
 /**
- * F-814 — the SPANS, not just the yes/no, because the read ceiling now needs to know WHERE
- * in a string the credential is. `anchoredShapeSources()` is the same census carrying the
- * left anchor the bare `SECRET_VALUE_SHAPES` list does not: `risk-assessment` contains
- * `sk-` followed by 8 word characters, and this regex used to answer true about it.
+ * EVERY credential SPAN in a string — the SHAPES from their one home merged with this
+ * door's own key FAMILIES, leftmost-first and non-overlapping.
  *
- * Built per call — a `g` regex kept across calls carries `lastIndex`, which is the reason
- * `credentialValueRegex` next door is a factory too.
+ * F-814 — spans, not a yes/no, because the read ceiling needs to know WHERE the credential
+ * is: a token inside prose is rewritten in place and the sentence survives. The shapes
+ * carry the left anchor the bare `SECRET_VALUE_SHAPES` census does not, which is why
+ * `risk-assessment` no longer answers true here.
+ * F-815 — the shape half is `findCredentialSpans`, which carries the JWT as a LINEAR hand
+ * scanner rather than a quadratic regex, because this door reads tenant-authored rows up to
+ * the 240 KiB KVS cap. The families are literals and cannot blow up; their regex is built
+ * per call because a `g` regex kept across calls carries `lastIndex`.
  */
 const secretSpansInText = (text) => {
   if (typeof text !== "string" || text === "") return [];
-  const re = secretValueRe("g");
-  const out = [];
+  const spans = findCredentialSpans(text);
+  const re = familyRe("g");
   let m;
   while ((m = re.exec(text)) !== null) {
     if (m[0] === "") { re.lastIndex++; continue; }
-    out.push({ start: m.index, end: m.index + m[0].length });
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  spans.sort((a, b) => a.start - b.start || b.end - a.end);
+  const out = [];
+  for (const sp of spans) {
+    const last = out[out.length - 1];
+    if (last && sp.start < last.end) { if (sp.end > last.end) last.end = sp.end; continue; }
+    out.push({ ...sp });
   }
   return out;
 };
@@ -463,7 +473,7 @@ export const notPlantedRefusal = (what) => ({
  *
  * `findSecretFields` walks a value and returns EVERY path whose FIELD NAME reads like a
  * credential (`SECRET_KEY_HINTS`) or whose STRING VALUE looks like one
- * (`SECRET_VALUE_RE`), in depth-first order. Two doors ask it one question:
+ * (`secretSpansInText`), in depth-first order. Two doors ask it one question:
  *
  *   · the WRITE refusal (`findPlantedSecret`) wants the FIRST hit, to name a field and
  *     refuse the body. Its behaviour is UNCHANGED — it is now the one-line caller that
@@ -548,7 +558,7 @@ export const findPlantedSecret = (value) => findSecretFields(value)[0] || null;
  * ceiling with a value-shape backstop, and free text is neither:
  *   · `functions[].code`, `agent.instructions`, `prompt`/`systemPrompt`/`instructions` and
  *     every other prose field come back PLAIN. A tenant who pasted a token into a prompt is
- *     caught ONLY if it wears a shape `SECRET_VALUE_RE` knows (`sk-…`, `ghp_…`, `xoxb-`,
+ *     caught ONLY if it wears a shape `secretSpansInText` knows (`sk-…`, `ghp_…`, `xoxb-`,
  *     `github_pat_`, a `.atlassian-dev.net/` web-trigger URL, or a declared key family
  *     name). A bare hex/base64 blob in a prompt is invisible, and masking every long
  *     string in a `code` field would mask the code.
@@ -643,7 +653,7 @@ export const maskSecretFields = async (value, { extraFieldNames = [] } = {}) => 
  *
  * THE RESIDUAL IS UNCHANGED and is the one stated at `maskSecretFields`: free text
  * (`functions[].code`, `agent.instructions`, a log entry's AI output) is caught only by
- * SHAPE (`SECRET_VALUE_RE`).
+ * SHAPE (`secretSpansInText`).
  *
  * F-814 — AND FREE TEXT IS NOW REDACTED IN PLACE RATHER THAN SWALLOWED. Widening the
  * ceiling onto the log and registry arms put PROSE through a rule written for a header

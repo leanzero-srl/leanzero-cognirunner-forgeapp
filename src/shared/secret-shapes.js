@@ -51,6 +51,21 @@
  * the token on the line. `test-hook.js` only ever asks `.test()`, so the tail costs it
  * nothing. One shape, both jobs.
  *
+ * EVERY SHAPE MUST BE LINEAR (F-815). A greedy unbounded run FOLLOWED BY A REQUIRED LITERAL
+ * is quadratic: the engine extends the run to the end of the input and then backtracks to
+ * every position looking for a literal that is not there - once per starting position. The
+ * JWT shape was exactly that (`ey...{8,}` then a required `.`), and it is reachable from the
+ * dev hook's read ceiling, which feeds it tenant-authored strings up to the 240 KiB KVS
+ * value cap: a step body, a prompt, a skill or a memory. MEASURED on the shipped shape:
+ * 245,760 chars of `"eyAb"` = 15,217 ms for ONE `.test()`, and the web-trigger's whole
+ * budget is 55 s. `redact.mjs` ran the same shape with `g` + `.replace()`, where the
+ * blow-up hangs the harness instead.
+ *
+ * So the JWT is a HAND SCANNER (`findJwtLike`), not a shape, and the rule for every future
+ * entry in the census is: an open-ended quantifier may only appear at the END of a shape.
+ * `evidence-redaction.test.mjs` asserts that property over the list AND times the
+ * pathological input, so the next quadratic shape goes red instead of timing a door out.
+ *
  * WHY THERE ARE NO `\b` ANCHORS, AND WHY THERE IS A LEFT ONE ANYWAY (F-814). `redact.mjs`
  * had none, and a `\b` would NARROW the redactor — `…=sk-abcdefgh` must keep matching, and
  * so must `sk-abc…` glued to the end of a longer token, because the tail is what `.replace()`
@@ -105,7 +120,8 @@ export const SECRET_VALUE_SHAPES = [
   "ATATT[A-Za-z0-9_\\-+=/]{8,}",          // Atlassian API token
   "xox[bpasre]-[A-Za-z0-9-]{8,}",         // Slack bot/user/app/… tokens — `xoxp-` was missing from BOTH lists
   "AKIA[0-9A-Z]{12,}",                    // AWS access key id
-  "ey[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}(?:\\.[A-Za-z0-9_\\-]+)?", // a JWT, which is how `Bearer <jwt>` arrives
+  // A JWT - `Bearer <jwt>` - is NOT a regex shape. It is `findJwtLike` below, a hand
+  // scanner, because as a regex it was QUADRATIC (F-815). See the rule above the scanner.
   "\\.atlassian-dev\\.net/",              // a Forge dev web-trigger URL: bearer-less, and itself a capability
 ];
 
@@ -133,6 +149,61 @@ export const anchoredShapeSources = () => SECRET_VALUE_SHAPES.map((sh) => (NO_LE
  */
 export const credentialValueRegex = (flags = "") => new RegExp("(" + anchoredShapeSources().join("|") + ")", flags);
 
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-815 — THE JWT IS SCANNED, NOT MATCHED.
+ *
+ * `ey[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}` is quadratic on dot-free input, and the door
+ * that calls it reads tenant-authored rows. The scanner below answers the SAME question in
+ * one left-to-right pass, and it stays linear by walking MAXIMAL TOKEN RUNS rather than
+ * candidate start positions: every `ey` inside one run shares that run's END, so the
+ * "is the next character a `.`" question is asked ONCE PER RUN, not once per `ey`.
+ *
+ * What counts as a JWT here — deliberately the same language the old shape described:
+ *   · `ey` with a non-alphanumeric character (or the start of the string) before it — the
+ *     F-814 left anchor, so `keyAbcdefgh.something` is not a token;
+ *   · at least 8 more base64url characters (`A-Za-z0-9_-`) before the run ends;
+ *   · a `.` IMMEDIATELY after that run, then a second run of at least 8;
+ *   · optionally a second `.` and a third run of at least 1 (the signature).
+ * The span returned is the WHOLE thing, because `redact.mjs` replaces it, and the leftmost
+ * `ey` in a run wins, which is what the regex did.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+const isTokenChar = (c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 45;
+const isAlnum = (c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+
+/** Every JWT-shaped span in `s`, leftmost-first. One pass, no backtracking. */
+export const findJwtLike = (s) => {
+  if (typeof s !== "string" || s.length < 19) return [];
+  const out = [];
+  const n = s.length;
+  const runEndFrom = (from) => { let j = from; while (j < n && isTokenChar(s.charCodeAt(j))) j++; return j; };
+  let i = 0;
+  while (i < n) {
+    if (!isTokenChar(s.charCodeAt(i))) { i++; continue; }
+    const runStart = i, runEnd = runEndFrom(i);
+    // The cheap rejection FIRST, once per run: with no `.` after it, no candidate inside
+    // this run can start a JWT, whatever it looks like. This is the line that makes the
+    // scanner linear where the regex was quadratic.
+    if (s[runEnd] !== ".") { i = runEnd; continue; }
+    let start = -1;
+    for (let p = runStart; p + 10 <= runEnd; p++) {
+      if (s.charCodeAt(p) !== 101 /* e */ || s.charCodeAt(p + 1) !== 121 /* y */) continue;
+      if (p > 0 && isAlnum(s.charCodeAt(p - 1))) continue;      // F-814: the left anchor
+      start = p; break;
+    }
+    if (start < 0) { i = runEnd; continue; }
+    const secondStart = runEnd + 1, secondEnd = runEndFrom(secondStart);
+    if (secondEnd - secondStart < 8) { i = runEnd; continue; }
+    let end = secondEnd;
+    if (s[secondEnd] === ".") {
+      const thirdEnd = runEndFrom(secondEnd + 1);
+      if (thirdEnd > secondEnd + 1) end = thirdEnd;
+    }
+    out.push({ start, end });
+    i = end;
+  }
+  return out;
+};
+
 /**
  * EVERY credential-shaped SPAN in a string, `[{start, end}]`, leftmost-first and
  * non-overlapping.
@@ -145,11 +216,22 @@ export const credentialValueRegex = (flags = "") => new RegExp("(" + anchoredSha
 export const findCredentialSpans = (s) => {
   if (typeof s !== "string" || s === "") return [];
   const re = credentialValueRegex("g");
-  const out = [];
+  const spans = [];
   let m;
   while ((m = re.exec(s)) !== null) {
     if (m[0] === "") { re.lastIndex++; continue; }
-    out.push({ start: m.index, end: m.index + m[0].length });
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  // The JWT is not in the alternation (F-815) — it is the scanner above. Merged HERE so no
+  // caller has to know there are two producers: one span list, leftmost-first, with an
+  // overlap absorbed into the span that started first rather than replaced twice.
+  for (const j of findJwtLike(s)) spans.push(j);
+  spans.sort((a, b) => a.start - b.start || b.end - a.end);
+  const out = [];
+  for (const sp of spans) {
+    const last = out[out.length - 1];
+    if (last && sp.start < last.end) { if (sp.end > last.end) last.end = sp.end; continue; }
+    out.push({ ...sp });
   }
   return out;
 };

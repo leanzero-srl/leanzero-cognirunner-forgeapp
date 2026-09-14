@@ -49,6 +49,7 @@
  *   node scripts/va-shadow-live.mjs --keep           # leave the agent in place
  *   node scripts/va-shadow-live.mjs --postwait=420   # seconds to wait for a planner tick
  *   node scripts/va-shadow-live.mjs --env=staging    # needs STAGING_TESTSTATE_URL
+ *   node scripts/va-shadow-live.mjs --expect-drafts  # this run HAS an item that must stage
  *
  * Env: TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID + the JIRA_* trio.
  * NOTHING secret is printed — not the trigger URL, not the Bearer, not a draft body.
@@ -66,6 +67,11 @@ import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
    POST_WAIT_S) against a door that had already answered, and then read the timeout as
    "no receipt appeared" — a FAIL against a product that ticked, paid for twice over. */
 import { newestReceipt, receiptPoll, unavailableNote } from "../lib/va-tick-receipt.mjs";
+/* F-846 — `applyVerdict` is the ONE verdict-to-reporter dispatch in this directory
+   (live-driver-scope RULE 4/F-784: a driver that writes its own `{PASS, FAIL, NV}[row.verdict]`
+   map is how eight files shipped a TypeError under a green RESULT line). The two draft
+   judges below return its row shape so this file never grows a ninth map. */
+import { applyVerdict } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "issues"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -83,6 +89,19 @@ const QUEUES = arg("queues", "1,2,3").split(",").filter(Boolean);
 const POST_WAIT_S = Number(arg("postwait", "420"));
 const TICK_WAIT_S = Number(arg("tickwait", "240"));
 const KEEP = flag("keep");
+/* F-846 — IS A DRAFT DUE? Only the operator knows.
+   This fixture stages NOTHING of its own: it points a brand-new agent at whatever issues
+   already exist in PROJECT (intake.jql `project = <PROJECT>`, desk/queues as given) and the
+   drafting is two decisions deep past anything the script controls — `diffCandidates`
+   (va-ledger.js) turns the sweep into candidates, and then EACH ITEM TURN asks the model,
+   which may legitimately end `with nothing staged` and park the item (virtual-admin.js, the
+   F-414 attempts branch). So on a healthy tenant "0 drafts" is a NORMAL outcome, not a
+   defect — it means no issue in PROJECT was owed an answer the model thought worth writing.
+   `--expect-drafts` is the operator asserting the opposite: that this run was set up with an
+   item that MUST stage (a customer comment awaiting a reply). Only then is an empty
+   `listVaDrafts` a FAIL; otherwise it is N/V with the remedy, because a precondition that
+   never held is un-runnable, not broken. */
+const EXPECT_DRAFTS = flag("expect-drafts");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (m) => { console.error("\nFAIL:", m); process.exitCode = 1; throw new Error(m); };
@@ -259,6 +278,90 @@ async function pollStatus(jobId, predicate, seconds, label) {
   return last;
 }
 
+/* ── the draft precondition, judged once (F-846) ─────────────────────────────
+ *
+ * STEP 6 used to grade F-414 with `else if (!drafts2.length) FAIL("no drafts remain after
+ * the second tick, so F-414 could not be judged")`. That sentence IS an N/V — it says the
+ * thing could not be judged — and it fired on exactly the run where STEP 3 had already
+ * FAILED for the same missing drafts. One un-runnable precondition, two red rows, and a
+ * reader counting reds would have opened two investigations into a tenant that simply had
+ * nothing owed. So the rule is: ONE CAUSE, ONE VERDICT, and the step that discovered the
+ * cause is the step that reports it.
+ *
+ * Both judges are PURE and live here rather than in lib/va-tick-receipt.mjs, which is the
+ * RECEIPT library (RULE 6) and owns nothing about drafts. They are exercised offline by
+ * scripts/va-shadow-draft-precondition.test.mjs.
+ */
+
+/**
+ * STEP 3's verdict on "did anything stage?", plus whether STEP 6 can judge F-414 at all.
+ *
+ * @param {{expectedToStage: boolean, drafts: any[], detail?: string}} input
+ * @returns {{staged: boolean, count: number, stage: {verdict: string, what: string},
+ *            f414: {verdict: string, what: string}|null}}
+ *   `f414` is non-null ONLY when the precondition never held — it is STEP 6's whole row in
+ *   that case, and it is an N/V that NAMES step 3 so the two rows read as one story.
+ */
+export function judgeDraftPrecondition({ expectedToStage = false, drafts = [], detail = "" } = {}) {
+  const count = Array.isArray(drafts) ? drafts.length : 0;
+  if (count > 0) {
+    return {
+      staged: true,
+      count,
+      stage: { verdict: "PASS", what: `listVaDrafts: ${count} staged draft(s)` },
+      f414: null,
+    };
+  }
+  const tail = detail ? ` (${detail})` : "";
+  const stage = expectedToStage
+    ? {
+      verdict: "FAIL",
+      what: `listVaDrafts returned no staged draft, and --expect-drafts says this run was set up with an item that MUST stage${tail}`,
+    }
+    : {
+      verdict: "N/V",
+      what: "nothing staged on this tick, and nothing in this fixture is REQUIRED to stage — "
+        + "the agent sweeps the issues that already exist and each item turn may end with nothing staged. "
+        + `Remedy: leave an issue owed a reply (a customer comment with no answer after it) in the swept project and re-run with --expect-drafts${tail}`,
+    };
+  return {
+    staged: false,
+    count: 0,
+    stage,
+    f414: {
+      verdict: "N/V",
+      what: "F-414 was not judged: no draft was staged on the first tick (reported in step 3), "
+        + "so there was no staged item for a second tick to re-stage",
+    },
+  };
+}
+
+/**
+ * STEP 6's verdict when the precondition DID hold — i.e. step 3 staged `stagedBefore`
+ * drafts and the second tick has just been read. An empty `drafts` here is NOT the
+ * precondition; it means drafts that existed have gone, which is a real product event and
+ * keeps its FAIL.
+ *
+ * @param {{stagedBefore: number, drafts: any[], unchanged: boolean}} input
+ * @returns {{verdict: string, what: string}|null} — null when the per-draft loop has
+ *   already reported every field that moved, so nothing is said twice.
+ */
+export function judgeRestageEvidence({ stagedBefore = 0, drafts = [], unchanged = true } = {}) {
+  const count = Array.isArray(drafts) ? drafts.length : 0;
+  if (count === 0) {
+    return {
+      verdict: "FAIL",
+      what: `the ${stagedBefore} draft(s) staged on the first tick are GONE after the second tick — `
+        + "a staged item must survive a re-tick untouched (F-414)",
+    };
+  }
+  if (!unchanged) return null;
+  return {
+    verdict: "PASS",
+    what: "every previously staged item is unchanged — same stagedAt, same attempts",
+  };
+}
+
 /* ── the body shape, never the body ─────────────────────────────────────────── */
 
 const shapeOf = (body) => {
@@ -348,8 +451,14 @@ async function main() {
   const withDraft = await pollStatus(jobId, (s) => Number(s.staged) >= 1, TICK_WAIT_S, "first staged draft");
   const dr = await invoke("listVaDrafts", { jobId });
   const drafts = (dr.body && dr.body.drafts) || [];
-  if (drafts.length >= 1) {
-    PASS(`listVaDrafts: ${drafts.length} staged draft(s)`);
+  /* F-846 — the precondition is judged ONCE, here, and step 6 is told what it may judge. */
+  const draftPrecondition = judgeDraftPrecondition({
+    expectedToStage: EXPECT_DRAFTS,
+    drafts,
+    detail: JSON.stringify(dr.body).slice(0, 300),
+  });
+  applyVerdict(draftPrecondition.stage, { PASS, FAIL, NV });
+  if (draftPrecondition.staged) {
     for (const d of drafts) {
       const sh = shapeOf(d.body);
       const prose = sh.bullets === 0;
@@ -359,8 +468,6 @@ async function main() {
       if (prose) PASS(`  ${d.itemKey}: plain prose — 0 bullet lines`);
       else FAIL(`  ${d.itemKey}: ${sh.bullets} bullet line(s) in the body`);
     }
-  } else {
-    FAIL(`listVaDrafts returned no staged draft (${JSON.stringify(dr.body).slice(0, 300)})`);
   }
 
   // The ROW itself, straight from KVS, so the resolver's answer has a second source.
@@ -424,8 +531,17 @@ async function main() {
     if (d.attempts !== wasAttempts) { FAIL(`  ${d.itemKey}: attempts moved ${wasAttempts} → ${d.attempts}`); f414 = false; }
     if (d.stagedAt !== wasStagedAt) { FAIL(`  ${d.itemKey}: the draft was RE-STAGED (stagedAt ${wasStagedAt} → ${d.stagedAt})`); f414 = false; }
   }
-  if (f414 && drafts2.length) PASS(`every previously staged item is unchanged — same stagedAt, same attempts (${JSON.stringify(drafts2.map((d) => ({ k: d.itemKey, a: d.attempts })))})`);
-  else if (!drafts2.length) FAIL("no drafts remain after the second tick, so F-414 could not be judged");
+  /* F-846 — when NOTHING ever staged, step 3 already owns that row and this step says only
+     that F-414 was not judgeable. When drafts DID stage and are now gone, that is a product
+     event of its own and keeps its FAIL. */
+  if (draftPrecondition.f414) {
+    applyVerdict(draftPrecondition.f414, { PASS, FAIL, NV });
+  } else {
+    const row = judgeRestageEvidence({ stagedBefore: drafts.length, drafts: drafts2, unchanged: f414 });
+    /* The evidence rides in `what` rather than in applyVerdict's `detail`, because these three
+       reporters take ONE string and a second argument would be silently dropped. */
+    if (row) applyVerdict({ ...row, what: `${row.what} (${JSON.stringify(drafts2.map((d) => ({ k: d.itemKey, a: d.attempts })))})` }, { PASS, FAIL, NV });
+  }
 
   /* ── STEP 5 — pause ──────────────────────────────────────────────────────── */
   console.log("\nSTEP 5 — pause the agent (saveScheduledJob status.paused; `pauseVa` is not allow-listed)");

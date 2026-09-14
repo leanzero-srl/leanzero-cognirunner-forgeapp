@@ -154,11 +154,17 @@ const reasonsFor = (r, field) => r.refused.filter((x) => x.field === field).map(
   ok(VA_ITEM_STATES.length === 8 && VA_ITEM_STATES.includes("parked"), "the item state vocabulary is complete");
 }
 
+const messageOf = (fn) => { try { fn(); return ""; } catch (e) { return String(e && e.message ? e.message : e); } };
+
 /* ── 3. REFUSALS ──────────────────────────────────────────────────────────────── */
 throws(() => normalizeVa({ ...base(), scope: { read: { site: true }, write: { site: true } } }, CTX),
   /scope\.write\.site is refused/, "REFUSE a site-wide write scope");
-throws(() => normalizeVa({ persona: { name: "" } }, CTX), /persona\.name is required/, "REFUSE a nameless agent");
-throws(() => normalizeVa({ persona: { name: "<<<>>> **" } }, CTX), /persona\.name is required/, "REFUSE a name that is nothing but illegal characters");
+/* F-916 - the name refusal is a SENTENCE, because the classic form renders it before the
+   admin has typed anything. A record path and a charset in brackets is not an instruction.
+   The charset half is added only once something unusable was actually typed. */
+throws(() => normalizeVa({ persona: { name: "" } }, CTX), /Give the administrator a name\./, "REFUSE a nameless agent");
+ok(!/persona\.name|\(letters/.test(messageOf(() => normalizeVa({ persona: { name: "" } }, CTX))), "the empty-name refusal carries no record path and no charset");
+throws(() => normalizeVa({ persona: { name: "<<<>>> **" } }, CTX), /A name may use letters/, "REFUSE a name that is nothing but illegal characters, and say which characters");
 throws(() => normalizeVa(base({ cadence: { preset: "custom", cron: "not a cron" } }), CTX), /cadence\.cron is invalid/, "REFUSE an unparseable cron");
 throws(() => normalizeVa(base({ cadence: { preset: "custom" } }), CTX), /cadence\.cron is required/, "REFUSE a custom cadence with no cron");
 {

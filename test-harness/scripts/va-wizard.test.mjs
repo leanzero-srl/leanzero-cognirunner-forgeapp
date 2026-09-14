@@ -25,7 +25,10 @@ import {
   WIZARD_STEPS, VOICE_SAMPLE_CHIPS, VA_WIZARD_SAY_MAX, VA_WIZARD_STATE_MAX_BYTES,
   VA_WIZARD_VERSION,
 } from "../../src/shared/va-wizard.js";
-import { normalizeVa, VA_DEFAULTS } from "../../src/shared/va-config.js";
+import {
+  normalizeVa, VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_COPY,
+  vaSuggestedCadence, resolveDefaultTimeZone, vaPowerPhrase,
+} from "../../src/shared/va-config.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -64,8 +67,8 @@ const HAPPY = [
   ["cadence", { preset: "every30", timeZone: "Europe/Berlin", postWindow: { days: [1, 2, 3, 4, 5], from: "08:00", to: "18:00" } }],
   ["powers", { replyInternal: true, replyPublic: true, transition: true, skillIds: ["skill_jsm_tone"] }],
   ["guardrails", { capsPerHour: 4, capsPerDay: 20, minPostGapMinutes: 10, maxItemsPerTick: 3, maxWritesPerRun: 5, approvalProjectKey: "OPS" }],
+  // F-916 - confirming the REVIEW creates. There is no second "Ready to create it?" turn.
   ["review", { confirm: true }],
-  ["create", { confirm: true }],
 ];
 
 const drive = (answers, catalog = CATALOG) => {
@@ -82,7 +85,16 @@ const drive = (answers, catalog = CATALOG) => {
 };
 
 const happy = drive(HAPPY);
-ok(happy.turn.done === true && happy.turn.created === true, "the interview finishes at create");
+ok(happy.turn.done === true && happy.turn.created === true, "the interview finishes on the review card's confirm");
+ok(happy.turn.stepId === "create", "the create step is where it lands, it is just never rendered standing there");
+/* F-916 - a caller driving the machine directly may still answer the create step, and the
+   step still validates: what went is the extra SCREEN, not the step. */
+{
+  const again = stepWizard(happy.turn.state, { answer: { confirm: true } });
+  ok(again.created === true, "the create step still answers a direct caller");
+  const unconfirmed = stepWizard(happy.turn.state, { answer: {} });
+  ok(unconfirmed.refused.some((r) => r.field === "create"), "the create step still refuses an unconfirmed answer");
+}
 ok(happy.turn.va && happy.turn.va.persona.name === "Nadia", "create returns the normalised record");
 ok(Array.isArray(happy.turn.refused) && happy.turn.refused.length === 0, `create refuses nothing on the happy path (${JSON.stringify(happy.turn.refused)})`);
 ok(happy.turn.va.scope.write.projects.join(",") === "SUP", "the write scope survived");
@@ -114,6 +126,74 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
   const all = [...atReview.summary, ...atReview.guardrailSentences].join("\n");
   ok(!/^[ \t]*[-*+•]/m.test(all) && !/\*\*/.test(all) && !/`/.test(all), "the review card is plain prose (no bullets, no bold, no backticks)");
   ok(atReview.summary.some((s) => s.includes("Nadia")), "the summary names the agent");
+}
+
+/* ── 2b. F-916 — what the card SAYS, and what a new agent STARTS with ────── */
+
+{
+  /* THE STARTING POINT IS ONE HOME, and it is not the record's normalisation fallback.
+     `VA_DEFAULTS.cadence.postWindow` still means "no restriction" for normalizeVa; what a
+     NEW agent is OFFERED is the working week. Two questions, two answers. */
+  ok(VA_SUGGESTED_POST_WINDOW.days.join(",") === "1,2,3,4,5" && VA_SUGGESTED_POST_WINDOW.from === "08:00" && VA_SUGGESTED_POST_WINDOW.to === "18:00",
+    "the suggested posting window is the working week, working hours");
+  ok(VA_DEFAULTS.cadence.postWindow.days.length === 7, "the record's own fallback still means no restriction");
+
+  /* the zone: the viewer's when the site offers it, UTC when it does not, and never the
+     first entry of an alphabetical zone list (which is how "Africa/Abidjan" happened). */
+  ok(resolveDefaultTimeZone("Europe/Bucharest", null, CATALOG.timeZones) === "Europe/Bucharest", "the viewer's zone is the default when the site offers it");
+  ok(resolveDefaultTimeZone("Pacific/Palau", null, CATALOG.timeZones) === "UTC", "a viewer zone the site does not offer falls back to UTC, not to the list's first entry");
+  ok(resolveDefaultTimeZone("", "Europe/Berlin", CATALOG.timeZones) === "Europe/Berlin", "the site's zone is the second choice");
+  ok(resolveDefaultTimeZone("", "", CATALOG.timeZones) === "UTC", "with neither, it is UTC");
+  ok(resolveDefaultTimeZone("Not/AZone", "", null) === "UTC", "a zone that is not a zone is never the default");
+  ok(vaSuggestedCadence({ viewer: "Europe/Berlin", allowed: CATALOG.timeZones }).timeZone === "Europe/Berlin", "the suggested cadence carries the resolved zone");
+  ok(vaSuggestedCadence({ viewer: "", allowed: CATALOG.timeZones }).postWindow.from === "08:00", "the suggested cadence carries the suggested window");
+
+  /* the cadence step hands the UI the SAME starting point, so the control cannot seed
+     itself from somewhere else. */
+  const cad = stepWizard(createWizard({ catalog: CATALOG }).state, null);
+  const atCadence = happy.turns[5];
+  ok(atCadence.stepId === "cadence", `turn 5 is the cadence step (got ${atCadence.stepId})`);
+  ok(atCadence.extras.suggestedPostWindow && atCadence.extras.suggestedPostWindow.from === "08:00", "the cadence turn carries the suggested window");
+  ok(typeof atCadence.extras.stagingNote === "string" && /15 minutes/.test(atCadence.extras.stagingNote), "the cadence turn carries the staging note");
+  ok(cad.stepId === "persona_name", "a fresh interview still opens on the name");
+
+  /* THE CARD MARKS A VALUE NOBODY CHOSE. */
+  const bare = normalizeVa({ persona: { name: "Ada" }, cadence: { postWindow: { days: [1, 2, 3, 4, 5], from: "08:00", to: "18:00" } } }, catalogToCtx(CATALOG)).va;
+  const marked = renderReviewSummary(bare, { defaultTimeZone: "UTC" });
+  ok(marked[0].includes(VA_DEFAULT_MARK.trim()), `an untouched cadence line is marked as a default (got ${marked[0]})`);
+  ok(marked[0].includes("weekdays"), "the posting days are words, not a seven-name list");
+  const chosen = normalizeVa({ persona: { name: "Ada" }, cadence: { preset: "hourly", timeZone: "Europe/Berlin", postWindow: { days: [0, 6], from: "09:00", to: "17:00" } } }, catalogToCtx(CATALOG)).va;
+  const chosenLine = renderReviewSummary(chosen, { defaultTimeZone: "UTC" })[0];
+  ok(!chosenLine.includes(VA_DEFAULT_MARK.trim()), `a chosen cadence line is not marked (got ${chosenLine})`);
+  ok(chosenLine.includes("weekends"), "a weekend window says weekends");
+
+  /* PROJECTS BY NAME, when the catalogue has one. */
+  const scoped = normalizeVa({ persona: { name: "Ada" }, scope: { read: { projects: ["SUP", "OPS"] }, write: { projects: ["SUP"] } } }, catalogToCtx(CATALOG)).va;
+  const named = renderReviewSummary(scoped, { projects: CATALOG.projects }).join(" ");
+  ok(named.includes("Support (SUP)") && named.includes("Operations (OPS)"), `the card names projects (got ${named})`);
+  const unknown = renderReviewSummary(scoped, { projects: [] }).join(" ");
+  ok(unknown.includes("SUP"), "a key with no catalogue row still renders as the key");
+}
+
+{
+  /* AN AGENT THAT WOULD DO NOTHING IS REFUSED AT THE STEP, not mentioned on the card. */
+  const at = (stepId) => {
+    let turn = stepWizard(createWizard({ catalog: CATALOG }).state, null);
+    for (const [expect, answer] of HAPPY) { if (expect === stepId) return turn; turn = stepWizard(turn.state, { answer }); }
+    return turn;
+  };
+  const empty = stepWizard(at("intake").state, { answer: { serviceDesks: [], jql: "", mentionsOf: [] } });
+  refusedOn(empty, "intake", "an intake with no source at all");
+  ok(empty.stepId === "intake", "an empty intake does not advance the interview");
+  const reason = empty.refused.find((r) => r.field === "intake").reason;
+  ok(reason === VA_COPY.intakeEmpty, "the refusal is the copy home's sentence");
+  ok(/queue/i.test(reason) && /JQL/i.test(reason) && /mention/i.test(reason), "the refusal names all three ways to give it work");
+  const blank = stepWizard(at("intake").state, { answer: { serviceDesks: [], jql: "   ", mentionsOf: [] } });
+  refusedOn(blank, "intake", "a whitespace-only JQL filter is not a source");
+  const oneSource = stepWizard(at("intake").state, { answer: { serviceDesks: [], jql: "project = SUP", mentionsOf: [] } });
+  ok(oneSource.refused.length === 0 && oneSource.stepId === "read_scope", "one source is enough to continue");
+  const byMention = stepWizard(at("intake").state, { answer: { serviceDesks: [], jql: "", mentionsOf: ["557058:abc-123"] } });
+  ok(byMention.refused.length === 0, "a mention list alone is enough");
 }
 
 /* ── 3. every refusal ──────────────────────────────────────────────────────── */
@@ -480,7 +560,9 @@ const at = (stepId) => {
   const s = renderReviewSummary(va);
   ok(s.some((x) => x.includes("It changes nothing")), "a read-only agent is described as one");
   ok(s.some((x) => x.includes("no intake source")), "an agent with no intake is told so");
-  ok(s.some((x) => x.includes("replyInternal")), "the default power (internal notes) is named");
+  // F-916 — the power is named in the POWERS STEP's own words, never by its record id.
+  ok(s.some((x) => x.includes(vaPowerPhrase("replyInternal"))), `the default power is named in words (got ${JSON.stringify(s)})`);
+  ok(!s.join(" ").includes("replyInternal"), "no power id leaks into the review card");
   const bare = normalizeVa({ persona: { name: "Mute" }, powers: { replyInternal: false } }, catalogToCtx(CATALOG)).va;
   ok(renderReviewSummary(bare).some((x) => x.includes("no powers")), "an agent with no powers is told so");
 }

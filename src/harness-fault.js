@@ -1689,6 +1689,17 @@ export const plantResumeMode = (reason, complete, advanced = true) => {
  * `{ ok: false, reason: "bad-start" }`. A `repost` answer additionally carries
  * `remainingStale` and `clearToken` (F-744: POST it back with the identical body).
  *
+ * F-747 — TWO FAILURE COUNTS, TWO NAMES, AND THEY NEVER SWAP PLACES.
+ *   · `failed`      — WRITES this call could not place. It is the only meaning it has, in
+ *                     every branch, and it is 0 in both `repost` answers because neither of
+ *                     them plants anything.
+ *   · `staleFailed` — DELETES the stale clear could not land, present only when there were
+ *                     any, and named identically whether the clear ran out of budget
+ *                     (`clearing`) or reached the end with refusals in it (`clear-failed`).
+ * `failed` used to carry the CLEAR's failures in the `clearing` branch and the WRITES' in
+ * the other, so one field name meant two different things in two branches of one function —
+ * and `failed > 0` is what `sweepAnswerTail` turns into `writes-failed`.
+ *
  * F-724/F-745 — `resume` IS THE ANSWER'S OWN INSTRUCTION, from `plantResumeMode` and nowhere
  * else: `"start-index"` = carry on from `nextIndex`, `"repost"` = send the SAME body again,
  * `"stop"` = do not loop (refused WRITES — the population is short and `nextIndex` may not
@@ -1828,7 +1839,13 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
        * spin the drivers were right to fear. The rows this call removed are gone for good,
        * so an identical retry strictly converges. */
       return {
-        ok: true, planted: 0, failed: stale.failed, n: population, startIndex: from, nextIndex: from,
+        /* F-747: `failed` IS WRITE FAILURES, EVERYWHERE. It used to carry the CLEAR's
+         * failures here and the writes' failures four lines down, so one field name meant
+         * two different things in two branches of one function. The clear's failures have
+         * one name — `staleFailed` — in both branches, and a `clearing` answer plants
+         * nothing, so its `failed` is 0 and says so. */
+        ok: true, planted: 0, failed: 0, staleFailed: stale.failed,
+        n: population, startIndex: from, nextIndex: from,
         expired: past, ttlSeconds, budgetMs, keys: [], cleared,
         clearedSoFar: carriedCleared + cleared,
         remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
@@ -1857,14 +1874,19 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
     if (stale.failed > 0) {
       const tail = sweepAnswerTail({ truncated: true, reason: "clear-failed", cursor: null, unresolved: true, failedResume: null });
       return {
+        // F-747: `failed` is WRITE failures and this branch writes nothing; the clear's
+        // failures are `staleFailed`, the same name the `clearing` branch above uses.
         ok: true, planted: 0, failed: 0, n: population, startIndex: from, nextIndex: from,
         expired: past, ttlSeconds, budgetMs, keys: [], cleared,
         clearedSoFar: carriedCleared + cleared,
         remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
         clearToken: encodeSweepCursor(null, undefined, carriedCleared + cleared),
         staleFailed: stale.failed, staleFailedKeys: stale.failedKeys || [],
-        truncated: tail.truncated, reason: "clear-failed", complete: tail.complete,
-        resume: plantResumeMode("clear-failed", tail.complete),
+        /* F-747: `reason` comes off the TAIL that was just built from it, like every other
+         * answer in this lever. The literal was written three times, so a rename could
+         * change the stop reason and leave the resume instruction pointing at the old one. */
+        truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
+        resume: plantResumeMode(tail.reason, tail.complete),
       };
     }
   }

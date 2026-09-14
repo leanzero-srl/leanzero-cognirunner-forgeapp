@@ -1789,6 +1789,16 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       "F-724 (unchanged): `clearing` still does NOT advance `nextIndex` — that is the contract, not the defect");
     ok(clearing.resume === "repost",
       `F-724: …and the answer now SAYS so, in a field a driver can switch on (resume ${JSON.stringify(clearing.resume)})`);
+
+    /* F-747 — ONE FIELD NAME, ONE MEANING. `failed` carried the CLEAR's failures here and
+     * the WRITES' failures in the `clear-failed` branch four lines away, in the same
+     * function — and `failed > 0` is what `sweepAnswerTail` turns into `writes-failed`, so
+     * a reader (or a future tail) could read refused DELETES as refused WRITES. The clear's
+     * count is `staleFailed` in BOTH branches now, and `failed` is writes, always. */
+    ok(clearing.failed === 0,
+      `F-747: a \`clearing\` answer plants NOTHING, so its \`failed\` — which means WRITES — is 0 (got ${clearing.failed})`);
+    ok(clearing.staleFailed === 0,
+      `F-747: …and the clear's own failure count is \`staleFailed\`, here zero because this clear ran out of BUDGET, not of luck (got ${clearing.staleFailed})`);
     ok(clearing.clearedSoFar > 0,
       `F-724: …naming the progress it DID make (clearedSoFar ${clearing.clearedSoFar})`);
     ok(Number.isInteger(clearing.remainingStale) && clearing.remainingStale > 0
@@ -1953,6 +1963,10 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       `F-725: …and it plants NOTHING over a keyspace it could not make into the one its \`n\` describes (planted ${shrink.planted})`);
     ok(shrink.staleFailed === 1 && shrink.remainingStale === 1,
       `F-725: …naming how many stale rows survived (staleFailed ${shrink.staleFailed}, remainingStale ${shrink.remainingStale})`);
+    ok(shrink.failed === 0,
+      `F-747: …under the SAME two names the \`clearing\` branch uses — \`failed\` is WRITES and this branch wrote nothing (got ${shrink.failed})`);
+    ok(shrink.reason === "clear-failed" && shrink.resume === "repost",
+      "F-747: …and `reason`/`resume` are both taken from the tail that was built from it, never hand-written a second and third time");
     ok(Array.isArray(shrink.staleFailedKeys) && shrink.staleFailedKeys.length === 1
       && shrink.staleFailedKeys[0].startsWith(PLANT725)
       && shrink.staleFailedKeys.length <= fault.CLEAR_FAILED_KEYS_REPORTED,
@@ -1984,6 +1998,12 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
 
     ok(/if \(stale\.failed > 0\) \{/.test(faultCode),
       "F-725.SOURCE: `failed` is judged on the FINISHED path too, not only on `!done`");
+    ok((faultCode.match(/staleFailed: stale\.failed/g) || []).length === 2,
+      "F-747.SOURCE: the clear's failure count has ONE name, and both branches use it");
+    ok(!/failed: stale\.failed/.test(faultCode),
+      "F-747.SOURCE: …and `failed` is never the clear's count — it is WRITE failures everywhere");
+    ok((faultCode.match(/"clear-failed"/g) || []).length === 2,
+      "F-747.SOURCE: `clear-failed` is written where it is DECIDED (the vocabulary, and the tail's input) and read back off the tail after that");
     ok(fault.PLANT_REPOST_REASONS.includes("clear-failed"),
       "F-725: `clear-failed` is in the re-POST vocabulary's one home, beside `clearing`");
   }

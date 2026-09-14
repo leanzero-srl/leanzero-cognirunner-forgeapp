@@ -2197,5 +2197,143 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
   });
 }
 
+/* ════ F-852 — a listener/job run ASSEMBLES its namespace executors; `{}` was a lie ════
+ *
+ * Every door into this surface passed `executors = {}`, so a git or Confluence action
+ * that had just survived the whole save-time and run-time gate reached the dispatcher and
+ * was told `"commit_files" needs a git connection, and none is configured for this rule.`
+ * — a sentence that was FALSE on an instance that had one, and useless on one that did
+ * not, because it named neither the rule's missing choice nor the admin's missing setup.
+ *
+ * These checks run the REAL listener and job modules against the REAL assembler and the
+ * REAL git executor (its simulated write path never reaches a provider), and read the
+ * executor map off the arguments the run handed `runAgentTask`.
+ */
+{
+  const { gitNoConnectionReason, LEDGER_NOT_ON_THIS_SURFACE } = await import("../../src/agent-executors.js");
+  const saveGate852 = buildAgentGateContext({ provider: "openai", edition: "standard", agentModel: "gpt-5.4", savedByRole: "admin" });
+  const CONN = { id: "gc1", kind: "github", status: "active", label: "acme", repos: ["acme/app"] };
+  const seedConn = () => { storage.__seed("git_conn_index", ["gc1"]); storage.__seed("git_conn:gc1", CONN); };
+
+  const listenerRun = async ({ id, actions, connectionId, seed = true }) => {
+    const state = reset();
+    if (seed) seedConn();
+    const config = normalizeListener({ id, name: id, events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: actions, connectionId } }, { gate: saveGate852, savedByRole: "admin" });
+    storage.__seed(`listener:${id}`, config);
+    const out = await testListener({ listener: config, issueKey: ISSUE.key, gateFacts: { provider: "openai", edition: "standard", agentModel: "gpt-5.4" } });
+    assert.equal(state.runs.length, 1, "the run reached runAgentTask");
+    return { state, args: state.runs[0], out, config };
+  };
+  const jobRun = async ({ id, actions, connectionId, seed = true }) => {
+    const state = reset();
+    if (seed) seedConn();
+    const config = normalizeJob({ id, name: id, schedule: { cron: "*/5 * * * *" }, mode: "agent", agent: { instructions: "go", allowedActions: actions, connectionId } }, { gate: saveGate852, savedByRole: "admin" });
+    storage.__seed(`job:${id}`, config);
+    await runJob({ job: config, manual: true, forceSimulation: true, source: "test", gateFacts: { provider: "openai", edition: "standard", agentModel: "gpt-5.4" } });
+    assert.equal(state.runs.length, 1);
+    return { state, args: state.runs[0], config };
+  };
+
+  await check("F-852 ALLOW: an admin-saved listener with a connection gets a SIMULATED git executor, and commit_files reaches it", async () => {
+    const { args, config } = await listenerRun({ id: "f852-l-allow", actions: ["get_issue", "commit_files"], connectionId: "gc1" });
+    assert.equal(config.agent.connectionId, "gc1", "the record carries the connection the rule acts as");
+    const ex = args.executors;
+    assert.ok(ex && ex.git, "a git executor was assembled");
+    // THE FACTORY ARGUMENT: the executor reports the `simulation` it was built with, and
+    // `forceSimulation` (a test run) must reach it — a test run that made a real commit
+    // is the single worst outcome this cut could have.
+    assert.equal(ex.git.simulation, true);
+    assert.deepEqual(ex.refusals, {}, "nothing was refused");
+    const r = await ex.git.execute("commit_files", { repo: "acme/app", branch: "main", message: "m", files: [{ path: "a.txt", content: "x" }] });
+    assert.equal(r.success, true);
+    assert.equal(r.simulated, true, "the write was recorded, never issued");
+    assert.equal(r.connection, "gc1", "…on the connection the RULE names");
+  });
+
+  await check("F-852 ALLOW: the same on a scheduled job — one map for the whole run", async () => {
+    const { args } = await jobRun({ id: "f852-j-allow", actions: ["get_issue", "commit_files"], connectionId: "gc1" });
+    assert.equal(args.executors.git.simulation, true);
+    const r = await args.executors.git.execute("commit_files", { repo: "acme/app", branch: "main", message: "m", files: [{ path: "a.txt", content: "x" }] });
+    assert.equal(r.simulated, true);
+  });
+
+  await check("F-852 BLOCK, NAMED: no connectionId gets the new sentence, never the generic one", async () => {
+    const { args } = await listenerRun({ id: "f852-l-noconn", actions: ["get_issue", "commit_files"], connectionId: null });
+    assert.equal(args.executors.git, undefined, "no executor is built from a connection nobody named");
+    assert.equal(args.executors.refusals.git, gitNoConnectionReason(1), "the instance HAS one, so the sentence says to choose it");
+    assert.match(args.executors.refusals.git, /does not name a Git connection/);
+    assert.doesNotMatch(args.executors.refusals.git, /none is configured for this rule/);
+  });
+
+  await check("F-852 BLOCK, NAMED: with no connection on the instance at all, the sentence names the admin's job", async () => {
+    const { args } = await listenerRun({ id: "f852-l-nonone", actions: ["commit_files"], connectionId: null, seed: false });
+    assert.equal(args.executors.refusals.git, gitNoConnectionReason(0));
+    assert.match(args.executors.refusals.git, /this instance has none/);
+  });
+
+  await check("F-852 BLOCK: a dangerous action on an external trigger is refused at the GATE — the executor is never consulted", async () => {
+    const { args } = await listenerRun({ id: "f852-l-danger", actions: ["get_issue", "approve_pull_request"], connectionId: "gc1" });
+    // A listener is ALWAYS an external trigger, so the gate the run built drops it.
+    const v = normalizeAllowedActions(args.allowedActions, args.gate);
+    assert.deepEqual(v.allowed, ["get_issue"]);
+    assert.deepEqual(v.refused, [{ id: "approve_pull_request", reason: "external-trigger" }]);
+  });
+
+  await check("F-852 NEGATIVE: a ledger action on a listener refuses by name — the VA's surface is not this one", async () => {
+    const { args } = await listenerRun({ id: "f852-l-ledger", actions: ["get_issue", "stage_reply"], connectionId: "gc1" });
+    assert.equal(args.executors.ledger, undefined, "no ledger executor is ever built here");
+    assert.equal(args.executors.refusals.ledger, LEDGER_NOT_ON_THIS_SURFACE);
+  });
+
+  await check("F-852: a GIT-TRIGGERED delivery's connection WINS over the rule's — a run started by A acts on A", async () => {
+    const state = reset();
+    storage.__seed("git_conn_index", ["gc1", "gc2"]);
+    storage.__seed("git_conn:gc1", CONN);
+    storage.__seed("git_conn:gc2", { ...CONN, id: "gc2", label: "other" });
+    const cfg = normalizeListener({ id: "f852-ctx", name: "x", events: [UPDATE], mode: "agent", simulationMode: true, agent: { instructions: "go", allowedActions: ["commit_files"], connectionId: "gc1" } }, { gate: saveGate852, savedByRole: "admin" });
+    storage.__seed("listener:f852-ctx", cfg);
+    await executeListenerTask({ listenerId: "f852-ctx", eventType: UPDATE, event: { issue: ISSUE }, ctx: { issueKey: ISSUE.key, projectKey: "LZPT", connectionId: "gc2" } }, "task-ctx",
+      { gateFacts: { provider: "openai", edition: "standard", agentModel: "gpt-5.4" } });
+    const r = await state.runs[0].executors.git.execute("commit_files", { repo: "acme/app", branch: "main", message: "m", files: [{ path: "a.txt", content: "x" }] });
+    assert.equal(r.connection, "gc2", "the delivery's connection, not the rule's");
+  });
+
+  await check("F-852 PARITY: the TEST door and the QUEUED door produce the same allowed set and the same executor map", async () => {
+    const ACTIONS = ["get_issue", "add_comment", "commit_files"];
+    const facts = { provider: "openai", edition: "standard", agentModel: "gpt-5.4", allowanceLevel: null };
+    const shape = (ex) => ({ namespaces: Object.keys(ex).filter((k) => k !== "refusals").sort(), simulation: ex.git ? ex.git.simulation : null, refusals: ex.refusals });
+
+    const s1 = reset(); seedConn();
+    const cfg = normalizeListener({ id: "f852-parity", name: "p", events: [UPDATE], mode: "agent", simulationMode: true, agent: { instructions: "go", allowedActions: ACTIONS, connectionId: "gc1" } }, { gate: saveGate852, savedByRole: "admin" });
+    storage.__seed("listener:f852-parity", cfg);
+    await testListener({ listener: cfg, issueKey: ISSUE.key, gateFacts: facts });
+    const testArgs = s1.runs[0];
+
+    const s2 = reset(); seedConn();
+    storage.__seed("listener:f852-parity", cfg);
+    await executeListenerTask({ listenerId: "f852-parity", eventType: UPDATE, event: { issue: ISSUE }, ctx: { issueKey: ISSUE.key, projectKey: "LZPT" } }, "task-f852", { gateFacts: facts });
+    const queuedArgs = s2.runs[0];
+
+    assert.deepEqual(normalizeAllowedActions(queuedArgs.allowedActions, queuedArgs.gate).allowed,
+      normalizeAllowedActions(testArgs.allowedActions, testArgs.gate).allowed, "the two doors allow the same ids");
+    assert.deepEqual(shape(queuedArgs.executors), shape(testArgs.executors), "…and hold the same executor map");
+    assert.equal(queuedArgs.executors.git.simulation, true, "the rule's own simulationMode reaches the executor on the LIVE door too");
+  });
+
+  await check("F-852: a caller-supplied executor map still WINS, whole and unmerged", async () => {
+    const state = reset(); seedConn();
+    const mine = { git: { namespace: "git", execute: async () => ({ success: true }) }, refusals: {} };
+    const cfg = normalizeListener({ id: "f852-caller", name: "c", events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: ["commit_files"], connectionId: "gc1" } }, { gate: saveGate852, savedByRole: "admin" });
+    await testListener({ listener: cfg, issueKey: ISSUE.key, executors: mine });
+    assert.equal(state.runs[0].executors, mine);
+  });
+
+  await check("F-852: a Jira-only listener is byte-identical to the pre-1.4 run — no executor at all", async () => {
+    const { args } = await listenerRun({ id: "f852-l-plain", actions: ["get_issue", "add_comment"], connectionId: "gc1" });
+    assert.deepEqual(Object.keys(args.executors), ["refusals"]);
+    assert.deepEqual(args.executors.refusals, {});
+  });
+}
+
 console.log(`RULES RUNTIME REGRESSION: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

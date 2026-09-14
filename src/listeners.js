@@ -45,6 +45,9 @@ import { knowledgeBudget, fieldGuideAudience, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WE
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
+// ONE HOME for "which namespace executors does this run hold" (F-852) — see the header
+// of src/agent-executors.js for why this surface must not keep a private map.
+import { assembleAgentExecutors } from "./agent-executors.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 // ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
 import { safeKeyPart } from "./shared/kvs-keys.js";
@@ -1328,9 +1331,17 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
   // agentModel, allowanceLevel, products } — which only the caller can read (they live
   // behind index.js). OMITTED means the most restrictive context: the 13 Jira actions
   // behave exactly as before and nothing from another namespace is held, so forgetting
-  // to pass them can never be the way PAST the gate. `executors` carries the namespace
-  // modules (the caller owns the credentials); a namespace with none refuses.
-  gateFacts = null, executors = {} }) => {
+  // to pass them can never be the way PAST the gate.
+  //
+  // `executors` carries the namespace modules. Since F-852 the DEFAULT is not an empty
+  // map: when a caller passes none, this run ASSEMBLES its own from the rule and the
+  // delivery (src/agent-executors.js), because all four of this surface's doors — the
+  // queue consumer, the resolver test, the REST test and the hook probe — passed `{}`
+  // and every git and Confluence action an admin had saved died at the dispatcher with
+  // "none is configured for this rule". A caller that DOES pass a map still wins, whole
+  // and unmerged, exactly as F-842 made `gateFacts` preferred when supplied: a caller
+  // that answered the question itself is not overruled.
+  gateFacts = null, executors = null }) => {
   const m = await idx();
   const started = Date.now();
   const config = { ...listener, simulationMode: forceSimulation || listener.simulationMode === true };
@@ -1391,10 +1402,20 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     // because that is the row the operator opens.
     const knowledgeNotices = [];
     const knowledge = await buildAgentKnowledge(listener.agent, { projectKey: ctx.projectKey || (extraContext && extraContext.projectKey) || null, audience: "agentRun", log: (line) => knowledgeNotices.push(String(line)) });
+    // THE NAMESPACE EXECUTORS, ASSEMBLED HERE (F-852) when the caller supplied none.
+    // `config.simulationMode` is the run's ALREADY-COMPUTED simulation verdict
+    // (`forceSimulation || listener.simulationMode === true`, one line above) and it is
+    // handed to the assembler rather than re-derived there — two readings of "is this
+    // simulated" is how a simulated run makes a real commit. The assembler's own
+    // refusal sentences ride on the map and the dispatcher prefers them.
+    const runExecutors = executors || await assembleAgentExecutors({
+      surface: "listener", rule: listener, ctx, simulation: config.simulationMode === true,
+      log: (line) => knowledgeNotices.push(String(line)),
+    });
     const r = await runAgentTask({
       instructions: listener.agent.instructions, allowedActions: listener.agent.allowedActions, maxRounds: listener.agent.maxRounds,
       issueKey: ctx.issueKey || null, config, contextTitle: "EVENT", contextText: summarizeEventForAi(eventType, event, ctx),
-      deadline, cancelToken, extraContext, gate: agentGate, executors, knowledge,
+      deadline, cancelToken, extraContext, gate: agentGate, executors: runExecutors, knowledge,
       // ONE listener run is ONE turn today, so this ceiling is not what stops a listener —
       // the tenant-wide 5-minute brake is. It is passed anyway so that the run, not the
       // turn, is where the number lives on BOTH surfaces (F-407): the day a listener grows
@@ -1450,7 +1471,7 @@ export const claimListenerRun = (params, taskId) => claimRuleExecution(
 );
 
 /** Queue consumer entry: taskType "listener". */
-export const executeListenerTask = async (params, taskId, { gateFacts = null, executors = {} } = {}) => {
+export const executeListenerTask = async (params, taskId, { gateFacts = null, executors = null } = {}) => {
   const m = await idx();
   const { listenerId, eventType, event, ctx } = params || {};
   const listener = await getListener(listenerId);
@@ -1493,7 +1514,7 @@ export const testListener = async ({ listener, issueKey, eventType, syntheticEve
   // F-302 — the SAME seam the two live run sites use. Without it a test run gated
   // arity-1 and dropped every git action, so "Test with an issue" reported a rule that
   // cannot do what the live delivery will do: the one thing a test must never do.
-  gateFacts = null, executors = {} }) => {
+  gateFacts = null, executors = null }) => {
   const m = await idx();
   const ev = eventType && listener.events.includes(eventType) ? eventType : listener.events[0];
   const meta = getEvent(ev) || {};

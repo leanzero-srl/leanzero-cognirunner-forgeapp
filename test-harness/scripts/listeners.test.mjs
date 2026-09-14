@@ -684,6 +684,26 @@ ok(defs.every((d) => d.type === "function" && d.function.parameters.type === "ob
     agent: { instructions: "do it", allowedActions: ["add_comment"], skillIds: ["sk_real"], useMemories: false },
   }, { accountId: "u" });
   ok(j.agent.skillIds[0] === "sk_real" && j.agent.useMemories === false, "a scheduled job carries the SAME binding shape");
+
+  /* F-852 — the GIT CONNECTION a rule acts as rides on the same normalizer, so a listener
+     and a job cannot grow two shapes for it. It is NOT validated at save: a connection can
+     be deleted long after, and the run-time refusal is the one that can tell the truth. */
+  const lc = await saveListener({
+    name: "KC", events: ["avi:jira:created:issue"], mode: "agent",
+    agent: { instructions: "do it", allowedActions: ["add_comment"], connectionId: "  gc_7  " },
+  }, { accountId: "u" });
+  ok(lc.agent.connectionId === "gc_7", "a listener stores the Git connection it acts as, trimmed");
+  ok((await getListener(lc.id)).agent.connectionId === "gc_7", "…and reads it back off the record");
+  const jc = await saveJob({
+    name: "KJC", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, mode: "agent",
+    agent: { instructions: "do it", allowedActions: ["add_comment"], connectionId: "gc_7" },
+  }, { accountId: "u" });
+  ok(jc.agent.connectionId === "gc_7", "a scheduled job carries the SAME field");
+  const lcNone = await saveListener({
+    name: "KC2", events: ["avi:jira:created:issue"], mode: "agent",
+    agent: { instructions: "do it", allowedActions: ["add_comment"], connectionId: "../../etc" },
+  }, { accountId: "u" });
+  ok(lcNone.agent.connectionId === null, "an id that is not an id degrades to null — it becomes part of a KVS key");
   let jRefused = null;
   try {
     await saveJob({ name: "KJ2", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, mode: "agent", agent: { instructions: "x", allowedActions: [], skillIds: ["sk_ghost"] } }, { accountId: "u" });

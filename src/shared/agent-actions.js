@@ -425,6 +425,17 @@ export const agentActionNamespace = (a) => (a && a.kind === "control" ? "control
  * `useMemories`  — opt-in, default OFF, exactly like the runtime memory injection the
  *                  validators use. Memories cost tokens on every round of every run, so
  *                  the rule's author says yes, not the app.
+ * `connectionId` — the GIT CONNECTION this rule acts as (F-852). Clamped here exactly
+ *                  like a skill id (the same id shape, the same 80-character bound) and
+ *                  validated LAZILY, at run time, by `getConnection` inside the git
+ *                  executor: a connection can be deleted or its credential can die long
+ *                  after the rule was saved, so a save-time existence check would be a
+ *                  promise the record cannot keep, and re-checking it here as well would
+ *                  put the refusal sentence in two places. Absent ⇒ `null`, and the
+ *                  assembler refuses every git action BY NAME rather than guessing at a
+ *                  sole connection: which account a rule acts as is the rule's own
+ *                  statement, not a deployment detail. (The sole-connection convenience
+ *                  belongs to the EDITOR, as a pre-selection that writes this field.)
  *
  * Unknown-shaped input degrades to the empty binding rather than throwing: a rule with
  * no knowledge is the pre-1.4 rule, and that has to stay saveable.
@@ -438,7 +449,15 @@ export const normalizeAgentKnowledge = (a) => {
     ids.push(id);
     if (ids.length >= MAX_RULE_SKILL_IDS) break;
   }
-  return { skillIds: ids, useMemories: src.useMemories === true };
+  // A STRING or nothing. `String(x)` would turn the number 0 into the perfectly
+  // well-shaped id "0", and an id this rule acts as must be something an author wrote,
+  // not something a coercion invented out of a wrong-typed field.
+  const conn = typeof src.connectionId === "string" ? src.connectionId.trim() : "";
+  return {
+    skillIds: ids,
+    useMemories: src.useMemories === true,
+    connectionId: /^[A-Za-z0-9_.:-]{1,80}$/.test(conn) ? conn : null,
+  };
 };
 
 export const AGENT_ACTION_IDS = AGENT_ACTIONS.map((a) => a.id);

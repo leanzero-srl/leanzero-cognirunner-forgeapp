@@ -78,7 +78,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
-import { drainSweep, answerComplete, plantPopulation, plantLedgerRow } from "../lib/sweep-drain.mjs";
+import { drainSweep, answerComplete, plantPopulation, plantLedgerRow, leverFacts } from "../lib/sweep-drain.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -295,8 +295,14 @@ async function stalePhase() {
   step(`2 · arm armDeleteFault mode:"refuse" count=${STALE_REFUSALS} — the stall`);
   const armed = await hook({ action: "armDeleteFault", mode: "refuse", count: STALE_REFUSALS, ttlSeconds: STALE_TTL_SECONDS });
   if (!ok200(armed)) { FAIL(`armDeleteFault did not answer 200/ok (HTTP ${armed.status})`, { reason: armed.json?.reason ?? null }); return; }
+  /* F-772 — the READ answer is NESTED (`value: { mode, count }`), the ARM answer is FLAT.
+     This read used to be parsed in the ARM's shape, so `armed`/`mode`/`count` were undefined
+     on every tenant and this positive control FAILED on every run: the arm below has never
+     executed live. `leverFacts` is the ONE reader of this door, shared with
+     `delete-fault-drain-live.mjs`, and `sweep-drain-decision.test.mjs` pins it to the
+     recorded read shape so a flat answer can never be mistaken for an armed lever again. */
   const read = await hook({ action: "readDeleteFault" });
-  const lever = ok200(read) ? { armed: read.json.armed ?? null, mode: read.json.mode ?? null, count: read.json.count ?? null } : null;
+  const lever = ok200(read) ? leverFacts(read.json) : null;
   ev.stale.lever = lever;
   if (lever && lever.armed === true && Number(lever.count) > 0) PASS(`readDeleteFault SEES the lever: mode=${lever.mode} count=${lever.count} — the positive control for the "it is spent" read at the end`, lever);
   else { FAIL("readDeleteFault did not read back the lever that was just armed — nothing below could be attributed to it", lever); return; }
@@ -366,11 +372,16 @@ async function stalePhase() {
 
   /* ── 6 · THE LEVER IS SPENT, by the same read that saw it armed. */
   step("6 · the lever, read back");
+  /* F-772 — the same ONE reader as the positive control in step 2, and for a second reason:
+     read flat, `count` was `undefined` here, `Number(undefined || 0) === 0` was TRUE, and
+     this step announced "the lever is spent" on every run WITHOUT EVER READING THE LEVER.
+     A false PASS is worse than the false FAIL above, because nothing goes red to report it. */
   const after = await hook({ action: "readDeleteFault" });
-  const spent = ok200(after) ? { armed: after.json.armed ?? null, count: after.json.count ?? null, expired: after.json.expired ?? null } : null;
+  const spent = ok200(after) ? leverFacts(after.json) : null;
   ev.stale.leverAfter = spent;
-  if (spent && Number(spent.count || 0) === 0) PASS(`readDeleteFault answers count:0 (armed=${spent.armed}) — the units went into the refusals observed above`, spent);
-  else NV(`readDeleteFault still reports count=${spent && spent.count} — not every armed unit was consumed by this trail, so some refusals above may belong to fewer batches than armed`, spent);
+  if (!spent) FAIL(`readDeleteFault did not answer 200/ok (HTTP ${after.status}) — whether the lever spent itself is unknown, and step 2 proved this same query CAN see it`, { status: after.status });
+  else if (Number(spent.count || 0) === 0) PASS(`readDeleteFault answers count:0 (armed=${spent.armed}, expired=${spent.expired}) — the units went into the refusals observed above; this is the same query that SAW the lever in step 2`, spent);
+  else NV(`readDeleteFault still reports count=${spent.count} (armed=${spent.armed}) — not every armed unit was consumed by this trail, so some refusals above may belong to fewer batches than armed`, spent);
 }
 
 /* The arm's OWN cleanup. It runs from the driver's `finally` alongside the ballast clear, so

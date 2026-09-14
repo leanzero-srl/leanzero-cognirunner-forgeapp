@@ -25,7 +25,7 @@ import {
   decideSweepStep, newDrainState, answerSignature, answerComplete, madeProgress, drainSweep,
   DELETES_FAILING_BACKOFF_MS, IDENTICAL_ANSWER_LIMIT,
   plantPopulation, resumeOf, PLANT_CLEARING_LIMIT, PLANT_CLEARING_PAUSE_MS,
-  plantLedgerRow,
+  plantLedgerRow, leverFacts,
 } from "../lib/sweep-drain.mjs";
 
 /** Walk a scripted list of answers through the decision, returning every step taken. */
@@ -557,5 +557,80 @@ const fakeClock = () => { const slept = []; return { slept, sleep: async (ms) =>
 }
 
 console.log("F-761: the plant ledger row records `resume`, `clearedSoFar`, `remainingStale` and `staleFailed`, and the clearToken as a boolean only — so a stale-tail resume is legible in the evidence and the F-744 carry is falsifiable live");
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §10 · F-772 — THE LEVER READER READS THE *READ* ANSWER, AND REFUSES THE ARM'S.
+ *
+ * `leverFacts` is the one reader of `readDeleteFault` for both live drivers. It used to
+ * exist twice, and the second copy — in `plant-sweep-live.mjs` — parsed the READ answer in
+ * the ARM answer's FLAT shape. The consequences were one of each kind of lie: the `--stale`
+ * arm's positive control FAILED on every tenant (armed came back undefined), and its
+ * "the lever is spent" step PASSED on every tenant (count came back undefined, and
+ * `Number(undefined || 0) === 0`).
+ *
+ * So the assertions below are in two halves, and the SECOND half is the one that matters:
+ * the flat arm shape must NOT be readable as an armed lever. A reader that merely accepts
+ * the nested shape would still have accepted the old driver's bug.
+ *
+ * Both fixtures are the real return values: the read is `readHarnessFault`
+ * (`src/harness-fault.js`, `{ key, value, until, expired }`) spread under the hook's
+ * `{ ok: true, prefix }`; the arm is `armDeleteFault`'s flat literal under the same.
+ * ───────────────────────────────────────────────────────────────────────────── */
+{
+  /* THE RECORDED READ SHAPE. `value.armedAt` is carried by the real row and is deliberately
+     NOT a recorded fact; `until` is TOP-LEVEL, which is where both real answers put it. */
+  const armedRead = leverFacts({
+    ok: true, prefix: "harness_fault:plant:",
+    key: "harness_fault:delete:harness_fault:plant:",
+    value: { count: 5, mode: "refuse", armedAt: "2026-09-14T11:00:00.000Z" },
+    until: "2026-09-14T11:05:00.000Z", expired: false,
+  });
+  assert.equal(armedRead.armed, true, "F-772: the recorded READ shape reads as ARMED");
+  assert.equal(armedRead.count, 5, "F-772: …with the count from `value.count`, which is the only place the read answer carries it");
+  assert.equal(armedRead.mode, "refuse", "F-772: …and the mode from `value.mode`");
+  assert.equal(armedRead.until, "2026-09-14T11:05:00.000Z",
+    "F-772: `until` is read TOP-LEVEL — `setFaultRow` stores {mode,count,armedAt} and computes the window outside the row, so a `value.until`-only reader reports null on every live run");
+  assert.equal(armedRead.expired, false, "F-772: `expired` is the read answer's own top-level judgement (F-664)");
+  assert.ok(!JSON.stringify(armedRead).includes("harness_fault:delete:"),
+    "F-772: the lever's KEY never enters the recorded facts — it names the prefix the lever guards");
+
+  /* THE MINIMAL FORM THE FINDING NAMES: value present, count 5, mode refuse -> armed. */
+  const minimal = leverFacts({ ok: true, value: { count: 5, mode: "refuse" } });
+  assert.equal(minimal.armed, true, "F-772: `{ok:true, value:{count:5, mode:'refuse'}}` reads as armed");
+  assert.equal(minimal.count, 5, "F-772: …count 5");
+
+  /* ── THE HALF THAT CATCHES THE BUG. The ARM answer is flat, and it is NOT a read. A
+     reader that accepted it would report a lever armed when it had read nothing about one,
+     which is exactly the direction a positive control must never fail in. */
+  const armAnswer = leverFacts({
+    ok: true, key: "harness_fault:delete:harness_fault:plant:", prefix: "harness_fault:plant:",
+    mode: "refuse", count: 5, ttlSeconds: 300, until: "2026-09-14T11:05:00.000Z",
+    modes: ["refuse"], maxCount: 11, maxTtlSeconds: 300,
+  });
+  assert.equal(armAnswer.armed, false,
+    "F-772: the flat ARM answer is NOT accepted as a read — `armed` keys off `value`, which an arm answer does not have");
+  assert.equal(armAnswer.count, 0,
+    "F-772: …and its top-level `count` is NOT harvested: a reader that took it would let step 2 pass on an answer that says nothing about the stored row");
+  assert.equal(armAnswer.mode, null, "F-772: …nor its top-level `mode`");
+
+  /* AND THE STEP-6 DIRECTION. A spent or expired lever answers `value: null`, and the
+     driver's "spent" test is `count === 0` — which must be reached through a real read. */
+  const spent = leverFacts({ ok: true, prefix: "harness_fault:plant:", value: null, until: null, expired: false });
+  assert.equal(spent.armed, false, "F-772: a spent lever (`value:null`) is not armed");
+  assert.equal(spent.count, 0, "F-772: …and counts 0, which is what step 6 asserts on");
+  const expiredRead = leverFacts({ ok: true, prefix: "harness_fault:plant:", value: null, expired: true });
+  assert.equal(expiredRead.armed, false, "F-772: an EXPIRED row is answered absent (F-664 deletes it on the way out), so unreadable and unarmed are one answer");
+  assert.equal(expiredRead.expired, true, "F-772: …but the expiry is reported rather than swallowed, so a driver knows its window ended on its own");
+
+  /* NULL-SAFETY: a harness-off or malformed answer must not throw inside the evidence. */
+  const off = leverFacts({});
+  assert.equal(off.armed, false, "F-772: an empty answer is not armed");
+  assert.equal(off.count, 0);
+  assert.equal(off.ok, null, "F-772: …and absent fields are null, not undefined — an absent key would vanish from the JSON");
+  assert.equal(leverFacts(undefined).armed, false, "F-772: even `undefined` answers unarmed rather than throwing");
+}
+
+console.log("F-772: `leverFacts` has ONE home and reads the readDeleteFault answer's NESTED shape — the flat ARM answer is refused as a read, so the plant-sweep --stale positive control cannot silently fail nor its 'lever is spent' step silently pass");
 
 console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived, and drainSweep is the one loop both live drivers obey (F-702); plantPopulation re-POSTs a `clearing` answer UNCHANGED and bounded, so a stale-tail clear no longer fails a run the tenant would have completed (F-724); and it now obeys the answer's own `resume` — repost/start-index/stop — forwarding the clearToken, so `clear-failed` is a re-POST and an unknown mode is a stop (F-744/F-745/F-747/F-748)");

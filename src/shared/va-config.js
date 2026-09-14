@@ -539,6 +539,61 @@ const int = (value, lo, hi, fallback, field, report) => {
 /** The persona name clamp: charset first, then length, then the empty-after-strip case. */
 export const clampPersonaName = (value) => clampChars(String(value == null ? "" : value).replace(PERSONA_ALLOWED, "").replace(/\s+/g, " ").trim(), VA_PERSONA_NAME_MAX);
 
+/* ── F-927: the CLOSED key vocabulary of a VA record, at the SAVE doors only ── */
+
+/*
+ * WHAT WENT WRONG. `normalizeVa` builds its output key by key, so a key it does not
+ * know was simply not copied — in SILENCE. Only two names were refused out loud
+ * (`guardrails.owedUncapped`, `guardrails.maxBulkTargets`), and only because they had
+ * once existed. Everything else vanished: an admin-panel spinner wrote
+ * `guardrails.shadowUntilTick` (the field lives under `status`) for a whole release,
+ * the save returned ok, the record read back without it, and nobody could tell the
+ * difference between "saved and ignored" and "never sent".
+ *
+ * THE VOCABULARY IS DERIVED, NOT RETYPED. Every list below comes from `VA_DEFAULTS`
+ * (and `VA_POWERS`), so a key added to the record's shape is accepted the moment it
+ * exists and cannot be forgotten here. The two list-valued powers are named explicitly
+ * because they are not booleans in `VA_DEFAULTS`' power block's sense but are still
+ * documented keys.
+ *
+ * TOP-LEVEL KEYS OF EACH SECTION ONLY. `persona.voice`, `scope.read`, `scope.write` and
+ * `cadence.postWindow` are validated by their own clamps (an unknown key inside them is
+ * ignored by a reader that names the fields it wants). The defect this closes, and every
+ * shape a form or a REST client actually produces, is a top-level key on a section.
+ *
+ * SAVE REFUSES, READ STAYS LENIENT. This runs only when the caller passes
+ * `{ strict: true }`, and the ONLY caller that does is `prepareVaSave`
+ * (src/va-admin.js) — the single door behind BOTH save paths, the classic form resolver
+ * and the Rules REST API's `?resource=agents`. The storage-module pass inside
+ * `normalizeJob`, the wizard machine and the admin panel's live preview stay lenient on
+ * purpose: they re-normalise records that are already this module's own output, and a
+ * stored row carrying a stale key must still LOAD rather than become unopenable.
+ *
+ * THE REFUSAL IS A THROW, which `prepareVaSave` already turns into the one shape the VA
+ * save doors speak — `fail("va_invalid", { message, refused:[{field:"va",reason}] })`,
+ * rendered by the admin UI and returned by REST as `400 { error, refused }` through
+ * `errBody`. It names the key, so the operator can see the typo they made.
+ *
+ * THE TWO LEGACY NAMES KEEP THEIR OWN SENTENCES. `owedUncapped` and `maxBulkTargets`
+ * are reported (and dropped), not thrown: they explain what REPLACED them, which a
+ * generic "not a setting" line cannot, and an old export being re-imported should not
+ * be unsavable.
+ */
+const VA_KNOWN_KEYS = Object.freeze({
+  persona: Object.freeze(Object.keys(VA_DEFAULTS.persona)),
+  scope: Object.freeze(Object.keys(VA_DEFAULTS.scope)),
+  intake: Object.freeze(Object.keys(VA_DEFAULTS.intake)),
+  cadence: Object.freeze(Object.keys(VA_DEFAULTS.cadence)),
+  powers: Object.freeze([...VA_POWERS, "skillIds", "confluenceSpaces"]),
+  guardrails: Object.freeze(Object.keys(VA_DEFAULTS.guardrails)),
+});
+
+/** The names refused with their own sentence, so the generic refusal skips them. */
+const VA_RETIRED_KEYS = Object.freeze({ guardrails: Object.freeze(["owedUncapped", "maxBulkTargets"]) });
+
+/** Every documented key of a section, for a refusal that says what WOULD have worked. */
+export const vaKnownKeys = (section) => [...(VA_KNOWN_KEYS[section] || [])];
+
 /* ── normalizeVa ─────────────────────────────────────────────────────────────── */
 
 /**
@@ -861,6 +916,36 @@ export const normalizeVa = (raw, ctx = {}) => {
      */
     shadowUntilTick: clampShadowUntilTick(int(st.shadowUntilTick, 0, shadowReachableCeiling(doorWatch), guardrails.shadowTicks, "status.shadowUntilTick", report), doorWatch),
   };
+
+  /* — F-927: unknown keys, refused BY NAME at the save doors (see the note above the
+   * `VA_KNOWN_KEYS` table). Last, so a structurally broken record still fails on the
+   * thing an operator can act on first (a missing name, a site-wide write scope, an
+   * unusable cadence) rather than on a typo further down the same body. — */
+  if (ctx.strict === true) {
+    const unknown = [];
+    for (const section of Object.keys(VA_KNOWN_KEYS)) {
+      const raw = isObj(src[section]) ? src[section] : null;
+      if (!raw) continue;
+      const retired = VA_RETIRED_KEYS[section] || [];
+      for (const k of Object.keys(raw)) {
+        if (VA_KNOWN_KEYS[section].includes(k) || retired.includes(k)) continue;
+        unknown.push(`${section}.${k}`);
+      }
+    }
+    if (unknown.length) {
+      // ONE sentence, every offending key named with its section, plus the vocabulary
+      // that WOULD have been accepted — a refusal an operator can act on without opening
+      // the docs. Grouped by section so a body with two typos reads as two facts.
+      const bySection = {};
+      for (const path of unknown) {
+        const section = path.slice(0, path.indexOf("."));
+        (bySection[section] = bySection[section] || []).push(path.slice(section.length + 1));
+      }
+      const parts = Object.keys(bySection).map((section) =>
+        `${bySection[section].map((k) => `"${k}"`).join(", ")} under ${section} (the settings it has there are: ${VA_KNOWN_KEYS[section].join(", ")})`);
+      throw new Error(`va.${unknown.join(", va.")} ${unknown.length > 1 ? "are" : "is"} refused: a Virtual Administrator has no ${parts.join("; and no ")}. Remove the key or correct its name.`);
+    }
+  }
 
   return { va: { persona, scope, intake, cadence, powers, guardrails, status }, refused };
 };

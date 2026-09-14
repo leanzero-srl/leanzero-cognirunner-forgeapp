@@ -178,6 +178,48 @@ throws(() => normalizeVa(base({ cadence: { preset: "custom" } }), CTX), /cadence
   ok(normalizeVa(base({ guardrails: { owedUncapped: false } }), CTX).refused.some((x) => x.field === "guardrails.owedUncapped"),
     "a FALSE owedUncapped is refused too, because the field itself no longer exists");
 }
+/* ── F-927 — AN UNKNOWN KEY UNDER A SECTION IS REFUSED AT THE SAVE DOORS ──────────
+ *
+ * `normalizeVa` builds its output key by key, so a key it did not know was dropped in
+ * SILENCE - which is how an admin-panel spinner wrote `guardrails.shadowUntilTick` (the
+ * field lives under `status`) into the void for a whole release, with the save answering
+ * ok. Only `owedUncapped` and `maxBulkTargets` were refused, and only by name.
+ *
+ * SAVE refuses, READ stays lenient: `{ strict: true }` is passed by `prepareVaSave`
+ * (src/va-admin.js) alone - the one door behind both the classic form resolver and the
+ * REST `?resource=agents` - so a stored row written by an older build still normalises.
+ */
+{
+  throws(() => normalizeVa(base({ guardrails: { shadowUntilTick: 400 } }), { ...CTX, strict: true }),
+    /guardrails\.shadowUntilTick is refused/, "BLOCK an unknown guardrail key at the save door, with the key named");
+  const msg = messageOf(() => normalizeVa(base({ guardrails: { shadowUntilTick: 400 } }), { ...CTX, strict: true }));
+  ok(/shadowTicks/.test(msg) && /maxWritesPerRun/.test(msg), "…and the refusal lists the settings guardrails actually has");
+  // Every other section is closed too, and each names its own vocabulary.
+  for (const [section, key] of [["persona", "tone"], ["scope", "read_projects"], ["intake", "queues"], ["cadence", "everyMinutes"], ["powers", "deleteIssues"]]) {
+    throws(() => normalizeVa(base({ [section]: { ...(base()[section] || {}), [key]: true } }), { ...CTX, strict: true }),
+      new RegExp(`${section}\\.${key} is refused`), `BLOCK an unknown key under ${section}`);
+  }
+  // ALLOW every documented key of every section: the full default record, with a name.
+  const full = normalizeVa({
+    ...VA_DEFAULTS,
+    persona: { ...VA_DEFAULTS.persona, name: "Nadia" },
+    scope: { read: { projects: ["OPS", "SUP"] }, write: { projects: ["OPS"] } },
+    intake: { serviceDesks: [{ serviceDeskId: "3", queueIds: ["11"] }], jql: "project = OPS", mentionsOf: [], owedFirst: true },
+    cadence: { preset: "every30", cron: "*/30 * * * *", timeZone: "UTC", postWindow: { days: [1, 2], from: "08:00", to: "18:00" } },
+    powers: { ...VA_DEFAULTS.powers, skillIds: ["sk1"], confluenceSpaces: ["OPS"] },
+  }, { ...CTX, strict: true });
+  ok(full.va.persona.name === "Nadia", "ALLOW a record that uses every documented key of every section");
+  ok(VA_POWERS.every((k) => k in full.va.powers), "…including every power id");
+  // A STORED ROW WITH A STALE KEY STILL NORMALISES ON READ (no strict flag).
+  const stale = normalizeVa(base({ guardrails: { shadowUntilTick: 400, capsPerHour: 2 } }), CTX);
+  ok(stale.va.guardrails.capsPerHour === 2 && !("shadowUntilTick" in stale.va.guardrails),
+    "a stored row carrying an unknown key still loads, and the key is dropped");
+  // The two RETIRED names keep their own sentences rather than the generic refusal, so
+  // an old export being re-imported is reported, not made unsavable.
+  const retired = normalizeVa(base({ guardrails: { owedUncapped: true } }), { ...CTX, strict: true });
+  ok(retired.refused.some((x) => x.field === "guardrails.owedUncapped"), "a RETIRED name is still reported, not thrown, even at the save door");
+}
+
 {
   const r = norm({ powers: { deleteIssues: true, changeWorkflow: true, replyPublic: true } });
   ok(reasonsFor(r, "powers.deleteIssues").length === 1 && reasonsFor(r, "powers.changeWorkflow").length === 1,

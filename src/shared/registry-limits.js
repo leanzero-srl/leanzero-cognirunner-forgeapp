@@ -31,6 +31,8 @@
  * explicit human approval.
  */
 
+import { utf8ByteLength } from "./text-clamp.js";
+
 /** Hard row cap for the registry. A create/claim at or above this is refused. */
 export const REGISTRY_MAX_ROWS = 500;
 
@@ -63,10 +65,18 @@ export const REGISTRY_CREATE_MAX_BYTES = 200000;
  * that runs the Custom UI iframes, so backend and frontend measure a document
  * with the SAME function, not merely with the same intent. This is the whole
  * point: F-836 was a gate in characters guarding a ceiling in bytes.
+ *
+ * F-885 — THE IMPLEMENTATION IS NOT HERE ANY MORE. It used to be a second body
+ * of the same measure: `utf8ByteLength` in src/shared/text-clamp.js is the home
+ * F-874 consolidated on, and it must be, because the measure and the CLAMP that
+ * enforces the same budget (`clampUtf8Bytes`, next to it) have to agree exactly
+ * — two encoders that merely look alike are how a gate passes a string the
+ * clamp then cuts. `utf8Bytes` stays as the public NAME because the doc cap's
+ * callers (saveContextDoc, both DocRepository copies, the F-836 tests) speak it
+ * and renaming them would be a wider edit than the defect. Both modules are
+ * dependency-free, so importing one into the other keeps every bundle valid.
  */
-export function utf8Bytes(s) {
-  return new TextEncoder().encode(String(s ?? "")).length;
-}
+export const utf8Bytes = utf8ByteLength;
 
 /**
  * Content ceiling for ONE Documentation Library document (`saveContextDoc`).

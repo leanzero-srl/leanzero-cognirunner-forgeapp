@@ -22,7 +22,7 @@ import {
   GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES, buildAgentKnowledge,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule, toIndexRow as toJobIndexRow, MAX_SCOPE_ISSUES } from "../../src/scheduled-jobs.js";
-import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, AGENT_RUN_BRAKE_MAX_PER_BUCKET } from "../../src/shared/registry-limits.js";
+import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, AGENT_RUN_BRAKE_MAX_PER_BUCKET, GENERATION_META_LIMITS } from "../../src/shared/registry-limits.js";
 import { normalizeAllowedActions, toolDefinitionsFor } from "../../src/shared/agent-actions.js";
 
 let pass = 0; let fail = 0;
@@ -53,6 +53,93 @@ ok(l1b.id === l1.id && l1b.stats === undefined && l1b.createdBy === "acc-1" && l
 ok(normalizeListener({ id: "my.custom_id-1", name: "n", events: ["avi:jira:created:issue"], functions: [{ code: "1" }] }).id === "my.custom_id-1", "client id honoured when well-formed");
 ok(normalizeStep({}, 2).name === "Step 3" && normalizeStep({ code: "x".repeat(30000) }).code.length === 30000, "step defaults + 30k code accepted");
 throws(() => normalizeStep({ code: "x".repeat(40000) }), /exceeds 32768/, "oversized step code is an ERROR, not a silent clamp");
+
+// ── generationMeta allow-list (F-800) ─────────────────────────────────────────
+// `generationMeta` used to be assigned WHOLESALE from caller JSON behind a typeof check
+// while every sibling field was clamped, so the bound that makes a `listener:*`/`job:*`
+// row reviewable had one hole a REST caller could fill with arbitrary nested JSON —
+// including a credential, under a field name no ceiling inspects. The allow-list has ONE
+// home (src/shared/registry-limits.js `normalizeGenerationMeta`) and is reached through
+// normalizeStep by BOTH engines, so both arms are asserted here.
+//
+// BLOCK — nothing outside the allow-list survives, and nothing nests.
+{
+  const hostile = normalizeStep({
+    code: "1",
+    generationMeta: {
+      creds: { token: "shhh-not-a-real-secret" },        // unknown key, nested → gone
+      appliedDocs: [{ id: "d1", title: "T", leak: { token: "nested-under-a-known-key" } }],
+      appliedSkills: [{ id: "s1", name: "S", auto: true, extra: ["x"] }],
+      truncatedDocs: [{ id: "d1", title: "T" }],          // compactMeta emits title only
+      appliedMemories: Number.POSITIVE_INFINITY,          // not finite → dropped entirely
+      fieldGuide: ["fg1", { token: "x" }, "fg2"],         // non-scalar entry dropped
+      source: "x".repeat(500),                            // clamped, not stored whole
+    },
+  }).generationMeta;
+  const blob = JSON.stringify(hostile);
+  ok(!/shhh-not-a-real-secret/.test(blob) && !/nested-under-a-known-key/.test(blob),
+    "F-800 BLOCK: a nested credential under generationMeta is dropped — unknown key AND under a known key");
+  ok(hostile.creds === undefined && hostile.appliedDocs[0].leak === undefined && hostile.appliedSkills[0].extra === undefined,
+    "F-800 BLOCK: unknown fields dropped at every level");
+  ok(hostile.truncatedDocs[0].id === undefined && hostile.truncatedDocs[0].title === "T",
+    "F-800 BLOCK: truncatedDocs carries title only, the shape compactMeta actually writes");
+  ok(hostile.appliedMemories === undefined, "F-800 BLOCK: a non-finite appliedMemories is dropped, never stored as Infinity/NaN");
+  ok(JSON.stringify(hostile.fieldGuide) === JSON.stringify(["fg1", "fg2"]), "F-800 BLOCK: non-scalar fieldGuide entries dropped");
+  ok(hostile.source.length === 40, "F-800 BLOCK: oversized strings are clamped, not stored whole");
+  ok(normalizeStep({ code: "1", generationMeta: { token: "x" } }).generationMeta === undefined,
+    "F-800 BLOCK: meta with nothing known left carries no generationMeta key at all");
+  ok(normalizeStep({ code: "1", generationMeta: ["token"] }).generationMeta === undefined,
+    "F-800 BLOCK: an ARRAY generationMeta passed the old typeof check; it is refused now");
+  // Volume bounds: a caller cannot use a known key as an unbounded array.
+  const many = normalizeStep({ code: "1", generationMeta: {
+    appliedDocs: Array.from({ length: 200 }, (_, i) => ({ id: `d${i}`, title: "T" })),
+    fieldGuide: Array.from({ length: 200 }, (_, i) => `fg${i}`),
+  } }).generationMeta;
+  ok(many.appliedDocs.length === GENERATION_META_LIMITS.maxAppliedDocs && many.fieldGuide.length === GENERATION_META_LIMITS.maxFieldGuide,
+    "F-800 BLOCK: known keys are length-capped from the ONE limits home");
+  // recipeParams is a FLAT map — a nested value under a param name never lands.
+  const rp = normalizeStep({ code: "1", generationMeta: { source: "recipe", recipeParams: { fieldName: "Summary", bad: { token: "nested-param-secret" } } } }).generationMeta;
+  ok(JSON.stringify(rp.recipeParams) === JSON.stringify({ fieldName: "Summary" }),
+    "F-800 BLOCK: recipeParams keeps scalars and drops nested values");
+}
+
+// ALLOW — the two REAL editor shapes survive byte-identical (emit order included).
+// Derived from static/config-ui/src/components/FunctionBlock.jsx: `compactMeta` for the
+// codegen/fix path and the Insert-recipe onUpdate for the deterministic path. If this
+// fails, the allow-list drifted from the writer and provenance chips will go blank.
+{
+  const uiCodegenMeta = {
+    appliedDocs: [{ id: "builtin_doc_jql", title: "JQL Cheat Sheet" }, { id: null, title: "(inline context)" }],
+    appliedSkills: [{ id: "sk_fields_data", name: "Fields & Data", auto: true }, { id: "sk_x", name: "Manual", auto: false }],
+    appliedMemories: 2,
+    truncatedDocs: [{ title: "Field Types & Update Shapes" }],
+    fieldGuide: ["fg_fields_1", "fg_fields_2"],
+  };
+  const viaListener = normalizeStep({ code: "api.log(1)", generationMeta: uiCodegenMeta }).generationMeta;
+  ok(JSON.stringify(viaListener) === JSON.stringify(uiCodegenMeta),
+    "F-800 ALLOW: the UI's real codegen generationMeta survives byte-identical (incl. the id:null inline pseudo-doc)");
+
+  const uiRecipeMeta = { source: "recipe", recipeKey: "bulk_label", recipeLabel: "Add a label", recipeParams: { label: "triaged", projectKey: "LZPT" } };
+  ok(JSON.stringify(normalizeStep({ code: "api.log(1)", generationMeta: uiRecipeMeta }).generationMeta) === JSON.stringify(uiRecipeMeta),
+    "F-800 ALLOW: the UI's real recipe generationMeta survives byte-identical");
+
+  // The JOB arm reaches the SAME normaliser — asserted so the two engines cannot drift.
+  const jobStep = normalizeJob({
+    name: "Nightly", schedule: { cron: "0 2 * * *", timeZone: "UTC" },
+    functions: [{ code: "api.log(1)", generationMeta: { ...uiCodegenMeta, creds: { token: "job-arm-secret" } } }],
+  }).functions[0];
+  ok(JSON.stringify(jobStep.generationMeta) === JSON.stringify(uiCodegenMeta),
+    "F-800 ALLOW+BLOCK (job arm): the real shape survives and the injected credential is dropped");
+  ok(!/job-arm-secret/.test(JSON.stringify(jobStep)), "F-800 BLOCK (job arm): no credential anywhere in the stored job step");
+
+  // And the LISTENER arm end-to-end through normalizeListener, not just the step helper.
+  const lm = normalizeListener({
+    name: "L", events: ["avi:jira:created:issue"],
+    functions: [{ code: "1", generationMeta: { ...uiRecipeMeta, creds: { token: "listener-arm-secret" } } }],
+  });
+  ok(JSON.stringify(lm.functions[0].generationMeta) === JSON.stringify(uiRecipeMeta) && !/listener-arm-secret/.test(JSON.stringify(lm)),
+    "F-800 ALLOW+BLOCK (listener arm): real shape kept, injected credential dropped");
+}
 ok(normalizeListener({ name: "j", events: ["avi:jira:created:issue"], filters: { jql: "priority = High ORDER BY created DESC" }, functions: [{ code: "1" }] }).filters.jql === "priority = High", "trailing ORDER BY stripped from the JQL filter");
 
 // ── matchListenerStatic ───────────────────────────────────────────────────────

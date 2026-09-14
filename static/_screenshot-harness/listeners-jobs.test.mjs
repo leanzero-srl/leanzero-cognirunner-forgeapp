@@ -2618,6 +2618,95 @@ try {
     await close(env);
   }
 
+  /* ---------------- F-902 — the Git connection row on an agent rule
+   *
+   * `assembleAgentExecutors` reads `agent.connectionId` as the ONLY non-delivery source of
+   * the account a git action acts as, and no editor ever wrote it: an admin could arm
+   * "Commit files" on a scheduled job, save it, and then read a run-time refusal naming a
+   * control that did not exist. What is asserted here is the DECISION and the PAYLOAD:
+   * with one connection the row pre-selects it AND the saved job carries the id; with none
+   * the row says so in a solid red sentence and Save is off, so nothing reaches the
+   * backend. Both themes, because the sentence is a hue.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-902 ${theme} git connection row — sole connection pre-selects and saves`);
+    const env = await openAdmin(browser, theme, { __CODE_ONE_CONN__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Scheduled Jobs");
+      await page.locator(".lst-table").waitFor({ timeout: 10000 });
+      await page.locator("button", { hasText: "+ Add Job" }).first().click();
+      await page.locator(".lst-editor").waitFor({ timeout: 10000 });
+      await page.locator(".mode-btn.mode-agent").click();
+      await page.locator(".agc-textarea").waitFor({ timeout: 10000 });
+
+      // No git action ticked yet: the row does not exist, because nothing owes an account.
+      ok(await page.locator(".agc-git-conn").count() === 0, "F-902 no Git connection row until a git action is ticked");
+
+      await page.locator(".agc-textarea").fill("Commit the generated changelog to the release branch.");
+      await page.locator("#job-name").fill("Changelog commit");
+      await page.locator(".agc-action", { hasText: "Commit files" }).locator("input").check();
+      const row = page.locator(".agc-git-conn");
+      await row.waitFor({ timeout: 10000 });
+      ok(true, "F-902 ticking a git action reveals the Git connection row");
+
+      // THE PRE-SELECTION: exactly one connection, so the row answers for the admin — and
+      // writes the id into the draft, which is what the payload below proves.
+      await row.locator(".dropdown-trigger", { hasText: "Acme engineering" }).waitFor({ timeout: 10000 });
+      ok(await row.locator("select").count() === 0, "F-902 the picker is a CustomSelect, never a native select");
+      ok(await page.locator(".agc-git-refusal").count() === 0, "F-902 a chosen connection leaves no refusal");
+      ok(!(await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).isDisabled()), "F-902 Save is available once a connection is named");
+      await shot(page, `F-902-${theme}-git-connection-row`);
+
+      await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
+      await page.locator(".mls-toast", { hasText: "Job saved" }).waitFor({ timeout: 5000 });
+      const savedJ = await page.evaluate(() => window.__CALLS__.filter((c) => c.name === "saveScheduledJob").at(-1).payload.job);
+      ok(savedJ.agent.connectionId === "gc_1", `F-902 the saved job carries the connection id (got ${savedJ.agent.connectionId})`);
+      ok((savedJ.agent.allowedActions || []).includes("commit_files"), "F-902 the git action rides the same payload");
+      ok(env.errors.length === 0, "F-902 one-connection no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-902 ${theme} one-connection threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-902 ${theme} git connection row — no connections at all`);
+    const env = await openAdmin(browser, theme, { __CODE_NO_CONNS__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Scheduled Jobs");
+      await page.locator(".lst-table").waitFor({ timeout: 10000 });
+      await page.locator("button", { hasText: "+ Add Job" }).first().click();
+      await page.locator(".lst-editor").waitFor({ timeout: 10000 });
+      await page.locator(".mode-btn.mode-agent").click();
+      await page.locator(".agc-textarea").waitFor({ timeout: 10000 });
+      await page.locator(".agc-textarea").fill("Commit the generated changelog to the release branch.");
+      await page.locator(".agc-action", { hasText: "Commit files" }).locator("input").check();
+
+      const refusal = page.locator(".agc-git-refusal");
+      await refusal.waitFor({ timeout: 10000 });
+      const rtxt = (await refusal.innerText()).replace(/\s+/g, " ").trim();
+      ok(rtxt === "Connect a Git provider in Settings before this rule can use Git actions", `F-902 the empty instance is told where to go (got ${rtxt})`);
+      const st = await refusal.evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, color: cs.color, bl: cs.borderLeftWidth, bt: cs.borderTopWidth, w: cs.fontWeight }; });
+      ok(st.bg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `F-902 ${theme} the sentence is a solid red, never a tint (got ${st.bg})`);
+      ok(st.color === "rgb(255, 255, 255)", "F-902 white text on the refusal");
+      ok(st.bl === st.bt, "F-902 the refusal has NO left accent rail");
+      ok(Number(st.w) >= 600, `F-902 the refusal is 600+ weight (got ${st.w})`);
+      ok(await page.locator(".agc-git-conn .dropdown").count() === 0, "F-902 no picker is offered when there is nothing to pick");
+
+      // SAVE IS OFF. Not a toast after a round trip: the decision is owed before the call.
+      ok(await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).isDisabled(), "F-902 Save is disabled while the connection is owed");
+      ok(await page.locator(".section-actions .btn-solid", { hasText: "Save & close" }).isDisabled(), "F-902 Save & close is disabled too");
+      ok(!(await page.evaluate(() => window.__CALLS__)).some((c) => c.name === "saveScheduledJob"), "F-902 nothing reached the backend");
+      await shot(page, `F-902-${theme}-no-connections`);
+
+      // Untick the git action and the rule owes nothing again.
+      await page.locator(".agc-action", { hasText: "Commit files" }).locator("input").uncheck();
+      ok(await page.locator(".agc-git-conn").count() === 0, "F-902 the row leaves with the action that summoned it");
+      ok(!(await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).isDisabled()), "F-902 Save comes back when no git action is armed");
+      ok(env.errors.length === 0, "F-902 no-connections no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-902 ${theme} no-connections threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
 } finally {
   await browser.close();
 }

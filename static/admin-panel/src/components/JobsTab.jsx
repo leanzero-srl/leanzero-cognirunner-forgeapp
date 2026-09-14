@@ -7,7 +7,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import SchedulePicker from "./SchedulePicker";
-import AgentConfig from "./AgentConfig";
+import AgentConfig, { agentNeedsGitConnection } from "./AgentConfig";
 import FunctionBuilder from "./FunctionBuilder";
 import { ModeSwitch, RunStat, RunResultView, RecentLogs } from "./RuleEditorBits";
 import { showToast } from "./toast";
@@ -174,6 +174,12 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
     if (!v.ok) return `Fix the schedule: ${v.error}`;
     if (draft.mode === "script" && !functions.some((f) => (f.code || "").trim())) return "Add at least one code step with code (describe it and click Generate).";
     if (draft.mode === "agent" && !draft.agent.instructions.trim()) return "Write instructions for the AI agent.";
+    /* F-902 - a job has no delivery, so `agent.connectionId` is the ONLY source of the
+       account its git actions act as (src/agent-executors.js). Saving without it produced
+       a rule that refused at run time; the decision is owed here, where the row is. */
+    if (draft.mode === "agent" && agentNeedsGitConnection(draft.agent, false)) {
+      return "Choose the Git connection this job acts as.";
+    }
     return null;
   };
   const save = async (andClose = false) => {
@@ -196,6 +202,8 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
   const saveAndRun = async () => { const j = await save(false); if (j) runNow(j.id); };
 
   const scoped = draft && draft.scope && draft.scope.jql && draft.scope.jql.trim();
+  // F-902 - Save is OFF while a git action is armed with no connection named.
+  const gitConnOwed = !!(draft && draft.mode === "agent" && agentNeedsGitConnection(draft.agent, false));
   const codegenContext = draft ? { runtime: "job", schedule: draft.schedule, scopeJql: scoped ? draft.scope.jql : null } : null;
   const testContext = draft ? { runtime: "job", jobName: draft.name, scheduledFor: new Date().toISOString(), manual: true, schedule: draft.schedule } : null;
 
@@ -206,9 +214,9 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
           <span className="section-title">{draft.id ? "Edit scheduled job" : "New scheduled job"}</span>
           <div className="section-actions">
             <button type="button" className="btn-small" onClick={closeEditor}>← Back to jobs</button>
-            <button type="button" className="btn-small" onClick={saveAndRun} disabled={saving || !!running || !canEdit}>{running ? (running.id === draft.id ? `Running (${running.status})…` : "Another job is running") : "Save & run now"}</button>
-            <button type="button" className="btn-small btn-edit" onClick={() => save(false)} disabled={saving || !canEdit}>{saving ? "Saving…" : "Save"}</button>
-            <button type="button" className="btn-small btn-solid" onClick={() => save(true)} disabled={saving || !canEdit}>Save &amp; close</button>
+            <button type="button" className="btn-small" onClick={saveAndRun} disabled={saving || !!running || !canEdit || gitConnOwed}>{running ? (running.id === draft.id ? `Running (${running.status})…` : "Another job is running") : "Save & run now"}</button>
+            <button type="button" className="btn-small btn-edit" onClick={() => save(false)} disabled={saving || !canEdit || gitConnOwed}>{saving ? "Saving…" : "Save"}</button>
+            <button type="button" className="btn-small btn-solid" onClick={() => save(true)} disabled={saving || !canEdit || gitConnOwed}>Save &amp; close</button>
           </div>
         </div>
         <p className="hint">{draft.simulationMode ? "Save & run now simulates this job: live reads, writes recorded." : "Save & run now executes this job with real Jira writes. Enable Simulation mode below to record writes instead."}</p>

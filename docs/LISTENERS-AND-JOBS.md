@@ -112,8 +112,21 @@ against the Skills tab at save time; an unknown id is refused by name) and
 `agent.useMemories` (opt-in, default off). Skills and memories are injected as
 trusted-but-bounded blocks under the `agentRun` budget (8 KB of skills, 4 KB of memories,
 re-sent every round); a skill too large for the budget is named in the log rather than
-silently skipped. Both fields are REST fields today; the Listeners and Scheduled Jobs
-editors do not expose them yet.
+silently skipped. Both fields are set from the Knowledge row of the agent editor in the
+Listeners and Scheduled Jobs tabs, and over REST.
+
+**Git connection.** An agent rule that is allowed any `git:` action also carries
+`agent.connectionId`, the id of the Git connection the rule acts as (Settings, Code). The
+runtime reads exactly two sources for that account: the connection whose webhook delivered
+the run, which wins, and this field. There is no "the instance has only one, so use it"
+fallback at run time, because a rule that acts as an account nobody named would change
+meaning the day a second connection is added; the sole connection is pre-selected in the
+editor instead, and written into the record. The Git connection row appears in the agent
+editor as soon as a Git action is ticked and blocks Save until a connection is chosen. A
+listener bound to a Git event may leave it empty, since every delivery of such an event
+carries its own connection. An unknown or malformed value is normalised away to null
+(`normalizeAgentKnowledge`), and a run with no connection from either source refuses the
+git actions with a sentence naming this field.
 
 ## Rules REST API
 

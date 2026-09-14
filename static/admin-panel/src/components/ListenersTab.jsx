@@ -8,13 +8,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CustomSelect from "./CustomSelect";
 import EventPicker from "./EventPicker";
-import AgentConfig from "./AgentConfig";
+import AgentConfig, { agentNeedsGitConnection } from "./AgentConfig";
 import FunctionBuilder from "./FunctionBuilder";
 import IssuePicker from "./IssuePicker";
 import { ModeSwitch, ChipsInput, ProjectPicker, RunStat, RunResultView, RecentLogs } from "./RuleEditorBits";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
-import { getEvent, eventLabel, filtersForEvents, EVENT_CATEGORIES, requiresRepoFilter } from "../../../../src/shared/jira-events.js";
+import { getEvent, eventLabel, filtersForEvents, EVENT_CATEGORIES, requiresRepoFilter, isGitEvent } from "../../../../src/shared/jira-events.js";
 import { DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS } from "../../../../src/shared/agent-actions.js";
 import { PREMADE_LISTENERS, premadeRequiresCapability } from "../../../../src/shared/premade-rules-catalog.js";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
@@ -182,6 +182,9 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   const patch = (p) => setDraft((d) => ({ ...d, ...p }));
   const patchFilters = (p) => setDraft((d) => ({ ...d, filters: { ...d.filters, ...p } }));
   const buildPayload = () => ({ ...draft, functions: draft.mode === "script" ? functions : [] });
+  // F-902 - does the DELIVERY supply the connection? Only a git-sourced event does.
+  const gitBound = !!(draft && (draft.events || []).some((id) => isGitEvent(id)));
+  const gitConnOwed = !!(draft && draft.mode === "agent" && agentNeedsGitConnection(draft.agent, gitBound));
   const validateDraft = () => {
     if (!draft.name.trim()) return "Give the listener a name.";
     if (!draft.events.length) return "Pick at least one event.";
@@ -192,6 +195,12 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
     }
     if (draft.mode === "script" && !functions.some((f) => (f.code || "").trim())) return "Add at least one code step with code (describe it and click Generate).";
     if (draft.mode === "agent" && !draft.agent.instructions.trim()) return "Write instructions for the AI agent.";
+    /* F-902 - a listener bound to a GIT event is exempt: the webhook delivery carries the
+       connection and it wins over the rule's (src/agent-executors.js). Any other listener
+       armed with a git action owes the name of the account it acts as. */
+    if (draft.mode === "agent" && agentNeedsGitConnection(draft.agent, gitBound)) {
+      return "Choose the Git connection this listener acts as.";
+    }
     return null;
   };
   const save = async (andClose = false) => {
@@ -252,8 +261,8 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
           <span className="section-title">{draft.id ? "Edit listener" : "New listener"}</span>
           <div className="section-actions">
             <button type="button" className="btn-small" onClick={closeEditor}>← Back to listeners</button>
-            <button type="button" className="btn-small btn-edit" onClick={() => save(false)} disabled={saving || testing || !canEdit}>{saving ? "Saving…" : "Save"}</button>
-            <button type="button" className="btn-small btn-solid" onClick={() => save(true)} disabled={saving || testing || !canEdit}>Save &amp; close</button>
+            <button type="button" className="btn-small btn-edit" onClick={() => save(false)} disabled={saving || testing || !canEdit || gitConnOwed}>{saving ? "Saving…" : "Save"}</button>
+            <button type="button" className="btn-small btn-solid" onClick={() => save(true)} disabled={saving || testing || !canEdit || gitConnOwed}>Save &amp; close</button>
           </div>
         </div>
         <div className="card lst-card">
@@ -328,7 +337,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
               <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} roleUnknown={roleUnknown} />
             </div>
           ) : (
-            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="listener" invoke={invoke} knowledgeRefusal={knowledgeRefusal} />
+            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="listener" invoke={invoke} knowledgeRefusal={knowledgeRefusal} gitEventBound={gitBound} />
           )}
 
           <div className="lst-options">

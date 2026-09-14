@@ -1187,7 +1187,11 @@ export const recordTick = async (store, agent, { tickId, phase = "prepare", star
      * has exactly one question - how many went out before I pressed it - and this is the
      * record that answers it.
      */
-    ...(stoppedBy === "paused" || stoppedBy === "cancelled"
+    // F-949 adds the third stop: the post window CLOSED while the pass was running. It is
+    // the same question with the same answer - how many went out before it stopped - so it
+    // is the same two fields and not a new shape. The list stays CLOSED on purpose: an
+    // arbitrary `stoppedBy` reaching a receipt is a string an operator cannot read.
+    ...(stoppedBy === "paused" || stoppedBy === "cancelled" || stoppedBy === "window_closed"
       ? { reason: stoppedBy, postedBefore: Math.max(0, Math.trunc(Number(postedBefore) || 0)) }
       : {}),
     ...(isObj(compacted)

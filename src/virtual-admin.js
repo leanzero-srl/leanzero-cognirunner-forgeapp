@@ -2110,9 +2110,26 @@ export const inPostWindow = (va, nowMs, { timeZone = null } = {}) => {
   const days = asArray(w.days).map(Number);
   if (days.length && !days.includes(day)) return { ok: false, reason: "outside_post_window_day" };
   const toMin = (hhmm) => { const m = /^(\d{2}):(\d{2})$/.exec(String(hhmm || "")); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
-  const from = toMin(w.from);
-  const to = toMin(w.to);
-  if (from == null || to == null) return { ok: true, reason: "no_window_hours" };
+  const rawFrom = w.from == null ? "" : String(w.from).trim();
+  const rawTo = w.to == null ? "" : String(w.to).trim();
+  const from = toMin(rawFrom);
+  const to = toMin(rawTo);
+  /*
+   * F-948 - A BOUND THAT WAS SET AND CANNOT BE READ CLOSES THE WINDOW.
+   *
+   * This answered `ok: true, "no_window_hours"` for an unreadable bound, which made a
+   * typed "18.00" mean "post at any hour" - a restriction evaporating on bad input, the
+   * same fault the unreadable time zone above already refuses. A bound that is simply
+   * ABSENT still means "no hour restriction": that is the record with days but no times,
+   * and it is an opt-in rule, not a silent "never". The two cases are told apart by
+   * whether anything was written there at all, so one bound set and the other missing is
+   * also read as unreadable - half a window is not a window, and it cannot be produced by
+   * `normalizeVa`, which always fills both.
+   */
+  if (from == null || to == null) {
+    if (rawFrom || rawTo) return { ok: false, reason: "window_unreadable" };
+    return { ok: true, reason: "no_window_hours" };
+  }
   const inside = from <= to ? (minutes >= from && minutes <= to) : (minutes >= from || minutes <= to);
   return inside ? { ok: true } : { ok: false, reason: "outside_post_window_hours" };
 };
@@ -2213,6 +2230,30 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
    * FAIL-SOFT, BOTH ARMS (F-571's reason): a storage blip must not silence an agent whose
    * operator has not touched anything. An unreadable record answers "not paused".
    */
+  /*
+   * F-949 - THE POST WINDOW IS ASKED HERE TOO, not once for the whole pass.
+   *
+   * The window was evaluated once, above the scan, and the pass it guards can then run
+   * for up to 120 seconds: a pass that starts at 16:59 on a window closing at 17:00 posted
+   * every remaining draft into the quiet hours the operator had bought. Two minutes is
+   * small, and the window is a product promise about when a person hears from this agent,
+   * so it is the same class of fault as a pause that took effect one window late - and it
+   * gets the same answer, in the same predicate, rather than a second one.
+   *
+   * IT STOPS THE PASS (`window_closed`), it does not skip the row: the remaining drafts
+   * stay staged and unattempted, and the next pass inside the hours posts them. The check
+   * ABOVE the scan stays where it is - a pass that is outside the window from the start
+   * should not read a single item row - and this is the wall for the boundary a pass
+   * crosses while it runs. `deps.now()` is re-read on purpose; the pass's `now` is the
+   * instant it started, which is exactly the value that cannot see the boundary.
+   *
+   * FAIL-SOFT IS NOT AVAILABLE ON THIS ARM, and must not be: `inPostWindow` is pure, and
+   * every unreadable input it has already answers CLOSED (F-948). A throw is closed too.
+   */
+  const windowClosed = () => {
+    try { return inPostWindow(va, deps.now()).ok !== true; }
+    catch (e) { return true; }
+  };
   const cancelReason = async () => {
     try {
       const fresh = await deps.getJob(agentId);
@@ -2222,6 +2263,7 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
     } catch (e) { /* fail-soft: an unreadable record is not a pause */ }
     try { if (await deps.isKillSwitchActive(job, enqueuedAt)) return "cancelled"; }
     catch (e) { /* fail-soft */ }
+    if (windowClosed()) return "window_closed";
     return null;
   };
 
@@ -2263,6 +2305,8 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
     // an approved draft exactly as it does to any other.
     if (!g1.ok && g1.reason !== "shadow") { note("(agent)", `gate.${g1.reason}`); return await finish(); }
     const inShadow = !g1.ok && g1.reason === "shadow";
+    // The window, once, before a single item row is read — and again per comment inside
+    // `cancelReason` (F-949), which is what catches the boundary this pass crosses.
     const window = inPostWindow(va, now);
     if (!window.ok) { note("(agent)", `gate.${window.reason}`); return await finish(); }
 

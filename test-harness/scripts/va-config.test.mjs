@@ -357,9 +357,35 @@ throws(() => normalizeVa(base({ cadence: { preset: "custom" } }), CTX), /cadence
   ok(bogus.va.cadence.preset === VA_DEFAULTS.cadence.preset && reasonsFor(bogus, "cadence.preset").length === 1, "an unknown preset falls back and is reported");
   const w = norm({ cadence: { preset: "hourly", timeZone: "UTC", postWindow: { days: [9, 1, 1, 3, -2], from: "25:00", to: "17:30" } } }).va.cadence.postWindow;
   ok(w.days.join(",") === "1,3", "post-window days are filtered and de-duplicated, never clamped into a different day");
-  ok(w.from === "00:00" && w.to === "17:30", "a malformed time of day falls back to the open end");
   const empty = norm({ cadence: { preset: "hourly", timeZone: "UTC", postWindow: { days: [] } } }).va.cadence.postWindow;
   ok(empty.days.length === 7, "no days listed means NO RESTRICTION, never never");
+
+  /* — F-948: a malformed bound may NEVER widen the window to the whole day — */
+  //
+  // "18.00" is the shape half of Europe types. It used to fall back to VA_DEFAULTS'
+  // 00:00-23:59, so a typo made an evening agent post at 04:00: the one direction a
+  // restriction must never fail in. The save door refuses it BY NAME; a lenient read of a
+  // stored row KEEPS the typo (which is what makes a second normalisation stable) and
+  // `inPostWindow` reads it as closed.
+  const badWindow = (over) => ({ cadence: { preset: "hourly", timeZone: "UTC", postWindow: { days: [1], from: "09:00", to: "17:00", ...over } } });
+  throws(() => normalizeVa(base(badWindow({ from: "18.00" })), { ...CTX, strict: true }),
+    /cadence\.postWindow\.from is refused/, "BLOCK a malformed post-window start at the save door, named");
+  ok(/HH:MM/.test(messageOf(() => normalizeVa(base(badWindow({ from: "18.00" })), { ...CTX, strict: true }))),
+    "…and the refusal states the shape that would have worked");
+  throws(() => normalizeVa(base(badWindow({ to: "9pm" })), { ...CTX, strict: true }),
+    /cadence\.postWindow\.to is refused/, "BLOCK a malformed post-window end at the save door, named");
+  const good = normalizeVa(base(badWindow({ from: "18:00", to: "02:00" })), { ...CTX, strict: true });
+  ok(good.va.cadence.postWindow.from === "18:00" && good.va.cadence.postWindow.to === "02:00",
+    "ALLOW a well-formed window, including one that wraps past midnight");
+  const lenient = norm(badWindow({ from: "18.00" }));
+  ok(lenient.va.cadence.postWindow.from === "18.00", "a STORED malformed bound is kept on a lenient read, never widened to 00:00");
+  ok(reasonsFor(lenient, "cadence.postWindow.from").some((x) => /posts nothing until it is corrected/.test(x)),
+    "…and the refusal says what the consequence is");
+  const again = normalizeVa(lenient.va, CTX);
+  ok(again.va.cadence.postWindow.from === "18.00",
+    "a SECOND normalisation keeps it too — blanking it would come back as the 00:00-23:59 default one pass later");
+  ok(norm(badWindow({ from: "  " })).va.cadence.postWindow.from === VA_DEFAULTS.cadence.postWindow.from,
+    "an ABSENT bound is still the default: the window is opt-in, only an unreadable one closes it");
 }
 
 /* ── 8b. powers.confluenceSpaces (1.5 commit 4c) ──────────────────────────────── */

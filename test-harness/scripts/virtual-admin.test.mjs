@@ -842,6 +842,28 @@ const stageDraft = async (over = {}) => {
   bad.cadence.postWindow = { days: [1], from: "09:00", to: "17:00" };
   bad.cadence.timeZone = "Not/AZone";
   eq(V.inPostWindow(bad, T0).reason, "post_window_unreadable", "window.BLOCK_unreadable_timezone — a restriction must not evaporate on bad input");
+
+  /* — F-948: an unreadable BOUND is closed too, for the same reason — */
+  //
+  // "18.00" answered `ok: true, no_window_hours`, i.e. "post at any hour": a typo WIDENED
+  // the window to the whole day. `normalizeVa` keeps a stored malformed bound (blanking it
+  // comes back as the 00:00-23:59 default on the next pass), so this is the wall that
+  // makes keeping it safe.
+  const typo = vaJob().va;
+  typo.cadence.postWindow = { days: [], from: "18.00", to: "02:00" };
+  eq(V.inPostWindow(typo, Date.parse("2026-09-14T12:00:00Z")).reason, "window_unreadable", "window.BLOCK_unreadable_from — a typo may not mean all day");
+  eq(V.inPostWindow(typo, Date.parse("2026-09-14T23:00:00Z")).ok, false, "…at every hour, not only the ones outside the window they meant");
+  const typoTo = vaJob().va;
+  typoTo.cadence.postWindow = { days: [], from: "18:00", to: "2am" };
+  eq(V.inPostWindow(typoTo, Date.parse("2026-09-14T23:00:00Z")).reason, "window_unreadable", "window.BLOCK_unreadable_to");
+  const halfSet = vaJob().va;
+  halfSet.cadence.postWindow = { days: [1], from: "09:00" };
+  eq(V.inPostWindow(halfSet, Date.parse("2026-09-14T10:00:00Z")).reason, "window_unreadable", "window.BLOCK_half_a_window — one bound set and the other missing is not a window");
+  // …and a window with NO hours at all is still no restriction: it is an opt-in rule, and
+  // reading an absent value as "never" would be an agent that stages for ever in silence.
+  const daysOnly = vaJob().va;
+  daysOnly.cadence.postWindow = { days: [1] };
+  eq(V.inPostWindow(daysOnly, Date.parse("2026-09-14T03:00:00Z")).reason, "no_window_hours", "window.ALLOW_days_only");
 }
 
 /* — GATE 9: the voice lint, and it fails CLOSED — */
@@ -3062,6 +3084,57 @@ reset();
   eq(receipt.heldWrites, 1, "F-925: the shadow-held write on a row BEYOND the stop is still counted");
   eq(receipt.reason, "paused", "F-925: the receipt still names what stopped the pass (F-921)");
   eq(receipt.postedBefore, 1, "F-925: …and how many had gone out");
+}
+
+/* ══ F-949 — THE POST WINDOW IS ASKED PER COMMENT, NOT ONCE PER PASS ══════
+ *
+ * The window was evaluated once, above the scan, and a post pass has 120 seconds: a pass
+ * that started at 16:59 on a window closing at 17:00 delivered every remaining draft into
+ * the quiet hours the operator had bought. It is folded into F-921's predicate, so it
+ * STOPS the pass — the rest stay staged, unattempted, and the receipt names the reason.
+ */
+reset();
+{
+  await stageThree();
+  // The window is open when the pass starts and closed three minutes later. The clock is
+  // the dep's, so this is the real boundary the pass crosses, not a stubbed answer.
+  let clock = T0;                                        // 2026-09-13T12:00Z
+  const live = vaJob();
+  live.va.cadence.timeZone = "UTC";
+  live.va.cadence.postWindow = { days: [], from: "11:00", to: "12:01" };
+  const d = postDeps({ getJob: async () => live, now: () => clock });
+  const inner = d.addComment;
+  d.addComment = async (k, body, opts) => {
+    const written = await inner(k, body, opts);
+    clock = T0 + 3 * MIN;                                // 12:03 — past the window's end
+    return written;
+  };
+  const r = await V.runVaPost({ agent: live, tickId: "t-window-close", deps: d });
+  eq(d.__commented.length, 1, "F-949.BLOCK_past_the_boundary — the draft that was inside the window went out, and nothing after it did");
+  eq(r.reason, "window_closed", "F-949: …and the pass names the window as what stopped it, not a pause or a cap");
+  const held = r.skipped.filter((x) => String(x.reason || "") === "held.window_closed");
+  eq(held.length, 2, "F-949: the two drafts left are NAMED as held (F-925's complete counts)");
+  eq((await stillStaged(THREE)).length, 2, "F-949: …still staged, so the next pass inside the hours posts them");
+  eq((await attemptsOf(THREE)).join(","), "0,0,0", "F-949: …and the window cost them no attempt");
+  const receipt = (await L.readTick(kvs, AG, "t-window-close", "post")).receipt;
+  eq(receipt.reason, "window_closed", "F-949: the receipt an operator reads names the reason too");
+  eq(receipt.postedBefore, 1, "F-949: …and how many had already gone out");
+  ok(receipt.skipped.some((x) => x.key === "(agent)" && x.reason === "stopped.window_closed"), "F-949: the stop itself is a row on the receipt");
+}
+
+/* — …and a pass that is outside the window from the very first instant still reads no
+ *   item row at all: the cheap agent-level gate above the scan is unchanged. — */
+reset();
+{
+  await stageThree();
+  const shut = vaJob();
+  shut.va.cadence.timeZone = "UTC";
+  shut.va.cadence.postWindow = { days: [], from: "18:00", to: "23:00" };
+  const d = postDeps({ getJob: async () => shut });
+  const r = await V.runVaPost({ agent: shut, tickId: "t-window-shut", deps: d });
+  eq(d.__commented.length, 0, "F-949: a pass outside the window posts nothing");
+  ok(r.skipped.some((x) => x.key === "(agent)" && x.reason === "gate.outside_post_window_hours"), "F-949: …and it is refused at the agent gate, by name");
+  eq((await stillStaged(THREE)).length, 3, "F-949: every draft is left staged");
 }
 
 reset();

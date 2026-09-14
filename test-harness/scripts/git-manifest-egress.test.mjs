@@ -126,7 +126,9 @@ ok(!/- key: git-webhook\n\s+function: gitWebhookProbeFn/.test(manifest),
 
 const indexSrc = readFileSync(path.join(root, "src", "index.js"), "utf8");
 ok(/export async function gitWebhook\s*\(/.test(indexSrc), "index.js exports gitWebhook");
-ok(/export \{ testStateTrigger, gitWebhookProbe \} from "\.\/test-hook"/.test(indexSrc),
+// F-804 — the specifier carries its `.js`: the Forge bundler accepts an extensionless one,
+// Node's ESM resolver does not, and `?what=execlogs` imports src/index.js.
+ok(/export \{ testStateTrigger, gitWebhookProbe \} from "\.\/test-hook\.js"/.test(indexSrc),
   "the probe is still its own, separately exported, handler");
 
 /* ---- 6. the 900 s consumer, and THE ONE GATE ---- */

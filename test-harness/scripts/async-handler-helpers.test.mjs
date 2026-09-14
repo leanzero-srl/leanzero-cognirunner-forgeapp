@@ -790,14 +790,14 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // ===================================================================================
   // EXECUTED — the REAL source of the gate region and of the refusal helper, run with
   // stubs. `new Function` (not eval) so the extracted text is compiled in one scope with
-  // every free variable injected; the helper's `await import("./index")` is rewritten to
+  // every free variable injected; the helper's `await import("./index.js")` is rewritten to
   // an injected `__importIndex()` because ./index cannot load offline (project pattern).
   // ===================================================================================
   const makeHelper = (deps) => new Function("deps", `
     const { console: __c, UNPOLLED_TASKS, storage, TASK_PREFIX, NO_PROVIDER_ERROR, claimRuleExecution,
             REFUSE_CLAIM_PREFIX, REFUSE_CLAIM_TTL, statsReceipt, updateAsyncJob, JOB_TTL_DONE, __importIndex } = deps;
     const console = __c;
-    ${helperSrc.replace('await import("./index")', "await __importIndex()")}
+    ${helperSrc.replace('await import("./index.js")', "await __importIndex()")}
     return refuseQueuedRunWithoutProvider;
   `)(deps);
 

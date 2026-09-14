@@ -594,11 +594,44 @@ export const readCeiling = async (key, value) => {
  * and nothing else. `envelope` keeps each arm's historical field (`registry`, `logs`,
  * `value`) so no driver has to change; `key` is what the row is stored under.
  */
-const answerStored = async (envelope, key, value) => {
+const answerStored = async (envelope, key, value) =>
+  json(200, { key, ...(await storedFields(envelope, key, value)) });
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-806 — THE CEILING IS THE DOOR'S, NOT THE GET SWITCH'S.
+ *
+ * F-802 routed all five arms of the GET `what` switch through `readCeiling`, and left the
+ * POST action map — which also reads storage and also answers rows — outside it. Nothing
+ * leaked: every row those actions reach is harness-PLANTED, and `findPlantedSecret`
+ * refuses a credential in the plant body before anything is written. But "no leak today"
+ * was a property of the PLANT, not of the READ, so the ceiling had two classes of door and
+ * only one of them was gated — which is precisely the shape F-802 was filed about.
+ *
+ * `storedFields` is the projection; `answerStored` is now a thin `json(200, …)` around it,
+ * so GET and POST share ONE rule rather than two that agree today. A POST answer carries
+ * OTHER fields beside the row (`ok`, `key`, `op`, `planted`, `predicates`, `set`), so it
+ * SPREADS the projection instead of replacing the envelope: every answer's field names are
+ * unchanged and no driver has to move. A masked row is spelled the way the GET side spells
+ * it — `{masked:true, present, fingerprint}`, the envelope absent — so a caller reads one
+ * shape whichever door answered.
+ *
+ * `answerFingerprintOnly` is the deliberately TIGHTER statement for the two doors that must
+ * never put the row on the wire at all: `kvStash`/`kvRestore` move a tenant's value BY NAME
+ * (F-769), so their answers are present+fingerprint and the value is not projected, it is
+ * not answered. It is named rather than inlined so the POST gate can SEE that the read was
+ * answered on purpose, instead of reading an un-projected `storage.get` as a bypass.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+const storedFields = async (envelope, key, value) => {
   const c = await readCeiling(key, value);
-  if (c.masked) return json(200, { key, masked: true, present: c.present, fingerprint: c.fingerprint });
-  return json(200, { key, [envelope]: c.value, ...(c.maskedFields ? { maskedFields: c.maskedFields } : {}) });
+  if (c.masked) return { masked: true, present: c.present, fingerprint: c.fingerprint };
+  return { [envelope]: c.value, ...(c.maskedFields ? { maskedFields: c.maskedFields } : {}) };
 };
+
+/** The row is NOT answered — only whether it is there and which bytes it was. */
+const answerFingerprintOnly = async (stored) => ({
+  present: stored !== null && stored !== undefined,
+  fingerprint: await credentialFingerprint(stored ?? null),
+});
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
  * F-742 — THE KVS DOOR: A MALFORMED BODY IS A 400 HERE, NOT A STACK TRACE THERE.
@@ -768,6 +801,12 @@ export async function testStateTrigger(req) {
   if (String((req && req.method) || "GET").toUpperCase() === "POST") {
     let body = {};
     try { body = JSON.parse((req && req.body) || "{}"); } catch (e) { return json(400, { error: "invalid JSON body" }); }
+    /* F-806 - EVERY ACTION BELOW THAT ANSWERS A STORED ROW GOES THROUGH `storedFields`
+       (-> `readCeiling`), the same rule the GET `what` switch takes through `answerStored`.
+       An action that `storage.get`s and puts the row in its own `json(200, ...)` re-opens
+       the ceiling on the POST side, which is where it stood open until now. The two doors
+       that must answer even less - `kvStash`/`kvRestore`, which move a value by NAME -
+       take `answerFingerprintOnly` instead, and say so at the call. */
     // ===== Coder plan Part 0 platform probes (dev-gated) =====
     // "probe": records getAppContext().license as seen by THIS webtrigger and enqueues the same
     // question (or a Forge LLM cap measurement) into the async consumer; "readProbe" returns the
@@ -1234,7 +1273,8 @@ export async function testStateTrigger(req) {
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });
-      return json(200, { name, value: (await storage.get("probe:" + name)) || null });
+      const probeKey = "probe:" + name;
+      return json(200, { name, ...(await storedFields("value", probeKey, (await storage.get(probeKey)) || null)) });
     }
     // Cross-product reach: can THIS Jira-triggered function call Confluence, and what is the
     // exact error when the app is not installed on Confluence?
@@ -1360,7 +1400,7 @@ export async function testStateTrigger(req) {
       const { harnessProbeKey, HARNESS_PROBE_KINDS } = await import("./async-handler.js");
       const kind = HARNESS_PROBE_KINDS.includes(body.kind) ? body.kind : "confluence";
       const key = harnessProbeKey(kind, id);
-      return json(200, { id, kind, key, value: (await storage.get(key)) || null });
+      return json(200, { id, kind, key, ...(await storedFields("value", key, (await storage.get(key)) || null)) });
     }
     if (body.action === "commit") {
       try {
@@ -1918,16 +1958,13 @@ export async function testStateTrigger(req) {
       // this door says about a credential row" has one shape wherever it is said.
       const now = (await storage.get(body.key)) ?? null;
       const set = body.value === null ? "deleted" : true;
-      if (isCredentialKey(body.key)) {
-        return json(200, { key: body.key, set, present: now !== null, fingerprint: await credentialFingerprint(now), masked: true });
-      }
       // F-794 — and the FIELD ceiling for the same reason, in the same shape. This echo is
       // the caller's own value, so it discloses nothing new TODAY; it takes the mask so
       // that "what this door says about a secret-carrying row" has ONE shape in both
       // directions and a driver never learns to read a field here that the GET masks.
-      const fieldMask = await maskSecretFields(now, { extraFieldNames: extraMaskedFieldsFor(body.key) });
-      if (fieldMask) return json(200, { key: body.key, set, now: fieldMask.value, maskedFields: fieldMask.maskedFields });
-      return json(200, { key: body.key, set, now });
+      // F-806 — and it takes it from `storedFields`, not from its own second copy of the
+      // credential-key/field-mask pair, which is what this door carried until now.
+      return json(200, { key: body.key, set, ...(await storedFields("now", body.key, now)) });
     }
     /* F-769 — the two halves of the stash door; see its docblock at `kvWriteAllowList`. */
     if (body.action === "kvStash" || body.action === "kvRestore") {
@@ -1985,7 +2022,7 @@ export async function testStateTrigger(req) {
         }
         return json(200, {
           ok: true, stashed: true, stashId, key: body.key,
-          present: row.present, fingerprint: await credentialFingerprint(stored),
+          ...(await answerFingerprintOnly(stored)),
           ttlSeconds: appliedTtlSeconds,
         });
       }
@@ -2009,9 +2046,8 @@ export async function testStateTrigger(req) {
       const now = (await storage.get(row.key)) ?? null;
       return json(200, {
         ok: true, restored: true, key: row.key,
-        present: now !== null,
         // The SAME fingerprint the stash answered, when the round trip was byte-identical.
-        fingerprint: await credentialFingerprint(now),
+        ...(await answerFingerprintOnly(now)),
       });
     }
     /* ═════════════════════════════════════════════════════════════════════════════
@@ -2111,7 +2147,7 @@ export async function testStateTrigger(req) {
       if (op === "read") {
         return json(200, {
           ok: true, key, planted,
-          row: publicPipelineRow(existing),
+          ...(await storedFields("row", key, publicPipelineRow(existing))),
           // The SAME three functions the projection and the Code tab ask, on the stored
           // row, so a driver can prove projection and predicate agree rather than assume it.
           predicates: {
@@ -2127,7 +2163,7 @@ export async function testStateTrigger(req) {
           return json(409, { ...notPlantedRefusal("pipeline row"), key });
         }
         await storage.delete(key);
-        return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
+        return json(200, { ok: true, key, ...(await storedFields("row", key, (await storage.get(key)) ?? null)) });
       }
       if (op !== "plant") return json(400, { error: `unknown op "${op}" for pipelineRow (plant|read|clear)` });
 
@@ -2215,7 +2251,7 @@ export async function testStateTrigger(req) {
       await storage.set(key, row);
       return json(200, {
         ok: true, key, op, planted: true,
-        row: publicPipelineRow(row),
+        ...(await storedFields("row", key, publicPipelineRow(row))),
         predicates: { outdated: pipelineOutdated(row), live: pipelineLive(row), stuck: pipelineStuck(row) },
         currentScaffoldVersion: SCAFFOLD_VERSION,
         effectiveAgeMs: ageMs,
@@ -2267,16 +2303,16 @@ export async function testStateTrigger(req) {
       const { vaPurgedKey, VA_PURGED_TTL } = await import("./shared/va-keys.js");
       const key = vaPurgedKey(agent);
       const op = String(body.op || "read");
-      if (op === "read") return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
+      if (op === "read") return json(200, { ok: true, key, ...(await storedFields("row", key, (await storage.get(key)) ?? null)) });
       if (op === "clear") {
         // F-632 — the same predicate `pipelineRow clear` asks, from the same home. A
         // tombstone this door did not plant is a REAL purge record: deleting it retires a
         // live settle window and erases the landed writes the F-608 purges panel reports,
         // so it is refused and left exactly as it stands.
         const standing = (await storage.get(key)) ?? null;
-        if (standing && !harnessPlanted(standing)) return json(409, { ...notPlantedRefusal("tombstone"), key, row: standing });
+        if (standing && !harnessPlanted(standing)) return json(409, { ...notPlantedRefusal("tombstone"), key, ...(await storedFields("row", key, standing)) });
         await storage.delete(key);
-        return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
+        return json(200, { ok: true, key, ...(await storedFields("row", key, (await storage.get(key)) ?? null)) });
       }
       if (op === "plant" || op === "age") {
         // F-628 — a write body may never name a credential. One home, shared with the
@@ -2294,7 +2330,7 @@ export async function testStateTrigger(req) {
         // `at` back is the soft form of deleting it (it retires the settle window early).
         // So a plant or an age over a row this door did not plant is refused, exactly as
         // `pipelineRow plant` refuses a real pipeline record.
-        if (existing && !harnessPlanted(existing)) return json(409, { ...notPlantedRefusal("tombstone"), key, op, row: existing });
+        if (existing && !harnessPlanted(existing)) return json(409, { ...notPlantedRefusal("tombstone"), key, op, ...(await storedFields("row", key, existing)) });
         const ageMs = Math.max(0, Math.min(7 * 24 * 3600 * 1000, Number(body.ageMs) || 0));
         const createdMs = Date.parse((job.createdAt == null ? "" : job.createdAt));
         const wanted = Date.now() - ageMs;
@@ -2356,7 +2392,7 @@ export async function testStateTrigger(req) {
         }
 
         return json(200, {
-          ok: true, key, row: (await storage.get(key)) ?? row, op,
+          ok: true, key, ...(await storedFields("row", key, (await storage.get(key)) ?? row)), op,
           jobCreatedAt: job.createdAt || null,
           effectiveAgeMs: Date.now() - at,
           clampedToCreatedAt: Number.isFinite(createdMs) && wanted > createdMs - 1000,

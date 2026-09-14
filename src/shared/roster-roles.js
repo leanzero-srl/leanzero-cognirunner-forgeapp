@@ -89,3 +89,44 @@ export const VALID_SCOPES = Object.freeze(["own", "all"]);
 
 /** The role a grant form offers before the admin chooses one. The narrowest. */
 export const DEFAULT_ROSTER_ROLE = "viewer";
+
+/*
+ * F-884 — ONE HOME for the SAVED-BY vocabulary and its default, for the same reason the
+ * roster vocabulary lives here.
+ *
+ * THE DEFECT THIS EXISTS TO KILL. `savedByRole` is the arming stamp: the role a rule was
+ * saved with, and therefore the fact that decides whether an admin-confirm action (a pull
+ * request verdict, an outward comment) may exist on the row at all. Its default was typed
+ * as a bare `"editor"` at FIVE places with no home between them — `REST_SAVED_BY_ROLE` in
+ * src/rules-api.js, `stampSavedByRole` in src/index.js, both `p.savedByRole || "editor"`
+ * reads in src/async-handler.js, the `savedByRole = "editor"` default parameter in
+ * src/coder-engine.js — plus `normalizeSavedByRole`'s own fallback in src/listeners.js and
+ * the `=== "admin"` widening comparisons in src/git-review.js and src/async-handler.js.
+ * That is the exact shape of F-840/F-843/F-844: one rule, N private copies, and the copy
+ * that drifts hands out (or withholds) a permission nobody decided.
+ *
+ * IT IS A SUBSET OF THE ROSTER VOCABULARY, SO IT IS DERIVED, NOT RE-TYPED. A viewer cannot
+ * save a rule, so "viewer" can never be an arming stamp; every other roster role can.
+ * Deriving it means a fourth roster role automatically becomes a saveable one here instead
+ * of silently failing a `SAVED_BY_ROLES.includes()` check that nobody remembered to widen.
+ * Order follows `VALID_ROLES`: widest reach LAST.
+ *
+ * WHY "editor" IS THE DEFAULT. Same tie-break as `DEFAULT_ROSTER_ROLE`: the lesser power is
+ * the safe answer. A row with no stamp, a read fault, an ownerless rule, a REST save whose
+ * token role says nothing about who CLICKED the action — each of those is silence, and
+ * silence must not arm a repository write. Kept as its own export rather than derived from
+ * `SAVED_BY_ROLES[0]` so that re-ordering the vocabulary can never move the default, which
+ * is the rule `DEFAULT_ROSTER_ROLE` already follows.
+ */
+
+/** Every role that can arm a rule, widest reach LAST. A viewer cannot save, so it is not here. */
+export const SAVED_BY_ROLES = Object.freeze(VALID_ROLES.filter((r) => r !== "viewer"));
+
+/** The arming stamp a save takes when nothing states one. The lesser power. */
+export const DEFAULT_SAVED_BY_ROLE = "editor";
+
+/** The one arming stamp that may hold a confirm action. Never re-type this comparison. */
+export const ADMIN_SAVED_BY_ROLE = "admin";
+
+/** True only for the admin arming stamp. The widening branch, asked the same way everywhere. */
+export const isAdminSavedByRole = (role) => String(role || "") === ADMIN_SAVED_BY_ROLE;

@@ -78,6 +78,9 @@ import { kvs as storage } from "@forge/kvs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { JIRA_EVENTS, EVENT_CATEGORIES } from "./shared/jira-events.js";
 import { AGENT_ACTIONS, buildAgentGateContext } from "./shared/agent-actions.js";
+// F-884 — the arming-stamp default has ONE home; this door imports it rather than
+// re-typing the word. See src/shared/roster-roles.js.
+import { DEFAULT_SAVED_BY_ROLE } from "./shared/roster-roles.js";
 import * as L from "./listeners.js";
 import * as J from "./scheduled-jobs.js";
 // The ONE home for every Virtual Administrator operation (1.5 commit 5b). The Agents
@@ -310,7 +313,7 @@ const errBody = (e) => ({
  * because an admin CLICKED it. `?resource=agents` and the collections had this
  * constant twice; it is one value with one reason, so it is one constant.
  */
-const REST_SAVED_BY_ROLE = "editor";
+const REST_SAVED_BY_ROLE = DEFAULT_SAVED_BY_ROLE;
 
 /*
  * THE GATE CONTEXT FOR A REST SAVE (F-480, through F-485's one fact reader).

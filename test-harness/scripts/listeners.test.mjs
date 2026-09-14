@@ -18,7 +18,7 @@ import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
   BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
-  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, BRAKE_BUCKET_MS, takeAgentRunSlot, runListener, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets, summarizeEventForAi,
+  normalizeSavedByRole, assertSavedByRole, resolveSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, BRAKE_BUCKET_MS, takeAgentRunSlot, runListener, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets, summarizeEventForAi,
   GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES, buildAgentKnowledge,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule, toIndexRow as toJobIndexRow, MAX_SCOPE_ISSUES } from "../../src/scheduled-jobs.js";
@@ -470,6 +470,50 @@ ok(normalizeJob({ name: "j", schedule: { cron: "0 9 * * *" }, functions: [{ code
   // The verdict switch reads the SAME one value: a gate-only admin arms it.
   ok(normalizeListener({ ...base5c, gitReview: { allowVerdictActions: true } }, { gate: gateFor("admin") }).gitReview.allowVerdictActions === true,
     "F-882: gitReview.allowVerdictActions follows the one resolved role, not a second argument");
+}
+
+// F-891 — STRICT AT THE DOOR, LENIENT ON THE ROW. `normalizeSavedByRole` answers "editor"
+// to anything that is not "admin", which is right for READING a legacy or hand-edited row
+// and wrong for a SAVE: a caller that passes a role the product does not have ("viewer", a
+// misspelled permission constant) got a silent "editor" and no signal anywhere that the
+// argument was nonsense. Save doors now refuse it BY NAME; stored rows still read lenient.
+{
+  const confirmSeed891 = { ...base5c, agent: { instructions: "go", allowedActions: ["get_issue"] } };
+  const gate891 = (role) => ({ capability: true, products: ["jira"], triggerSource: null, savedByRole: role });
+  const jobSeed891 = { name: "j", schedule: { cron: "0 9 * * *" }, mode: "agent", agent: { instructions: "go", allowedActions: ["get_issue"] } };
+
+  // A role OUTSIDE the saved-by vocabulary is refused by name, on both rule kinds, whether
+  // it arrives as the argument or on the gate the caller built.
+  throws(() => normalizeListener(confirmSeed891, { savedByRole: "viewer" }), /savedByRole must be one of/,
+    "F-891: savedByRole \"viewer\" at a listener save door is refused, not silently stored as editor");
+  throws(() => normalizeJob(jobSeed891, { savedByRole: "viewer" }), /savedByRole must be one of/,
+    "F-891: …and the same argument is refused at the job save door");
+  throws(() => normalizeListener(confirmSeed891, { gate: gate891("Admin") }), /savedByRole must be one of/,
+    "F-891: a MISCASED role on the gate is refused too — it used to read as editor, quietly downgrading the save");
+
+  // The refusal is machine-readable: `reason` is what the REST door puts in 400 { error, reason }.
+  let named = null;
+  try { normalizeListener(confirmSeed891, { savedByRole: "owner" }); } catch (e) { named = e; }
+  ok(named && named.reason === "unknown-saved-by-role" && /owner/.test(named.message),
+    "F-891: the refusal carries reason \"unknown-saved-by-role\" and names the value it rejected");
+
+  // SILENCE is not a bad value. null / undefined / "" are "nobody stated a role", which is
+  // the ordinary shape of a gate context built without one, and they take the default.
+  ok(assertSavedByRole(undefined) === "editor" && assertSavedByRole(null) === "editor" && assertSavedByRole("") === "editor",
+    "F-891: an unstated role is still the default editor, not a refusal");
+  ok(resolveSavedByRole({ gate: { capability: true } }) === "editor",
+    "F-891: a gate context that names no role resolves to the default, as every premade save does");
+  ok(assertSavedByRole("admin") === "admin" && assertSavedByRole("editor") === "editor",
+    "F-891: the two real roles pass through unchanged");
+
+  // READS stay lenient: a row stored before the field existed, or hand-edited in KVS, must
+  // still open as an editor rule rather than throw in the admin's face.
+  ok(normalizeSavedByRole("viewer") === "editor" && normalizeSavedByRole("\u0000garbage") === "editor" && normalizeSavedByRole(undefined) === "editor",
+    "F-891: a stored row carrying garbage still READS as editor — the normaliser is untouched");
+  const legacyRow = { ...base5c, id: "lst_legacy891" };
+  const reopened = normalizeListener(legacyRow, { existing: { ...legacyRow, savedByRole: "wat", createdBy: "acc-1", firstCreatedBy: "acc-1" }, accountId: "acc-1" });
+  ok(reopened.savedByRole === "editor",
+    "F-891: re-saving a legacy row whose stored stamp is garbage lands on editor — the garbage is on the ROW, not in the argument");
 }
 
 // F-409 — THE ARMING STAMP: role AND acting account move TOGETHER, from one helper, for

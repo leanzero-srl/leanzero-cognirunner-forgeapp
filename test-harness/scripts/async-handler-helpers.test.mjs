@@ -36,6 +36,9 @@ import { gatedExportViolations } from "../lib/gated-export-contract.mjs";
    settle block) deliberately read comments and keep reading the RAW source. */
 import { maskComments } from "../lib/js-source-scan.mjs";
 import { FORGE_LLM_DEFAULT } from "../../src/shared/edition.js";
+// F-884 — the arming-stamp vocabulary's ONE home; the eval'd consumer slices below take
+// the shipped value from here rather than a literal of their own.
+import * as ROLES from "../../src/shared/roster-roles.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
@@ -1152,8 +1155,10 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 
   // The permission is read from the RULE ROW and defaults to false.
   const h = asyncSrc.slice(asyncSrc.indexOf("const executeGitReview = async"), asyncSrc.indexOf("const executeGitEvent = async"));
-  ok(/savedByRole === "admin" && reviewCfg\.allowVerdictActions === true/.test(h),
-    "allowVerdictActions requires BOTH the rule's flag and an admin author");
+  // F-884 - the admin comparison is the SHARED predicate now (src/shared/roster-roles.js),
+  // not a hand-typed `=== "admin"`. Both halves are still required, which is the point.
+  ok(/isAdminSavedByRole\(savedByRole\) && reviewCfg\.allowVerdictActions === true/.test(h),
+    "allowVerdictActions requires BOTH the rule's flag and an admin author, asked through the one predicate");
   ok(/options: \{ simulation: simulated, allowVerdictActions, savedByRole \}/.test(h),
     "savedByRole is passed to the engine so the engine can re-check it (F-286) — never trusted from here alone");
   ok(/type: "listener", source: "async"/.test(h), "the execution-log entry uses the listener type (a badge every UI knows)");
@@ -1811,12 +1816,15 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     // F-829 — the execution-time gate is a collaborator here too: this block tests the
     // CLAIM's control flow, so the gate is stubbed to "allow" unless a case says otherwise.
     "resolveFreshCoderGate", "agentActionRefusalText",
+    // F-884 - the arming-stamp default is imported by the consumer, so the eval'd slice
+    // needs it in scope. It is the SHIPPED value, not a stand-in.
+    "DEFAULT_SAVED_BY_ROLE",
     `return (${src});`,
   )(deps.runCoderTurn, () => false, deps.recordCoderPfOutcome, deps.claimRuleExecution,
     deps.storage, (id) => `coder_pf_done:${id}`, { ttl: { value: 24, unit: "HOURS" } },
     deps.buildCoderKnowledge || (async () => ({})), quiet,
     deps.resolveFreshCoderGate || (async () => ({ facts: { provider: "openai", edition: "standard" }, queuedFacts: null, allowed: null, refusal: null })),
-    (r) => String(r));
+    (r) => String(r), ROLES.DEFAULT_SAVED_BY_ROLE);
 
   const makeDeps = (over = {}) => {
     const held = new Set();
@@ -1962,9 +1970,13 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // builder are the SHIPPED ones: nothing about capability is re-implemented here either.
   const buildGate = (facts) => new Function(
     "resolveFreshGateFacts", "buildAgentGateContext", "normalizeAllowedActions", "getAgentAction", "isHeadlessTrigger",
+    // F-884 - the shipped arming-stamp default, imported by the consumer and therefore
+    // needed in scope for the eval'd slice. F-890 adds the surface vocabulary for the
+    // same reason: the consumer now NAMES the Coder surface on this gate.
+    "DEFAULT_SAVED_BY_ROLE", "AGENT_SURFACES",
     `return (${src});`,
   )(async () => facts, gateMod.buildAgentGateContext, gateMod.normalizeAllowedActions, gateMod.getAgentAction,
-    (s) => s === "postfunction" || s === "listener" || s === "external");
+    (s) => s === "postfunction" || s === "listener" || s === "external", ROLES.DEFAULT_SAVED_BY_ROLE, gateMod.AGENT_SURFACES);
 
   // A `build` mode's payload: two writes and one read, already intersected with the
   // producer's (BYOK) verdict, armed by an ADMIN so the role arm cannot be the cause.

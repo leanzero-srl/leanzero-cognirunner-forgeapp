@@ -141,7 +141,9 @@ import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL
 // F-829 — the ONE gate predicate and the ONE refusal vocabulary, used here exactly as the
 // producer uses them. Nothing about capability is decided in this file; it only supplies
 // FRESH facts to the same three functions.
-import { buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText } from "./shared/agent-actions.js";
+import { buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText, AGENT_SURFACES } from "./shared/agent-actions.js";
+// F-884 — the arming-stamp default and the admin comparison have ONE home.
+import { DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
 import { knowledgeBudget, fieldGuideAudience, fieldGuideBudget, KNOWLEDGE_BUDGET_BYTES } from "./shared/registry-limits.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
@@ -1164,9 +1166,9 @@ const executeGitReview = async (params, taskId) => {
   // absent flag, non-admin author → false.
   let ruleRow = null;
   if (ruleId) { try { ruleRow = await getListener(ruleId); } catch (e) { ruleRow = null; } }
-  const savedByRole = ruleRow && ruleRow.savedByRole === "admin" ? "admin" : null;
+  const savedByRole = ruleRow && isAdminSavedByRole(ruleRow.savedByRole) ? ADMIN_SAVED_BY_ROLE : null;
   const reviewCfg = (ruleRow && ruleRow.gitReview && typeof ruleRow.gitReview === "object") ? ruleRow.gitReview : {};
-  const allowVerdictActions = savedByRole === "admin" && reviewCfg.allowVerdictActions === true;
+  const allowVerdictActions = isAdminSavedByRole(savedByRole) && reviewCfg.allowVerdictActions === true;
   const simulated = simulation === true || (ruleRow ? ruleRow.simulationMode === true : false);
   const ruleName = (ruleRow && ruleRow.name) || null;
 
@@ -2194,9 +2196,13 @@ const executeQueuedScheduledJob = async (params, taskId, opts) =>
 
 const resolveFreshCoderGate = async (p) => {
   const headless = isHeadlessTrigger(p.triggerSource) || p.headless === true;
-  const savedByRole = p.savedByRole || "editor";
+  const savedByRole = p.savedByRole || DEFAULT_SAVED_BY_ROLE;
   const facts = await resolveFreshGateFacts() || {};
-  const gate = buildAgentGateContext({ ...facts, triggerSource: headless ? "external" : null, savedByRole });
+  // F-890 — the consumer's re-derivation is the CODER surface and names it, exactly as the
+  // engine's own gate does. Unnamed, it would answer `surface-unset` (F-883) for any future
+  // `requiresSurface: "coder"` action while the panel path allowed it: a gate whose verdict
+  // depends on which door called it, which is the defect the line above this one exists for.
+  const gate = buildAgentGateContext({ ...facts, triggerSource: headless ? "external" : null, savedByRole, surface: AGENT_SURFACES.CODER });
   const out = { facts, queuedFacts: p.gateFacts || null, allowed: null, refusal: null };
   if (!Array.isArray(p.allowedActions)) return out;
 
@@ -2281,7 +2287,7 @@ const executeCoderTurn = async (params, taskId) => {
       // F-829 — THE FRESH FACTS, never `p.gateFacts`. The engine's own gate is the second
       // assertion of the same verdict; it is only worth anything if the facts under it are
       // the instance's CURRENT ones. `p.gateFacts` is kept in the payload for the log only.
-      gateFacts: gateNow.facts, savedByRole: p.savedByRole || "editor", cancelToken: taskId,
+      gateFacts: gateNow.facts, savedByRole: p.savedByRole || DEFAULT_SAVED_BY_ROLE, cancelToken: taskId,
       headless: isHeadlessTrigger(p.triggerSource) || p.headless === true,
       // Already intersected with the fresh verdict above; the engine intersects again.
       allowedActions: Array.isArray(gateNow.allowed) ? gateNow.allowed : null,

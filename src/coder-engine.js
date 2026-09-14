@@ -60,7 +60,7 @@
 import storage from "@forge/kvs";
 import {
   AGENT_ACTIONS, getAgentAction, toolDefinitionsFor, normalizeAllowedActions,
-  buildAgentGateContext, agentActionRefusalText, MAX_AGENT_ROUNDS,
+  buildAgentGateContext, agentActionRefusalText, AGENT_SURFACES, MAX_AGENT_ROUNDS,
 } from "./shared/agent-actions.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -69,6 +69,8 @@ import { createGitActionExecutor } from "./git-actions.js";
 import { createCoderWorkspace, workspaceEntry, renderWorkspaceSummaryLine, classifyThrow } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
 import { clampChars } from "./shared/text-clamp.js";
+// F-884 — the arming-stamp default and the admin comparison have ONE home.
+import { DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 
 const idx = () => import("./index.js");
 
@@ -629,7 +631,7 @@ export const runCoderTurn = async ({
   // UNDEFINED, not false: "the caller said nothing" and "the caller said live" must be
   // distinguishable, because the thread row is the authority for simulation (F-360).
   simulation = undefined, connectionId = null, maxRounds = CODER_DEFAULT_ROUNDS,
-  gateFacts = null, savedByRole = "editor", deadline = null, cancelToken = null,
+  gateFacts = null, savedByRole = DEFAULT_SAVED_BY_ROLE, deadline = null, cancelToken = null,
   headless = false, allowedActions = null,
   // TRUSTED-BUT-BOUNDED knowledge for this turn: { memoryBlock, skillsBlock,
   // fieldGuideBlock, fieldGuideSections } inside the stable prefix, and
@@ -745,8 +747,15 @@ const runCoderTurnClaimed = async ({
   // producer froze minutes ago re-derives the producer's verdict and proves nothing. The
   // queue consumer therefore re-reads them fresh (`resolveFreshCoderGate`,
   // src/async-handler.js) and hands THOSE in; the resolvers already read fresh.
+  //
+  // F-890 — AND IT NAMES ITS SURFACE. This context carried no `surface`, so the day an
+  // action declares `requiresSurface: "coder"` the Coder would refuse it on its own
+  // surface as `surface-unset` (F-883) — the most confusing refusal there is, because the
+  // sentence tells the admin the save did not say what kind of rule this is when the run
+  // is the Coder itself. The listener and job normalizers have always stamped theirs; this
+  // is the same statement, from the one vocabulary rather than a literal.
   const gate = gateFacts
-    ? buildAgentGateContext({ ...gateFacts, triggerSource: headless ? "external" : null, savedByRole })
+    ? buildAgentGateContext({ ...gateFacts, triggerSource: headless ? "external" : null, savedByRole, surface: AGENT_SURFACES.CODER })
     : undefined;
   // The CEILING. A post-function offers only its mode's subset; the panel offers
   // everything. Unknown and control ids are dropped here so the gate only ever sees real
@@ -1449,12 +1458,12 @@ export const stepLinksFromResult = (action, result) => {
  * had, not the role they have.
  */
 const savedByRoleNow = async (accountId, deps) => {
-  if (deps && deps.savedByRole) return deps.savedByRole === "admin" ? "admin" : "editor";
+  if (deps && deps.savedByRole) return isAdminSavedByRole(deps.savedByRole) ? ADMIN_SAVED_BY_ROLE : DEFAULT_SAVED_BY_ROLE;
   try {
     const m = deps && deps.loadIndex ? await deps.loadIndex() : await idx();
     const perms = await m.getUserPermissions(accountId);
-    return perms && perms.role === "admin" ? "admin" : "editor";
-  } catch (e) { return "editor"; }
+    return perms && isAdminSavedByRole(perms.role) ? ADMIN_SAVED_BY_ROLE : DEFAULT_SAVED_BY_ROLE;
+  } catch (e) { return DEFAULT_SAVED_BY_ROLE; }
 };
 
 /** Append one `kind:"decision"` row to a thread, under the thread-write lock. */
@@ -1526,9 +1535,12 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
    * the ticket for 24 h. */
   if (verdict === "confirm") {
     const savedByRole = await savedByRoleNow(accountId, deps);
+    // F-890 — the confirmation-time re-gate is the SAME surface as the turn that staged
+    // the ticket, and it must say so; a fallback context that names no surface would
+    // answer `surface-unset` where the turn answered allow.
     const gateOpts = gateFacts
-      ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole })
-      : { capability: true, products: ["jira"], triggerSource: null, savedByRole };
+      ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole, surface: AGENT_SURFACES.CODER })
+      : { capability: true, products: ["jira"], triggerSource: null, savedByRole, surface: AGENT_SURFACES.CODER };
     const now = normalizeAllowedActions([ticket.action], gateOpts);
     let allowedNow = true;
     try { assertAgentActionAllowed(ticket.action, now.allowed); } catch (e) { allowedNow = false; }

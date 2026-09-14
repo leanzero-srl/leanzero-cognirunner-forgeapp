@@ -37,7 +37,7 @@
 import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
-import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, AGENT_SURFACES, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep, armingStamp, resolveSavedByRole, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
 // ONE HOME for "which namespace executors does this run hold" (F-852) — the SAME
@@ -127,7 +127,7 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
     // further down, after this line. `mode` is decided above, from the input, with
     // "script" as the default an unknown value falls to — so a forged mode can only make
     // the answer MORE restrictive, never less.
-    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), savedByRole: role, surface: mode === "va" ? "va" : "job" }),
+    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), savedByRole: role, surface: mode === "va" ? AGENT_SURFACES.VA : AGENT_SURFACES.JOB }),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
     // Knowledge binding — ONE normalizer, shared with listeners (1.4 commit 13b).
     ...normalizeAgentKnowledge(a),
@@ -607,7 +607,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   // `config.simulationMode` is the run's already-computed verdict, never re-derived.
   let assembled = executors || null;
   const executorsFor = async () => {
-    if (!assembled) assembled = await assembleAgentExecutors({ surface: "job", rule: job, ctx: null, simulation: config.simulationMode === true });
+    if (!assembled) assembled = await assembleAgentExecutors({ surface: AGENT_SURFACES.JOB, rule: job, ctx: null, simulation: config.simulationMode === true });
     return assembled;
   };
   const runOne = async (issue, perDeadline) => {
@@ -623,10 +623,10 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
         return { issueKey, success: false, braked: true, reason: slot.reason, changes: [], logs: [slot.reason], tokens: 0, aiTimeMs: 0 };
       }
       const { runAgentTask } = await agentMod();
-      // `surface: "job"` (F-865): this arm only ever runs `mode === "agent"` jobs — a VA
+      // `surface: AGENT_SURFACES.JOB` (F-865): this arm only ever runs `mode === "agent"` jobs — a VA
       // is swept by src/virtual-admin.js and never reaches here — so a ledger action on
       // this row is one no executor could serve, and the run stops offering it as a tool.
-      const agentGate = gateFacts ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole: job.savedByRole, surface: "job" }) : undefined;
+      const agentGate = gateFacts ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole: job.savedByRole, surface: AGENT_SURFACES.JOB }) : undefined;
       // Knowledge is built PER ISSUE because the memory block is project-scoped and a
       // scoped job walks issues from different projects. The skills half is identical
       // across them; paying one extra KVS read per issue is the cost of not injecting

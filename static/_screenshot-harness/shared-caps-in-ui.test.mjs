@@ -555,5 +555,121 @@ ok(scanSource(PRE_F855, { declarations: true }).some((h) => h.value === 200000 &
 ok(scanSource(PRE_F855).length === 0,
   "negative control: …and it stays invisible WITHOUT the declaration form, which is why the retype survived section 5");
 
+/* ===========================================================================
+ * 8. F-884 - NO BACKEND FILE MAY TYPE A **SAVED-BY** ROLE DEFAULT OR COMPARISON
+ *
+ * THE DEFECT THIS ARM EXISTS TO KILL. Section 6 stops the UI apps re-typing a roster
+ * default. The same mechanism was loose in src/: `savedByRole` - the ARMING STAMP, the
+ * fact that decides whether a rule may hold a pull-request verdict or an outward comment -
+ * defaulted to a bare `"editor"` at FIVE unrelated sites (`REST_SAVED_BY_ROLE` in
+ * rules-api.js, `stampSavedByRole` in index.js, two `p.savedByRole || "editor"` reads in
+ * async-handler.js, a `savedByRole = "editor"` default parameter in coder-engine.js) and
+ * the widening branch was a hand-typed `=== "admin"` in the review engine, the consumer,
+ * the Coder engine and index.js. Five copies of a default and four of a comparison, with
+ * no home between them: F-840/F-843/F-844 all over again, on a permission rather than a
+ * display string. They now come from `src/shared/roster-roles.js`
+ * (`DEFAULT_SAVED_BY_ROLE`, `ADMIN_SAVED_BY_ROLE`, `isAdminSavedByRole`, `SAVED_BY_ROLES`).
+ *
+ * THE RULE. No file under `src/` may write a saved-by literal ("admin"/"editor") as the
+ * DEFAULT of, the ASSIGNMENT to, or a COMPARISON against a binding whose name is about the
+ * saved-by role. The four shapes, each one a site the finding actually took:
+ *   A. `p.savedByRole || "editor"`            - the consumer shape;
+ *   B. `const REST_SAVED_BY_ROLE = "editor"` / `savedByRole = "editor"` in a parameter list
+ *                                             - the REST door and Coder engine shapes;
+ *   C. `savedByRole === "admin"`              - the widening branch;
+ *   D. `savedByRole: "admin"`                 - a stamp written as a literal into a row.
+ *
+ * WHY THE BINDING NAME IS NARROW (/saved_?by/i and nothing else). `role` and `scope` alone
+ * would sweep in the roster resolvers, the token roles and a hundred display strings in
+ * index.js, and an arm that cries wolf gets an allow-list entry per hit until it means
+ * nothing. Every site this finding names is spelled `savedByRole`, so that is the net.
+ *
+ * BLIND SPOTS, stated rather than papered over: a default reached through a differently
+ * named variable is invisible to a textual rule, as is a comparison written the other way
+ * round (`"admin" === x`). The rule catches the shape all nine sites actually took.
+ * ------------------------------------------------------------------------- */
+const SAVEDBY_WORDS = ["admin", "editor"];
+const SAVEDBY_LIT = `"(${SAVEDBY_WORDS.join("|")})"`;
+const SAVEDBYISH = /saved_?by/i;   // savedByRole AND REST_SAVED_BY_ROLE
+
+/** @returns {{how:string, line:number, text:string}[]} */
+function scanSavedByLiterals(src) {
+  const code = maskComments(src);
+  const lineOf = (idx) => code.slice(0, idx).split("\n").length;
+  const lines = src.split("\n");
+  const out = [];
+  const push = (idx, how) => {
+    const line = lineOf(idx);
+    out.push({ how, line, text: lines[line - 1] || "" });
+  };
+
+  /* A. `p.savedByRole || "editor"` / `?? "editor"`. */
+  for (const m of code.matchAll(new RegExp(`([A-Za-z_$][\\w$.?]*)\\s*(?:\\|\\||\\?\\?)\\s*${SAVEDBY_LIT}`, "g"))) {
+    if (SAVEDBYISH.test(m[1])) push(m.index, `${m[1]} || ${JSON.stringify(m[2])}`);
+  }
+
+  /* B. a plain assignment or a default parameter - `savedByRole = "editor"`. The lookarounds
+     keep `===` / `!==` / `>=` out of this shape; C owns those. */
+  for (const m of code.matchAll(new RegExp(`([A-Za-z_$][\\w$]*)\\s*(?<![=!<>])=(?!=)\\s*${SAVEDBY_LIT}`, "g"))) {
+    if (SAVEDBYISH.test(m[1])) push(m.index, `${m[1]} = ${JSON.stringify(m[2])}`);
+  }
+
+  /* C. the widening comparison - `savedByRole === "admin"`. */
+  for (const m of code.matchAll(new RegExp(`([A-Za-z_$][\\w$.?]*)\\s*[=!]==?\\s*${SAVEDBY_LIT}`, "g"))) {
+    if (SAVEDBYISH.test(m[1])) push(m.index, `${m[1]} === ${JSON.stringify(m[2])}`);
+  }
+
+  /* D. a stamp written straight into a row - `savedByRole: "admin"`. */
+  for (const m of code.matchAll(new RegExp(`([A-Za-z_$][\\w$]*)\\s*:\\s*${SAVEDBY_LIT}`, "g"))) {
+    if (SAVEDBYISH.test(m[1])) push(m.index, `${m[1]}: ${JSON.stringify(m[2])}`);
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/* POSITIVE CONTROLS: the four pre-F-884 lines, verbatim. If these stop firing the arm is
+   dead and the finding could ship again unseen. */
+for (const [label, line] of [
+  ["REST_SAVED_BY_ROLE constant", `const REST_SAVED_BY_ROLE = "editor";\n`],
+  ["consumer default read", `  const savedByRole = p.savedByRole || "editor";\n`],
+  ["Coder default parameter", `  gateFacts = null, savedByRole = "editor", deadline = null,\n`],
+  ["widening comparison", `  const allow = options.allowVerdictActions === true && savedByRole === "admin";\n`],
+]) {
+  ok(scanSavedByLiterals(line).length > 0, `positive control: the pre-F-884 ${label} line is flagged`);
+}
+
+/* NEGATIVE CONTROL: the imported names, which is the shape we want. */
+ok(scanSavedByLiterals(`const savedByRole = p.savedByRole || DEFAULT_SAVED_BY_ROLE;\nconst a = isAdminSavedByRole(row.savedByRole);\n`).length === 0,
+  "negative control: the imported default and the imported comparison raise nothing");
+
+/* NEGATIVE CONTROL: a ROSTER role literal is section 6's business, not this arm's. */
+ok(scanSavedByLiterals(`const role = user.role || "admin";\n`).length === 0,
+  "negative control: a roster `role` literal is not a saved-by literal - section 6 owns that");
+
+const backendSources = [];
+const walkSrc = (dir) => {
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) walkSrc(full);
+    else if (/\.js$/.test(name)) backendSources.push(full);
+  }
+};
+walkSrc(join(REPO, "src"));
+ok(backendSources.length > 20, `scanned ${backendSources.length} backend source files under src/`);
+
+/* Every file that reads or writes the arming stamp must take the vocabulary from the one
+   home. There is no allow-list: a saved-by literal in src/ has never been anything but a
+   copy of this rule, and admitting one is how the roster list grew to three entries. */
+const savedByOffences = [];
+for (const file of backendSources) {
+  const rel = relative(REPO, file).split(sep).join("/");
+  if (rel === "src/shared/roster-roles.js") continue;     // the HOME declares them, by definition
+  for (const hit of scanSavedByLiterals(readFileSync(file, "utf8"))) {
+    savedByOffences.push(`${rel}:${hit.line}  ${hit.how}\n      ${hit.text.trim().slice(0, 140)}`);
+  }
+}
+ok(savedByOffences.length === 0, savedByOffences.length === 0
+  ? "no backend file types a saved-by role default, assignment or comparison - they come from src/shared/roster-roles.js"
+  : `${savedByOffences.length} saved-by literal(s) outside roster-roles.js:\n    ` + savedByOffences.join("\n    "));
+
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} - ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

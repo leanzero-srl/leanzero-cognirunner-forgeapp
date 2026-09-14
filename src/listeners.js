@@ -40,9 +40,12 @@ import {
   isKnownEvent, getEvent, eventLabel, extractEventContext, changedFieldsOf, commentTextOf,
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
-import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, AGENT_SURFACES, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { knowledgeBudget, fieldGuideAudience, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText, normalizeGenerationMeta } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
+// F-884 — the arming-stamp vocabulary and its default live in ONE dependency-free home,
+// beside the roster vocabulary they are a subset of. See src/shared/roster-roles.js.
+import { SAVED_BY_ROLES, DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
 // ONE HOME for "which namespace executors does this run hold" (F-852) — see the header
@@ -127,8 +130,14 @@ export const newListenerId = () => `lst_${Date.now().toString(36)}${Math.random(
  * (F-311: this field did not exist before 1.4 commit 5c; rows saved earlier carry
  * no `savedByRole` and are therefore treated as "editor" on read.)
  */
-export const SAVED_BY_ROLES = ["admin", "editor"];
-export const normalizeSavedByRole = (role) => (role === "admin" ? "admin" : "editor");
+/*
+ * F-884 — THE VOCABULARY AND THE DEFAULT ARE NOT DECLARED HERE. `SAVED_BY_ROLES` used to
+ * be a second hand-typed enum in this file and `"editor"` a hand-typed default in five
+ * more places. Both now come from src/shared/roster-roles.js, which already owned the
+ * roster vocabulary this one is a subset of. This function stays: it is the NORMALISER
+ * (lenient by design, for reading stored rows), not the vocabulary.
+ */
+export const normalizeSavedByRole = (role) => (isAdminSavedByRole(role) ? ADMIN_SAVED_BY_ROLE : DEFAULT_SAVED_BY_ROLE);
 
 /**
  * F-882 - ONE ROLE PER SAVE. `savedByRole` used to exist TWICE on a normalize call: as a
@@ -145,7 +154,41 @@ export const normalizeSavedByRole = (role) => (role === "admin" ? "admin" : "edi
  * construction the role stored on the row.
  */
 export const resolveSavedByRole = ({ gate = undefined, savedByRole = undefined } = {}) =>
-  normalizeSavedByRole(savedByRole !== undefined ? savedByRole : (gate && typeof gate === "object" ? gate.savedByRole : undefined));
+  assertSavedByRole(savedByRole !== undefined ? savedByRole : (gate && typeof gate === "object" ? gate.savedByRole : undefined));
+
+/**
+ * F-891 - THE STRICT VARIANT, FOR SAVE DOORS ONLY.
+ *
+ * `normalizeSavedByRole` answers "editor" to ANYTHING that is not the literal "admin".
+ * That is the right answer when READING a stored row: a row written before the field
+ * existed, or one hand-edited in KVS, must still resolve to the lesser power rather than
+ * throw on a rule the admin is trying to open. It is the WRONG answer at a save door.
+ * A caller that passes `savedByRole: "viewer"`, `"Admin"`, `"owner"` or a misspelled
+ * permission constant is asking for something the product does not have, and the lenient
+ * normaliser silently grants it "editor" - a save that half-worked, with no signal
+ * anywhere that the argument was nonsense. The mistake is undetectable precisely where
+ * detecting it is cheap: at the door, with a human waiting on a response.
+ *
+ * So: STRICT AT THE DOOR, LENIENT ON THE ROW. Silence still means the default - `null`,
+ * `undefined` and `""` are "nobody stated a role", which is the ordinary case for a gate
+ * context built without one, and they take DEFAULT_SAVED_BY_ROLE. A STATED value that is
+ * not in the vocabulary is refused BY NAME: the error carries `reason` so the REST door
+ * returns it as `400 { error, reason }` and the admin UI shows the same sentence.
+ *
+ * This is the only door that needs it. Every other save-time stamp (`stampArming` /
+ * `stampSavedByRole` in src/index.js) computes its role from the roster rather than
+ * accepting one, so there is no argument there to mistype.
+ */
+export const assertSavedByRole = (role) => {
+  if (role === undefined || role === null || role === "") return DEFAULT_SAVED_BY_ROLE;
+  const v = String(role);
+  if (!SAVED_BY_ROLES.includes(v)) {
+    const err = new Error(`savedByRole must be one of ${SAVED_BY_ROLES.join("/")} (got "${v.slice(0, 40)}")`);
+    err.reason = "unknown-saved-by-role";
+    throw err;
+  }
+  return normalizeSavedByRole(v);
+};
 
 /**
  * F-409 — THE ARMING STAMP. ONE home for "who armed this rule", used by post-functions,
@@ -175,7 +218,7 @@ export const resolveSavedByRole = ({ gate = undefined, savedByRole = undefined }
  * existing owner: wiping `createdBy` would leave a live Coder rule ownerless, which is a
  * hard error at run time. The previous owner stands and the role still re-stamps.
  */
-export const armingStamp = ({ accountId = null, savedByRole = "editor", existing = null } = {}) => {
+export const armingStamp = ({ accountId = null, savedByRole = DEFAULT_SAVED_BY_ROLE, existing = null } = {}) => {
   const acct = accountId || null;
   const prevOwner = existing ? existing.createdBy || null : null;
   const prevFirst = existing ? existing.firstCreatedBy || prevOwner : null;
@@ -242,7 +285,7 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     // premade wizard and the import path each had to remember it, and the one that forgot
     // would be the hole. It rides ON the caller's gate rather than replacing it, so the
     // capability, product and role arms keep the answer the instance's facts gave them.
-    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), savedByRole: role, surface: "listener" }),
+    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), savedByRole: role, surface: AGENT_SURFACES.LISTENER }),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
     // Knowledge binding — ONE normalizer, shared with scheduled jobs (1.4 commit 13b).
     ...normalizeAgentKnowledge(a),
@@ -1416,11 +1459,11 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     // block a merge, deploy) is dropped whatever was saved. `savedByRole` comes from
     // the rule ROW, never from the delivery.
     const agentGate = gateFacts
-      // `surface: "listener"` (F-865) makes the RUN agree with the SAVE: a row saved
+      // `surface: AGENT_SURFACES.LISTENER` (F-865) makes the RUN agree with the SAVE: a row saved
       // before the surface flag existed may still hold a ledger action, and this is what
       // stops `toolDefinitionsFor` offering it. Stated rather than left to the null
       // default, because a reader must not have to know that null happens to refuse.
-      ? buildAgentGateContext({ ...gateFacts, triggerSource: "external", savedByRole: listener.savedByRole, surface: "listener" })
+      ? buildAgentGateContext({ ...gateFacts, triggerSource: "external", savedByRole: listener.savedByRole, surface: AGENT_SURFACES.LISTENER })
       : undefined;
     // Knowledge is built by the CALLER (1.4 commit 13b): only here do we know the rule's
     // binding and the run's project. Fail-open — see buildAgentKnowledge.
@@ -1438,7 +1481,7 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     // simulated" is how a simulated run makes a real commit. The assembler's own
     // refusal sentences ride on the map and the dispatcher prefers them.
     const runExecutors = executors || await assembleAgentExecutors({
-      surface: "listener", rule: listener, ctx, simulation: config.simulationMode === true,
+      surface: AGENT_SURFACES.LISTENER, rule: listener, ctx, simulation: config.simulationMode === true,
       log: (line) => knowledgeNotices.push(String(line)),
     });
     const r = await runAgentTask({

@@ -2109,8 +2109,17 @@ function invoke(name, payload) {
         models: isStandardEd() ? [FORGE_HAIKU] : [FORGE_HAIKU, ...FORGE_FRONTIER],
         locked: isStandardEd() ? FORGE_FRONTIER : [],
       });
+      /* F-914 - `window.__SAVED_MODEL__` forces the SAVED rule model for a BYOK provider
+         WITHOUT adding it to the list this key returns. That is the real state the walk
+         found: a vendor retires an id, or the key cannot see it, and the live list and
+         the saved value disagree. It is a fixture knob and not a second list on purpose -
+         the models array below stays exactly what it was. */
       return Promise.resolve({ success: true, isByok: true, edition: edName(), locked: [], models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6-20260101", "claude-opus-4-1-20250805", "claude-3-7-sonnet-20250219"] });
     case "getOpenAIModelFromKVS":
+      if (payload && payload.provider !== MANAGED_PROVIDER_ID && payload.provider !== "atlassian"
+          && typeof window !== "undefined" && window.__SAVED_MODEL__) {
+        return Promise.resolve({ success: true, model: String(window.__SAVED_MODEL__), isByok: true, edition: edName(), clamped: false });
+      }
       if (payload && payload.provider === MANAGED_PROVIDER_ID) return Promise.resolve({
         success: true, model: MANAGED_DEFAULT_MODEL, isByok: false, edition: edName(), clamped: false,
         managedAvailable: managedMockAvailable(), managedReason: managedMockReason() || "managed",

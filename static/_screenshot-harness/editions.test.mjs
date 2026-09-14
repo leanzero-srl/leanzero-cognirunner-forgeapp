@@ -972,6 +972,70 @@ try {
     } catch (e) { fail++; console.log("  x E5c threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
+  /* ---------------- E6 - F-914: the model controls on the ACTIVE BYOK provider ----------
+     The walk found a Model picker reading "Select a model..." with Save disabled while
+     every rule on the site ran on a model. That pair is what a dead control looks like:
+     nothing to read, nothing to press. It happens whenever the SAVED id is not in the
+     live list the key returns, which is F-895's finding one picker higher up. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E6 a saved model outside the live list (${theme})`);
+    const env = await openAdmin(browser, theme, false, false, { __SAVED_MODEL__: "claude-sonnet-5-20261101" });
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      const trigger = page.locator(".dropdown-trigger").nth(1);
+      const shown = (await trigger.innerText()).trim();
+      ok(shown.includes("claude-sonnet-5-20261101"), `E6 ${theme} the trigger shows the model in use, got: ${shown}`);
+      ok(!/Select a model/.test(shown), `E6 ${theme} and never the placeholder over a live model`);
+      const note = page.locator(".model-out-of-list-note");
+      ok(await note.count() === 1, `E6 ${theme} the reason is readable without opening the dropdown`);
+      ok((await note.first().innerText()).includes("Anthropic"), `E6 ${theme} and it names the provider by its product name`);
+      ok(!/[\u2013\u2014]/.test(await note.first().innerText()), `E6 ${theme} no em dash or en dash in it`);
+      // The row is LOCKED: it is already saved, so there is nothing to select or re-save.
+      await trigger.click();
+      await page.locator(".dropdown-panel").waitFor({ timeout: 5000 });
+      const first = page.locator(".dropdown-panel .dropdown-item").first();
+      ok((await first.innerText()).includes("claude-sonnet-5-20261101"), `E6 ${theme} the in-use model is the FIRST row`);
+      ok((await first.getAttribute("aria-disabled")) === "true", `E6 ${theme} and it is locked, not offered`);
+      const badgeBg = await page.locator(".dropdown-panel .dib-info").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(badgeBg === (theme === "dark" ? "rgb(20, 184, 166)" : "rgb(13, 148, 136)"), `E6 ${theme} its badge is the solid memories teal per theme (got ${badgeBg})`);
+      await shot(page, `E6-model-out-of-list-${theme}`);
+      await page.keyboard.press("Escape");
+      ok(env.errors.length === 0, `E6 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E6 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    console.log("E6b negative control: a saved model IN the list gets no extra row");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      ok(await page.locator(".model-out-of-list-note").count() === 0, "E6b no out-of-list note when the saved model is listed");
+      const shown = (await page.locator(".dropdown-trigger").nth(1).innerText()).trim();
+      ok(shown.includes("claude-haiku-4-5-20251001"), `E6b the trigger still shows the saved model, got: ${shown}`);
+      ok(env.errors.length === 0, "E6b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E6b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* E6c - the agent-model placeholder is PER PROVIDER. It shipped as an OpenRouter id
+       on every BYOK provider, including Anthropic, whose API rejects that format. */
+    console.log("E6c per-provider agent-model placeholder");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      const ph = await page.locator('input[aria-label="Agent model"]').first().getAttribute("placeholder");
+      ok(ph === "e.g. claude-sonnet-5", `E6c Anthropic gets an Anthropic id, got: ${ph}`);
+      ok(!/anthropic\//.test(String(ph)), "E6c and never the OpenRouter namespaced form");
+      ok(env.errors.length === 0, "E6c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E6c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
 } finally {
   await browser.close();
 }

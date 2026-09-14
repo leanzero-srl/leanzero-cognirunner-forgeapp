@@ -50,25 +50,33 @@ const PROVIDER_OPTIONS = [
   { value: "bedrock", label: PROVIDER_LABELS.bedrock, icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5z"/></svg>' },
 ];
 
+/*
+ * F-914 - `agentModelPlaceholder` is PER PROVIDER, from this table, because one shared
+ * example is wrong for five of the six. The agent-model input shipped with
+ * "e.g. anthropic/claude-opus-5" for EVERY BYOK provider - an OpenRouter id, offered to
+ * an Anthropic tenant whose API would reject it verbatim. A placeholder is documentation;
+ * a placeholder that names another vendor's id format is worse than an empty box.
+ */
 const PROVIDER_HELP = {
-  openai: { keyPlaceholder: "sk-...", keyLabel: "OpenAI API Key", endpointNeeded: false },
+  openai: { keyPlaceholder: "sk-...", keyLabel: "OpenAI API Key", endpointNeeded: false, agentModelPlaceholder: "e.g. gpt-5.4" },
   // Azure OpenAI rides the same OpenAI-compatible path as OpenAI; it is mostly untested end-to-end.
-  azure: { keyPlaceholder: "Enter your Azure OpenAI API key...", keyLabel: "Azure API Key", endpointNeeded: true, endpointPlaceholder: "https://myresource.openai.azure.com/openai/v1", note: "Azure OpenAI is mostly untested, verify your deployment before relying on it." },
-  openrouter: { keyPlaceholder: "sk-or-...", keyLabel: "OpenRouter API Key", endpointNeeded: false },
-  anthropic: { keyPlaceholder: "sk-ant-...", keyLabel: "Anthropic API Key", endpointNeeded: false },
+  azure: { keyPlaceholder: "Enter your Azure OpenAI API key...", keyLabel: "Azure API Key", endpointNeeded: true, endpointPlaceholder: "https://myresource.openai.azure.com/openai/v1", note: "Azure OpenAI is mostly untested, verify your deployment before relying on it.", agentModelPlaceholder: "e.g. your deployment name" },
+  openrouter: { keyPlaceholder: "sk-or-...", keyLabel: "OpenRouter API Key", endpointNeeded: false, agentModelPlaceholder: "e.g. anthropic/claude-opus-5" },
+  anthropic: { keyPlaceholder: "sk-ant-...", keyLabel: "Anthropic API Key", endpointNeeded: false, agentModelPlaceholder: "e.g. claude-sonnet-5" },
   lmstudio: {
     keyPlaceholder: "Optional: Bearer token from LM Studio Developer page",
     keyLabel: "API Token (optional)",
     endpointNeeded: true,
     endpointPlaceholder: "https://your-machine.tailXXXX.ts.net",
     keyOptional: true,
+    agentModelPlaceholder: "the model id exactly as LM Studio lists it",
   },
   // Forge LLM is Atlassian-hosted: no API key, no endpoint. Inference runs inside
   // the Atlassian platform (data never leaves it) and is billed to the app vendor.
   atlassian: { keyPlaceholder: "", keyLabel: "API Key", endpointNeeded: false, noKey: true },
   // AWS Bedrock: the API key is a plain bearer token (no SigV4). No endpoint URL —
   // the region (picked below) determines the Converse host. regionNeeded shows the picker.
-  bedrock: { keyPlaceholder: "Bedrock API key (bearer token)", keyLabel: "Bedrock API Key", endpointNeeded: false, regionNeeded: true },
+  bedrock: { keyPlaceholder: "Bedrock API key (bearer token)", keyLabel: "Bedrock API Key", endpointNeeded: false, regionNeeded: true, agentModelPlaceholder: "e.g. eu.anthropic.claude-sonnet-4-6" },
   // The managed engine has NO key field and NO URL field: its credential is an encrypted
   // Forge env var on LeanZero's side, never KVS and never something a tenant admin pastes.
   [MANAGED_PROVIDER_ID]: { keyPlaceholder: "", keyLabel: "API Key", endpointNeeded: false, noKey: true },
@@ -1369,6 +1377,25 @@ export default function OpenAIConfig({ invoke }) {
   // the id comes from the ONE home (src/shared/edition.js), never retyped here —
   // reorder or rename the frontier list and this follows instead of going stale.
   const recommendedModel = isAtlassian && isAdvanced ? FORGE_LLM_FRONTIER[0] : null;
+  /* F-914 - THE RULE-MODEL PICKER MUST NOT RENDER A PLACEHOLDER OVER A MODEL IN USE.
+     This is F-895's finding on the picker above the agent one. `selectedModel` is seeded
+     from getOpenAIModelFromKVS, but the OPTIONS come from getOpenAIModels - the live list
+     the key returns - and the two disagree whenever a saved id has been retired by the
+     vendor, is not visible to this key, or the list call degraded. CustomSelect then
+     matches no option and falls back to "Select a model...", so the screen reads "nothing
+     is configured" while every rule on the site is running on that very model, and Save
+     is disabled because the selection equals the current model - the exact pair the walk
+     reported as a dead control.
+     So the resolved id is added as a LOCKED first row. Locked, not selectable, because
+     there is nothing to select: it is ALREADY saved, and re-saving it is the no-op the
+     disabled Save button already says. The sentence under the picker carries the reason,
+     for the same measured reason F-895 gives - `.dropdown-item-meta` is one ellipsised
+     line in a 320px panel. */
+  const savedModelId = (currentModel || "").trim();
+  const modelOutOfList = !!savedModelId
+    && !effectiveModels.includes(savedModelId)
+    && !effectiveLocked.includes(savedModelId)
+    && !(isLmStudio && modelDetails.some((m) => m.id === savedModelId));
   /* F-895 — THE AGENT PICKER MUST NEVER RENDER A PLACEHOLDER OVER A RESOLVED MODEL.
      On Forge LLM the options are FORGE_LLM_FRONTIER, but `getAgentModel` answers with
      whatever the resolution chain ACTUALLY resolved (src/shared/model-resolution.js) —
@@ -2125,6 +2152,14 @@ export default function OpenAIConfig({ invoke }) {
                             return { value: m.id, label: m.id, meta: meta.join(" · ") || undefined, badges, group: m.device || "This machine" };
                           })
                         : [
+                            // The model ACTUALLY IN USE first, when the live list does not
+                            // contain it, so the trigger shows a model instead of a placeholder.
+                            ...(modelOutOfList ? [{
+                              value: savedModelId,
+                              label: savedModelId,
+                              disabled: true,
+                              badges: [{ text: "in use", tone: "info" }],
+                            }] : []),
                             // Allowed rows first, then the edition-locked ones. Locked rows
                             // are rendered (never hidden) so the admin can see exactly what
                             // CogniRunner Coder unlocks — click/Enter on them is a no-op.
@@ -2214,6 +2249,12 @@ export default function OpenAIConfig({ invoke }) {
                     : ""}
                 </p>
               )}
+              {/* F-914 - the reason, readable WITHOUT opening the dropdown. */}
+              {modelOutOfList && (
+                <p className="model-out-of-list-note" style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" }}>
+                  This model is not in the list {providerLabel} returns for your key right now. It is still the model every rule runs on.
+                </p>
+              )}
               {currentModel && (
                 <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                   Currently active: <strong>{currentModel}</strong>
@@ -2291,7 +2332,7 @@ export default function OpenAIConfig({ invoke }) {
                       type="text"
                       value={agentModel}
                       onChange={(e) => setAgentModel(e.target.value)}
-                      placeholder="e.g. anthropic/claude-opus-5"
+                      placeholder={pHelp.agentModelPlaceholder || "the model id your provider expects"}
                       aria-label="Agent model"
                       style={{ flex: 1, padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px", fontFamily: "SFMono-Regular, Consolas, monospace" }}
                       onKeyDown={(e) => e.key === "Enter" && handleSaveAgentModel()}

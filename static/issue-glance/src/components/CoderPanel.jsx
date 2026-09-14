@@ -380,6 +380,14 @@ export default function CoderPanel({ issueKey, accountId }) {
         endedBy: r.endedBy || "",
         rounds: Number(r.rounds) || 0,
         ok: r.success !== false,
+        /* F-857 - WHAT THE TURN COULD NOT WRITE ONTO THE ISSUE. The engine's own summary
+           line goes into the running Coder log, which is one of the write groups it
+           reports, so when the LOG write is the one that failed the sentence dies with the
+           turn. The record carries it (`workspaceSummary`) precisely so a surface that does
+           not depend on that comment can say it, and this panel is that surface. The
+           wording is the ENGINE'S, never re-composed here. */
+        workspaceSummary: r.workspaceSummary ? String(r.workspaceSummary) : "",
+        workspaceFailures: Number(r.workspaceFailures) || 0,
       });
       if (r.error) setError(String(r.error));
     }
@@ -765,6 +773,12 @@ export default function CoderPanel({ issueKey, accountId }) {
                 </li>
               ))}
             </ul>
+          )}
+          {(outcome.workspaceSummary || outcome.workspaceFailures > 0) && (
+            <p className="coder-workspace-bad" role="status">
+              {outcome.workspaceSummary
+                || `Workspace: ${outcome.workspaceFailures} write${outcome.workspaceFailures === 1 ? "" : "s"} did not land on this issue.`}
+            </p>
           )}
           <p className="coder-outcome-foot">
             {outcome.rounds ? `${outcome.rounds} round${outcome.rounds === 1 ? "" : "s"}` : "Finished"}

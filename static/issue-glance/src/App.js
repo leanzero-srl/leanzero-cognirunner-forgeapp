@@ -167,6 +167,11 @@ const injectStyles = () => {
     .coder-action-verdict { font-weight: 700; color: var(--text-secondary); text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
     .coder-action-ms { margin-left: auto; color: var(--text-muted); font-size: 11px; }
     .coder-outcome-foot { margin: 9px 0 0; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+    /* F-857 - the writes that did not land on the issue. Solid red with white text, the
+       same device every other named failure in this app uses, because a turn that answered
+       and left nothing on the issue must not read as a clean turn. No tint, no rail. */
+    .coder-workspace-bad { margin: 9px 0 0; border-radius: 6px; background: #dc2626; color: #fff; font-size: 11.5px; font-weight: 700; padding: 7px 10px; word-break: break-word; }
+    html[data-color-mode="dark"] .coder-workspace-bad { background: #ef4444; color: #2a0404; }
 
     /* -- a failure is NAMED, in solid red with white text; never a tint -- */
     .coder-error { border-radius: 8px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 600; padding: 9px 11px; word-break: break-word; }

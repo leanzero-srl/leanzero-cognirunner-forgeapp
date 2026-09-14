@@ -1882,5 +1882,63 @@ await check("F-841: the summary line is empty when nothing failed and counts onl
     "Workspace: 2 of 3 writes failed (log: storage, artifact: unknown)");
 });
 
+/* ═════════ F-857. the summary survives the surface that failed ═════════
+ *
+ * The summary line was written with `log(...)` into the very buffer that ONLY the failing
+ * writer flushes, so when the failing group is `log` the sentence dies with the turn: the
+ * failure is reported exclusively to the surface that just proved it cannot report. The
+ * count on the record was meant to be the backstop and had no reader of its own. These
+ * checks read the RECORD, not the log buffer.
+ */
+
+await check("F-857: the turn RECORD carries the summary when the log write itself failed", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const kvsFault = Object.assign(new Error("Field 'key' must match pattern"), { name: "ForgeKvsError", code: "INVALID_KEY" });
+  const faultStore = { set: async () => { throw kvsFault; }, get: async () => undefined, delete: async () => {} };
+
+  const { out: r, warned } = await catchWarn(() => startTurn(world, {
+    userMessage: "log it", deps: { store, gitExecutor: recordingGit(world), workspace: workspaceWithFaultyLog(faultStore) },
+  }));
+
+  assert.equal(r.success, true, "still degrading, never killing");
+  assert.equal(r.workspaceFailures, 1);
+  assert.ok(r.workspace.find((e) => e.group === "log" && e.ok === false), "the failing group is named on the record");
+
+  // THE POINT: the sentence is on the record, reachable through getAsyncTaskResult by the
+  // issue panel, and not only in the log buffer the failing writer could not flush.
+  assert.ok(r.workspaceSummary, "the record carries the summary SENTENCE, not only the count");
+  assert.match(r.workspaceSummary, /^Workspace: 1 of 3 writes failed/);
+  assert.match(r.workspaceSummary, /log: storage/, "naming the group that died");
+  assert.equal(/—/.test(r.workspaceSummary), false, "no em dash, by owner rule");
+
+  // and console.warn stays, for an operator with no panel open.
+  assert.ok(warned.some((l) => /Workspace: 1 of 3 writes failed/.test(l)),
+    `the summary is warned to the platform log too: ${JSON.stringify(warned)}`);
+});
+
+await check("F-857: a healthy turn carries NO summary on the record", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const r = await startTurn(world, { userMessage: "do the thing" });
+  assert.equal(r.workspaceFailures, 0);
+  assert.equal(r.workspaceSummary, undefined, "presence of the sentence is the signal a reader branches on");
+});
+
+await check("F-857: the issue panel prints the record's sentence in solid red", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const panel = readFileSync(fileURLToPath(new URL("../../static/issue-glance/src/components/CoderPanel.jsx", import.meta.url)), "utf8");
+  assert.match(panel, /workspaceSummary/, "the panel reads the record's sentence");
+  assert.match(panel, /coder-workspace-bad/, "…and renders it in its own class");
+  const app = readFileSync(fileURLToPath(new URL("../../static/issue-glance/src/App.js", import.meta.url)), "utf8");
+  const rule = (app.match(/\.coder-workspace-bad \{[^}]*\}/) || [""])[0];
+  assert.ok(rule, "the class has a style rule in the live CSS source (injectStyles)");
+  assert.match(rule, /background: #dc2626/, "solid red, not a tint");
+  assert.match(rule, /color: #fff/);
+  assert.equal(/border-left/.test(rule), false, "no left accent rail, by owner rule");
+  assert.match(app, /html\[data-color-mode="dark"\] \.coder-workspace-bad/, "and a dark-mode override");
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

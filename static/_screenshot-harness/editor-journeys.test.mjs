@@ -4091,6 +4091,108 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- J16y - F-958: the SECOND cold walk of the Confluence form ---------
+     Three defects, all of them "the form knows something and does not say it":
+       1. "Which page to look for" is REQUIRED and takes CQL, and the description builder
+          that writes CQL sits COLLAPSED at the top of the form. A designer who does not
+          write CQL was stopped at a required field with no route forward. The field now
+          carries "Describe the page instead", which opens the builder and puts the caret
+          in it.
+       2. The not-installed card named "Apps, Manage apps" in prose and linked nothing.
+       3. The rule's behaviour was stated THREE times on one screen - the catalogue help
+          paragraph, the Strict paragraph and the footer - twice of them in caps-lock
+          ALLOWED/BLOCKS. The Strict paragraph is the one that stays: it sits beside the
+          checkbox that flips the behaviour and it states both columns. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16y F-958 Confluence form: the route out of CQL and the copy that stopped repeating (${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-confluence", theme);
+    const { page } = env;
+    try {
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "a page for this issue exists" }).first().click();
+      await page.waitForSelector(".pr-seg-conf", { timeout: 6000 });
+
+      // (3) ONE statement of the degradation behaviour, not three.
+      /* The COPY, not the labels: `.label` is uppercased by CSS, so "shown to the user if
+         blocked" reads as caps in innerText and is not a second statement of anything. */
+      const copyParas = (await page.locator(".pr-form p.hint, .pr-form .pr-note").allInnerTexts())
+        .map((t) => t.replace(/\s+/g, " "));
+      const capsParas = copyParas.filter((t) => /\b(ALLOWED|BLOCKED|BLOCKS)\b/.test(t));
+      ok(capsParas.length === 1, `J16y (${theme}) the fail-open behaviour is stated ONCE on the screen, in caps, beside Strict (got ${capsParas.length}: ${capsParas.join(" || ")})`);
+      const strictPara = await page.locator(".pr-git-toggle-row").locator("xpath=following-sibling::p[1]").first().innerText();
+      ok(/ALLOWED/.test(strictPara), `J16y (${theme}) ...and the one that survives is the Strict paragraph`);
+      const helpPara = (await page.locator(".pr-form .form-group").first().locator("p.hint").first().innerText()).replace(/\s+/g, " ");
+      ok(/searched LIVE on every transition/.test(helpPara), `J16y (${theme}) the catalogue help still says what the rule CHECKS`);
+      ok(!/Strict|ALLOWED|BLOCKS/.test(helpPara), `J16y (${theme}) ...and no longer re-states the Strict behaviour (got "${helpPara}")`);
+      const foot = (await page.locator("p.pr-foot").first().innerText()).replace(/\s+/g, " ");
+      ok(/blocked and your message is shown/.test(foot), `J16y (${theme}) the footer keeps what only it says: a plain fail blocks with your message`);
+      ok(!/can't be reached|never traps the issue|Strict is on/.test(foot), `J16y (${theme}) ...and drops the third copy of the degradation sentence (got "${foot}")`);
+
+      // (1) THE ROUTE OUT OF CQL. A real button on the required field's own label row.
+      const describe = page.locator(".pr-describe-btn").first();
+      ok(await describe.count() === 1, `J16y (${theme}) the CQL field offers "Describe the page instead"`);
+      const btnStyle = await describe.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bg: cs.backgroundColor, fg: cs.color, leftBorder: cs.borderLeftWidth, weight: cs.fontWeight };
+      });
+      ok(btnStyle.bg === (theme === "dark" ? "rgb(99, 102, 241)" : "rgb(79, 70, 229)"), `J16y (${theme}) it is a SOLID indigo fill with a dark override, not a tint (got ${btnStyle.bg})`);
+      ok(btnStyle.fg === "rgb(255, 255, 255)", `J16y (${theme}) white text on it (got ${btnStyle.fg})`);
+      ok(btnStyle.leftBorder === "0px", `J16y (${theme}) and no left accent rail (got ${btnStyle.leftBorder})`);
+      ok(Number(btnStyle.weight) >= 600, `J16y (${theme}) 600-700 weight for the emphasis (got ${btnStyle.weight})`);
+      ok(await page.locator(".br-body").count() === 0, `J16y (${theme}) the builder starts collapsed, which is the whole defect`);
+      await describe.click();
+      await page.waitForSelector(".br-body .br-input", { timeout: 6000 });
+      ok(await page.locator(".br-body .br-input").count() === 1, `J16y (${theme}) clicking it OPENS the description builder`);
+      const focused = await page.evaluate(() => document.activeElement && document.activeElement.className);
+      ok(/br-input/.test(focused || ""), `J16y (${theme}) ...with the caret already in the description box (focus was "${focused}")`);
+      const inView = await page.locator(".br-body").first().evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top < window.innerHeight && r.bottom > 0;
+      });
+      ok(inView, `J16y (${theme}) ...and scrolled into view rather than left above the fold`);
+      ok(await page.locator("select").count() === 0, `J16y (${theme}) still no native <select> anywhere on this form`);
+      if (SHOTS) await page.locator(".pr-form").screenshot({ path: path.join(OUT, `conf-describe-route-${theme}.png`) });
+    } catch (e) { fail++; console.log(`  ✗ J16y (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J16z - F-958 (2): the Manage apps link the banner owed -------------
+     The card told the reader a Jira admin does this "under Apps, Manage apps" and linked
+     nothing, on a screen where the app knows the site origin. The href is built from the
+     ONE path (src/shared/manage-apps.js) and opened through the bridge router, so it
+     behaves in the iframe rather than dying in a sandboxed tab. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16z F-958 Manage apps link on the not-installed card (${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-confluence", theme, { __NO_CONFLUENCE__: true });
+    const { page } = env;
+    try {
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "a page for this issue exists" }).first().click();
+      await page.locator(".pr-conf-missing").waitFor({ timeout: 8000 });
+      const link = page.locator(".pr-conf-missing-link").first();
+      ok(await link.count() === 1, `J16z (${theme}) the card carries a real link, not only the prose`);
+      const href = await link.getAttribute("href");
+      ok(href === "https://your-site.atlassian.net/jira/settings/apps/manage", `J16z (${theme}) it is the site-relative Manage apps page (got ${href})`);
+      ok(await link.getAttribute("target") === "_blank", `J16z (${theme}) it opens in a new tab`);
+      const ls = await link.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { fg: cs.color, leftBorder: cs.borderLeftWidth, deco: cs.textDecorationLine, weight: cs.fontWeight };
+      });
+      ok(ls.fg === "rgb(255, 255, 255)", `J16z (${theme}) white on the solid slate card, in both themes (got ${ls.fg})`);
+      ok(/underline/.test(ls.deco), `J16z (${theme}) underlined, so it reads as a link and not as more prose`);
+      ok(Number(ls.weight) >= 600, `J16z (${theme}) 600-700 weight (got ${ls.weight})`);
+      ok(ls.leftBorder === "0px", `J16z (${theme}) no left accent rail (got ${ls.leftBorder})`);
+      await link.click();
+      const calls = await page.evaluate(() => window.__ROUTER_CALLS__ || []);
+      ok(calls.some((c) => /\/jira\/settings\/apps\/manage$/.test((c && (c.arg || c.url)) || "")),
+        `J16z (${theme}) clicking it navigates through the bridge router (got ${JSON.stringify(calls)})`);
+      if (SHOTS) await page.locator(".pr-conf-missing").screenshot({ path: path.join(OUT, `conf-manage-apps-${theme}.png`) });
+    } catch (e) { fail++; console.log(`  ✗ J16z (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J23d - F-447: the fail-open BANNER in config-view -----------------
      A Confluence validator that could not reach Confluence ALLOWS the transition and says
      so on the log row as `banner: "confluence_unavailable"`. config-view rendered no row

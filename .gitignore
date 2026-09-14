@@ -41,8 +41,15 @@ openapi-jira.json
 # Empty directories
 src/frontend/
 
-# issue-glance shares config-view node_modules via symlink (not a dir → global node_modules/ misses it)
+# A node_modules SYMLINK is not a directory, so the `node_modules/` rule above (trailing
+# slash = directories only) does not match it. That hole was patched for issue-glance
+# alone; a worktree that links the main checkout's installs in order to build hits it in
+# EVERY app, and `add -A <app>` then commits an absolute developer path as a tracked
+# symlink. Close it once, for every home a link gets made in.
 static/issue-glance/node_modules
+static/*/node_modules
+test-harness/node_modules
+node_modules
 
 # Tool cache (Playwright MCP session data) — not project source
 .playwright-mcp/

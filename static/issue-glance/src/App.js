@@ -79,7 +79,8 @@ const injectStyles = () => {
     .coder-cap-title { margin: 8px 0 0; font-size: 13px; font-weight: 700; color: var(--text-color); }
     .coder-cap-loading .coder-cap-title { margin: 0; }
     .coder-cap-remedy { margin: 6px 0 0; font-size: 12px; font-weight: 500; color: var(--text-secondary); }
-    .coder-cap-link { margin: 8px 0 0; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; color: var(--text-muted); }
+    /* F-954 removed .coder-cap-link: the breadcrumb it styled is gone. The off card now
+       renders either two real actions or one sentence, both at the foot of this file. */
     .coder-cap-facts { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
     .coder-fact { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; color: #fff; background: #475569; }
     .coder-fact-model { background: #a21caf; }
@@ -476,6 +477,51 @@ const injectStyles = () => {
     .dropdown-item.dropdown-item-locked .dropdown-item-name { color: var(--text-secondary); }
     .dropdown-item.dropdown-item-locked .dropdown-item-meta { color: var(--text-muted); }
     .dropdown-empty { padding: 16px 12px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+    /* =====================================================================
+       F-954 - the second cold walk on the Coder panel. Appended at the FOOT
+       of injectStyles on purpose: a block that only ever grows at the end
+       cannot collide with another surgeon's. Solid fills, white text, a dark
+       override for every hue, no rails and no tints.
+       ===================================================================== */
+
+    /* The off card's two real doors. SAME class names and same values as
+       admin-panel's injectStyles carries for AgentOffState.jsx, so the pair
+       reads identically on both surfaces: docs blue for the app's own page,
+       burnt orange for Jira's Manage apps. The panel is narrow, so they wrap. */
+    .coder-cap-links { margin: 9px 0 0; }
+    .agent-off-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .agent-off-btn, .agent-off-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border: none; border-radius: 8px;
+      background: #2563eb; color: #ffffff;
+      font-size: 12px; font-weight: 700; font-family: inherit;
+      text-decoration: none; cursor: pointer;
+    }
+    .agent-off-btn:hover, .agent-off-link:hover { background: #1d4ed8; color: #ffffff; text-decoration: none; }
+    .agent-off-link { background: #c2410c; }
+    .agent-off-link:hover { background: #9a3412; }
+    html[data-color-mode="dark"] .agent-off-btn { background: #3b82f6; }
+    html[data-color-mode="dark"] .agent-off-btn:hover { background: #60a5fa; }
+    html[data-color-mode="dark"] .agent-off-link { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .agent-off-link:hover { background: #fb923c; color: #2a1602; }
+    /* The sentence a non-admin gets instead. Plain secondary text: it is a
+       request to make of a person, not a control, and dressing it as one
+       would be the dead end this finding is about. */
+    .coder-cap-ask { font-weight: 600; }
+
+    /* Why Confirm cannot be pressed on a degraded consent card. The reader has
+       already been told nothing ran; this says what the button is waiting for,
+       in the neutral secondary text - a red banner here would report a failure
+       where there is none. */
+    .coder-consent-why { margin: 6px 0 0; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
+
+    /* The connection the conversation acts as. OWED is a refusal, so it is the
+       app's solid red with white text at 700; the plan-only line is a fact, so
+       it stays secondary text. */
+    .coder-conn-owed { margin: 0; padding: 6px 10px; border-radius: 6px; background: #dc2626; color: #ffffff; font-size: 11.5px; font-weight: 700; }
+    html[data-color-mode="dark"] .coder-conn-owed { background: #ef4444; color: #ffffff; }
+    .coder-conn-note { margin: 0; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
 
   `;
   document.head.appendChild(el);

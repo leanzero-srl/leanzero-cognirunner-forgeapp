@@ -40,7 +40,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@forge/bridge";
+import { invoke, router, view } from "@forge/bridge";
 import CustomSelect from "./CustomSelect.jsx";
 import FieldGuideChip from "./FieldGuideChip.jsx";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
@@ -198,6 +198,39 @@ export const previewRows = (preview) => {
 const noPreviewText = (action) =>
   `The details of this step were not kept when the page reloaded, so ${action ? `${action} ` : "it "}cannot be described here. Nothing has run. Skip it and ask again to see the full preview before confirming.`;
 
+/* F-954 - WHAT THE DISABLED CONFIRM IS WAITING FOR.
+   A control that is off without saying why is a dead end; this is the one sentence, used
+   BOTH as the button's title and as the line under the row, so the two cannot drift. */
+const CONFIRM_NEEDS_PREVIEW = "Confirm needs the full preview";
+
+/* F-954 - THE REMEDY FOR A READER WHO CANNOT APPLY IT.
+   The off card used to print "Apps > CogniRunner > Settings" as a breadcrumb at every
+   reader of an ISSUE panel. Most of them are developers, not Jira admins, so the
+   instruction named a page they cannot open and no one they could ask. */
+const ASK_ADMIN_TEXT = "Ask your Jira admin to change the provider or the edition under Apps, CogniRunner.";
+
+/* Jira's own app-management page, relative to the SITE origin - the same path
+   AgentOffState.jsx (admin-panel) builds its upgrade link from. A relative href inside a
+   Custom UI iframe points at the iframe's sandbox origin, so it is only ever rendered once
+   `view.getContext()` has reported a real origin. */
+const MANAGE_APPS_PATH = "/jira/settings/apps/manage";
+
+/* F-954 - THE COMPOSER'S CONNECTION SENTENCES.
+   `connectionId` started empty, rode the turn as `undefined` and Send was enabled on the
+   draft alone, so a turn on a site with several connections landed on whichever one the
+   engine defaults to - in somebody else's repository, with nothing on screen that had
+   asked. Three states, three different truths:
+     several, none chosen -> the turn is BLOCKED and the sentence asks for the pick;
+     exactly one          -> it is pre-selected (a convenience, the F-902 rule: the record
+                             still carries the name it acts as, and the runtime still has
+                             no fallback of its own);
+     none at all          -> Send STAYS ENABLED. A plan-only turn is legitimate: the
+                             executors refuse the git actions themselves and say so
+                             (src/agent-executors.js), so the panel must not refuse the
+                             conversation - it must say what the turn cannot do. */
+const CHOOSE_CONNECTION_TEXT = "Choose the Git connection this conversation acts as";
+const NO_CONNECTION_TEXT = "No Git connection on this site; the Coder can plan but not push";
+
 export default function CoderPanel({ issueKey, accountId }) {
   const [cap, setCap] = useState(null);            // the getAgentCapability answer
   const [capState, setCapState] = useState("loading"); // loading | ok | refused | upgrade | unknown
@@ -222,6 +255,10 @@ export default function CoderPanel({ issueKey, accountId }) {
      under the NEXT turn's answer is a claim about work that turn did not do. */
   const [links, setLinks] = useState([]);
   const [error, setError] = useState("");
+  /* F-954 - the SITE origin, for the one real href the off card offers. Absent until the
+     context answers, and absent forever if it never does: a link built without it points
+     at the iframe's own sandbox, which is a link to nowhere. */
+  const [siteUrl, setSiteUrl] = useState("");
 
   const defaultThreadId = threadIdFor(accountId);
   const [threadId, setThreadId] = useState(defaultThreadId);
@@ -245,6 +282,16 @@ export default function CoderPanel({ issueKey, accountId }) {
   const pollRef = useRef(null);
   // Rule 4: the token of the turn currently allowed to write state.
   const genRef = useRef(0);
+
+  /* F-954 - the site origin, asked once. Wrapped, because a context read that throws must
+     cost the panel a link and never the panel. */
+  useEffect(() => {
+    let live = true;
+    Promise.resolve(view.getContext())
+      .then((c) => { if (live && c && c.siteUrl) setSiteUrl(String(c.siteUrl).replace(/\/+$/, "")); })
+      .catch(() => { /* no origin, no link: the sentence and the button stand alone */ });
+    return () => { live = false; };
+  }, []);
 
   // F-368: the remembered ids, read once per issue. Nothing stored is the normal first
   // open, and it renders as no list at all rather than an empty control.
@@ -356,7 +403,15 @@ export default function CoderPanel({ issueKey, accountId }) {
             .filter((o) => !!o.id);
         } catch (e) { return; }
       }
-      if (!cancelled && mountedRef.current) setConnections(rows);
+      if (cancelled || !mountedRef.current) return;
+      setConnections(rows);
+      /* F-954 - THE SOLE CONNECTION IS PRE-SELECTED (the F-902 rule, on this surface).
+         With exactly one there is nothing to choose between, so the panel chooses it and
+         the turn CARRIES the name it acts as rather than travelling as `undefined` and
+         landing on whatever the engine falls back to. Convenience in the composer only:
+         the runtime still has no fallback of its own, and a viewer who somehow already
+         holds a pick keeps it. */
+      if (rows.length === 1 && rows[0] && rows[0].id) setConnectionId((v) => v || String(rows[0].id));
     })();
     return () => { cancelled = true; };
   }, [capEnabled]);
@@ -539,6 +594,11 @@ export default function CoderPanel({ issueKey, accountId }) {
   const send = async () => {
     const text = draft.trim();
     if (!text || running) return;
+    /* F-954 - the same predicate the Send button is disabled by, asserted where the turn
+       is actually started: a keyboard or a stale render must not post a turn that has not
+       said which connection it acts as. A site with ONE connection has it pre-selected and
+       a site with NONE is a plan-only turn, so neither is stopped here. */
+    if (connections.length > 1 && !connectionId) return;
     const token = ++genRef.current;
     if (pollRef.current) clearTimeout(pollRef.current);
     setRunning(true); setError(""); setOutcome(null); setRounds(0); setLinks([]);
@@ -639,6 +699,29 @@ export default function CoderPanel({ issueKey, accountId }) {
     }
   };
 
+  /* F-954 - THE OFF CARD'S TWO DOORS, and who may be shown them.
+     `admin` is the role the capability resolver ALREADY computed to gate itself (it has to
+     read the caller's role to answer at all), so nothing extra is asked here. It is
+     deliberately read as `=== true`: an older backend that does not carry the flag, or a
+     read that answered without it, is treated as NOT an admin, and the reader gets the
+     sentence rather than a button that lands them on a page Jira will refuse. */
+  const isAdmin = !!(cap && cap.admin === true);
+  const manageUrl = siteUrl ? siteUrl + MANAGE_APPS_PATH : null;
+  /* The Settings TAB is not addressable by URL (AGENT_CAPABILITY_REASONS.link says the
+     same thing where it refuses to put one there), so the destination is the app's own
+     page plus a one-shot intent saying which tab to land on - the handoff config-view's
+     `openAdmin` already makes. Module navigation first; the deep link built from this
+     module's own localId ARI is the fallback, so no id is hardcoded. */
+  const openSettings = async () => {
+    try { await invoke("setUiIntent", { tab: "settings" }); } catch (e) { /* best-effort tab hint */ }
+    try { await router.navigate({ target: "module", moduleKey: "cognirunner-global-page" }); return; } catch (e) { /* fall through */ }
+    try {
+      const c = await view.getContext();
+      const appId = (String(c && c.localId).match(/\/extension\/([^/]+)\//) || [])[1];
+      if (appId && c && c.environmentId) await router.open(`/jira/apps/${appId}/${c.environmentId}`);
+    } catch (e) { /* both paths unavailable: do nothing rather than open a dead page */ }
+  };
+
   /* ------------------------------------------------------------------ rendering */
   if (capState === "loading") return <div className="coder-cap coder-cap-loading"><span className="spin-ring" /> <span className="coder-cap-title">{CAPABILITY_CHECKING_TITLE}</span></div>;
 
@@ -686,16 +769,54 @@ export default function CoderPanel({ issueKey, accountId }) {
         <span className="coder-chip coder-chip-off">Coder off</span>
         <p className="coder-cap-title">{copy.title}</p>
         <p className="coder-cap-remedy">{copy.remedy}</p>
-        {copy.link === "settings" && (
-          <p className="coder-cap-link">Apps &rsaquo; CogniRunner &rsaquo; Settings</p>
-        )}
+        {copy.link === "settings" && (isAdmin ? (
+          /* F-954 - THE TWO REAL DOORS, for the reader who can actually walk through them.
+             Same pair, same words and the same classes AgentOffState.jsx renders in the
+             admin panel: a button that hands the reader to the app's own page with the
+             Settings tab as the intent, and a real href to Jira's Manage apps opened
+             through router.open, because a sandboxed iframe cannot be trusted to follow
+             target="_blank" on its own. */
+          <div className="agent-off-actions coder-cap-links">
+            <button type="button" className="agent-off-btn" onClick={openSettings}>Open CogniRunner Settings</button>
+            {manageUrl && (
+              <a
+                className="agent-off-link"
+                href={manageUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => { e.preventDefault(); try { router.open(manageUrl); } catch (err) { /* the href is still the destination */ } }}
+              >
+                Upgrade in Manage apps
+              </a>
+            )}
+          </div>
+        ) : (
+          /* ...and for the reader who cannot. This panel's audience is a DEVELOPER on an
+             issue, who is usually not a Jira admin: a breadcrumb to a page they cannot
+             open is a dead end dressed as an instruction, so they get the sentence that
+             names what to ask for and who to ask. */
+          <p className="coder-cap-remedy coder-cap-ask">{ASK_ADMIN_TEXT}</p>
+        ))}
       </div>
     );
   }
 
   const connOptions = connections.map((c) => ({ value: c.id, label: c.label || c.id, meta: c.kind }));
   const showPicker = connOptions.length > 1;
+  /* F-954 - the turn is OWED a connection: there are several and none has been named. The
+     answer is a DISABLED Send with the sentence beside it, not a refusal after the send. */
+  const connectionOwed = showPicker && !connectionId;
+  // ...and the site that simply has none. That is a PLAN-ONLY turn, which is legitimate:
+  // the git executors refuse their own actions and say why, so Send stays available.
+  const noConnections = connOptions.length === 0;
   const busy = running || !!deciding;
+  /* F-954 - IS THIS CONSENT CARD THE DEGRADED ONE? Computed ONCE, from the same two facts
+     the preview itself renders from, so the buttons and the sentence above them can never
+     disagree about whether the step can be described. A ticket that outlived the page has
+     neither a sentence preview nor a single argument row. */
+  const previewSentence = ticket && typeof ticket.argsPreview === "string" ? ticket.argsPreview.trim() : "";
+  const ticketRows = previewSentence ? [] : previewRows(ticket && ticket.argsPreview);
+  const degradedTicket = !!ticket && !previewSentence && ticketRows.length === 0;
   // F-371: one turn is all it takes; after that the engine owns the flag.
   const simulationLocked = turns > 0;
   /* The chips: the threads this browser remembers, plus the one on screen and the default,
@@ -789,10 +910,9 @@ export default function CoderPanel({ issueKey, accountId }) {
           </div>
           {(() => {
             // F-374: an OBJECT preview becomes rows; a string one (or none) stays a sentence.
-            if (typeof ticket.argsPreview === "string" && ticket.argsPreview.trim()) {
-              return <p className="coder-consent-args">{ticket.argsPreview}</p>;
-            }
-            const rows = previewRows(ticket.argsPreview);
+            // F-954: both facts are decided above, so the buttons read the same verdict.
+            if (previewSentence) return <p className="coder-consent-args">{ticket.argsPreview}</p>;
+            const rows = ticketRows;
             if (!rows.length) return <p className="coder-consent-args">{noPreviewText(ticket.action)}</p>;
             return (
               <dl className="coder-consent-args coder-args">
@@ -808,11 +928,32 @@ export default function CoderPanel({ issueKey, accountId }) {
               </dl>
             );
           })()}
-          <div className="coder-consent-btns">
-            <button type="button" className={`coder-btn coder-btn-go${deciding === "confirm" ? " is-busy busy-solid" : ""}`} onClick={() => decide("confirm")} disabled={busy}>Confirm</button>
-            <button type="button" className="coder-btn coder-btn-alt" onClick={() => setChangeOpen((v) => !v)} disabled={busy}>Change</button>
-            <button type="button" className={`coder-btn coder-btn-alt${deciding === "skip" ? " is-busy" : ""}`} onClick={() => decide("skip")} disabled={busy}>Skip</button>
-          </div>
+          {/* F-954 - THE DEGRADED CARD LEADS WITH THE ANSWER ITS OWN SENTENCE GIVES.
+              `noPreviewText` above tells the reader that nothing has run and to SKIP and
+              ask again, because the step's arguments did not survive the reload and
+              nobody can see what the write would do. The row under it then offered
+              Confirm first, solid, in the affirmative hue. A card whose words say "skip"
+              and whose layout says "confirm" is the mislead: the reader who trusts the
+              buttons authorises a write that nothing on screen can describe.
+              So on the degraded card the PRIMARY is Skip, and Confirm is DISABLED with a
+              sentence saying what it needs - a control that says what happens, rather
+              than one that simply will not move. The full card is untouched. */}
+          {degradedTicket ? (
+            <>
+              <div className="coder-consent-btns">
+                <button type="button" className={`coder-btn coder-btn-go coder-consent-skip${deciding === "skip" ? " is-busy busy-solid" : ""}`} onClick={() => decide("skip")} disabled={busy}>Skip</button>
+                <button type="button" className="coder-btn coder-btn-alt coder-consent-change" onClick={() => setChangeOpen((v) => !v)} disabled={busy}>Change</button>
+                <button type="button" className="coder-btn coder-btn-alt coder-consent-confirm" disabled title={CONFIRM_NEEDS_PREVIEW}>Confirm</button>
+              </div>
+              <p className="coder-consent-why">{CONFIRM_NEEDS_PREVIEW}</p>
+            </>
+          ) : (
+            <div className="coder-consent-btns">
+              <button type="button" className={`coder-btn coder-btn-go coder-consent-confirm${deciding === "confirm" ? " is-busy busy-solid" : ""}`} onClick={() => decide("confirm")} disabled={busy}>Confirm</button>
+              <button type="button" className="coder-btn coder-btn-alt coder-consent-change" onClick={() => setChangeOpen((v) => !v)} disabled={busy}>Change</button>
+              <button type="button" className={`coder-btn coder-btn-alt coder-consent-skip${deciding === "skip" ? " is-busy" : ""}`} onClick={() => decide("skip")} disabled={busy}>Skip</button>
+            </div>
+          )}
           {changeOpen && (
             <div className="coder-change">
               <textarea
@@ -956,6 +1097,12 @@ export default function CoderPanel({ issueKey, accountId }) {
             />
           </div>
         )}
+        {/* F-954 - the two sentences the composer owes about the connection. The OWED one
+            is a refusal and wears the app's solid red with white text; the PLAN-ONLY one
+            is a statement of fact and stays the neutral secondary text, because nothing
+            is wrong and nothing is blocked. */}
+        {connectionOwed && <p className="coder-conn-owed" role="alert">{CHOOSE_CONNECTION_TEXT}</p>}
+        {noConnections && <p className="coder-conn-note">{NO_CONNECTION_TEXT}</p>}
         <div className="coder-composer-row">
           {/* "Dry run" is the word the owner uses for simulation everywhere else in the app. */}
           <button
@@ -970,7 +1117,7 @@ export default function CoderPanel({ issueKey, accountId }) {
             <span className="coder-toggle-box" aria-hidden="true" />
             Dry run
           </button>
-          <button type="button" className={`coder-btn coder-btn-go${running ? " is-busy busy-solid" : ""}`} onClick={send} disabled={busy || !draft.trim()}>Send</button>
+          <button type="button" className={`coder-btn coder-btn-go${running ? " is-busy busy-solid" : ""}`} onClick={send} disabled={busy || !draft.trim() || connectionOwed}>Send</button>
         </div>
 
         {/* F-371: the locked state says WHY in the same words the refusal would, and names

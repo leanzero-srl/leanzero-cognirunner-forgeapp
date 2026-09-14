@@ -204,26 +204,45 @@ export const fingerprintInput = (value) => (typeof value === "string" ? value : 
  * without serving the value. `null` and a missing row both fingerprint as `null`, never
  * as a hash of the string "null", so "absent" is one answer and not two.
  *
- * F-781 — WHY IT IS KEYED, AND NOT A BARE sha256. The old docblock argued that 64 bits is
- * "far too little to brute a key back out of". That is true of a PREIMAGE SEARCH and false
- * of the attack that matters: a GUESS CHECK. An unsalted hash is a verification oracle —
- * hash your candidate, compare, done — and the values behind these rows are not all
- * high-entropy. `probe:webhook:secret` is an HMAC secret a TESTER types (`s3cr3t`, the repo
- * name, today's date); a credential slot a tenant filled with a placeholder is the same
- * shape. A reader who holds the harness secret could read the fingerprint, run a wordlist
- * offline, recover the value and then forge a signed request at the UNAUTHENTICATED
- * `gitWebhookProbe` door — turning "masked" back into "recoverable" for exactly the values
- * a human chose. So the fingerprint is an HMAC under a key DERIVED FROM `HARNESS_SECRET`,
- * the env var this whole file is already gated on: no new secret to manage, no new storage
- * row, and an offline wordlist is useless without it.
+ * F-781 — WHY IT IS KEYED, AND NOT A BARE sha256. The docblock before F-781 argued that 64
+ * bits is "far too little to brute a key back out of". That is true of a PREIMAGE SEARCH and
+ * false of the attack that matters: a GUESS CHECK. An unsalted hash is a verification
+ * oracle — hash your candidate, compare, done — and the values behind these rows are not
+ * all high-entropy. `probe:webhook:secret` is an HMAC secret a TESTER types (`s3cr3t`, the
+ * repo name, today's date); a credential slot a tenant filled with a placeholder is the same
+ * shape. Recovering one turns "masked" back into "recoverable" for exactly the values a
+ * human chose, and `probe:webhook:secret` in particular signs requests at the
+ * UNAUTHENTICATED `gitWebhookProbe` door. So the fingerprint is an HMAC under a key DERIVED
+ * FROM `HARNESS_SECRET`, the env var this whole file is already gated on: no new secret to
+ * manage and no new storage row.
  *
- * WHAT THIS COSTS, STATED. A fingerprint is comparable ONLY within one installation and
- * ONLY while `HARNESS_SECRET` is unchanged. Rotate the secret and every previously
- * recorded fingerprint becomes incomparable — which is correct, because it is no longer
- * the same oracle. Every use this exists for compares fingerprints FROM THE SAME RUN
- * (`lib/key-slot-witness.mjs`, the stash/restore round trip, before-vs-after on one slot),
- * so equality semantics are untouched; what is lost is comparing a fingerprint in an old
- * evidence file against a fresh read, which was never a check anyone wrote.
+ * F-791 — AND HERE IS WHO THAT ACTUALLY STOPS, because the F-781 text named the wrong
+ * attacker and then claimed him as beaten. It said "a reader who holds the harness secret
+ * could run a wordlist… an offline wordlist is useless without it" — but the key IS derived
+ * from that same secret, so a holder of it can compute `HMAC(sha256(domain || HARNESS_SECRET),
+ * candidate)` and check guesses exactly as before. The keying does not touch that actor at
+ * all. THE CEILING, stated so nobody has to re-derive it:
+ *
+ *   · STOPPED: a holder of a LEAKED FINGERPRINT WITHOUT THE SECRET — a committed evidence
+ *     file, a pasted log, a run artefact in CI. For them the digest is now unlinkable to any
+ *     candidate, and that is the real and worthwhile gain F-781 bought. It is also the
+ *     likeliest exposure: fingerprints are written into evidence files by design, while
+ *     `HARNESS_SECRET` is not.
+ *   · NOT STOPPED: a holder of `HARNESS_SECRET` — which is every tester and every driver
+ *     env. Against that actor the mask is a speed bump, not a boundary: they cannot read the
+ *     value back through this door, but they CAN confirm a guess, so a low-entropy value is
+ *     recoverable by anyone already trusted with the bearer. The mitigation for that is not
+ *     cryptographic — it is "do not type a guessable secret into a slot whose fingerprint
+ *     this door will answer", and `HARNESS_SECRET` is a credential in its own right, not a
+ *     test fixture to be shared with anyone who wants to run a driver.
+ *   · COMPARABILITY, which is the same ceiling wearing its other face: a fingerprint is
+ *     comparable ONLY within one installation and ONLY while `HARNESS_SECRET` is unchanged.
+ *     Rotate the secret and every previously recorded fingerprint becomes incomparable —
+ *     correct, because it is no longer the same oracle, but it means a comparison across a
+ *     rotation answers "this changed" about a row nothing touched. Every use this exists for
+ *     compares fingerprints FROM THE SAME RUN (`lib/key-slot-witness.mjs`, the stash/restore
+ *     round trip, before-vs-after on one slot), so equality semantics are untouched; what is
+ *     lost is comparing a fingerprint in an old evidence file against a fresh read.
  *
  * The derivation is one HKDF-ish step rather than the raw secret as the key, so a
  * fingerprint can never be a distinguisher on `HARNESS_SECRET` itself.

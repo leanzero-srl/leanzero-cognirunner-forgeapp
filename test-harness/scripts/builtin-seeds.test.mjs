@@ -20,6 +20,7 @@ import { BUILTIN_DOCS, DOC_SEED_VERSION } from "../../src/shared/builtin-docs.js
 import { BUILTIN_SKILLS, SKILL_SEED_VERSION } from "../../src/shared/builtin-skills.js";
 import { KNOWN_API_MEMBERS } from "../../src/shared/sandbox-api-spec.js";
 import { SKILL_CATEGORIES, autoMatchSkills } from "../../src/skills.js";
+import { DOC_CONTENT_MAX_BYTES, KNOWLEDGE_BUDGET_BYTES, utf8Bytes } from "../../src/shared/registry-limits.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -30,9 +31,13 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } 
 //            operationTypes .slice(0,8); fetchSkillsBlock capBytes 24576.
 const NAME_MAX = 80, DESCRIPTION_MAX = 300, TAGS_MAX = 10, TAG_LEN_MAX = 30;
 const INSTRUCTIONS_MAX = 24000, EXAMPLES_MAX = 16000, RECORD_MAX_CHARS = 45000;
-const MAX_OP_TYPES = 8, SKILL_BLOCK_CAP = 24576;
-// index.js saveContextDoc: title.substring(0,100), content rejected over 200000.
-const DOC_TITLE_MAX = 100, DOC_CONTENT_MAX = 200000;
+const MAX_OP_TYPES = 8;
+// F-855: CITED, not retyped. `fetchSkillsBlock` defaults capBytes to this same export.
+const SKILL_BLOCK_CAP = KNOWLEDGE_BUDGET_BYTES.codegen.skills;
+// index.js saveContextDoc: title.substring(0,100). The CONTENT cap is BYTES of UTF-8 and
+// is IMPORTED (F-855), never retyped: a `200000` typed here with `.length` next to it is
+// the exact defect F-836 fixed in the app, reintroduced in the test that guards it.
+const DOC_TITLE_MAX = 100;
 // The valid step operation types (FunctionBlock OPERATION_TYPES + the distill JSON contract in index.js).
 const VALID_OP_TYPES = new Set(["work_item_query", "rest_api_internal", "rest_api_external", "confluence_api", "log_function"]);
 const KNOWN = new Set(KNOWN_API_MEMBERS);
@@ -69,8 +74,9 @@ ok(Array.isArray(BUILTIN_DOCS) && BUILTIN_DOCS.length > 0, `BUILTIN_DOCS is a no
 {
   const longTitle = BUILTIN_DOCS.filter((d) => d.title.length > DOC_TITLE_MAX);
   ok(longTitle.length === 0, `no doc title exceeds ${DOC_TITLE_MAX} (saveContextDoc truncates) (offenders: ${longTitle.map((d) => d.id).join(",")})`);
-  const badContent = BUILTIN_DOCS.filter((d) => d.content.length > DOC_CONTENT_MAX || d.content.length < 200);
-  ok(badContent.length === 0, `every doc content is non-trivial and <= ${DOC_CONTENT_MAX} (offenders: ${badContent.map((d) => `${d.id}:${d.content.length}`).join(",")})`);
+  // BYTES, the unit of the cap and the unit `seedBuiltinDocs` now stores as contentLength.
+  const badContent = BUILTIN_DOCS.filter((d) => utf8Bytes(d.content) > DOC_CONTENT_MAX_BYTES || d.content.length < 200);
+  ok(badContent.length === 0, `every doc content is non-trivial and <= ${DOC_CONTENT_MAX_BYTES} bytes (offenders: ${badContent.map((d) => `${d.id}:${utf8Bytes(d.content)}`).join(",")})`);
 }
 {
   // Curated content must not carry a RAW fence sentinel (defangFence runs at injection, but a raw

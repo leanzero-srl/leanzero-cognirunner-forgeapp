@@ -2451,5 +2451,65 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
   });
 }
 
+/* ════ F-883 — AN UNNAMED SURFACE IS ITS OWN REFUSAL, and every caller is accounted for ══
+ *
+ * `buildAgentGateContext` defaults `surface` to null, and the gate reads an unnamed
+ * surface restrictively (F-865). That is right, but it used to answer
+ * `wrong-surface:va` — a sentence about the RULE ("a listener has no ledger") for a fact
+ * about the CALL ("nobody said what this rule is"). The reason is now `surface-unset`.
+ *
+ * The assertion below pins WHO may leave it unset. Every `buildAgentGateContext(` caller
+ * in src/, at the time of writing:
+ *
+ *   surface NAMED at the call
+ *     src/listeners.js          — the git-event run site, surface "listener"
+ *     src/scheduled-jobs.js     — the job run site, surface "job"
+ *
+ *   surface left to the NORMALIZER, which stamps it (normalizeListener says "listener",
+ *   normalizeJob says "job" or "va") — these are SAVE doors, and the stamp is the point:
+ *     src/index.js x3           — saveListener / test-listener / saveJob resolvers
+ *     src/index.js (external)   — the REST test door, triggerSource "external"
+ *     src/rules-api.js          — restGateContext, the REST collections door
+ *
+ *   surfaces that hold NO surface-bound action, so unset is the honest answer:
+ *     src/async-handler.js      — resolveFreshCoderGate (the Coder mode)
+ *     src/coder-engine.js x2    — the Coder run sites
+ *
+ * A new caller changes the counts here and has to say which of the three it is.
+ */
+{
+  await check("F-883: an unnamed surface refuses with surface-unset, a wrong one still names the surface", () => {
+    const LEDGER = ["stage_reply"];
+    const base = { capability: true, products: ["jira"], savedByRole: "admin" };
+    assert.deepEqual(normalizeAllowedActions(LEDGER, base).refused, [{ id: "stage_reply", reason: "surface-unset" }]);
+    assert.deepEqual(normalizeAllowedActions(LEDGER, { ...base, surface: "listener" }).refused, [{ id: "stage_reply", reason: "wrong-surface:va" }]);
+    const va = normalizeAllowedActions(LEDGER, { ...base, surface: "va" });
+    assert.deepEqual(va.allowed, LEDGER, "the va surface keeps its ledger ids");
+    assert.deepEqual(va.refused, []);
+  });
+
+  await check("F-883: every buildAgentGateContext caller either names the surface or is a door whose normalizer stamps it", () => {
+    const EXPECTED = {
+      // file: [callers that NAME a surface, callers that leave it to the normalizer or hold no surface-bound action]
+      "listeners.js": [1, 0],
+      "scheduled-jobs.js": [1, 0],
+      "index.js": [0, 4],
+      "rules-api.js": [0, 1],
+      "async-handler.js": [0, 1],
+      "coder-engine.js": [0, 2],
+    };
+    const files = readdirSync(new URL("../../src/", import.meta.url)).filter((f) => f.endsWith(".js"));
+    const seen = {};
+    for (const f of files) {
+      if (f === "shared") continue;
+      const src = stripJsComments(readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8"));
+      const calls = src.split("\n").filter((ln) => ln.includes("buildAgentGateContext("));
+      if (!calls.length) continue;
+      seen[f] = [calls.filter((ln) => /surface:/.test(ln)).length, calls.filter((ln) => !/surface:/.test(ln)).length];
+    }
+    assert.deepEqual(seen, EXPECTED, "a new gate-context caller must be listed in the F-883 comment above and counted here");
+  });
+}
+
 console.log(`RULES RUNTIME REGRESSION: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

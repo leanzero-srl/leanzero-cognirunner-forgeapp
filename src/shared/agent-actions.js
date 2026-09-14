@@ -515,6 +515,9 @@ export const DEFAULT_AGENT_ROUNDS = 5;
  *                   Omitted ⇒ treated as NOT admin.
  *   surface       — WHICH KIND OF RULE this is: "listener", "job", "va". An action whose
  *                   namespace declares `requiresSurface` is kept only on that surface.
+ *                   Unset is refused as `surface-unset` (F-883), NOT as a wrong surface:
+ *                   the caller said nothing, which is a different fact from saying the
+ *                   wrong thing, and the admin reading the refusal needs to know which.
  *                   Omitted ⇒ no surface, and no surface refuses every surface-bound
  *                   action — the ledger namespace is the only one today.
  *
@@ -567,7 +570,15 @@ const gateActions = (ids, opts) => {
     // `capability` and `savedByRole` already take. Only the two normalizers that KNOW the
     // surface name it — `normalizeListener` says "listener", `normalizeJob` says "job",
     // or "va" when the row's own mode is a Virtual Administrator.
+    //
+    // F-883 - AN UNNAMED SURFACE HAS ITS OWN REASON. The verdict is the same refusal it
+    // has always been, but "wrong-surface:va" on a caller that named NO surface read as
+    // "this rule is a listener and a listener has no ledger", which is a statement about
+    // the rule when the truth is a statement about the CALL: nobody said where the rule
+    // lives. `surface-unset` says that, and keeps the wrong-surface sentence honest for
+    // the rules that really are on the wrong surface.
     const needsSurface = a.requiresSurface || ns.requiresSurface || null;
+    if (needsSurface && !surfaceId) { refused.push({ id: a.id, reason: "surface-unset" }); continue; }
     if (needsSurface && surfaceId !== String(needsSurface)) { refused.push({ id: a.id, reason: `wrong-surface:${needsSurface}` }); continue; }
     if (a.dangerous && external) { refused.push({ id: a.id, reason: "external-trigger" }); continue; }
     if (a.confirm && !admin) { refused.push({ id: a.id, reason: "needs-admin" }); continue; }
@@ -639,6 +650,7 @@ export const agentActionRefusalText = (reason) => {
   if (code.startsWith("missing-product:")) return `this site does not have ${code.slice("missing-product:".length)}`;
   if (code === "external-trigger") return "an externally triggered rule may not hold an action that approves code, blocks a merge or deploys";
   if (code === "needs-admin") return "this action writes to somebody's repository, so only an ADMIN may save a rule that holds it";
+  if (code === "surface-unset") return "this action is bound to one kind of rule and the save did not say which kind this is, so it is refused: the listener and job normalizers stamp the surface, a caller that builds its own gate context must set it";
   if (code === "wrong-surface:va") return "only a Virtual Administrator can use this action: it stages a reply or files a proposal in the agent ledger, and a listener or a scheduled job has no ledger and never speaks";
   if (code.startsWith("wrong-surface:")) return `this action only works on a ${code.slice("wrong-surface:".length)} rule`;
   return code || "not allowed";

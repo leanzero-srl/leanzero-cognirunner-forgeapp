@@ -18,7 +18,7 @@ import { normalizeJob, runJob, executeScheduledJobTask, scheduledTick } from "..
 import { JIRA_EVENTS } from "../../src/shared/jira-events.js";
 // F-842 — the SHIPPED gate predicate and context builder; this suite never re-implements
 // either, it only asks them what the run's gate allows.
-import { buildAgentGateContext, normalizeAllowedActions, toolDefinitionsFor } from "../../src/shared/agent-actions.js";
+import { buildAgentGateContext, normalizeAllowedActions, toolDefinitionsFor, AGENT_SURFACES, AGENT_SURFACE_IDS } from "../../src/shared/agent-actions.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { testStateTrigger } from "../../src/test-hook.js";
 // F-770 — the platform's key predicate, imported from its ONE home so these checks
@@ -2471,11 +2471,22 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
  *     src/index.js (external)   — the REST test door, triggerSource "external"
  *     src/rules-api.js          — restGateContext, the REST collections door
  *
- *   surfaces that hold NO surface-bound action, so unset is the honest answer:
- *     src/async-handler.js      — resolveFreshCoderGate (the Coder mode)
- *     src/coder-engine.js x2    — the Coder run sites
+ * F-890 CLOSED THE THIRD CATEGORY. It used to read "surfaces that hold no surface-bound
+ * action, so unset is the honest answer", and it held the three Coder sites
+ * (`resolveFreshCoderGate` in src/async-handler.js, the turn gate and the
+ * confirmation-time re-gate in src/coder-engine.js). "It holds none TODAY" is not the same
+ * statement as "it has no surface": the Coder is a surface, and the day an action declares
+ * `requiresSurface: "coder"` those three would have refused it on its own surface as
+ * `surface-unset` — the most misleading refusal available, since the sentence tells the
+ * admin the save did not say what kind of rule this is. All three now name
+ * `AGENT_SURFACES.CODER`:
  *
- * A new caller changes the counts here and has to say which of the three it is.
+ *   surface NAMED at the call (continued)
+ *     src/async-handler.js      — resolveFreshCoderGate, surface "coder"
+ *     src/coder-engine.js x2    — the Coder run sites, surface "coder"
+ *
+ * A new caller changes the counts here and has to say which of the TWO it is: it names a
+ * surface, or it is a save door whose normalizer stamps one. There is no third answer.
  */
 {
   await check("F-883: an unnamed surface refuses with surface-unset, a wrong one still names the surface", () => {
@@ -2495,8 +2506,8 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
       "scheduled-jobs.js": [1, 0],
       "index.js": [0, 4],
       "rules-api.js": [0, 1],
-      "async-handler.js": [0, 1],
-      "coder-engine.js": [0, 2],
+      "async-handler.js": [1, 0],
+      "coder-engine.js": [2, 0],
     };
     const files = readdirSync(new URL("../../src/", import.meta.url)).filter((f) => f.endsWith(".js"));
     const seen = {};
@@ -2508,6 +2519,32 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
       seen[f] = [calls.filter((ln) => /surface:/.test(ln)).length, calls.filter((ln) => !/surface:/.test(ln)).length];
     }
     assert.deepEqual(seen, EXPECTED, "a new gate-context caller must be listed in the F-883 comment above and counted here");
+  });
+
+  /* F-890 — the surface names come from ONE vocabulary, and the Coder is IN it. Three
+     literals at three Coder sites would have been the same defect one edit later. */
+  await check("F-890: every surface a gate context can carry is an AGENT_SURFACES entry, the Coder included", () => {
+    assert.deepEqual(AGENT_SURFACE_IDS.slice().sort(), ["coder", "job", "listener", "va"],
+      "the surface vocabulary is listener/job/va/coder");
+    assert.equal(AGENT_SURFACES.CODER, "coder");
+    // The ledger namespace's requiresSurface must BE one of them, or nothing can ever hold it.
+    assert.ok(AGENT_SURFACE_IDS.includes("va"), "the one surface-bound namespace names a surface in the vocabulary");
+    // A coder-bound action would be KEPT on the Coder surface and refused by NAME elsewhere,
+    // which is the whole difference this cut buys. Asserted through the shipped gate with a
+    // stand-in id is impossible (no coder-bound action exists yet), so assert the contract
+    // the three call sites now satisfy: they pass a surface, and it is the Coder's.
+    const src = (f) => stripJsComments(readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8"));
+    for (const f of ["async-handler.js", "coder-engine.js"]) {
+      for (const ln of src(f).split("\n").filter((l) => l.includes("buildAgentGateContext("))) {
+        assert.match(ln, /surface: AGENT_SURFACES\.CODER/, `${f}: a Coder gate context names the Coder surface from the vocabulary, not a literal`);
+      }
+    }
+    // …and the listener/job/va sites take theirs from the same vocabulary.
+    for (const [f, re] of [["listeners.js", /AGENT_SURFACES\.LISTENER/], ["scheduled-jobs.js", /AGENT_SURFACES\.(JOB|VA)/]]) {
+      for (const ln of src(f).split("\n").filter((l) => l.includes("surface:"))) {
+        assert.match(ln, re, `${f}: the surface comes from AGENT_SURFACES`);
+      }
+    }
   });
 }
 

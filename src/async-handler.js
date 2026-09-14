@@ -141,7 +141,7 @@ import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL
 // F-829 — the ONE gate predicate and the ONE refusal vocabulary, used here exactly as the
 // producer uses them. Nothing about capability is decided in this file; it only supplies
 // FRESH facts to the same three functions.
-import { buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText } from "./shared/agent-actions.js";
+import { buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText, AGENT_SURFACES } from "./shared/agent-actions.js";
 // F-884 — the arming-stamp default and the admin comparison have ONE home.
 import { DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
@@ -2198,7 +2198,11 @@ const resolveFreshCoderGate = async (p) => {
   const headless = isHeadlessTrigger(p.triggerSource) || p.headless === true;
   const savedByRole = p.savedByRole || DEFAULT_SAVED_BY_ROLE;
   const facts = await resolveFreshGateFacts() || {};
-  const gate = buildAgentGateContext({ ...facts, triggerSource: headless ? "external" : null, savedByRole });
+  // F-890 — the consumer's re-derivation is the CODER surface and names it, exactly as the
+  // engine's own gate does. Unnamed, it would answer `surface-unset` (F-883) for any future
+  // `requiresSurface: "coder"` action while the panel path allowed it: a gate whose verdict
+  // depends on which door called it, which is the defect the line above this one exists for.
+  const gate = buildAgentGateContext({ ...facts, triggerSource: headless ? "external" : null, savedByRole, surface: AGENT_SURFACES.CODER });
   const out = { facts, queuedFacts: p.gateFacts || null, allowed: null, refusal: null };
   if (!Array.isArray(p.allowedActions)) return out;
 

@@ -1961,11 +1961,12 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const buildGate = (facts) => new Function(
     "resolveFreshGateFacts", "buildAgentGateContext", "normalizeAllowedActions", "getAgentAction", "isHeadlessTrigger",
     // F-884 - the shipped arming-stamp default, imported by the consumer and therefore
-    // needed in scope for the eval'd slice.
-    "DEFAULT_SAVED_BY_ROLE",
+    // needed in scope for the eval'd slice. F-890 adds the surface vocabulary for the
+    // same reason: the consumer now NAMES the Coder surface on this gate.
+    "DEFAULT_SAVED_BY_ROLE", "AGENT_SURFACES",
     `return (${src});`,
   )(async () => facts, gateMod.buildAgentGateContext, gateMod.normalizeAllowedActions, gateMod.getAgentAction,
-    (s) => s === "postfunction" || s === "listener" || s === "external", ROLES.DEFAULT_SAVED_BY_ROLE);
+    (s) => s === "postfunction" || s === "listener" || s === "external", ROLES.DEFAULT_SAVED_BY_ROLE, gateMod.AGENT_SURFACES);
 
   // A `build` mode's payload: two writes and one read, already intersected with the
   // producer's (BYOK) verdict, armed by an ADMIN so the role arm cannot be the cause.

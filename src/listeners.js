@@ -40,7 +40,7 @@ import {
   isKnownEvent, getEvent, eventLabel, extractEventContext, changedFieldsOf, commentTextOf,
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
-import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, AGENT_SURFACES, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { knowledgeBudget, fieldGuideAudience, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText, normalizeGenerationMeta } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
 // F-884 — the arming-stamp vocabulary and its default live in ONE dependency-free home,
@@ -285,7 +285,7 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     // premade wizard and the import path each had to remember it, and the one that forgot
     // would be the hole. It rides ON the caller's gate rather than replacing it, so the
     // capability, product and role arms keep the answer the instance's facts gave them.
-    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), savedByRole: role, surface: "listener" }),
+    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), savedByRole: role, surface: AGENT_SURFACES.LISTENER }),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
     // Knowledge binding — ONE normalizer, shared with scheduled jobs (1.4 commit 13b).
     ...normalizeAgentKnowledge(a),
@@ -1459,11 +1459,11 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     // block a merge, deploy) is dropped whatever was saved. `savedByRole` comes from
     // the rule ROW, never from the delivery.
     const agentGate = gateFacts
-      // `surface: "listener"` (F-865) makes the RUN agree with the SAVE: a row saved
+      // `surface: AGENT_SURFACES.LISTENER` (F-865) makes the RUN agree with the SAVE: a row saved
       // before the surface flag existed may still hold a ledger action, and this is what
       // stops `toolDefinitionsFor` offering it. Stated rather than left to the null
       // default, because a reader must not have to know that null happens to refuse.
-      ? buildAgentGateContext({ ...gateFacts, triggerSource: "external", savedByRole: listener.savedByRole, surface: "listener" })
+      ? buildAgentGateContext({ ...gateFacts, triggerSource: "external", savedByRole: listener.savedByRole, surface: AGENT_SURFACES.LISTENER })
       : undefined;
     // Knowledge is built by the CALLER (1.4 commit 13b): only here do we know the rule's
     // binding and the run's project. Fail-open — see buildAgentKnowledge.
@@ -1481,7 +1481,7 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     // simulated" is how a simulated run makes a real commit. The assembler's own
     // refusal sentences ride on the map and the dispatcher prefers them.
     const runExecutors = executors || await assembleAgentExecutors({
-      surface: "listener", rule: listener, ctx, simulation: config.simulationMode === true,
+      surface: AGENT_SURFACES.LISTENER, rule: listener, ctx, simulation: config.simulationMode === true,
       log: (line) => knowledgeNotices.push(String(line)),
     });
     const r = await runAgentTask({

@@ -163,9 +163,41 @@ export const AGENT_ACTION_NAMESPACES = Object.freeze({
   // flag — the same precedence `agentActionNamespace` applies for dispatch. Were that
   // order reversed, every listener and job run would lose the one tool the loop needs
   // in order to end cleanly.
-  ledger: Object.freeze({ label: "Agent ledger", requiresCapability: null, requiresProduct: null, requiresSurface: "va", executor: "va-ledger-actions", reserved: false }),
+  ledger: Object.freeze({ label: "Agent ledger", requiresCapability: null, requiresProduct: null, requiresSurface: "va", /* AGENT_SURFACES.VA - declared above this table, so the literal stays here; the gate compares the two strings */ executor: "va-ledger-actions", reserved: false }),
 });
 export const AGENT_ACTION_NAMESPACE_IDS = Object.keys(AGENT_ACTION_NAMESPACES);
+
+/*
+ * F-890 — THE SURFACE VOCABULARY. Every kind of rule that can build a gate context.
+ *
+ * `requiresSurface` (F-865) and the `surface-unset` refusal (F-883) are both answered
+ * against a STRING that, until now, was typed at the call site: "listener" in
+ * src/listeners.js, "job"/"va" in src/scheduled-jobs.js, and NOTHING at the three Coder
+ * sites. A vocabulary nobody can enumerate is a vocabulary nobody can check, and the cost
+ * showed up as F-890: the Coder builds its gate with no surface at all, so the day any
+ * action declares `requiresSurface: "coder"` the Coder itself refuses it as
+ * `surface-unset` — a rule refused on its own surface, reported as "the save did not say
+ * which kind this is".
+ *
+ * THE CODER IS A SURFACE LIKE THE OTHERS, and this is the whole reason it needs naming:
+ * it is the one surface with a human watching (a chat thread on an issue), which is
+ * exactly the shape a future surface-bound action would be written for. It holds no
+ * surface-bound action TODAY — the ledger namespace is still the only one — so stamping
+ * it changes no verdict now. That is the point: the stamp is free while it is latent and
+ * expensive once it is not.
+ *
+ * Frozen and shared by reference, like the roster vocabulary it is modelled on.
+ */
+export const AGENT_SURFACES = Object.freeze({
+  LISTENER: "listener",
+  JOB: "job",
+  VA: "va",
+  CODER: "coder",
+});
+
+/** Every surface id, for the gate's own vocabulary checks and for the harness census. */
+export const AGENT_SURFACE_IDS = Object.freeze(Object.values(AGENT_SURFACES));
+
 
 const REPO = { type: "string", description: "Repository as owner/name (GitHub) or workspace/slug (Bitbucket). Must be one of the repositories the connection allows." };
 const PRNUM = { type: "integer", description: "Pull request number" };
@@ -513,7 +545,8 @@ export const DEFAULT_AGENT_ROUNDS = 5;
  *   savedByRole   — "admin" when an admin saved the rule. A `confirm` action on a headless
  *                   surface is kept only for an admin-saved rule; anything else is refused.
  *                   Omitted ⇒ treated as NOT admin.
- *   surface       — WHICH KIND OF RULE this is: "listener", "job", "va". An action whose
+ *   surface       — WHICH KIND OF RULE this is, one of `AGENT_SURFACES` (F-890):
+ *                   "listener", "job", "va", "coder". An action whose
  *                   namespace declares `requiresSurface` is kept only on that surface.
  *                   Unset is refused as `surface-unset` (F-883), NOT as a wrong surface:
  *                   the caller said nothing, which is a different fact from saying the

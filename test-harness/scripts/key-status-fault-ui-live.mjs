@@ -50,7 +50,7 @@ const PROVIDER = arg("provider", "openai");
  * iframe boot (the loop below waits up to 90s for the frame, and if it ever takes longer
  * than 60s the fault expires and the check FAILS LOUDLY rather than lingering armed). */
 const ARM_TTL_SECONDS = 60;
-const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), {
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), {
   faults: [`keyRead:${PROVIDER}`],
   maxSeconds: ARM_TTL_SECONDS,
   script: "key-status-fault-ui-live.mjs",

@@ -60,7 +60,9 @@
 
 import { requireEnvAck, forgeEnvId, ENV_NAMES } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
-import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+import { resolveFlipModel, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
+/* F-784 - the RESULT line, and what it must say when the run threw instead of finishing. */
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 /* F-752 — `envId` is NOT destructured: this driver's browser half is pinned to staging by
    construction (see STAGING_ENV below), so the settled row's id has no reader here, and a
@@ -150,6 +152,8 @@ let agentModelSlotBefore;      // `undefined` = never touched, so the finally mu
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
+/* F-784 - a throw must never be printed as "0 fail". The RESULT line is built from this too. */
+let crashed = null;
 const PASS = (s) => { passes++; console.log(`  PASS  ${s}`); };
 const FAIL = (s) => { fails++; console.log(`  FAIL  ${s}`); };
 const NV = (s) => { unproven++; console.log(`  N/V   ${s}`); };
@@ -332,7 +336,7 @@ async function main() {
   /* F-767 — a provider-slot precondition is N/V with its remedy named, never a FAIL that
      reads as a defect in the shadow door. The decision has one home; see the lib. */
   const capVerdict = judgeAgentCapability({ cap, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });
-  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  applyVerdict(capVerdict, { PASS, FAIL, NV });
   if (!capVerdict.proceed) return;
 
   /* ── STEP 1 — an agent with THREE shadow ticks ───────────────────────────── */
@@ -483,7 +487,7 @@ async function main() {
 }
 
 main()
-  .catch((e) => { console.error("\nDRIVER ERROR:", e && e.stack); process.exitCode = 1; })
+  .catch((e) => { crashed = e; console.error("\nDRIVER ERROR:", e && e.stack); process.exitCode = 1; })
   .finally(async () => {
     /* THE RESTORE IS AN ASSERTION. An agent left enabled on a live site, or a model slot
        left pointing somewhere this run put it, is damage — so both are re-read. */
@@ -506,7 +510,7 @@ main()
       console.log(`        ${ok ? "RESTORED" : "NOT RESTORED"}: ${AGENT_MODEL_SLOT} reads back ${JSON.stringify(back.value)} (was ${JSON.stringify(agentModelSlotBefore)})`);
       if (!ok) left.push(`${AGENT_MODEL_SLOT} still holds ${JSON.stringify(back.value)}`);
     }
-    console.log(`\nRESULT — ${passes} pass, ${fails} fail, ${unproven} not verified`);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed }));
     if (left.length) { console.error(`\nCLEANUP FAILED — ${left.join("; ")}`); process.exitCode = 1; }
-    if (fails) process.exitCode = 1;
+    process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;
   });

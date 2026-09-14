@@ -63,7 +63,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — `decideInstanceFlip` is imported for the SECOND half of the decision: which capability
    reasons this run may fix at all. The `needs-frontier-model` comparison below used to be spelled
    here, which is the same second-home defect F-776 closed for the flag and the verdict. */
-import { resolveFlipModel, judgeAgentCapability, decideInstanceFlip } from "../lib/agent-capability-precondition.mjs";
+import { resolveFlipModel, judgeAgentCapability, applyVerdict, decideInstanceFlip } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -208,7 +208,7 @@ async function main() {
   if (FLIP_MODEL && instanceFlip.blocked) {
     /* Off for something no model flip can fix: the lib's flag-less arm says so, with the remedy. */
     const blocked = judgeAgentCapability({ cap: cap0.body || {}, flipped: false, envName: ENV_NAME, frontier: FRONTIER });
-    ({ PASS, FAIL, NV }[blocked.verdict])(blocked.what);
+    applyVerdict(blocked, { PASS, FAIL, NV });
     return;
   }
   if (FLIP_MODEL && instanceFlip.flip) {
@@ -224,7 +224,7 @@ async function main() {
   /* F-767/F-776 - ONE home. A provider slot that never came on leaves the settle window
      UNPROVEN, with the remedy named; it is not a defect in the settle window. */
   const capVerdict = judgeAgentCapability({ cap: cap1.body || {}, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });
-  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  applyVerdict(capVerdict, { PASS, FAIL, NV });
   if (!capVerdict.proceed) return;
 
   const cBefore = await commentTotal();

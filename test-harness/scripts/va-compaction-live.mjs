@@ -64,7 +64,9 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { readKeySlotWitness, describeKeySlot, sameKeySlot } from "../lib/key-slot-witness.mjs";
 /* F-767/F-776 - the ONE home of "should this run flip the agent model slot", and of what a
    capability that is off MEANS: a precondition, never a defect in compaction. */
-import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+import { resolveFlipModel, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
+/* F-784 - the RESULT line, and what it must say when the run threw instead of finishing. */
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "memories", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -116,6 +118,8 @@ let keySlotBefore = null;     // the witness read BEFORE the stash — the ident
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
+/* F-784 - a throw must never be printed as "0 fail". The RESULT line is built from this too. */
+let crashed = null;
 const PASS = (s) => { passes++; console.log(`  PASS  ${s}`); };
 const FAIL = (s) => { fails++; console.log(`  FAIL  ${s}`); };
 const NV = (s) => { unproven++; console.log(`  N/V   ${s}`); };
@@ -276,7 +280,7 @@ async function main() {
   /* F-767/F-776 - a provider-slot precondition that did not hold leaves everything below it
      UNPROVEN, and the sentence names the remedy. One home; the reasoning is in the lib. */
   const capVerdict = judgeAgentCapability({ cap, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });
-  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  applyVerdict(capVerdict, { PASS, FAIL, NV });
   if (!capVerdict.proceed) return;
 
   console.log("\nSTEP 0 — create the fixture agent (500 shadow ticks: it must never post)");
@@ -520,7 +524,7 @@ async function main() {
 }
 
 main()
-  .catch((e) => { console.error("\nDRIVER ERROR:", e && e.stack); process.exitCode = 1; })
+  .catch((e) => { crashed = e; console.error("\nDRIVER ERROR:", e && e.stack); process.exitCode = 1; })
   .finally(async () => {
     const left = [];
     /* ── F-769 — THE CREDENTIAL COMES BACK FIRST, BY NAME ────────────────────────
@@ -566,7 +570,7 @@ main()
       console.log(`        va_compact_backoff:${createdJobId} after the delete: ${bo.ok ? (bo.value === null ? "gone" : "STILL PRESENT") : "unreadable"}`);
       if (bo.ok && bo.value !== null) left.push(`va_compact_backoff:${createdJobId} survived the delete`);
     }
-    console.log(`\nRESULT — ${passes} pass, ${fails} fail, ${unproven} not verified`);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed }));
     if (left.length) { console.error(`\nCLEANUP FAILED — ${left.join("; ")}`); process.exitCode = 1; }
-    if (fails) process.exitCode = 1;
+    process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;
   });

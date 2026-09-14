@@ -330,6 +330,16 @@ export function preconditionViolations(src) {
      va-rest-doors-live's subject, and banning the word would have forced it to lie. */
   if (/!==\s*["'`]needs-frontier-model/.test(code))
     out.push("decides the flip by comparing the capability reason itself");
+  /* F-784 — AND THE DISPATCH. `judgeAgentCapability` owned the verdict; every caller still
+     owned the TRANSLATION from it to a reporter, spelled `({ PASS, FAIL, NV }[row.verdict])(…)`
+     in eight places. The lib says `"N/V"`; that map's third key is `NV`; so the lookup was
+     `undefined` and every incapable-instance run threw a TypeError under a `0 fail` RESULT
+     line. RULE 4/4b/4c could not see it — they compare SPELLINGS, and the two spellings were
+     each individually correct. `applyVerdict` is the one dispatch, and this is the rule that
+     keeps the ninth author from writing a ninth map. The bracket is required by the pattern:
+     `applyVerdict(row, { PASS, FAIL, NV })` is the FIXED shape and must stay clean. */
+  if (/\{\s*PASS\s*,\s*FAIL\s*,\s*NV\s*\}\s*\[/.test(code))
+    out.push("builds its own verdict-to-reporter map instead of calling applyVerdict");
   return out;
 }
 {
@@ -405,12 +415,28 @@ export function preconditionViolations(src) {
     'import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";',
     'const flip = decideInstanceFlip({ cap: cap0.body || {}, frontier: FRONTIER, envName: ENV_NAME });',
     'const capVerdict = judgeAgentCapability({ cap: cap1 || {}, flipped: flip.flip, envName: ENV_NAME, frontier: FRONTIER });',
-    '({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);',
+    /* F-784 — this line used to read `({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);`
+       and this control asserted it CLEAN, which it was, all the way through the eight drivers
+       that crashed on it. The control now carries the FIXED dispatch. */
+    'applyVerdict(capVerdict, { PASS, FAIL, NV });',
   ].join("\n");
   ok(preconditionViolations(f782fixed).length === 0,
-    "NEGATIVE CONTROL (F-782): the converged flag-less shape — decision and verdict both taken from the lib — is clean");
+    "NEGATIVE CONTROL (F-782): the converged flag-less shape — decision, verdict and dispatch all taken from the lib — is clean");
   ok(preconditionViolations('check(`${ENV_NAME} starts on the Coder edition`, before.reason === "needs-frontier-model");').length === 0,
     "NEGATIVE CONTROL (F-782): the EQUALITY form is untouched — coder-skills-live asserts the tenant's starting and restored reason, which is its SUBJECT, and a rule that banned the word would have forced it to lie");
+  /* F-784 POSITIVE CONTROL — the line as it stood in all eight places. It was CLEAN under
+     RULE 4/4b/4c (it calls the lib, it writes no sentence, it reads no flag) and it threw a
+     TypeError on every incapable instance. That combination is the whole argument for the
+     new arm: a rule that reads spellings cannot catch two correct spellings that disagree. */
+  ok(preconditionViolations('({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);')
+      .includes("builds its own verdict-to-reporter map instead of calling applyVerdict"),
+    "POSITIVE CONTROL (F-784): the crashing dispatch line, verbatim from the eight call sites");
+  ok(preconditionViolations('({ PASS, FAIL, NV }[blocked.verdict])(blocked.what);').length === 1
+      && preconditionViolations('({PASS,FAIL,NV}[v.verdict])(v.what, { cap });').length === 1,
+    "…in both of its variants: a different row name and the no-space/with-detail form, because the rule must police the SHAPE and not one file's whitespace");
+  ok(preconditionViolations('applyVerdict(capVerdict, { PASS, FAIL, NV });').length === 0
+      && preconditionViolations('applyVerdict(capVerdict, { PASS, FAIL, NV }, { cap });').length === 0,
+    "NEGATIVE CONTROL (F-784): the FIXED shape is clean — the reporters are still named in the driver, which is right: they are the driver's counters, and only the lookup moved");
   ok(preconditionViolations("/* on DEV the capability is still off, and capability is off for needs-frontier-model */\n").length === 0,
     "NEGATIVE CONTROL (F-782): PROSE may say all of it — six drivers' docblocks explain this precondition and must keep being able to");
 }

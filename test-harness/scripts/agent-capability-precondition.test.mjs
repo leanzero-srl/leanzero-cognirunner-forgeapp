@@ -23,7 +23,7 @@
 
 import {
   resolveFlipModel, judgeAgentCapability, FLIP_MODEL_DEFAULT_ENVS,
-  decideInstanceFlip, FLIPPABLE_REASON,
+  decideInstanceFlip, FLIPPABLE_REASON, applyVerdict, VERDICT_REPORTERS,
 } from "../lib/agent-capability-precondition.mjs";
 
 let pass = 0, fail = 0;
@@ -155,6 +155,91 @@ console.log("\n7 · judgeAgentCapability — THE FLAG-LESS ARM, BOTH WAYS (F-782
   const flagged = judgeAgentCapability({ cap: { enabled: false, reason: "needs-frontier-model" }, flipModel: false, flipped: true, envName: "staging", frontier: "m" });
   ok(/--flip-model/.test(flagged.what),
     "a caller that passes flipModel gets the FLAGGED sentence even with `flipped` set — the operator-flag drivers are unchanged by F-782, which is the arm that must not have moved");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * 8 · applyVerdict — THE DISPATCH IS EXECUTED, NOT READ (F-784)
+ *
+ * Everything above this line asserted STRINGS: that the lib says "N/V", that a driver's call
+ * line contains the right words. Both were true the whole time F-784 was live, because the
+ * defect was not in either string — it was in the TRANSLATION between them. The lib returned
+ * `"N/V"`, every driver looked it up in a map whose third key was `NV`, and `undefined(...)`
+ * threw on every incapable instance.
+ *
+ * So this section RUNS the dispatch, for every verdict the lib can produce, with reporters
+ * that count. Nothing here reads a source file.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+console.log("\n8 · applyVerdict — EVERY VERDICT DISPATCHES TO EXACTLY ONE REPORTER (F-784)");
+{
+  const spy = () => {
+    const n = { PASS: 0, FAIL: 0, NV: 0 };
+    const seen = { PASS: [], FAIL: [], NV: [] };
+    const mk = (k) => (s, d) => { n[k] += 1; seen[k].push([s, d]); };
+    return { n, seen, reporters: { PASS: mk("PASS"), FAIL: mk("FAIL"), NV: mk("NV") } };
+  };
+  const total = (n) => n.PASS + n.FAIL + n.NV;
+
+  /* THE VERDICTS THE LIB REALLY RETURNS, harvested from judgeAgentCapability itself rather
+     than typed out here: a verdict this test does not know about is exactly the verdict that
+     would crash a driver, so the list must come from the code under test. */
+  const produced = new Set([
+    judgeAgentCapability({ cap: { enabled: true, edition: "coder", provider: "atlassian", agentModel: "m" }, flipModel: true }).verdict,
+    judgeAgentCapability({ cap: { enabled: false, reason: "needs-frontier-model" }, flipModel: false, envName: "dev", frontier: "m" }).verdict,
+    judgeAgentCapability({ cap: { enabled: false, reason: "needs-frontier-model" }, flipModel: true, envName: "staging", frontier: "m" }).verdict,
+    judgeAgentCapability({ cap: { enabled: false, reason: "needs-coder-edition" }, flipped: false, envName: "dev", frontier: "m" }).verdict,
+    judgeAgentCapability({ cap: { enabled: false, reason: "needs-frontier-model" }, flipped: true, envName: "staging", frontier: "m" }).verdict,
+  ]);
+  for (const v of produced) {
+    ok(Object.prototype.hasOwnProperty.call(VERDICT_REPORTERS, v),
+      `the verdict ${JSON.stringify(v)} that judgeAgentCapability really returns has a reporter in VERDICT_REPORTERS — this is the F-784 assertion: the lib produced "N/V" and nothing in the codebase mapped it`);
+  }
+  ok(produced.has("N/V") && produced.has("PASS"),
+    "…and the harvest really did reach both the PASS arm and the N/V arm, so the loop above is not vacuously green over a one-element set");
+
+  /* Every verdict in the vocabulary, dispatched. */
+  for (const verdict of Object.keys(VERDICT_REPORTERS)) {
+    const expected = VERDICT_REPORTERS[verdict];
+    const s = spy();
+    const fired = applyVerdict({ verdict, what: `the ${verdict} sentence` }, s.reporters);
+    ok(fired === expected && s.n[expected] === 1,
+      `applyVerdict(${JSON.stringify(verdict)}) fires ${expected}() — the lookup is EXECUTED here, which is the one thing the old string assertions could not do`);
+    ok(total(s.n) === 1,
+      `…and fires it EXACTLY ONCE, nothing else: ${JSON.stringify(s.n)}`);
+    ok(s.seen[expected][0][0] === `the ${verdict} sentence`,
+      "…and hands the reporter the row's `what`, so the remedy sentence survives the dispatch");
+    ok(s.seen[expected][0][1] === undefined,
+      "…with NO second argument when no detail was passed, because three drivers push a truthy second argument straight into evidence.json");
+  }
+
+  /* The N/V row specifically, end to end from judge to reporter — the exact run F-784 killed. */
+  {
+    const s = spy();
+    const row = judgeAgentCapability({ cap: { enabled: false, reason: "needs-frontier-model" }, flipModel: false, envName: "staging", frontier: "m" });
+    applyVerdict(row, s.reporters);
+    ok(s.n.NV === 1 && s.n.FAIL === 0 && s.n.PASS === 0,
+      "the WHOLE F-784 path: an incapable instance goes judgeAgentCapability -> applyVerdict -> NV() without throwing, and is not counted as a failure");
+  }
+
+  /* The detail arm the three evidence-writing drivers use. */
+  {
+    const s = spy();
+    applyVerdict({ verdict: "N/V", what: "w" }, s.reporters, { cap: { enabled: false } });
+    ok(s.seen.NV[0][1] && s.seen.NV[0][1].cap.enabled === false,
+      "a detail argument reaches the reporter unchanged — va-receipt-copy and va-settling-carrier put it in evidence.json");
+  }
+
+  /* The two refusals. Both must NAME the problem: a dispatch that silently does nothing is
+     how a verdict goes unreported, and an unreported verdict still leaves a 0-fail line. */
+  {
+    let threw = null;
+    try { applyVerdict({ verdict: "NV", what: "w" }, spy().reporters); } catch (e) { threw = e; }
+    ok(threw && /unknown verdict/.test(threw.message) && /"N\/V"/.test(threw.message),
+      'an UNKNOWN verdict throws by name and lists the real vocabulary — "NV" is the spelling the eight driver maps used, so the nearest miss is the one asserted');
+    let threw2 = null;
+    try { applyVerdict({ verdict: "N/V", what: "w" }, { PASS: () => {}, FAIL: () => {} }); } catch (e) { threw2 = e; }
+    ok(threw2 && /needs a NV\(\) reporter/.test(threw2.message),
+      "a MISSING reporter throws naming the one it wanted, instead of the bare TypeError that made F-784 read as a product crash");
+  }
 }
 
 console.log(`\nagent-capability-precondition: ${pass} passed, ${fail} failed`);

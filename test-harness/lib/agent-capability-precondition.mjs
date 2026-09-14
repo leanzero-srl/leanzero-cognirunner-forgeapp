@@ -208,3 +208,70 @@ function judgeFlagless({ c, flipped, envName, frontier, slot }) {
     what: `the instance STILL cannot hold an agent (${reason}) after this run pointed the ${what} at "${frontier}" on ${envName}, so nothing below this point ran. Not graded FAIL because the door under test was never reached. REMEDY: confirm the slot really holds that model — the provider/model config is TTL-cached ~30s, so a capability read taken sooner than 35s after the write still answers with the OLD model; a slot that does hold it beside a capability that still says no is a finding in its own right, and va-capability-gate-live is where it is argued.`,
   };
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-784 — THE VERDICT AND ITS DISPATCH MUST BE ONE DECISION.
+ *
+ * F-767 gave the precondition a verdict and F-776 gave it one home — and then every caller
+ * wrote the dispatch itself, in the same handful of characters:
+ *
+ *     ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+ *
+ * The lib spells the third verdict `"N/V"`. The map's third key is `NV`. So the lookup is
+ * `undefined`, and EVERY incapable-instance run — the exact run F-767 exists to serve —
+ * throws `TypeError: ... is not a function` on the line that was supposed to say "not
+ * verified, here is the remedy". Eight call sites in seven drivers, all identical.
+ *
+ * The offline suites did not see it because they asserted the lib's STRING and the caller's
+ * LINE OF TEXT, never the DISPATCH. A rule that compares two spellings cannot notice that
+ * they disagree; only executing the lookup can. So `agent-capability-precondition.test.mjs`
+ * now runs `applyVerdict` for every verdict this file can return, with counting reporters,
+ * and asserts exactly one fires.
+ *
+ * WHY A FUNCTION AND NOT A RENAME. Renaming `"N/V"` to `"NV"` would have fixed today's eight
+ * copies and left the ninth author free to invent a ninth map. The verdict vocabulary and the
+ * translation from it to a reporter are the same decision, so they live in the same file; a
+ * verdict added here can never again be a verdict nobody dispatches, because the lookup is
+ * here too and it throws by name on anything it does not know.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Every verdict `judgeAgentCapability` can return, mapped to the reporter that must run for it.
+ * The KEYS are this file's vocabulary; the VALUES are the drivers' three reporter names.
+ */
+export const VERDICT_REPORTERS = Object.freeze({ PASS: "PASS", FAIL: "FAIL", "N/V": "NV" });
+
+/**
+ * Report one judged row through the caller's reporters. THE ONLY supported dispatch.
+ *
+ * @param {{verdict: string, what: string}|string} row — a `judgeAgentCapability` result.
+ * @param {{PASS: Function, FAIL: Function, NV: Function}} reporters — the driver's three.
+ * @param {any} [detail] — optional second argument for the reporters that take one
+ *        (`va-receipt-copy`, `va-settling-carrier`, `va-recreate-settle` push it into evidence).
+ * @returns {string} the reporter name that fired, so a caller or a test can assert on it.
+ *
+ * Throws — by name, with the known vocabulary listed — rather than returning undefined: a
+ * dispatch that silently does nothing is how a verdict goes unreported, and a verdict that is
+ * never reported is worse than a crash, because the RESULT line still says zero failures.
+ */
+export function applyVerdict(row, reporters, detail) {
+  const verdict = row && typeof row === "object" ? row.verdict : row;
+  const what = row && typeof row === "object" ? row.what : undefined;
+  const key = VERDICT_REPORTERS[verdict];
+  if (!key) {
+    throw new Error(
+      `applyVerdict: unknown verdict ${JSON.stringify(verdict)} — this lib returns only ` +
+      `${Object.keys(VERDICT_REPORTERS).map((v) => JSON.stringify(v)).join(", ")}`
+    );
+  }
+  const fn = reporters && reporters[key];
+  if (typeof fn !== "function") {
+    throw new Error(
+      `applyVerdict: the verdict ${JSON.stringify(verdict)} needs a ${key}() reporter and none was given ` +
+      `(got ${reporters ? Object.keys(reporters).join(", ") || "an empty object" : String(reporters)})`
+    );
+  }
+  if (detail === undefined) fn(what);
+  else fn(what, detail);
+  return key;
+}

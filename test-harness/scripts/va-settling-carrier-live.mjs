@@ -35,7 +35,9 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
-import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
+/* F-784 - the RESULT line, and what it must say when the run threw instead of finishing. */
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -56,6 +58,8 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
+/* F-784 - a throw must never be printed as "0 fail". The RESULT line is built from this too. */
+let crashed = null;
 const ev = { at: new Date().toISOString(), env: ENV_NAME, checks: [] };
 const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
@@ -147,7 +151,7 @@ async function main() {
     /* F-767/F-782 — ONE home for the verdict: a provider slot that never came on leaves the
        settling carrier UNPROVEN with the remedy named, not FAILED. */
     const capVerdict = judgeAgentCapability({ cap: cap1 || {}, flipped: flip.flip, envName: ENV_NAME, frontier: FRONTIER });
-    ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what, { cap: cap1 });
+    applyVerdict(capVerdict, { PASS, FAIL, NV }, { cap: cap1 });
     if (!capVerdict.proceed) return;
 
     const cBefore = await commentTotal();
@@ -254,6 +258,12 @@ async function main() {
     const cAfter = await commentTotal();
     if (cAfter.comments === cBefore.comments) PASS("no comment was posted anywhere in the project", { before: cBefore.comments, after: cAfter.comments });
     else FAIL("the project's comment total moved", { before: cBefore, after: cAfter });
+  } catch (e) {
+    /* F-784 - the print below lives in the finally so the RESTORE block can report its own
+       residue after it, which means it prints on the crash path too. Catching here is what
+       lets that line SAY it crashed instead of reporting the counters the throw froze. */
+    crashed = e;
+    console.error("\nDRIVER ERROR:", e && e.stack);
   } finally {
     console.log("\nRESTORE");
     if (agentId && !KEEP) {
@@ -275,9 +285,9 @@ async function main() {
       else FAIL(`${AGENT_MODEL_SLOT} was NOT restored`, { now: back.value === null ? "EMPTY" : "(a model id)" });
     }
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
-    console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
   }
 }
 
 await main();
-process.exit(fails === 0 ? 0 : 1);
+process.exit(resultExitCode({ fails, crashed }));

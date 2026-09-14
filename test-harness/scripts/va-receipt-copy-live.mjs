@@ -44,7 +44,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
-import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
 
 /* F-714 — the HOOK half and the BROWSER half must come from ONE guard row. This driver
    used to take `hookUrl` from `--env` while pinning `ADMIN_PAGE` to `forgeEnvId("staging")`,
@@ -183,7 +183,7 @@ async function main() {
   /* F-767/F-782 — ONE home for the verdict: a slot that never came on leaves the RECEIPT COPY
      unproven with the remedy named, not FAILED. */
   const capVerdict = judgeAgentCapability({ cap: cap || {}, flipped: flip.flip, envName: ENV_NAME, frontier: FRONTIER });
-  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what, { cap });
+  applyVerdict(capVerdict, { PASS, FAIL, NV }, { cap });
   if (!capVerdict.proceed) return;
   const cBefore = await commentTotal();
 

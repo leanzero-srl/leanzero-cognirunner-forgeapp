@@ -34,7 +34,9 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-776 - the flip decision and the capability verdict have ONE home. This driver used to
    read neither: it flipped only on an explicit flag and then let saveScheduledJob fail,
    so an incapable instance was reported as a broken CREATE. */
-import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+import { resolveFlipModel, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
+/* F-784 - the RESULT line, and what it must say when the run threw instead of finishing. */
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "memories", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -62,6 +64,8 @@ let slotBefore;
 let createdJobId = null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
+/* F-784 - a throw must never be printed as "0 fail". The RESULT line is built from this too. */
+let crashed = null;
 const PASS = (s) => { passes++; console.log(`  PASS  ${s}`); };
 const FAIL = (s) => { fails++; console.log(`  FAIL  ${s}`); };
 const NV = (s) => { unproven++; console.log(`  N/V   ${s}`); };
@@ -162,7 +166,7 @@ async function main() {
   const cap = (await invoke("getAgentCapability", {})).body || {};
   info(`getAgentCapability -> enabled=${cap.enabled} reason="${cap.reason}" edition=${cap.edition} provider=${cap.provider} agentModel=${cap.agentModel}`);
   const capVerdict = judgeAgentCapability({ cap, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });
-  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  applyVerdict(capVerdict, { PASS, FAIL, NV });
   if (!capVerdict.proceed) return;
   const created = await invoke("saveScheduledJob", { job: { name: `Pinned survival ${Date.now().toString(36)}`, mode: "va", enabled: true, va: vaRecord() } });
   if (!(created.body && created.body.success)) { FAIL(`saveScheduledJob refused: ${JSON.stringify(created.body).slice(0, 300)}`); return; }
@@ -237,7 +241,7 @@ async function main() {
 }
 
 main()
-  .catch((e) => { console.error("\nDRIVER ERROR:", e && e.stack); process.exitCode = 1; })
+  .catch((e) => { crashed = e; console.error("\nDRIVER ERROR:", e && e.stack); process.exitCode = 1; })
   .finally(async () => {
     const left = [];
     if (createdJobId) {
@@ -254,7 +258,7 @@ main()
       console.log(`        ${ok ? "RESTORED" : "NOT RESTORED"}: ${AGENT_MODEL_SLOT}`);
       if (!ok) left.push(`${AGENT_MODEL_SLOT} not restored`);
     }
-    console.log(`\nRESULT — ${passes} pass, ${fails} fail, ${unproven} not verified`);
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed }));
     if (left.length) { console.error(`\nCLEANUP FAILED — ${left.join("; ")}`); process.exitCode = 1; }
-    if (fails) process.exitCode = 1;
+    process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;
   });

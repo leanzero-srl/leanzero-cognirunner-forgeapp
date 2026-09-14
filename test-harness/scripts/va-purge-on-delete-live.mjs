@@ -39,7 +39,7 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
-import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -163,7 +163,7 @@ async function main() {
   /* F-767/F-782 — ONE home for the verdict. A provider slot that never came on leaves F-469's
      item arm UNPROVEN, with the remedy named; it is not a defect in the purge under test. */
   const capVerdict = judgeAgentCapability({ cap: cap1 || {}, flipped: flip.flip, envName: ENV_NAME, frontier: FRONTIER });
-  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  applyVerdict(capVerdict, { PASS, FAIL, NV });
   if (!capVerdict.proceed) return;
 
   /* ── the baseline ───────────────────────────────────────────────────────── */

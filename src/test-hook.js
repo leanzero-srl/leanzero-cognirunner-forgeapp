@@ -395,6 +395,99 @@ const kvWriteAllowList = () => {
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-639 — THE KNOWLEDGE FAMILIES: WHICH ROWS A DRIVER MAY SNAPSHOT AND PUT BACK.
+ *
+ * The `invokeResolver` allow-list admits six MUTATORS — `saveSkill`, `deleteSkill`,
+ * `deleteContextDoc`, `saveListener`, `deleteScheduledJob`, `addMemory` — and the only
+ * thing that ever put the tenant back the way it was found is a SENTENCE in the docblock
+ * above them: "a driver that calls them must restore what it changed, in the same run, in
+ * a `finally`". A duty written in prose is discharged by whoever remembers it. A driver
+ * that deletes a builtin doc and then throws before its `finally` — or is killed, or
+ * times out mid-run — leaves the tenant changed, and nothing in this file notices.
+ *
+ * So this is the same answer F-769 gave the credential problem, aimed at the knowledge
+ * store: the rows move SERVER-SIDE, by NAME, and the restore is a lever rather than a
+ * promise. `knowledgeSnapshot` copies the rows a driver names, `knowledgeRestore` puts
+ * them back. Neither door ever puts a row's CONTENT on the wire in either direction —
+ * a skill body is the tenant's own writing, and the read ceiling's rule ("what a door
+ * says about a stored row is `present`, a fingerprint, and nothing else") is not
+ * suspended because the row happens not to be a credential.
+ *
+ * WHICH KEYS, and where each NAME comes from (the module that owns it, never retyped —
+ * this is the rule the memory and knowledge-pack slots already follow at `kvSet`):
+ *   skill_repo_index / skill_repo:{id} / skill_repo_seed_meta   — src/skills.js
+ *   pf_memories / the settings row / the store-full marker      — src/memories.js
+ *   listener_index / listener:{id}                              — src/listeners.js
+ *   job_index / job:{id} / job_sched                            — src/scheduled-jobs.js
+ *   doc_repo_index / doc_repo:{id} / doc_repo_seed_meta         — src/index.js, RETYPED
+ *
+ * THE LAST LINE IS A DEFECT THIS DOOR CANNOT FIX, SO IT IS NAMED. `DOC_REPO_INDEX_KEY`,
+ * `DOC_REPO_PREFIX` and `DOC_SEED_META_KEY` are module-private consts in src/index.js and
+ * are not exported, so there is no binding to import — and index.js already carries a
+ * SECOND home for the prefix itself (`storage.get(\`doc_repo:${id}\`)` at its doc-fetch
+ * site, nowhere near the consts). Retyping them here makes a third. The fix is to export
+ * the three from index.js (or move them to a shared module) and have all three sites
+ * import them; that belongs to whoever owns index.js, not to this door.
+ *
+ * WHAT IS DELIBERATELY OUT. Every credential family (`isCredentialKey`) — a knowledge
+ * snapshot is not a way to move a secret, and `kvStash` already exists for the one case
+ * that legitimately needs it. The registry, the execution logs, `pf_code:*` and the
+ * provider slots: none of the six mutators touch them, and a snapshot door is bounded by
+ * what the drivers it exists for actually change, not by what would be convenient.
+ *
+ * Async because the names are IMPORTED, and this file imports a backend module the way
+ * every other harness path in it does — lazily, inside the request — so production loads
+ * none of it.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+export const knowledgeKeyFamilies = async () => {
+  const [skills, listeners, jobs] = await Promise.all([
+    import("./skills.js"), import("./listeners.js"), import("./scheduled-jobs.js"),
+  ]);
+  return {
+    // Rows addressed by their whole name.
+    exact: [
+      "doc_repo_index", "doc_repo_seed_meta",
+      skills.SKILL_INDEX_KEY, skills.SKILL_SEED_META_KEY,
+      MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY,
+      listeners.LISTENER_INDEX_KEY,
+      jobs.JOB_INDEX_KEY, jobs.JOB_SCHED_KEY,
+    ],
+    // Families addressed by prefix — `doc_repo:{id}` and friends. A bare prefix with no
+    // id after it is NOT a member: `doc_repo:` names no row, and admitting it would let a
+    // malformed driver write an empty-id row the product can never read or clean up.
+    prefixes: ["doc_repo:", skills.SKILL_PREFIX, listeners.LISTENER_PREFIX, jobs.JOB_PREFIX],
+  };
+};
+
+/**
+ * Is this key one of the knowledge rows the snapshot door may copy? Asked on the way IN
+ * (which keys a snapshot may name) and again on the way OUT (F-769's rule: a row snapshot
+ * before a families change must not become a write door for a key the list no longer
+ * admits).
+ */
+export const isKnowledgeKey = async (key) => {
+  if (typeof key !== "string" || key.length === 0) return false;
+  // A credential is never a knowledge row, whatever else it is. Stated rather than relied
+  // on: no family below overlaps one today, and this is what keeps that true tomorrow.
+  if (isCredentialKey(key)) return false;
+  const f = await knowledgeKeyFamilies();
+  return f.exact.includes(key) || f.prefixes.some((p) => key.startsWith(p) && key.length > p.length);
+};
+
+/** At most this many rows in one snapshot — a driver restores what it touched, not a tenant. */
+export const KNOWLEDGE_SNAPSHOT_MAX_KEYS = 40;
+/* The snapshot rows live in the `harness_stash:*` PREFIX FAMILY, deliberately, because
+ * that family already has everything this one needs and a second keyspace would need all
+ * of it again: the TTL (`HARNESS_STASH_MAX_AGE_SECONDS`), the sweeper that can SEE and
+ * reap a leaked row (`stashSweep`), and a place in `CREDENTIAL_KEY_FAMILIES` so the
+ * `?what=kvs` read cannot hand the copied rows back out. One home. The id carries a
+ * `snap-` marker and the row carries `kind`, so the two doors cannot be crossed: a
+ * `kvRestore` of a snapshot id finds no `row.key` and 404s, and a `knowledgeRestore` of a
+ * stash id finds no `kind` and 404s. Both directions asserted offline. */
+export const KNOWLEDGE_SNAPSHOT_ID_PREFIX = "snap-";
+export const KNOWLEDGE_SNAPSHOT_KIND = "knowledge-snapshot";
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
  * F-769 — `kvStash` / `kvRestore`: PUT THE TENANT'S OWN CREDENTIAL BACK WITHOUT EVER
  * HAVING READ IT.
  *
@@ -2207,6 +2300,143 @@ export async function testStateTrigger(req) {
         ok: true, restored: true, key: row.key,
         // The SAME fingerprint the stash answered, when the round trip was byte-identical.
         ...(await answerFingerprintOnly(now)),
+      });
+    }
+    /* ═════════════════════════════════════════════════════════════════════════════
+     * F-639 — `knowledgeSnapshot` / `knowledgeRestore`: THE RESTORE DUTY BECOMES A LEVER.
+     *
+     * The six knowledge MUTATORS on the `invokeResolver` allow-list were admitted with a
+     * written duty attached — restore what you changed, in the same run, in a `finally`.
+     * That duty has no mechanism: a driver that deletes a builtin doc and throws before
+     * its `finally`, or is killed, or runs out of budget, leaves the tenant changed and
+     * nothing in this file knows. `kvStash`/`kvRestore` answered the identical problem for
+     * credentials (F-769/F-779); this is the same answer for the knowledge store, built on
+     * the same rows, the same TTL, the same sweeper and the same refusals.
+     *
+     * WHAT IT ANSWERS, AND WHAT IT NEVER DOES. `{snapshotId, keys, count, presentCount,
+     * fingerprint}`. Not the rows. A skill body, a doc body and a listener config are the
+     * tenant's own writing, and the read ceiling's rule — what a door says about a stored
+     * row is `present`, a fingerprint and nothing else — is not suspended because the row
+     * is not a credential. The fingerprint is what makes the round trip PROVABLE: the
+     * snapshot's digest of the stored rows and the restore's digest of the rows that are
+     * now back must be the same string, which is strictly more than a driver comparing
+     * what it remembered.
+     *
+     * THE CAP IS CHECKED BEFORE THE SIDE EFFECT, and that is the `commitImportCore` lesson
+     * rather than a style choice: the snapshot row is measured against the KVS value
+     * ceiling (`kvsValueRefusal`, the one home) BEFORE it is written, so a driver learns
+     * "your snapshot is 300 KiB" instead of planting its mutation and discovering at
+     * restore time that nothing was ever saved.
+     *
+     * THE TTL FAILS CLOSED, exactly as F-779 left the stash: a snapshot that could not be
+     * given an expiry is a REFUSED snapshot — whatever landed is deleted, the compensation
+     * is reported, and the driver aborts BEFORE it makes the change it could no longer
+     * undo. Same error classes, same 424, same `snapshotId` handed back so a row the
+     * compensation could not remove still has a handle.
+     *
+     * SINGLE USE. A successful restore deletes the snapshot row, so a second restore of
+     * the same id is a 404 — the same sentence an expired one gets, because a driver must
+     * treat both the same way: it no longer holds the tenant's rows.
+     * ════════════════════════════════════════════════════════════════════════════ */
+    if (body.action === "knowledgeSnapshot" || body.action === "knowledgeRestore") {
+      // The one home for the option SHAPE, the TTL NUMBER and the key builder — the same
+      // three the stash uses, because these rows ARE stash-family rows (see the families
+      // docblock). Imported the way every other harness-fault use in this file is.
+      const { faultTtlOption, harnessStashKey, HARNESS_STASH_MAX_AGE_SECONDS } = await import("./harness-fault.js");
+      const snapshotRowKey = (id) => harnessStashKey(`${KNOWLEDGE_SNAPSHOT_ID_PREFIX}${id}`);
+      if (body.action === "knowledgeSnapshot") {
+        const wanted = [];
+        if (!Array.isArray(body.keys) || body.keys.length === 0) {
+          return json(400, badRequest("keys", "keys must be a non-empty array of knowledge row names"));
+        }
+        if (body.keys.length > KNOWLEDGE_SNAPSHOT_MAX_KEYS) {
+          return json(400, badRequest("keys", `at most ${KNOWLEDGE_SNAPSHOT_MAX_KEYS} keys per snapshot (got ${body.keys.length})`));
+        }
+        for (const k of body.keys) {
+          // Shape first, then authorisation — the F-742 order, for the F-742 reason: a
+          // non-string key cannot be judged against a family in any meaningful way.
+          const keyBad = kvsKeyRefusal(k);
+          if (keyBad) return json(400, keyBad);
+          if (!(await isKnowledgeKey(k))) {
+            const families = await knowledgeKeyFamilies();
+            return json(400, { ok: false, error: "key is not a knowledge row", key: k, families: [...families.exact, ...families.prefixes].sort() });
+          }
+          if (!wanted.includes(k)) wanted.push(k);
+        }
+        const rows = [];
+        for (const k of wanted) {
+          const v = (await storage.get(k)) ?? null;
+          rows.push({ key: k, value: v, present: v !== null });
+        }
+        const row = { kind: KNOWLEDGE_SNAPSHOT_KIND, keys: wanted, rows, stashedAt: new Date().toISOString() };
+        /* THE CAP, BEFORE THE SIDE EFFECT. `kvsValueRefusal` is the one home for "will the
+           platform take this value", and a size in bytes is a measurement rather than a
+           disclosure, so the reason may carry it. Refusing here is what keeps a driver from
+           mutating first and finding out second. */
+        const tooBig = kvsValueRefusal(row);
+        if (tooBig) return json(400, { ...tooBig, error: "snapshot-too-large", keys: wanted });
+        const snapshotId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        let appliedTtlSeconds;
+        try {
+          await storage.set(snapshotRowKey(snapshotId), row, faultTtlOption(HARNESS_STASH_MAX_AGE_SECONDS));
+          appliedTtlSeconds = HARNESS_STASH_MAX_AGE_SECONDS;
+        } catch (e) {
+          const errorClass = errorClassOf(e);
+          let compensation = "deleted";
+          try { await storage.delete(snapshotRowKey(snapshotId)); } catch (de) { compensation = `delete-failed:${errorClassOf(de)}`; }
+          return json(424, {
+            ok: false, snapshot: false,
+            error: STASH_TTL_ERROR_CLASS_RE.test(errorClass) ? "snapshot-ttl-unavailable" : "snapshot-write-failed",
+            keys: wanted, reason: errorClass, snapshotId, compensation,
+          });
+        }
+        /* The digest comes from the SAME named projection the stash uses, so the POST gate
+           can see that the read was answered on purpose. Its `present` is dropped: on an
+           ARRAY of rows it is always true and would say nothing — `presentCount` is the
+           honest form of the same fact, and it is a count, never a content. */
+        const { fingerprint } = await answerFingerprintOnly(rows);
+        return json(200, {
+          ok: true, snapshot: true, snapshotId, keys: wanted, count: wanted.length,
+          presentCount: rows.filter((r) => r.present).length,
+          fingerprint, ttlSeconds: appliedTtlSeconds,
+        });
+      }
+      // knowledgeRestore — by ID. The rows are never named on the wire, sent or returned.
+      if (typeof body.snapshotId !== "string" || body.snapshotId.length === 0) {
+        return json(400, badRequest("snapshotId", "snapshotId must be a non-empty string"));
+      }
+      const stored = (await storage.get(snapshotRowKey(body.snapshotId))) ?? null;
+      /* `kind` is what keeps the two doors from being crossed: a `kvStash` row has a
+         `key` and no `kind`, so it is answered here exactly as an unknown id is — and a
+         snapshot id handed to `kvRestore` has no `row.key` and gets that door's 404. */
+      if (!stored || typeof stored !== "object" || stored.kind !== KNOWLEDGE_SNAPSHOT_KIND || !Array.isArray(stored.rows)) {
+        // Expired, consumed and never-existed are ONE answer: the driver no longer holds
+        // the tenant's rows, and there is nothing it should do differently for each.
+        return json(404, { ok: false, error: "no such snapshot (unknown id, already restored, or its TTL ran out)", snapshotId: body.snapshotId });
+      }
+      // The families are asked AGAIN on the way out, for F-769's reason: a row snapshot
+      // before a families change must not become a write door for a key no longer admitted.
+      for (const r of stored.rows) {
+        if (!r || !(await isKnowledgeKey(r.key))) return json(400, { ok: false, error: "key is not a knowledge row", key: r && r.key, snapshotId: body.snapshotId });
+      }
+      for (const r of stored.rows) {
+        if (r.present === true) await storage.set(r.key, r.value);
+        else await storage.delete(r.key);
+      }
+      // Single use. The restore is the contract, not the sweep — and `stashSweep` reaps
+      // the row by age if this delete cannot.
+      try { await storage.delete(snapshotRowKey(body.snapshotId)); } catch { /* swept by age */ }
+      const now = [];
+      for (const r of stored.rows) {
+        const v = (await storage.get(r.key)) ?? null;
+        now.push({ key: r.key, value: v, present: v !== null });
+      }
+      const { fingerprint } = await answerFingerprintOnly(now);
+      return json(200, {
+        ok: true, restored: true, keys: stored.keys, count: now.length,
+        presentCount: now.filter((r) => r.present).length,
+        // The SAME fingerprint the snapshot answered, when the round trip was byte-identical.
+        fingerprint,
       });
     }
     /* ═════════════════════════════════════════════════════════════════════════════

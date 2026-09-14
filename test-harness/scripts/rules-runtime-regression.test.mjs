@@ -1000,9 +1000,11 @@ try {
       "clearHarnessProbe",
     ];
     // ("kvStash" is the chunk that carries the kvRestore tail too — the split lands on the
-    //  NESTED `if (body.action === "kvStash")`, and both reads live below it.)
+    //  NESTED `if (body.action === "kvStash")`, and both reads live below it. F-639's
+    //  "knowledgeSnapshot" chunk carries its own `knowledgeRestore` tail the same way, for
+    //  the same reason — it is built in the shape of the stash door it was modelled on.)
     assert.deepEqual(reading.map((r) => r.name).sort(),
-      ["clearHarnessProbe", "invokeResolver", "kvSet", "kvStash", "pipelineRow", "readHarnessProbe", "readProbe", "vaTombstone"].sort(),
+      ["clearHarnessProbe", "invokeResolver", "knowledgeSnapshot", "kvSet", "kvStash", "pipelineRow", "readHarnessProbe", "readProbe", "vaTombstone"].sort(),
       "the set of POST actions that read storage changed — each one needs a judgement, not a silent pass");
     const bypassing = reading.filter((r) => !r.projects && !ANSWERS_NO_STORED_CONTENT.includes(r.name));
     assert.deepEqual(bypassing.map((r) => r.name), [],
@@ -1094,6 +1096,140 @@ try {
     assert.equal(storage.__raw(SLOT), REAL, "the tenant's own key is back");
     // A stash is single-use: the row is gone, so a replay cannot resurrect an old value.
     assert.equal((await POST({ action: "kvRestore", stashId: stashed.stashId })).statusCode, 404, "a consumed stash is gone");
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-639 — THE KNOWLEDGE RESTORE DUTY IS A MECHANISM, NOT A DOCBLOCK.
+   *
+   * Six mutators are on the `invokeResolver` allow-list (`saveSkill`, `deleteSkill`,
+   * `deleteContextDoc`, `saveListener`, `deleteScheduledJob`, `addMemory`) and the only
+   * thing that ever put the tenant back is a sentence telling drivers to. A driver that
+   * deletes a builtin doc and dies before its `finally` leaves the tenant changed.
+   * `knowledgeSnapshot`/`knowledgeRestore` is the `kvStash`/`kvRestore` answer aimed at
+   * the knowledge store: the rows move server-side, by name, and never on the wire.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("ALLOW: snapshot -> mutate -> restore round-trips knowledge rows byte-identically (F-639)", async () => {
+    const DOC_INDEX = "doc_repo_index";
+    const DOC = "doc_repo:builtin-adf";
+    const SKILLS = "skill_repo_index";
+    const MEM = "pf_memories";
+    const INDEX_ROWS = [{ id: "builtin-adf", title: "ADF cookbook", builtin: true }];
+    const DOC_ROW = { id: "builtin-adf", title: "ADF cookbook", content: "the tenant's own words", builtin: true };
+    storage.__seed(DOC_INDEX, INDEX_ROWS);
+    storage.__seed(DOC, DOC_ROW);
+    storage.__seed(SKILLS, [{ id: "s1", name: "Jira REST" }]);
+    await storage.delete(MEM);   // ABSENT is a state, and it must round-trip as absent
+
+    const snap = JSON.parse((await POST({ action: "knowledgeSnapshot", keys: [DOC_INDEX, DOC, SKILLS, MEM] })).body);
+    assert.equal(snap.ok, true);
+    assert.equal(snap.snapshot, true);
+    assert.equal(typeof snap.snapshotId === "string" && snap.snapshotId.length > 0, true, "an opaque, server-minted id");
+    assert.deepEqual(snap.keys, [DOC_INDEX, DOC, SKILLS, MEM], "the door answers WHICH rows it holds");
+    assert.equal(snap.count, 4);
+    assert.equal(snap.presentCount, 3, "…and how many were there — a count, never a content");
+    assert.match(snap.fingerprint, /^[0-9a-f]{16}$/);
+    assert.equal(snap.ttlSeconds, 3600, "the same TTL the stash family asks for — one home");
+    // THE CONTENT NEVER CROSSES THE WIRE. The read ceiling's rule is not suspended because
+    // the row is a doc rather than a credential.
+    const answer = JSON.stringify(snap);
+    assert.equal(answer.includes("the tenant's own words"), false, "the snapshot answer carries no row content");
+    assert.equal(answer.includes("ADF cookbook"), false, "…not even a title");
+    assert.equal("rows" in snap || "value" in snap, false);
+    // …and the snapshot ROW is not readable back out either: it lives in the `harness_stash:*`
+    // family, which the read ceiling already masks. That reuse is the point of the prefix.
+    const peek = JSON.parse((await kvsRead(`harness_stash:snap-${snap.snapshotId}`)).body);
+    assert.equal(peek.masked, true, "a snapshot row is a harness_stash:* row — masked, like a stash");
+    assert.equal("value" in peek, false);
+
+    // THE DRIVER NOW DOES WHAT IT CAME FOR: it deletes a builtin doc and rewrites the index,
+    // which is exactly the mutation `deleteContextDoc` performs through `invokeResolver`.
+    await storage.delete(DOC);
+    storage.__seed(DOC_INDEX, []);
+    storage.__seed(SKILLS, [{ id: "s1", name: "MUTATED" }]);
+    storage.__seed(MEM, [{ id: "m1", text: "planted while snapshot was held" }]);
+
+    const back = JSON.parse((await POST({ action: "knowledgeRestore", snapshotId: snap.snapshotId })).body);
+    assert.equal(back.ok, true);
+    assert.equal(back.restored, true);
+    assert.deepEqual(back.keys, [DOC_INDEX, DOC, SKILLS, MEM], "the keys came from the SNAPSHOT, not from the caller");
+    assert.equal(back.fingerprint, snap.fingerprint,
+      "the round trip was byte-identical — provable without either door ever reading a row out");
+    assert.equal(JSON.stringify(back).includes("the tenant's own words"), false, "the restore answer carries no content either");
+    assert.deepEqual(storage.__raw(DOC), DOC_ROW, "the deleted builtin doc is back, byte for byte");
+    assert.deepEqual(storage.__raw(DOC_INDEX), INDEX_ROWS, "…and so is the index the driver rewrote");
+    assert.deepEqual(storage.__raw(SKILLS), [{ id: "s1", name: "Jira REST" }]);
+    assert.equal(storage.__raw(MEM), undefined,
+      "…and a row that was ABSENT is restored as ABSENT, not as null — the tenant is as it was FOUND");
+    // SINGLE USE, exactly as a stash is: a replay cannot resurrect an old copy of the store.
+    assert.equal((await POST({ action: "knowledgeRestore", snapshotId: snap.snapshotId })).statusCode, 404,
+      "a consumed snapshot is gone");
+  });
+  await check("BLOCK: a snapshot may only name a knowledge row, and the two restore doors do not cross (F-639)", async () => {
+    /* THE AUTHORISATION HALF. The families are the rows the six mutators touch, and
+       nothing else: not a credential (that is `kvStash`'s job and its own allow-list),
+       not the registry, not the logs, not `pf_code:*`, not a provider slot. */
+    for (const key of ["COGNIRUNNER_KEY_openai", "git_conn_secret:c1", "config_registry",
+                       "validation_logs", "pf_code:r1:abc", "harness_stash:whatever", "doc_repo:"]) {
+      const res = await POST({ action: "knowledgeSnapshot", keys: [key] });
+      assert.equal(res.statusCode, 400, `${key} must be refused by the snapshot door`);
+      assert.match(JSON.parse(res.body).error, /not a knowledge row/, `${key}: refused on AUTHORISATION`);
+    }
+    // `doc_repo:` above is the bare PREFIX: a family name is not a member of itself, and a
+    // row with an empty id is one the product can neither read nor clean up.
+    // The shape door applies here too — "/" is illegal and is NAMED, never thrown.
+    const illegal = JSON.parse((await POST({ action: "knowledgeSnapshot", keys: ["doc_repo:a/b"] })).body);
+    assert.equal(illegal.error, "bad-request");
+    assert.equal(illegal.field, "key");
+    // …and the body shape is a named 400 rather than a stack trace.
+    assert.equal(JSON.parse((await POST({ action: "knowledgeSnapshot", keys: [] })).body).field, "keys");
+    assert.equal(JSON.parse((await POST({ action: "knowledgeSnapshot" })).body).field, "keys");
+    const many = JSON.parse((await POST({ action: "knowledgeSnapshot", keys: Array.from({ length: 41 }, (_x, i) => `doc_repo:d${i}`) })).body);
+    assert.equal(many.field, "keys");
+    assert.match(many.reason, /at most 40/, "the cap is stated, not discovered at the platform");
+    assert.equal(JSON.parse((await POST({ action: "knowledgeRestore" })).body).field, "snapshotId");
+    assert.equal((await POST({ action: "knowledgeRestore", snapshotId: "no-such-snapshot" })).statusCode, 404,
+      "unknown, consumed and expired are ONE answer — the driver no longer holds the rows");
+
+    /* THE TWO DOORS DO NOT CROSS, in both directions. They share the `harness_stash:*`
+       prefix family on purpose (one TTL, one sweeper, one read ceiling); the id marker and
+       the row `kind` are what keep a snapshot id from being a credential write door. */
+    storage.__seed("COGNIRUNNER_KEY_openai", "zz-the-tenants-own-key-zz");
+    const stash = JSON.parse((await POST({ action: "kvStash", key: "COGNIRUNNER_KEY_openai" })).body);
+    assert.equal((await POST({ action: "knowledgeRestore", snapshotId: stash.stashId })).statusCode, 404,
+      "a kvStash id is not a knowledge snapshot — it has no `kind`");
+    storage.__seed("skill_repo_index", [{ id: "s1" }]);
+    const snap = JSON.parse((await POST({ action: "knowledgeSnapshot", keys: ["skill_repo_index"] })).body);
+    assert.equal((await POST({ action: "kvRestore", stashId: `snap-${snap.snapshotId}` })).statusCode, 404,
+      "…and a snapshot row is not a stash — it has no `key`, so kvRestore will not write from it");
+    assert.equal((await POST({ action: "kvRestore", stashId: snap.snapshotId })).statusCode, 404,
+      "…nor under its bare id");
+    // The tenant's own key is still where it was: neither cross-attempt wrote anything.
+    assert.equal(storage.__raw("COGNIRUNNER_KEY_openai"), "zz-the-tenants-own-key-zz");
+    /* …and this check discharges its OWN duty, which is the whole point of the finding:
+       both rows it opened are consumed, so it leaves no `harness_stash:*` behind for the
+       sweep checks below to trip over. A test that plants and walks away is the defect. */
+    assert.equal((await POST({ action: "kvRestore", stashId: stash.stashId })).statusCode, 200);
+    assert.equal((await POST({ action: "knowledgeRestore", snapshotId: snap.snapshotId })).statusCode, 200);
+  });
+  await check("BLOCK: a snapshot too large to store is refused BEFORE it is written (F-639)", async () => {
+    /* THE `commitImportCore` LESSON, applied to this door: a refused snapshot must not
+       leave a driver believing it holds the tenant's rows. The cap is asked BEFORE the
+       platform, through the ONE home (`kvsValueRefusal`), so the answer NAMES the field
+       and carries a measurement — and no `harness_stash:*` row is written at all. */
+    /* Counted for real, over the prefix family itself — never behind an `if (mock supports it)`,
+       which is a skipped assertion wearing the costume of a passing one. */
+    const stashRows = async () => (await storage.query().where("key", { values: ["harness_stash:"] }).limit(100).getMany()).results.length;
+    const before = await stashRows();
+    storage.__seed("doc_repo:huge", { content: "x".repeat(250 * 1024) });
+    const res = await POST({ action: "knowledgeSnapshot", keys: ["doc_repo:huge"] });
+    assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.body);
+    assert.equal(body.error, "snapshot-too-large");
+    assert.equal(body.field, "value", "…named through the one home, so the field names match the other doors");
+    assert.match(body.reason, /[0-9]/, "…and it says how big, which is a measurement rather than a disclosure");
+    assert.equal("snapshotId" in body, false, "a refused snapshot hands back no id to restore from");
+    assert.equal(await stashRows(), before,
+      "…and nothing was written: the cap is checked BEFORE the side effect");
+    await storage.delete("doc_repo:huge");
   });
   await check("kvStash refuses what kvSet refuses, and an unknown stash (F-769)", async () => {
     // The stash door WRITES, so it may not reach a row the write allow-list excludes.

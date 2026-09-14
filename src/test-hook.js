@@ -629,6 +629,10 @@ export async function testStateTrigger(req) {
         expired: body.expired === true,
         maxMs: typeof body.maxMs === "number" ? body.maxMs : undefined,
         startIndex: body.startIndex,
+        /* F-744: the running cleared count of an identical re-POST loop, carried in the
+         * answer's own `clearToken`. Best-effort in the lever — it is a progress report,
+         * not an input to a decision — so the door forwards it and judges nothing. */
+        clearToken: typeof body.clearToken === "string" ? body.clearToken : undefined,
       });
       // A refusal from the lever overrides the optimistic ok, exactly like the arm actions.
       // `complete` is named EXPLICITLY (F-692): it is the finished signal, and a field that

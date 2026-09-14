@@ -797,12 +797,24 @@ const sweepPause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * `f` is DROPPED when the answer's own cursor points AT the failure (the retry starts there,
  * so there is nothing left to remind the caller of) and carried whenever the answer resumes
  * somewhere AHEAD of it.
+ *
+ * F-744 — AND IT CARRIES A RUNNING COUNT, `"s"`, FOR DRAINS WHOSE PROGRESS IS NOT A PLACE.
+ *
+ * The plant's stale clear re-POSTs IDENTICALLY, so the only thing that survives its call
+ * boundary is what the answer hands back — and `clearedSoFar` was a byte-copy of the
+ * per-CALL `cleared`, which is exactly the per-call/per-drain confusion F-691 named for
+ * `complete`. `"s"` is that cumulative number, carried by the caller and added to.
+ *
+ * IT IS ADDITIVE, NOT A NEW GRAMMAR. `c` and `f` mean precisely what they meant; `s` is
+ * written only when there is a count to write, and a consumer that never looks at it reads
+ * the same token it always did. Symmetrically, a token minted without `s` decodes as zero.
  */
-export const encodeSweepCursor = (kvsCursor, failedResume = undefined) => {
+export const encodeSweepCursor = (kvsCursor, failedResume = undefined, clearedSoFar = undefined) => {
   const payload = { c: kvsCursor === undefined ? null : kvsCursor };
   // `undefined` means "no unresolved failure"; an explicit `null` means "unresolved, at the
   // beginning of the keyspace" — which is why this tests the ARGUMENT, not its truthiness.
   if (failedResume !== undefined) payload.f = failedResume;
+  if (Number.isSafeInteger(clearedSoFar) && clearedSoFar > 0) payload.s = clearedSoFar;
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
 };
 
@@ -873,6 +885,11 @@ export const decodeSweepToken = (token) => {
      * worst is one sweep old. */
     unresolved: "f" in parsed,
     failedResume: kvsCursor(parsed.f),
+    /* F-744: the running cleared count, ZERO when the token does not carry one — a token
+     * minted before `s` existed, or one minted by a drain that has nothing to count. Junk
+     * in `s` is zero too: this is a REPORTED number, never a control-flow input, so the
+     * strictest thing it can honestly do is not lie about progress it cannot prove. */
+    clearedSoFar: Number.isSafeInteger(parsed.s) && parsed.s > 0 ? parsed.s : 0,
   };
 };
 
@@ -1568,6 +1585,29 @@ const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
  */
 export const PLANT_REPOST_REASONS = Object.freeze(["clearing", "clear-failed"]);
 
+/*
+ * F-744 — THE RUNNING CLEARED COUNT CROSSES THE CALL BOUNDARY IN THE TOKEN, AND NOWHERE ELSE.
+ *
+ * `clearToken` is the plant's ONLY carried state and it is deliberately NOT called `cursor`:
+ * the plant resumes by INDEX (see `plantHarnessFaults`), and a field named `cursor` on a
+ * plant answer is exactly the thing a drain loop would mistake for a keyspace position. It
+ * rides the sweep's own token grammar (`encodeSweepCursor` / `decodeSweepToken`, one home)
+ * with `c: null` and an `s` that is the number.
+ *
+ * BEST-EFFORT BY DESIGN. A missing, malformed or foreign token is ZERO — the count is a
+ * PROGRESS REPORT, never an input to a decision, so a caller that drops it gets an
+ * understated `clearedSoFar` and an otherwise identical, still-converging drain. Throwing
+ * `bad-cursor` over a diagnostic would turn a cosmetic mistake into a refused plant.
+ */
+const carriedClearedSoFar = (clearToken) => {
+  if (typeof clearToken !== "string" || !clearToken) return 0;
+  try {
+    return decodeSweepToken(clearToken).clearedSoFar;
+  } catch {
+    return 0;
+  }
+};
+
 /** The ONE mapping from a plant's stop `reason` to how the caller resumes it. Pure. */
 export const plantResumeMode = (reason, complete) => {
   if (complete === true || !reason) return null;
@@ -1578,13 +1618,34 @@ export const plantResumeMode = (reason, complete) => {
  * Plant INERT rows under `harness_fault:plant:`, so the sweep's multi-page path can be
  * exercised on a real tenant. Returns
  * `{ ok, planted, failed, n, startIndex, nextIndex, expired, ttlSeconds, budgetMs, keys,
- *    cleared, truncated, reason, complete, resume }`, or `{ ok: false, reason: "bad-start" }`.
+ *    cleared, clearedSoFar, truncated, reason, complete, resume }`, or
+ * `{ ok: false, reason: "bad-start" }`. A `repost` answer additionally carries
+ * `remainingStale` and `clearToken` (F-744: POST it back with the identical body).
  *
  * F-724 — `resume` IS THE ANSWER'S OWN INSTRUCTION, from `plantResumeMode` and nowhere else:
  * `"start-index"` = carry on from `nextIndex`, `"repost"` = send the SAME body again, `null`
  * = nothing to resume. Only `reason: "clearing"` is a `"repost"`, it is the one answer whose
  * `nextIndex` deliberately does NOT advance, and it carries `clearedSoFar` / `remainingStale`
  * so a caller can tell converging progress from a spin without an advancing index.
+ *
+ * F-744 — `clearedSoFar` IS THE DRAIN'S TOTAL, AND IT ONLY EXISTS IF THE CALLER CARRIES IT.
+ * It was a byte-copy of this call's `cleared`, which is the per-CALL/per-DRAIN confusion
+ * F-691 named for `complete`: across three re-POSTs of a 28-row clear it read 9, 9, 9 and
+ * never 27, so the one number a non-advancing `nextIndex` leaves for measuring progress
+ * measured nothing. The running total now rides `clearToken` — the answer hands one back,
+ * the caller POSTs it with the identical body, and this call adds its own `cleared` to it.
+ * A caller that ignores `clearToken` is NOT broken: it gets an understated `clearedSoFar`
+ * and the same converging drain, because the count decides nothing.
+ *
+ * F-744 — AND `clearing` ANSWERS MAY REPEAT, BYTE FOR BYTE, WHILE A DELETE LEVER REFUSES.
+ * Under `armDeleteFault({ mode: "refuse" })` the first batch of a clear can land NOTHING, so
+ * the call clears 0, condemns the same set, and answers identically to the one before it —
+ * `remainingStale` standing still is, for those calls, the lever and not a spin. That is
+ * bounded, not open-ended: `DELETE_FAULT_DRAINABLE_MAX` is DERIVED from
+ * `DRAIN_IDENTICAL_ANSWER_LIMIT * KVS_DELETE_BATCH - 1`, so an armed lever runs out of units
+ * with a call to spare and the identical run is always SHORTER than the identical-answer
+ * limit a drain helper stops on. `clearedSoFar` is monotonic across the whole drain either
+ * way — it never decreases, because a removed row is gone for good.
  *
  * F-725 — `reason: "clear-failed"` IS THE OTHER `"repost"`. A stale clear that REFUSED some
  * deletes is never `complete`, even when it reached the end of the condemned set (it used to
@@ -1635,7 +1696,7 @@ export const plantResumeMode = (reason, complete) => {
  * keys are the index; `nextIndex` is that handle and the answer carries no `cursor` field for
  * a drain loop to mistake for one.
  */
-export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex } = {}) => {
+export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex, clearToken } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
   /* F-708 — THE POPULATION AND THE CALL'S END INDEX ARE DIFFERENT NUMBERS, and `startIndex`
    * is judged against the POPULATION. Clamped independently, a `startIndex` past the end of
@@ -1650,6 +1711,9 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
    * only what has been accepted; the answer echoes the number the CALLER sent, because that is
    * the number it has to fix. */
   const population = plantPopulationClamped(n);
+  /* F-744: what previous re-POSTs of this identical body already cleared. Read before the
+   * refusal so every answer that reports a total reports the same one. */
+  const carriedCleared = carriedClearedSoFar(clearToken);
   const startRefusal = plantStartRefusal(startIndex, population);
   if (startRefusal) {
     return { ok: false, reason: startRefusal, startIndex, n: population, maxStart: population };
@@ -1698,7 +1762,9 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
       return {
         ok: true, planted: 0, failed: stale.failed, n: population, startIndex: from, nextIndex: from,
         expired: past, ttlSeconds, budgetMs, keys: [], cleared,
-        clearedSoFar: cleared, remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
+        clearedSoFar: carriedCleared + cleared,
+        remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
+        clearToken: encodeSweepCursor(null, undefined, carriedCleared + cleared),
         truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
         resume: plantResumeMode(tail.reason, tail.complete),
       };
@@ -1725,7 +1791,9 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
       return {
         ok: true, planted: 0, failed: 0, n: population, startIndex: from, nextIndex: from,
         expired: past, ttlSeconds, budgetMs, keys: [], cleared,
-        clearedSoFar: cleared, remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
+        clearedSoFar: carriedCleared + cleared,
+        remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
+        clearToken: encodeSweepCursor(null, undefined, carriedCleared + cleared),
         staleFailed: stale.failed, staleFailedKeys: stale.failedKeys || [],
         truncated: tail.truncated, reason: "clear-failed", complete: tail.complete,
         resume: plantResumeMode("clear-failed", tail.complete),
@@ -1822,6 +1890,8 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
     ok: true, planted, failed, n: population, startIndex: from,
     nextIndex: failureFirst ? firstFailedIndex : nextIndexReached,
     expired: past, ttlSeconds, budgetMs, keys, cleared,
+    // F-744: the drain's total, so the call that finally plants closes the running count.
+    clearedSoFar: carriedCleared + cleared,
     truncated: tail.truncated,
     reason: failureFirst ? "writes-failed" : tail.reason,
     complete: tail.complete,

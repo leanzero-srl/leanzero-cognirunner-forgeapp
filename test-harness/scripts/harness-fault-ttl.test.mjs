@@ -1727,26 +1727,96 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       "F-724 (unchanged): `clearing` still does NOT advance `nextIndex` — that is the contract, not the defect");
     ok(clearing.resume === "repost",
       `F-724: …and the answer now SAYS so, in a field a driver can switch on (resume ${JSON.stringify(clearing.resume)})`);
-    ok(clearing.clearedSoFar === clearing.cleared && clearing.clearedSoFar > 0,
+    ok(clearing.clearedSoFar > 0,
       `F-724: …naming the progress it DID make (clearedSoFar ${clearing.clearedSoFar})`);
     ok(Number.isInteger(clearing.remainingStale) && clearing.remainingStale > 0
       && clearing.clearedSoFar + clearing.remainingStale === 28,
       `F-724: …and how much of the condemned 28 is left, so "converging" is measurable without an index (cleared ${clearing.clearedSoFar}, remaining ${clearing.remainingStale})`);
 
+    /* F-744 — `clearedSoFar` IS THE DRAIN'S TOTAL, AND A TRAIL IS THE ONLY THING THAT PROVES
+     * IT. It used to be `clearedSoFar: cleared` — a byte-copy of the per-CALL count — so the
+     * assertion `clearedSoFar === cleared` was a tautology that passed over the defect. The
+     * honest test is the TRAIL: carry the answer's `clearToken` into the identical re-POST
+     * and watch the number RISE, call over call, to the size of the condemned set. ── */
+    ok(typeof clearing.clearToken === "string" && clearing.clearToken.length > 0,
+      `F-744: a \`repost\` answer hands back the token that carries its running count (clearToken ${typeof clearing.clearToken})`);
+    ok(fault.decodeSweepToken(clearing.clearToken).clearedSoFar === clearing.clearedSoFar,
+      "F-744: …and the token's `s` IS the reported total — one number, one home");
+    ok(fault.decodeSweepToken(clearing.clearToken).cursor === null
+      && fault.decodeSweepToken(clearing.clearToken).unresolved === false,
+      "F-744: …carried on the sweep's own grammar with `c`/`f` untouched, so a consumer that ignores `s` reads the token it always did");
+
     /* THE CONTRACT, DRIVEN VERBATIM: the SAME body, again, until it is not `repost`. It must
      * CONVERGE — the rows a clearing call removed are gone for good. */
     let last = clearing, hops = 0, previousRemaining = clearing.remainingStale;
+    let previousCleared = clearing.clearedSoFar;
+    const trail = [clearing.clearedSoFar];
     while (last.resume === "repost" && hops < 40) {
       hops++;
-      last = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1 });
+      last = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1, clearToken: last.clearToken });
+      trail.push(last.clearedSoFar);
+      ok(last.clearedSoFar > previousCleared,
+        `F-744: every re-POST STRICTLY RAISES the running total (${previousCleared} → ${last.clearedSoFar})`);
+      previousCleared = last.clearedSoFar;
       if (last.resume === "repost") {
         ok(last.remainingStale < previousRemaining,
           `F-724: every re-POST strictly SHRINKS the remaining stale set (${previousRemaining} → ${last.remainingStale})`);
         previousRemaining = last.remainingStale;
       }
     }
+    ok(trail.length >= 2 && last.clearedSoFar === 28,
+      `F-744: …and the trail of a 28-row clear at maxMs:1 ends on the WHOLE condemned set, not on one call's share (trail ${JSON.stringify(trail)})`);
     ok(last.resume !== "repost" && last.planted === 2 && (await countPrefix(PLANT724)) === 2,
       `F-724: …and the identical re-POST loop terminates on a real plant of the population it asked for (hops ${hops}, planted ${last.planted}, rows ${await countPrefix(PLANT724)})`);
+
+    /* THE CALLER THAT IGNORES THE FIELD MUST STILL WORK: no `clearToken`, same drain, same
+     * convergence — only an understated total, because the count decides NOTHING. */
+    await purge();
+    await fault.plantHarnessFaults({ n: 30, expired: false, maxMs: 20_000 });
+    let blind = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1 });
+    let blindHops = 0;
+    while (blind.resume === "repost" && blindHops < 40) {
+      blindHops++;
+      blind = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 1 });
+    }
+    ok(blind.planted === 2 && (await countPrefix(PLANT724)) === 2 && blind.clearedSoFar < 28,
+      `F-744 (compat): a consumer that drops \`clearToken\` still converges, it just under-counts (hops ${blindHops}, clearedSoFar ${blind.clearedSoFar})`);
+
+    /* F-744 — AND AN ARMED LEVER MAKES `clearing` ANSWERS REPEAT, BOUNDEDLY.
+     *
+     * Under `armDeleteFault({ mode: "refuse" })` the first batch of a clear can land NOTHING,
+     * so the call clears 0, condemns the same set and answers BYTE-IDENTICALLY to the one
+     * before it. That is the lever, not a spin — and the docblock now says so. What makes it
+     * safe is arithmetic, not hope: `DELETE_FAULT_DRAINABLE_MAX` is derived from
+     * `DRAIN_IDENTICAL_ANSWER_LIMIT * KVS_DELETE_BATCH - 1`, so the lever runs out of units
+     * with a call to spare and the identical RUN is always shorter than the limit a drain
+     * helper stops on. Measured, at the lever's maximum arming. ── */
+    await purge();
+    await fault.plantHarnessFaults({ n: 30, expired: false, maxMs: 20_000 });
+    const maxArmed = await fault.armDeleteFault({
+      prefix: PLANT724, mode: "refuse", count: fault.DELETE_FAULT_DRAINABLE_MAX, ttlSeconds: 60,
+    });
+    ok(maxArmed.count === fault.DELETE_FAULT_DRAINABLE_MAX,
+      `(fixture) the delete lever armed to its DRAINABLE_MAX (count ${maxArmed.count})`);
+
+    let armedRun = 0, longestRun = 0, prevAnswer = null, armedHops = 0;
+    let armedLast = null;
+    do {
+      armedHops++;
+      armedLast = await fault.plantHarnessFaults({
+        n: 2, expired: false, maxMs: 20_000, clearToken: armedLast ? armedLast.clearToken : undefined,
+      });
+      const shape = JSON.stringify({ r: armedLast.reason, c: armedLast.clearedSoFar, s: armedLast.remainingStale });
+      armedRun = shape === prevAnswer ? armedRun + 1 : 1;
+      if (armedRun > longestRun) longestRun = armedRun;
+      prevAnswer = shape;
+    } while (armedLast.resume === "repost" && armedHops < 40);
+
+    ok(longestRun < fault.DRAIN_IDENTICAL_ANSWER_LIMIT,
+      `F-744: the identical-answer run an armed lever can produce is SHORTER than the drain's spin limit (run ${longestRun} < ${fault.DRAIN_IDENTICAL_ANSWER_LIMIT})`);
+    ok(armedLast.resume !== "repost" && armedLast.planted === 2 && (await countPrefix(PLANT724)) === 2,
+      `F-744: …and the lever's own cap is what converges it — the drain finishes without ever tripping the limit (hops ${armedHops}, rows ${await countPrefix(PLANT724)})`);
+    await purge();  // purge() removes the lever row too — it lives under `harness_fault:`.
 
     /* THE NEGATIVE CONTROL: a plant that is merely TRUNCATED resumes the other way, and its
      * index really does move. If this also said `repost` the field would say nothing. */

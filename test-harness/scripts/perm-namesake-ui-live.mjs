@@ -72,8 +72,17 @@ const NV = (s, d) => { const r = d ? redactSecrets(d) : d; unproven++; ev.checks
  * missing PNG was a silent hole in a green run. `makeShot` binds this driver's N/V writer
  * once. Strict is the default again — a readable address ABORTS rather than reaching disk
  * — and a capture that did not happen now says so, with its reason, in the evidence.
- * `scripts/evidence-redaction.test.mjs` keeps both halves true for the whole directory. */
-const shot_ = makeShot(NV);
+ * `scripts/evidence-redaction.test.mjs` keeps both halves true for the whole directory.
+ *
+ * F-681 — AND THE CAPTURE THAT SUCCEEDED IS RECORDED TOO. F-668 gave the FAILED capture a
+ * reader; the successful one still had none, and the successful one is the case that
+ * carries the proof — its `{total, masked, readable}` IS the F-660 DOM assertion, the only
+ * evidence that the addresses on that page were masked before the shutter. Measured on dev
+ * 381199f: 13 PNGs, 3 shot records, and the one capture that had a real address to mask
+ * recorded nothing at all. So this binding takes all three writers: a capture that happened
+ * is a PASS with its numbers, a capture that did not is an N/V with its reason, and a
+ * capture REFUSED for a readable address is a FAIL — never a sentence in an actions array. */
+const shot_ = makeShot({ pass: PASS, nv: NV, fail: FAIL });
 const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 async function hook(body, method = "POST", qs = "") {
@@ -283,8 +292,14 @@ async function main() {
     ev.searchRows = rows;
     fs.writeFileSync(`${OUT}/search-rows.json`, JSON.stringify(redactSecrets(rows), null, 2));
     const named = rows.filter((r) => r.name === NAME);
-    if (named.length >= 3) PASS(`the search for "${NAME}" returns ${named.length} rows with an IDENTICAL display name`, { rows: rows.length });
-    else FAIL(`expected >=3 namesake rows, got ${named.length} — the F-645 scenario is not reproduced on this site`, { rows });
+    /* F-681 — THE SENTENCE AND THE DETAIL COUNTED DIFFERENT THINGS. The sentence said
+       "returns N rows with an IDENTICAL display name" (that is `named.length`) and the
+       detail beside it read `{rows: rows.length}` — EVERY row the search returned, namesake
+       or not. On a search that returns five rows of which three are namesakes, the line read
+       "returns 3 rows … {rows: 5}" and contradicted itself. Both numbers are worth having;
+       they just have to say which is which. */
+    if (named.length >= 3) PASS(`the search for "${NAME}" returns ${named.length} row(s) with an IDENTICAL display name, out of ${rows.length} row(s) returned in total`, { namesakeRows: named.length, rowsReturned: rows.length });
+    else FAIL(`expected >=3 namesake rows, got ${named.length} of ${rows.length} row(s) returned — the F-645 scenario is not reproduced on this site`, { namesakeRows: named.length, rowsReturned: rows.length, rows });
 
     const idents = named.map((r) => r.ident);
     if (idents.every((t) => typeof t === "string" && t.length > 0)) PASS("every namesake row carries a SECOND LINE (the discriminator)", { idents });
@@ -367,7 +382,17 @@ async function main() {
         else FAIL("RECOVERY FAILED — the roster still differs from the snapshot", { end: end2 });
       }
     }
-    ev.summary = { passes, fails, unproven };
+    /* F-681 — THE CAPTURE RECORD IS PART OF THE EVIDENCE, NOT A SIDE EFFECT. Every shot
+       this run took, with the numbers the mask actually measured, so "no PNG here is
+       unmasked" is something a reader can READ off `evidence.json` instead of inferring it
+       from the absence of a throw. And a leak fails the run in its own right — a recorded
+       FAIL is already counted above, but the flag is asserted here too so that a future
+       `.catch` around a capture cannot quietly restore the old silence. */
+    ev.shots = shot_.shots;
+    if (shot_.leaked) {
+      FAIL("a screenshot capture was REFUSED because a readable email address survived the mask — the F-660 guarantee fired and this run FAILS on it regardless of the roster verdict", { leaks: shot_.leaks });
+    }
+    ev.summary = { passes, fails, unproven, shots: shot_.shots.length, captured: shot_.shots.filter((s) => s.captured).length, leaks: shot_.leaks.length };
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n  ${passes} PASS · ${fails} FAIL · ${unproven} N/V   -> ${OUT}/evidence.json\n`);
     process.exit(fails ? 1 : 0);

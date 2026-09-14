@@ -459,9 +459,21 @@ export async function testStateTrigger(req) {
      * thrown from the query or the deletes is `sweep-failed`, carrying the platform error's
      * own `code` when it has one, so a caller can back off rather than restart.
      *
-     * F-683 — THE ANSWER CONTRACT, which this door passes through verbatim: `complete` is
-     * computed in ONE place (the library) as `!truncated && failed === 0`. A caller loops
-     * while `cursor !== null`; `cursor === null` now means swept AND every delete landed.
+     * F-683/F-691/F-692 — THE ANSWER CONTRACT, AND THE ONE FIELD THAT CARRIES IT.
+     *
+     * `complete` IS THE FINISHED SIGNAL. It is computed in ONE place — `sweepAnswerTail` in
+     * harness-fault.js — as `!truncated && !unresolved`, where `unresolved` is a failed
+     * delete from ANY call of this drain, inherited through the resume token. This door
+     * returns it EXPLICITLY, after the spread, so a future reshape of the library's answer
+     * cannot quietly stop carrying it.
+     *
+     * ⚠ DEPRECATED: DERIVING FINISHEDNESS FROM `truncated` (or from `cursor === null`).
+     * Both are per-CALL facts. A drain that budget-broke after a page whose deletes failed
+     * answers `truncated: false` on its final call while rows it condemned are still live —
+     * that is F-691, and re-deriving is how a caller re-acquires the bug the library just
+     * fixed. Read `complete`. A caller loops while `cursor !== null` and STOPS ONLY ON
+     * `complete === true`; `failedResume` (a token, or null) names the page to go back to.
+     *
      * `reason: "deletes-failed"` carries the cursor of the page whose deletes failed so the
      * caller retries it, and `reason: "deletes-failing"` says the call is NOT converging —
      * a whole batch landed nothing — so a loop must back off instead of spinning. */
@@ -492,7 +504,9 @@ export async function testStateTrigger(req) {
         return json(500, { ok: false, reason: "sweep-failed", code, error: message });
       }
       // A refusal from the lever overrides the optimistic ok, exactly like the arm actions.
-      return json(r.ok === false ? 400 : 200, { ok: true, ...r });
+      // `complete` is named EXPLICITLY (F-692): it is the finished signal, and a field that
+      // only ever arrives by spread is a field a reshape can drop without anyone noticing.
+      return json(r.ok === false ? 400 : 200, { ok: true, ...r, complete: r.complete === true });
     }
     /* ===== F-688: THE BALLAST — the only way to give the sweep a second page =====
      * Everything F-673/F-674/F-677/F-682/F-683 built into `sweepHarnessFaults` — the resume
@@ -532,9 +546,11 @@ export async function testStateTrigger(req) {
     /* The other half: delete the ballast, and ONLY the ballast. The prefix is NOT a
      * parameter — no caller gets to name the keyspace an unconditional delete walks — and it
      * is bound to `HARNESS_FAULT_PLANT_PREFIX` in the library. The answer is the sweep's own shape
-     * (`truncated` / `reason` / `cursor` / `complete`), validated and diagnosed by the same
-     * two rules: `sweepCursorWellFormed` at the door (F-676/F-685) and only the library's own
-     * pre-KVS refusal of a token is `bad-cursor` (F-684). */
+     * (`truncated` / `reason` / `cursor` / `complete` / `failedResume`), assembled by the same
+     * `sweepAnswerTail`, validated and diagnosed by the same two rules: `sweepCursorWellFormed`
+     * at the door (F-676/F-685) and only the library's own pre-KVS refusal of a token is
+     * `bad-cursor` (F-684). `complete` is the finished signal here too, for the same reason
+     * (F-691/F-692): `truncated` is a per-CALL fact and re-deriving from it is deprecated. */
     if (body.action === "clearPlantedFaults") {
       const { clearPlantedFaults, sweepCursorWellFormed, BAD_SWEEP_CURSOR_CODE } = await import("./harness-fault.js");
       const rawCursor = body.cursor;
@@ -552,7 +568,8 @@ export async function testStateTrigger(req) {
         if (code === BAD_SWEEP_CURSOR_CODE) return json(400, { ok: false, reason: "bad-cursor", error: message });
         return json(500, { ok: false, reason: "clear-failed", code, error: message });
       }
-      return json(r.ok === false ? 400 : 200, { ok: true, ...r });
+      // Explicit for the same reason as the sweep above (F-692): this is THE finished signal.
+      return json(r.ok === false ? 400 : 200, { ok: true, ...r, complete: r.complete === true });
     }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");

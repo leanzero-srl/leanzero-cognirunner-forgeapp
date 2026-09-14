@@ -35,7 +35,12 @@
  */
 
 import "../lib/register-mocks-index.mjs";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import storage, { kvs, KVS_INVALID_CURSOR_CODE } from "../lib/mock-kvs.mjs";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 const { default: forgeApi } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -656,6 +661,53 @@ process.env.HARNESS_SECRET = SECRET;
   ok((await countPlanted()) === 0, "…with the whole 250-row population swept out of the keyspace");
   ok(delays.filter((d) => d === fault.KVS_DELETE_PAUSE_MS).length > 80,
     `…and both the planting and the deletes were PACED at the app's published ${fault.KVS_DELETE_PAUSE_MS} ms rate (${delays.filter((d) => d === fault.KVS_DELETE_PAUSE_MS).length} rounds)`);
+
+
+  /* ── F-691/F-692 AT THE DOOR: the finished signal is `complete`, and a drain that could
+   * not delete what it condemned never reaches it, however the calls in between ended.
+   *
+   * This is the sequence F-691 names, driven through the live door F-688 opened: a page of
+   * ballast whose deletes REFUSE, budget breaks on later pages that would have thrown the
+   * failing page's resume point away, and a final call that walks to the end with `failed: 0`
+   * of its own. `truncated` is a per-CALL fact; `complete` is the drain's. ── */
+  const drainDelete = kvs.delete;
+  const refused692 = new Set([fault.plantedFaultKey(0), fault.plantedFaultKey(1)]);
+  kvs.delete = async function refusing692(key) {
+    if (refused692.has(key)) { const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e; }
+    return drainDelete.call(this, key);
+  };
+  ok((await plant({ n: 120, expired: true })).body.planted === 120, "(fixture) 120 expired planted rows, two of which refuse to be deleted");
+  let t692 = null, last692 = null, calls692 = 0;
+  do {
+    last692 = await post({ action: "sweepHarnessFaults", maxMs: 1, cursor: t692 });
+    t692 = last692.body.cursor; calls692++;
+    // A drain STOPS on `complete`, never on "the cursor came back null" and never on
+    // `truncated === false` — and it backs off when told the call is not converging.
+  } while (t692 && calls692 < 400 && last692.body.complete !== true && last692.body.reason !== "deletes-failing");
+  ok(calls692 > 1 && last692.body.failed > 0,
+    `(fixture) the drain took several calls and some deletes refused (calls ${calls692}, failed on the last ${last692.body.failed})`);
+  ok(last692.body.complete === false,
+    "F-691: no call of this drain is complete — two rows it condemned are still live, even on the call that reached the end of the keyspace");
+  ok(typeof last692.body.failedResume === "string" && last692.body.failedResume.length > 0,
+    "F-691: …and the door hands back `failedResume`, the page to go back to, rather than dropping it at the first budget break");
+  ok(typeof last692.body.complete === "boolean" && "complete" in last692.body,
+    "F-692: the sweep door ALWAYS carries `complete` — it is the finished signal, not an optional extra");
+
+  kvs.delete = drainDelete;
+  const finished692 = await post({ action: "sweepHarnessFaults", maxMs: 20_000, cursor: last692.body.failedResume });
+  ok(finished692.body.complete === true && finished692.body.cursor === null && finished692.body.failedResume === null,
+    `F-691: POSTing \`failedResume\` back finishes the job, and only THEN is the drain complete (got ${JSON.stringify({ complete: finished692.body.complete, deleted: finished692.body.deleted })})`);
+  ok((await countPlanted()) === 0, "…with the keyspace actually empty, which is what `complete` was claiming all along");
+
+  /* SOURCE — F-692: `complete` had ZERO production consumers; it arrived only by spread and
+   * the drivers re-derived finishedness from `truncated`, so one rule had two homes the
+   * moment it was given one. Both actions now NAME it, and the docblock says outright that
+   * deriving it is deprecated. */
+  const hookSrc = readFileSync(path.join(here, "../../src/test-hook.js"), "utf8");
+  ok((hookSrc.match(/\.\.\.r, complete: r\.complete === true \}\)/g) || []).length === 2,
+    "F-692.SOURCE: both the sweep and the clear actions return `complete` explicitly, so a reshape of the library's answer cannot silently drop it");
+  ok(/DEPRECATED: DERIVING FINISHEDNESS FROM `truncated`/.test(hookSrc),
+    "F-692.SOURCE: …and the docblock marks the `truncated`-only derivation deprecated, naming `complete` as the ONE finished signal");
 
   /* ── THE CLEAR takes LIVE ballast (which the sweep must never touch) and nothing else. ── */
   const livePlant = await plant({ n: 120, expired: false });

@@ -52,10 +52,23 @@ export function maskNonCode(src) {
   };
   /* A `/` starts a REGEX LITERAL only where a VALUE is expected. Every false positive in the
      first run of the scope suite came from getting this wrong; the heuristic is that suite's,
-     kept verbatim because it is the one that was paid for. */
+     kept because it is the one that was paid for — with ONE correction (F-754).
+
+     F-754: `+` and `-` are in the operator list because `a = b + /re/.test(c)` expects a value
+     after them, but the list cannot see the difference between the BINARY `+` and the second
+     `+` of a POSTFIX `++`, which yields a value and is therefore followed by DIVISION.
+     MEASURED on `const r = a++ / b + c / d;`: ` b + c ` was masked as a regex body, hiding any
+     identifier between the two divisions from the RULE 2 unbound-name scan. A `++`/`--`
+     digraph is the only place this bites, so it is the only thing excluded — in particular
+     `>` STAYS, because `=> /cache|DEFECT/i.test(v)` is the shape 174 sites in this directory
+     are written in, and reading those regex bodies as code is the original false positive.
+
+     The prescribed-by-ledger alternative (drop every operator but `( , = : [ ! & | ? { } ;`)
+     would have taken `>` with it and re-opened exactly that. */
   const regexCanStart = () => {
     const last = lastCode();
     if (!last) return true;
+    if ((last.ch === "+" || last.ch === "-") && out[last.k - 1] === last.ch) return false;
     if ("(,=:[!&|?{};+-*%~^<>".includes(last.ch)) return true;
     if (/[\w$)\]]/.test(last.ch)) {
       /* `return /x/`, `typeof /x/` — a keyword, not a value. */
@@ -108,16 +121,27 @@ export function maskNonCode(src) {
       }
     }
     if (c === '"' || c === "'") {
-      let j = i + 1;
+      let j = i + 1, closed = false;
       while (j < src.length) {
         if (src[j] === "\\") { j += 2; continue; }
         /* A quoted literal cannot span a newline. Stopping there bounds the damage an
            UNTERMINATED quote can do to everything after it. */
         if (src[j] === "\n") break;
-        if (src[j] === c) { j += 1; break; }
+        if (src[j] === c) { j += 1; closed = true; break; }
         j += 1;
       }
-      blank(i, j); i = j; continue;
+      /* F-754: an UNCLOSED quote is not a string, so it masks NOTHING. In valid JS a quote
+         always closes on its own line, so the only way to reach here is that this `'` was
+         never a quote at all — an apostrophe inside a regex body the heuristic above declined
+         to open (`f(x) /don't/.test(s)`: `/` after `)` is division, so `don` is code and the
+         apostrophe is bare). Masking to end-of-line there swallowed the REST OF THE LINE:
+         MEASURED, `callArgs("const t = f(x) /don't/.test(s); … FAIL(\"m\", { paths: [1] });",
+         "FAIL")` returned `[]` and the leak rule read zero FAIL calls for the file — the
+         FAIL-OPEN direction F-730 was cut to close. Masking nothing can only ADD visible
+         code, which for every caller here is the direction that refuses rather than passes.
+         `i` still advances past the quote, so the walk always terminates. */
+      if (closed) { blank(i, j); i = j; continue; }
+      i += 1; continue;
     }
     if (c === "`") { blank(i, i + 1); i += 1; resume.push("code"); mode = "tmpl"; continue; }
 

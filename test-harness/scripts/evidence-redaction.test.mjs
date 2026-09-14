@@ -1028,6 +1028,38 @@ ok(leakFailNamesArtefacts(
 ok(!leakFailNamesArtefacts('FAIL("a capture was REFUSED", { paths: p });\nFAIL("unclosed", { paths: q };'),
   "NEGATIVE CONTROL (F-716): an unbalanced FAIL( is a FAILURE, never a pass — the walker returns null and the rule refuses rather than guessing");
 
+/* ─── F-754 — THE MASK'S TWO FAIL-OPEN SHAPES ────────────────────────────────────────────
+ * Both of these make `callArgs` return FEWER calls than the file really has, which is the
+ * direction every rule above is wrong in: a leak FAIL the walker cannot see is a leak FAIL
+ * the rule reads as absent, and the file reports clean. They are asserted HERE, on the real
+ * `callArgs`, rather than on `maskNonCode` alone, because the mask is only ever interesting
+ * through its callers.
+ *
+ * (a) An apostrophe left bare by a `/` the heuristic (correctly) read as DIVISION used to
+ *     open a string that ran to end-of-line. (b) A postfix `++` looked like the binary `+`
+ *     that expects a value, so the `/` after it opened a regex that ran to the NEXT `/`.
+ * The `APOS` splice keeps this file's own source free of the unterminated quote it is
+ * testing for — the suite reads its own directory. */
+const APOS = String.fromCharCode(39);
+const divisionLine =
+  "const t = f(x) /don" + APOS + "t/.test(s); const AFTER = 1; FAIL(\"a capture was REFUSED\", { paths: p });";
+ok(callArgs(divisionLine, "FAIL").length === 1,
+  "POSITIVE CONTROL (F-754): a `/` after `)` is DIVISION, so the apostrophe that follows is not a quote and masks nothing past it — the FAIL call later on the SAME LINE is still read (before the fix this returned [] and the leak rule saw zero FAIL calls for the file)");
+ok(leakFailNamesArtefacts(divisionLine),
+  "…and the rule that consumes it grades that FAIL on its real arguments, instead of grading a file it could not read as clean");
+ok(maskNonCode(divisionLine).length === divisionLine.length
+  && maskNonCode(divisionLine).split("\n").length === divisionLine.split("\n").length,
+  "…with the length/newline invariant intact, which is what lets every caller slice the ORIGINAL by indices balanced on the mask");
+ok(maskNonCode("const r = a++ / b + c / d;") === "const r = a++ / b + c / d;",
+  "POSITIVE CONTROL (F-754): a postfix `++` yields a VALUE, so the `/` after it is division — ` b + c ` is no longer masked as a regex body, which used to hide any identifier between two divisions from the RULE 2 unbound-name scan");
+ok(maskNonCode("arr.filter(v => /cache|DEFECT/i.test(v));") === "arr.filter(v =>                .test(v));",
+  "NEGATIVE CONTROL (F-754): `=>` still expects a VALUE, so an arrow-body regex is still masked — 174 sites in this directory are written that way, and reading their bodies as code is the original false positive the heuristic was paid for");
+ok(maskNonCode("const re = /WRITE BRAKE/; const X = 1;") === "const re =              ; const X = 1;"
+  && maskNonCode("if (x) return /ROTATION NOT/.test(y);") === "if (x) return               .test(y);",
+  "NEGATIVE CONTROL (F-754): the other two shapes the heuristic was bought for — a bare assignment and a `return` — are untouched by the correction");
+ok(/^const s = +; FAIL\( +\);$/.test(maskNonCode("const s = \"a 'quoted' b\"; FAIL(\"x\");")),
+  "NEGATIVE CONTROL (F-754): a CLOSED quote still masks its body, apostrophes inside it included — the correction is about quotes that never close, which valid JS does not contain");
+
 /* F-705 — THE COHORT IS EVERY DRIVER THAT CAPTURES, NOT EVERY DRIVER THAT BINDS `makeShot`.
    `makeRosterUI({ record })` calls `makeShot(record)` internally and `grantRole` /
    `removeAccount` capture on its behalf, so a driver that takes all its Permissions-tab

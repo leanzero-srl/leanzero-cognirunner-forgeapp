@@ -416,29 +416,188 @@ for (const f of permDrivers) {
 const codeLines = (src) => src.split("\n").map((l, i) => ({ l, n: i + 1 }))
   .filter(({ l }) => !/^\s*\*/.test(l) && !/^\s*\/\//.test(l));
 
-/** The identifiers in `src` that ultimately denote a capture function. */
-function captureBindings(src) {
+/* F-678 — THE BINDING RESOLVER MUST NOT ENUMERATE SHAPES IT HAPPENS TO HAVE SEEN.
+   F-672 closed the receiver-NAME bypass; the resolver it installed still recognised only
+   TWO shapes: a bare declarator assigned from `makeShot(`, and an identifier imported
+   DIRECTLY from `roster-ui.mjs`. Two more shapes resolved to nothing:
+
+     const S = { hero: makeShot(NV) };  await S.hero(page, frame, p).catch(() => {});
+     // lib/roster-shots.mjs:  export { shotMasked as snap };
+     import { snap } from "../lib/roster-shots.mjs";  await snap(...).catch(...);
+
+   Neither waives `strict`, neither spells `shotMasked`, and `/makeShot\s*\(/` is satisfied
+   by the driver's OTHER, conforming capture — so the `madeNames.size >= 1` guard passed on
+   the conforming one while the unresolved one ate F-660's leak refusal. A mixed file could
+   hide a capture; the guard only caught a file where EVERY capture was unresolvable.
+
+   So two things change. The resolver learns both shapes — depth-1 object properties (bound
+   as `obj.prop`) and one-level re-export aliases through any `test-harness/lib/*.mjs`. And
+   the guard stops being "at least one binding resolved" and becomes "EVERY `makeShot(` call
+   in the file resolved to a binding": `madeUnresolved` reports the line numbers that did
+   not, so a shape nobody anticipated FAILS LOUDLY instead of passing quietly. Anything
+   nested deeper than one level is deliberately left unresolved for exactly that reason. */
+
+/** Regex-safe form of a binding name, which may be a member expression (`s.shot`). */
+const rxName = (n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** A call to any of `names`, honouring dotted member bindings. */
+const callsAny = (names) => new RegExp(`\\b(?:${[...names].map(rxName).join("|")})\\s*\\(`);
+
+/*
+ * ONE LEVEL of re-export: `lib/x.mjs` imports from roster-ui.mjs and exports under another
+ * name. Returns basename -> Map(exportedName -> "shotMasked" | "makeShot"). One level only,
+ * and stated as such: a two-hop chain resolves to nothing, which leaves its `makeShot(` call
+ * UNRESOLVED and therefore FAILS the guard rather than slipping past it.
+ */
+/** The re-export map of ONE lib source. Split out so a control can feed it text (below). */
+function parseReexports(src) {
   const code = codeLines(src).map(({ l }) => l).join("\n");
-  const imported = new Map();           // local name -> exported name from roster-ui.mjs
+  const localOrigin = new Map();        // local name in this lib -> origin export of roster-ui
+  for (const m of code.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'][^"']*roster-ui\.mjs["']/g)) {
+    for (const spec of m[1].split(",")) {
+      const a = spec.trim().match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+      if (a) localOrigin.set(a[2] || a[1], a[1]);
+    }
+  }
+  const map = new Map();
+  /* `export { shotMasked as snap } from "./roster-ui.mjs"` — the direct re-export form. */
+  for (const m of code.matchAll(/export\s*\{([^}]*)\}\s*from\s*["'][^"']*roster-ui\.mjs["']/g)) {
+    for (const spec of m[1].split(",")) {
+      const a = spec.trim().match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+      if (a && (a[1] === "shotMasked" || a[1] === "makeShot")) map.set(a[2] || a[1], a[1]);
+    }
+  }
+  /* `import { shotMasked as s } …` then `export { s as snap };` — the two-statement form. */
+  for (const m of code.matchAll(/export\s*\{([^}]*)\}\s*(?!from)/g)) {
+    for (const spec of m[1].split(",")) {
+      const a = spec.trim().match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+      if (!a) continue;
+      const origin = localOrigin.get(a[1]);
+      if (origin === "shotMasked" || origin === "makeShot") map.set(a[2] || a[1], origin);
+    }
+  }
+  return map;
+}
+function libReexports() {
+  const out = new Map();
+  let files = [];
+  try { files = readdirSync(libDir).filter((f) => f.endsWith(".mjs")); } catch { return out; }
+  for (const f of files) {
+    let src = "";
+    try { src = readFileSync(path.join(libDir, f), "utf8"); } catch { continue; }
+    const map = parseReexports(src);
+    if (map.size) out.set(f, map);
+  }
+  return out;
+}
+const LIB_REEXPORTS = libReexports();
+
+/* THE ONE-LEVEL WALK, PROVEN ON SOURCE rather than asserted about the current lib dir.
+   No test-harness/lib/*.mjs re-exports a roster-ui capture today, so a control that only
+   looked at the real directory would prove nothing about the parser — the same "an empty
+   result is not evidence" trap this suite exists to close. These feed it both re-export
+   forms directly, and a negative that must NOT resolve. */
+ok(parseReexports('import { shotMasked as s } from "./roster-ui.mjs";\nexport { s as snap };').get("snap") === "shotMasked",
+  "POSITIVE CONTROL (F-678): the two-statement re-export `import { shotMasked as s } … export { s as snap }` resolves snap -> shotMasked");
+ok(parseReexports('export { makeShot as mk } from "./roster-ui.mjs";').get("mk") === "makeShot",
+  "POSITIVE CONTROL (F-678): the direct `export { makeShot as mk } from` form resolves mk -> makeShot");
+ok(parseReexports('import { maskEmailsOnPage } from "./roster-ui.mjs";\nexport { maskEmailsOnPage as mask };').size === 0,
+  "NEGATIVE CONTROL: re-exporting a roster-ui helper that is NOT a capture does not make it one");
+ok(parseReexports('import { shotMasked } from "./somewhere-else.mjs";\nexport { shotMasked as snap };').size === 0,
+  "NEGATIVE CONTROL: a `shotMasked` that did not come from roster-ui.mjs is not resolved on the strength of its name");
+
+/** The identifiers in `src` that ultimately denote a capture function.
+    `reexports` is injectable ONLY so the control below can prove the one-level lib walk
+    end to end; production callers take the real lib directory. */
+function captureBindings(src, reexports = LIB_REEXPORTS) {
+  const lines = codeLines(src);
+  const code = lines.map(({ l }) => l).join("\n");
+  const imported = new Map();           // local name -> origin export ("shotMasked"/"makeShot"/…)
   for (const m of code.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'][^"']*roster-ui\.mjs["']/g)) {
     for (const spec of m[1].split(",")) {
       const a = spec.trim().match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
       if (a) imported.set(a[2] || a[1], a[1]);
     }
   }
+  /* …and the same names arriving through ONE level of re-export in test-harness/lib. */
+  for (const m of code.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+\.mjs)["']/g)) {
+    const base = path.basename(m[2]);
+    const reexp = reexports.get(base);
+    if (!reexp) continue;
+    for (const spec of m[1].split(",")) {
+      const a = spec.trim().match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+      const origin = a && reexp.get(a[1]);
+      if (origin) imported.set(a[2] || a[1], origin);
+    }
+  }
   const local = (exported) => [...imported.entries()].filter(([, e]) => e === exported).map(([l]) => l);
+
   /* An alias of `shotMasked` IS a capture function — calling it is calling shotMasked. */
   const shotMaskedNames = new Set(["shotMasked", ...local("shotMasked")]);
   for (const n of [...shotMaskedNames]) {
-    for (const m of code.matchAll(new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${n}\\s*[;,\\n]`, "g"))) shotMaskedNames.add(m[1]);
+    for (const m of code.matchAll(new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${rxName(n)}\\s*[;,\\n]`, "g"))) shotMaskedNames.add(m[1]);
   }
-  /* A `makeShot(...)` RESULT is a capture function, under whatever name it is bound. */
+
+  /* A `makeShot(...)` RESULT is a capture function, under whatever name and in whatever
+     container it is bound. Every binding records the LINE it consumed, so the guard below
+     can tell a resolved call from one that merely exists. */
   const makeShotNames = ["makeShot", ...local("makeShot")];
   const madeNames = new Set();
-  for (const n of makeShotNames) {
-    for (const m of code.matchAll(new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:await\\s+)?${n}\\s*\\(`, "g"))) madeNames.add(m[1]);
+  const resolvedLines = new Set();
+  const mkAlt = makeShotNames.map(rxName).join("|");
+  const DECL = new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:await\\s+)?(?:${mkAlt})\\s*\\(`, "g");
+  const PROP = new RegExp(`([A-Za-z_$][\\w$]*)\\s*:\\s*(?:await\\s+)?(?:${mkAlt})\\s*\\(`, "g");
+  const ASSIGN = new RegExp(`([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)+)\\s*=\\s*(?:await\\s+)?(?:${mkAlt})\\s*\\(`, "g");
+  const OPEN_OBJ = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\{/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const { l, n } = lines[i];
+    for (const m of l.matchAll(DECL)) { madeNames.add(m[1]); resolvedLines.add(n); }
+    /* `obj.shot = makeShot(...)` — a member assignment is a binding too. */
+    for (const m of l.matchAll(ASSIGN)) { madeNames.add(m[1]); resolvedLines.add(n); }
+    /* `const S = { hero: makeShot(NV) }` — walk the object literal, ONE level deep, and
+       bind `S.hero`. A property nested deeper is left unresolved on purpose. */
+    const open = l.match(OPEN_OBJ);
+    if (!open) continue;
+    const obj = open[1];
+    /* Depth is tracked PER CHARACTER, not per line: `{ a: { b: makeShot(NV) } }` puts both
+       properties on one line, and a line-granular walk would bind the depth-2 one as though
+       it were a direct property. Only depth-1 text is collected, carrying the line number it
+       came from, so anything nested deeper never produces a binding — and therefore lands in
+       `madeUnresolved` and FAILS the guard, which is the intended treatment of a shape this
+       resolver does not understand. */
+    const segments = [];               // { text, n } at depth exactly 1
+    let depth = 0, buf = "", bufLine = 0, done = false;
+    for (let j = i; j < lines.length && !done; j++) {
+      const full = lines[j].l;
+      const from = j === i ? full.indexOf("{") : 0;
+      for (let k = from; k < full.length; k++) {
+        const ch = full[k];
+        if (ch === "{") {
+          depth++;
+          if (depth === 1) { buf = ""; bufLine = lines[j].n; continue; }
+        } else if (ch === "}") {
+          if (depth === 1) { segments.push({ text: buf, n: bufLine }); buf = ""; }
+          depth--;
+          if (depth === 0) { done = true; break; }
+          continue;
+        }
+        if (depth === 1) { buf += ch; if (ch === "\n") bufLine = lines[j].n; }
+      }
+      if (depth === 1) { segments.push({ text: buf, n: bufLine }); buf = ""; bufLine = lines[j + 1] ? lines[j + 1].n : bufLine; }
+    }
+    for (const seg of segments) {
+      for (const m of seg.text.matchAll(PROP)) { madeNames.add(`${obj}.${m[1]}`); resolvedLines.add(seg.n); }
+    }
   }
-  return { shotMaskedNames, madeNames, all: new Set([...shotMaskedNames, ...madeNames]) };
+
+  /* THE GUARD'S EVIDENCE: every line that CALLS a makeShot-denoting name but produced no
+     binding. A non-empty list is a capture shape this resolver does not understand. */
+  const MK_CALL = new RegExp(`\\b(?:${mkAlt})\\s*\\(`);
+  const madeUnresolved = lines
+    .filter(({ l, n }) => MK_CALL.test(l) && !resolvedLines.has(n) && !/^\s*import\b/.test(l))
+    .map(({ n }) => n);
+
+  return { shotMaskedNames, madeNames, madeUnresolved, all: new Set([...shotMaskedNames, ...madeNames]) };
 }
 
 const WAIVES_STRICT = /strict\s*:\s*false/;
@@ -446,7 +605,7 @@ const WAIVES_STRICT = /strict\s*:\s*false/;
 function scanSwallowedShots(src) {
   const { all } = captureBindings(src);
   if (all.size === 0) return [];
-  const calls = new RegExp(`\\b(?:${[...all].join("|")})\\s*\\(`);
+  const calls = callsAny(all);
   const lines = codeLines(src);
   const hits = [];
   for (let i = 0; i < lines.length; i++) {
@@ -461,7 +620,7 @@ function scanSwallowedShots(src) {
 /** Calling `shotMasked` — or any alias of it — instead of the driver's makeShot binding. */
 function scanDirectShotMasked(src) {
   const { shotMaskedNames } = captureBindings(src);
-  const re = new RegExp(`\\b(?:${[...shotMaskedNames].join("|")})\\s*\\(`);
+  const re = callsAny(shotMaskedNames);
   return codeLines(src).filter(({ l }) => re.test(l) && !/\bmakeShot\s*\(/.test(l)).map(({ n }) => n);
 }
 
@@ -489,6 +648,77 @@ ok(scanDirectShotMasked(ALIAS_IMPORTED).length === 1,
 ok(scanDirectShotMasked('import { makeShot } from "../lib/roster-ui.mjs";\nconst shot_ = makeShot(NV);\nawait shot_(page, frame, p);').length === 0,
   "NEGATIVE CONTROL: going through a makeShot binding is the sanctioned route, not an offence");
 
+/* ── F-678 controls: the two binding SHAPES the F-672 resolver could not see ──────
+   Both are MIXED files — a conforming `shot_` binding alongside the unresolved one —
+   because that is the reachable case: with a conforming binding present, the old
+   `madeNames.size >= 1` guard passed and the offending capture went unpoliced. */
+const OBJ_PROP = [
+  'import { makeShot } from "../lib/roster-ui.mjs";',
+  "const shot_ = makeShot(NV);",
+  "const S = { hero: makeShot(NV) };",
+  "await shot_(page, frame, p);",
+  "await S.hero(page, frame, p).catch(() => {});",
+].join("\n");
+ok(captureBindings(OBJ_PROP).madeNames.has("S.hero"),
+  "POSITIVE CONTROL (F-678): an object-property capture resolves to the binding `S.hero`");
+ok(scanSwallowedShots(OBJ_PROP).length === 1,
+  "POSITIVE CONTROL (F-678): …and the swallowed-answer rule FIRES on it, in a file whose other capture conforms");
+ok(captureBindings(OBJ_PROP).madeUnresolved.length === 0,
+  "…with every makeShot( call in that file accounted for");
+
+const OBJ_PROP_MULTILINE = [
+  'import { makeShot } from "../lib/roster-ui.mjs";',
+  "const S = {",
+  "  hero: makeShot(NV),",
+  "};",
+  "await S.hero(page, frame, p).catch(() => {});",
+].join("\n");
+ok(scanSwallowedShots(OBJ_PROP_MULTILINE).length === 1,
+  "POSITIVE CONTROL (F-678): spreading the object literal over lines is not a bypass either");
+
+const MEMBER_ASSIGN = [
+  'import { makeShot } from "../lib/roster-ui.mjs";',
+  "const S = {};",
+  "S.hero = makeShot(NV);",
+  "await S.hero(page, frame, p).catch(() => {});",
+].join("\n");
+ok(scanSwallowedShots(MEMBER_ASSIGN).length === 1,
+  "POSITIVE CONTROL (F-678): nor is assigning the capture onto a member after the fact");
+
+/* THE RE-EXPORT SHAPE, END TO END. No lib re-exports a capture today, so the map is
+   INJECTED — the parser that builds it for real is proven separately, on source, above. */
+const FAKE_REEXPORTS = new Map([["roster-shots.mjs", new Map([["snap", "shotMasked"], ["mk", "makeShot"]])]]);
+const REEXPORT_ALIAS = 'import { snap } from "../lib/roster-shots.mjs";\nawait snap(page, frame, p).catch(() => {});';
+ok(captureBindings(REEXPORT_ALIAS, FAKE_REEXPORTS).shotMaskedNames.has("snap"),
+  "POSITIVE CONTROL (F-678): a capture aliased through ONE level of lib re-export resolves to a shotMasked binding");
+ok(captureBindings(REEXPORT_ALIAS, FAKE_REEXPORTS).all.has("snap"),
+  "…so the swallow rule and the direct-call rule both police it");
+const REEXPORT_MADE = 'import { mk } from "../lib/roster-shots.mjs";\nconst shot_ = mk(NV);\nawait shot_(page, frame, p).catch(() => {});';
+ok(captureBindings(REEXPORT_MADE, FAKE_REEXPORTS).madeNames.has("shot_"),
+  "POSITIVE CONTROL (F-678): …and a `makeShot` re-exported as `mk` still produces a resolved capture binding");
+ok(captureBindings(REEXPORT_MADE, FAKE_REEXPORTS).madeUnresolved.length === 0,
+  "…with its makeShot-equivalent call accounted for by the guard");
+/* `all` always carries the literal `shotMasked`, so the discriminator is whether `snap`
+   is in it — not whether the set is empty. */
+ok(!captureBindings(REEXPORT_ALIAS, new Map()).all.has("snap"),
+  "NEGATIVE CONTROL: with no re-export map, that same import does NOT resolve — the pass above comes from the walk, not from the name `snap`");
+ok(scanSwallowedShots(REEXPORT_ALIAS).length === 0,
+  "…and against the REAL lib directory it is unresolved today, which is the honest state of the one-level walk: proven on source, with no live consumer");
+
+/* The one-level bound, stated as a control rather than as a comment: a capture aliased
+   through a lib that this walk does not resolve leaves its makeShot( call UNRESOLVED, and
+   the guard below turns that into a FAIL. Unknown shapes fail loudly; they do not pass. */
+const UNRESOLVED_SHAPE = [
+  'import { makeShot } from "../lib/roster-ui.mjs";',
+  "const shot_ = makeShot(NV);",
+  "const deep = { a: { b: makeShot(NV) } };",
+  "await shot_(page, frame, p);",
+].join("\n");
+ok(captureBindings(UNRESOLVED_SHAPE).madeUnresolved.length === 1,
+  "POSITIVE CONTROL (F-678): a capture shape the resolver does NOT understand is reported unresolved, not silently ignored");
+ok(captureBindings(UNRESOLVED_SHAPE).madeNames.size >= 1,
+  "…even though the file has a conforming binding too — which is exactly the case the old `size >= 1` guard waved through");
+
 for (const f of permDrivers) {
   const src = readFileSync(path.join(here, f), "utf8");
   const waived = codeLines(src).filter(({ l }) => WAIVES_STRICT.test(l)).map(({ n }) => n);
@@ -498,9 +728,14 @@ for (const f of permDrivers) {
   const direct = scanDirectShotMasked(src);
   ok(direct.length === 0, `${f}: shotMasked is not called directly, nor through an alias — makeShot is the one home of the recording (at: ${direct.join(", ")})`);
   ok(/makeShot\s*\(/.test(src), `${f}: captures are bound to this driver's own N/V writer via makeShot`);
-  /* The rule is only worth anything if it FOUND the binding it is policing. */
-  ok(captureBindings(src).madeNames.size >= 1,
-    `${f}: …and the scan RESOLVED that binding by name (${[...captureBindings(src).madeNames].join(", ") || "none — the rule would be scanning nothing"})`);
+  /* The rule is only worth anything if it found EVERY binding it is policing (F-678).
+     "At least one resolved" let a mixed file hide a capture behind a conforming sibling;
+     the bar is now that no `makeShot(` call in the file is left unaccounted for. */
+  const b = captureBindings(src);
+  ok(b.madeNames.size >= 1,
+    `${f}: …and the scan RESOLVED that binding by name (${[...b.madeNames].join(", ") || "none — the rule would be scanning nothing"})`);
+  ok(b.madeUnresolved.length === 0,
+    `${f}: …and EVERY makeShot( call resolved to a binding — an unresolved one is a capture the swallow rule cannot police (at: ${b.madeUnresolved.join(", ")})`);
 }
 
 /* ── 4c-iii. F-657 — NO PERMISSION DRIVER PICKS AN ACCOUNT ITS OWN WAY ──────────

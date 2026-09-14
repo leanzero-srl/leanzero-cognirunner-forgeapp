@@ -49,8 +49,11 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
+/* F-783 — the capability PRECONDITION is judged by the lib, never by this file. See the
+   conversion note at the read below. */
+import { judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
-const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "memories", "kvs"], defaultEnv: "staging" });
+const { hookUrl: URL_, envName: ENV_NAME } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "memories", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const SECRET = env.HARNESS_SECRET;
@@ -147,9 +150,20 @@ const main = async () => {
   console.log("waiting 40s for the ~30s provider cache…");
   await sleep(40000);
   const cap = await call("getAgentCapability");
-  check('the Coder is ENABLED on the managed engine (reason "managed")', cap.enabled === true && cap.reason === "managed",
-    { enabled: cap.enabled, reason: cap.reason, edition: cap.edition });
-  if (cap.enabled !== true) throw new Error(`the Coder is not enabled (${cap.reason}) — the rest of this script would prove nothing`);
+  /* F-783 — THE ANSWER GOES TO THE LIB BEFORE THIS FILE GRADES ANYTHING ON IT.
+     This block used to read `check('… ENABLED …', cap.enabled === true && cap.reason === "managed")`
+     followed by a bare `throw`, which is the F-767 defect wearing a generic helper's clothes: a
+     PRECONDITION (the provider slot came on) graded as a product FAIL, invisible to RULE 4b in
+     live-driver-scope.test.mjs because it carried none of the policed vocabulary. The verdict is
+     now `judgeAgentCapability`'s; `flipped: true` because this run DID flip a slot, and `slot`
+     names WHICH one — the provider slot, not the agent model — so the remedy sentence is true.
+     The `reason === "managed"` half stays here on purpose: that the managed engine identifies
+     itself by that reason is this driver's SUBJECT, and the EQUALITY form is deliberately not
+     policed (see the F-782 negative control). */
+  const capVerdict = judgeAgentCapability({ cap, flipped: true, envName: ENV_NAME, frontier: "managed", slot: `provider slot (${PROVIDER_SLOT})` });
+  check('the Coder is ENABLED on the managed engine (reason "managed")', capVerdict.proceed === true && cap.reason === "managed",
+    { enabled: cap.enabled, reason: cap.reason, edition: cap.edition, verdict: capVerdict.verdict });
+  if (!capVerdict.proceed) throw new Error(capVerdict.what);
 
   // ── the memory that must reach the pinned prefix ─────────────────────────────
   const epoch0 = await kvGet(EPOCH_KEY);

@@ -49,8 +49,11 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
+/* F-783 — the capability PRECONDITION is judged by the lib, never by this file. See the
+   conversion note at the read below. */
+import { judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
-const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
+const { hookUrl: URL_, envName: ENV_NAME } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const SECRET = env.HARNESS_SECRET;
@@ -151,8 +154,15 @@ const main = async () => {
     console.log("waiting 40s for the ~30s provider cache…");
     await sleep(40000);
     const cap = await call("getAgentCapability");
-    check('the Coder is ENABLED on the managed engine (reason "managed")', cap.enabled === true && cap.reason === "managed", { enabled: cap.enabled, reason: cap.reason, edition: cap.edition });
-    if (cap.enabled !== true) throw new Error(`the Coder is not enabled (${cap.reason}) — the rest of this script would prove nothing`);
+    /* F-783 — THE ANSWER GOES TO THE LIB BEFORE THIS FILE GRADES ANYTHING ON IT. Same
+       conversion, and for the same reason, as coder-pin-epoch-live: a PRECONDITION graded
+       `cap.enabled === true` inside a generic `check()` is the F-767 defect with none of the
+       vocabulary RULE 4b polices, so it read clean while turning an incapable tenant red.
+       `flipped: true` because this run flipped a slot; `slot` names the provider slot, which is
+       the one it actually flipped. `reason === "managed"` stays — it is the SUBJECT. */
+    const capVerdict = judgeAgentCapability({ cap, flipped: true, envName: ENV_NAME, frontier: "managed", slot: `provider slot (${PROVIDER_SLOT})` });
+    check('the Coder is ENABLED on the managed engine (reason "managed")', capVerdict.proceed === true && cap.reason === "managed", { enabled: cap.enabled, reason: cap.reason, edition: cap.edition, verdict: capVerdict.verdict });
+    if (!capVerdict.proceed) throw new Error(capVerdict.what);
 
     // ── two REAL skill ids, read from the store (never invented) ──────────────
     const sk = await call("getSkills");

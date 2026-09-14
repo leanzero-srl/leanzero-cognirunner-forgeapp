@@ -91,7 +91,7 @@ export function resolveFlipModel({ envName, argv = [], defaultEnvs = FLIP_MODEL_
  * positive control; here it is a precondition, and a precondition that did not hold leaves
  * everything below it UNPROVEN rather than broken.
  */
-export function judgeAgentCapability({ cap, flipModel, flipped, envName, frontier } = {}) {
+export function judgeAgentCapability({ cap, flipModel, flipped, envName, frontier, slot } = {}) {
   const c = cap || {};
   if (c.enabled === true) {
     return {
@@ -104,7 +104,7 @@ export function judgeAgentCapability({ cap, flipModel, flipped, envName, frontie
      `decideInstanceFlip` below) passes what HAPPENED, not what was asked for, and gets the
      same grading rule: a precondition that did not hold is N/V with the remedy named. */
   if (flipModel === undefined && typeof flipped === "boolean") {
-    return judgeFlagless({ c, flipped, envName, frontier });
+    return judgeFlagless({ c, flipped, envName, frontier, slot });
   }
   const reason = c.reason === undefined ? "no reason given" : c.reason;
   if (!flipModel) {
@@ -185,8 +185,15 @@ export function decideInstanceFlip({ cap, frontier, envName } = {}) {
  * The flag-less arm of the verdict, reached through `judgeAgentCapability({ cap, flipped })`:
  * `flipped` is what HAPPENED, where `flipModel` is what the operator ASKED FOR. Same grading
  * rule on both arms — a capability that is off is N/V with the remedy named, never FAIL.
+ *
+ * F-783 — `slot` NAMES THE SLOT THAT WAS FLIPPED, and defaults to the agent model because that
+ * is what every F-767/F-782 caller flips. The coder drivers converged in F-783 flip the
+ * PROVIDER slot (`COGNIRUNNER_AI_PROVIDER` → "managed") instead, and an N/V sentence whose
+ * REMEDY names the wrong slot costs the next reader exactly the hour these findings exist to
+ * save. Omitting it reproduces the previous sentence byte for byte, so no existing caller moves.
  */
-function judgeFlagless({ c, flipped, envName, frontier }) {
+function judgeFlagless({ c, flipped, envName, frontier, slot }) {
+  const what = slot || "agent model";
   const reason = c.reason === undefined ? "no reason given" : c.reason;
   if (!flipped) {
     return {
@@ -198,6 +205,6 @@ function judgeFlagless({ c, flipped, envName, frontier }) {
   return {
     proceed: false,
     verdict: "N/V",
-    what: `the instance STILL cannot hold an agent (${reason}) after this run pointed the agent model at "${frontier}" on ${envName}, so nothing below this point ran. Not graded FAIL because the door under test was never reached. REMEDY: confirm the slot really holds that model — the provider/model config is TTL-cached ~30s, so a capability read taken sooner than 35s after the write still answers with the OLD model; a slot that does hold it beside a capability that still says no is a finding in its own right, and va-capability-gate-live is where it is argued.`,
+    what: `the instance STILL cannot hold an agent (${reason}) after this run pointed the ${what} at "${frontier}" on ${envName}, so nothing below this point ran. Not graded FAIL because the door under test was never reached. REMEDY: confirm the slot really holds that model — the provider/model config is TTL-cached ~30s, so a capability read taken sooner than 35s after the write still answers with the OLD model; a slot that does hold it beside a capability that still says no is a finding in its own right, and va-capability-gate-live is where it is argued.`,
   };
 }

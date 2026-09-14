@@ -415,6 +415,220 @@ export function preconditionViolations(src) {
     "NEGATIVE CONTROL (F-782): PROSE may say all of it — six drivers' docblocks explain this precondition and must keep being able to");
 }
 
+/* ── RULE 4c (F-783) · THE CAPABILITY ANSWER REACHES THE LIB BEFORE THE DRIVER GRADES IT ──
+ *
+ * F-782 widened RULE 4b from the F-767 sentence to the sentence CLASS, and two drivers still
+ * walked past it — because they never wrote a sentence at all:
+ *
+ *     coder-skills-live:   check("the Coder is now ENABLED", cap.enabled === true)
+ *     _probe-shadow-badge: flipped the agent model with NO capability read whatsoever
+ *
+ * A precondition graded through a GENERIC assertion helper carries no policed vocabulary, so a
+ * rule that reads words cannot see it: measured, both files answered `[]` under RULE 4/4b even
+ * BEFORE the F-782 fix. Their convergence rested on review, and review is not a gate.
+ *
+ * So 4c polices the SHAPE instead of the words, at expression level:
+ *
+ *   (i)  A driver that READS `getAgentCapability` must hand an answer to the lib
+ *        (`judgeAgentCapability` / `decideInstanceFlip`) BEFORE any expression that grades
+ *        `<thatAnswer>.enabled` TRUE appears inside an assertion helper — `check(`, `assert*(`,
+ *        `PASS(`, `FAIL(`, `ok(`. Once the lib has been asked, the file is downstream of a
+ *        judged precondition and may say what it likes about the instance.
+ *   (ii) A driver that FLIPS the agent model (`saveAgentModel`) and never reads the capability
+ *        at all is the probe's shape: it mutates a tenant slot on a decision it never made.
+ *
+ * WHY "GRADES TRUE", AND NOT "MENTIONS .enabled". Measured against the whole 62-file cohort,
+ * the bare form reported four files; two of them were right and two were the rule being wrong:
+ *   - `coder-skills-live`  asserts `before.enabled === false && before.reason === "needs-frontier-model"`
+ *     as its OPENING state, before any handoff, because the Coder edition of that tenant is
+ *     what it is proving and restoring. That is the same SUBJECT argument F-782 made when it
+ *     left the `reason ===` EQUALITY form alone.
+ *   - `va-capability-gate-live` asserts `capBody.enabled === false` as its PREMISE and prints
+ *     `${capBody.enabled}` in a FAIL message.
+ * Asserting the capability is OFF is a subject or a premise; asserting it is ON is the
+ * precondition, and `judgeAgentCapability` exists precisely to answer `enabled === true`. So
+ * the policed expressions are `=== true` / `!== false` / a bare truthiness argument, and an
+ * `${…}` interpolation is never one of them: it displays a value, it does not grade it.
+ *
+ * THE TWO EXEMPT DRIVERS, per pass 7, with the reason quoted from RULE 4's own docblock:
+ * "va-rest-doors-live asserts that the SAVE DOOR refuses an agent on an incapable instance
+ * (F-485) and va-capability-gate-live needs capability OFF as its premise — for both, an
+ * incapable instance is the SUBJECT under test, not a precondition, and their FAILs are real
+ * assertions." HONESTLY MEASURED: neither is a hit under the text above even without the list,
+ * because both grade the capability OFF and 4c only polices grading it ON. The list is here so
+ * that a future rephrasing of THEIR assertion — the day one of them needs to say `enabled ===
+ * true` about the instance it is proving things about — cannot be answered by weakening 4c for
+ * everyone. An exemption that currently changes no verdict is cheap; a rule quietly narrowed to
+ * accommodate two files is not.
+ *
+ * WHAT THIS RULE CANNOT SEE, stated so the next reader does not trust it further than it goes:
+ * the cap-name scan reads single-line `const/let/var` initializers, so an answer bound across a
+ * line break is a name it never learns — a FALSE NEGATIVE, never a false positive. And a
+ * precondition graded outside an assertion helper (a bare `if (cap.enabled !== true) throw`)
+ * is out of scope by construction: it produces no red row, which is the harm 4c is about.
+ */
+const CAP_READ = "getAgentCapability";
+const CAP_FLIP = "saveAgentModel";
+const CAP_LIB_CALL = /(?:judgeAgentCapability|decideInstanceFlip)\s*\(/;
+/** The helpers whose argument list becomes a graded row in an evidence file. */
+const ASSERTION_HELPERS = ["check", "assert\\w*", "PASS", "FAIL", "ok"];
+/* DELIBERATELY NOT HELPERS: `nv` / `NV`. An N/V row is the LIB's own outcome — the converged
+   shape ends `nv(capVerdict.what, { enabled: cap.enabled })` — so policing them would flag the
+   very evidence payload the fix produces. They also cannot cause the harm: an N/V is not a red. */
+
+/** Names that hold an answer from `getAgentCapability`, including one-step aliases of one. */
+export function capabilityAnswerNames(withStrings) {
+  const names = new Set();
+  const decls = [];
+  const re = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g;
+  let m;
+  while ((m = re.exec(withStrings))) decls.push([m[1], m[2]]);
+  /* A fixed point, because `capRead` → `cap` → `capBody` is three hops in the wild
+     (va-rest-doors-live binds `capRead` then `cap`; va-capability-gate-live binds `cap` then
+     `capBody`). Four passes is past saturation for every shape in the directory. */
+  for (let pass = 0; pass < 4; pass++) {
+    for (const [name, rhs] of decls) {
+      if (names.has(name)) continue;
+      /* The LIB's answer is not the CAPABILITY's answer. Without this, `const flip =
+         decideInstanceFlip({ cap: cap0 })` would make `flip` a capability name and the rule
+         would start policing `flip.enabled`, which does not exist. */
+      if (CAP_LIB_CALL.test(rhs)) continue;
+      if (rhs.includes(CAP_READ)) { names.add(name); continue; }
+      for (const n of names) {
+        if (new RegExp("(?<![\\w$.])" + n + "(?![\\w$])").test(rhs)) { names.add(name); break; }
+      }
+    }
+  }
+  return names;
+}
+
+export function capabilityHandoffViolations(src) {
+  /* Two masks of the SAME LENGTH, so an index balanced on one slices the other (F-730).
+     `withStrings` keeps string literals, because `call("getAgentCapability")` IS a string and
+     masking it would hide the very read being policed. `codeOnly` masks them, because a `)` in
+     a FAIL message otherwise truncates the call whose arguments are being read — the exact bug
+     this file's own header records. Template INTERPOLATIONS survive both masks as code, which
+     is why the `${` test below is done against `withStrings`. */
+  const withStrings = maskComments(src);
+  const codeOnly = maskNonCode(src);
+  const out = [];
+
+  if (!withStrings.includes(CAP_READ)) {
+    /* The NAME, not a call: every driver in this directory flips through a helper
+       (`inv("saveAgentModel", …)`), so it is a STRING ARGUMENT and never a callee. Demanding a
+       following `(` is how the first draft answered clean on the probe's own line — caught by
+       the positive control below, which is why that control is written verbatim. */
+    if (withStrings.includes(CAP_FLIP)) {
+      out.push("flips the agent model without reading " + CAP_READ + " at all — the decision to mutate the tenant's slot was never made from the instance (pass it through decideInstanceFlip)");
+    }
+    return out;
+  }
+
+  const names = capabilityAnswerNames(withStrings);
+  const handoffAt = CAP_LIB_CALL.exec(codeOnly);
+  const handoff = handoffAt ? handoffAt.index : Infinity;
+
+  const callRe = new RegExp("(?<![\\w$.])(" + ASSERTION_HELPERS.join("|") + ")\\s*\\(", "g");
+  let c;
+  while ((c = callRe.exec(codeOnly))) {
+    if (c.index >= handoff) continue;
+    /* Balance on the masked source, so only real parentheses count. */
+    let depth = 0, end = -1;
+    for (let i = callRe.lastIndex - 1; i < codeOnly.length; i++) {
+      if (codeOnly[i] === "(") depth++;
+      else if (codeOnly[i] === ")") { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end < 0) continue;
+    const args = codeOnly.slice(callRe.lastIndex, end);
+    for (const n of names) {
+      const propRe = new RegExp("(?<![\\w$.])" + n + "\\s*\\.\\s*enabled", "g");
+      let g;
+      while ((g = propRe.exec(args))) {
+        const abs = callRe.lastIndex + g.index;
+        /* `${cap.enabled}` DISPLAYS the value in a message; it does not grade it. */
+        if (/\$\{\s*$/.test(withStrings.slice(Math.max(0, abs - 4), abs))) continue;
+        const after = args.slice(g.index + g[0].length);
+        const before = args.slice(0, g.index);
+        const gradedTrue = /^\s*(?:===|==)\s*true/.test(after) || /^\s*(?:!==|!=)\s*false/.test(after);
+        /* `$` matters: `args` is the slice INSIDE the parentheses, so the LAST argument has no
+           trailing `)` to match — `check("on", cap.enabled)` is the control that caught it. */
+        const bareTruthy = /[(,]\s*$/.test(before) && /^\s*(?:[,)]|$)/.test(after);
+        if (!gradedTrue && !bareTruthy) continue;
+        out.push(c[1] + "(...) grades `" + n + ".enabled` TRUE before any capability answer reaches the lib");
+      }
+    }
+  }
+  return [...new Set(out)];
+}
+{
+  /* The exemption is a LIST OF FILES with the reason quoted, not a hole in the pattern. */
+  const RULE_4C_EXEMPT = Object.freeze({
+    "va-rest-doors-live.mjs":
+      "asserts that the SAVE DOOR refuses an agent on an incapable instance (F-485) — an incapable instance is the SUBJECT under test, not a precondition, and its FAILs are real assertions",
+    "va-capability-gate-live.mjs":
+      "needs capability OFF as its premise — same reason: the instance's incapacity is what it proves, and a rule that banned the expression would have forced it to lie",
+  });
+  for (const f of Object.keys(RULE_4C_EXEMPT)) {
+    ok(fs.existsSync(path.join(here, f)),
+      "RULE 4c (F-783): the exempt driver " + f + " still exists — an exemption naming a deleted file is a comment pretending to be a rule");
+  }
+
+  for (const f of drivers) {
+    if (RULE_4C_EXEMPT[f]) continue;
+    const v = capabilityHandoffViolations(fs.readFileSync(path.join(here, f), "utf8"));
+    ok(v.length === 0,
+      "RULE 4c (F-783) " + f + ": " + v.join(" and ") + " — hand the answer to lib/" + PRECONDITION_LIB
+      + " (judgeAgentCapability / decideInstanceFlip) BEFORE grading it, so an absent precondition is N/V and not a red");
+  }
+
+  /* MEASURED, AND RECORDED SO THE LIST STAYS HONEST: both exempt drivers are clean under the
+     rule as written today, because each grades the capability OFF and 4c polices grading it ON.
+     If this assertion ever fails, the exemption started doing real work and the reason above
+     has to be re-argued rather than re-assumed. */
+  for (const [f, why] of Object.entries(RULE_4C_EXEMPT)) {
+    ok(capabilityHandoffViolations(fs.readFileSync(path.join(here, f), "utf8")).length === 0,
+      "RULE 4c (F-783): the exemption for " + f + " is NOT load-bearing today (it is listed because: " + why + ")");
+  }
+
+  /* ── POSITIVE CONTROLS (F-783) — the two shapes that walked past RULE 4/4b ─────────── */
+  const f783skills = [
+    'const cap = await call("getAgentCapability");',
+    'check("the Coder is now ENABLED", cap.enabled === true);',
+  ].join("\n");
+  ok(capabilityHandoffViolations(f783skills).length === 1,
+    "POSITIVE CONTROL (F-783): coder-skills-live's line verbatim — a precondition graded TRUE through a generic check() with no lib call anywhere, which RULE 4 and 4b both answered clean on");
+  ok(preconditionViolations(f783skills).length === 0,
+    "…and the SAME line is measured clean under RULE 4/4b right here, which is the whole reason 4c exists");
+  const f783probe = 'await inv("saveAgentModel", { model: FRONTIER });\nawait inv("getAgentBadge", {});';
+  ok(capabilityHandoffViolations(f783probe).length === 1,
+    "POSITIVE CONTROL (F-783): _probe-shadow-badge's shape — a FLIP with no capability read at all, so there was no answer to hand anywhere");
+  ok(preconditionViolations(f783probe).length === 0,
+    "…also clean under RULE 4/4b: it contains neither the flag nor any verdict sentence, because it never says anything");
+  ok(capabilityHandoffViolations('const cap = await call("getAgentCapability");\ncheck("on", cap.enabled);').length === 1,
+    "POSITIVE CONTROL (F-783): the BARE truthiness argument is the same grade without the comparator");
+  ok(capabilityHandoffViolations('const r = await invoke("getAgentCapability", {});\nconst cap = r.body || {};\nPASS(`up`, { ok: cap.enabled !== false });').length === 1,
+    "POSITIVE CONTROL (F-783): through a one-hop ALIAS and spelled `!== false` — the shape, not the spelling");
+
+  /* ── NEGATIVE CONTROLS (F-783) ─────────────────────────────────────────────────────── */
+  const f783fixed = [
+    'const cap = await call("getAgentCapability");',
+    'const capVerdict = judgeAgentCapability({ cap, flipped: true, envName: ENV_NAME, frontier: FRONTIER });',
+    'check("the Coder is now ENABLED", capVerdict.proceed === true, { enabled: cap.enabled });',
+  ].join("\n");
+  ok(capabilityHandoffViolations(f783fixed).length === 0,
+    "NEGATIVE CONTROL (F-783): the converged shape — the answer reaches the lib first and the row is graded on the VERDICT, with `cap.enabled` kept as evidence");
+  ok(capabilityHandoffViolations('const cap = await call("getAgentCapability");\ncheck("off at rest", cap.enabled === false);').length === 0,
+    "NEGATIVE CONTROL (F-783): grading the capability OFF is untouched — that is va-capability-gate-live's premise and coder-skills-live's opening state, and it is a SUBJECT, never a precondition");
+  ok(capabilityHandoffViolations('const cap = await call("getAgentCapability");\nFAIL(`capability is ON (enabled=${cap.enabled}) - this script proves the REFUSAL`);').length === 0,
+    "NEGATIVE CONTROL (F-783): an ${…} INTERPOLATION displays the value and does not grade it — va-capability-gate-live's real FAIL message, which the first draft of this rule reported");
+  ok(capabilityHandoffViolations('const cap = await call("getAgentCapability");\nif (cap.enabled !== true) throw new Error("nope");').length === 0,
+    "NEGATIVE CONTROL (F-783): a bare `if`/`throw` is out of scope BY DESIGN — it produces no graded row, and the harm 4c polices is a red FAIL row on a missing precondition");
+  ok(capabilityHandoffViolations('const skills = all.filter((s) => s.enabled !== false);\ncheck("two skills", skills.length === 2);').length === 0,
+    "NEGATIVE CONTROL (F-783): a file that never reads the capability and never flips the model is not in this rule's world — `.enabled` on a SKILL row is somebody else's field (coder-pin-kept-live has five of them)");
+  ok(capabilityHandoffViolations('/* check("the Coder is now ENABLED", cap.enabled === true) is the F-783 shape */\n').length === 0,
+    "NEGATIVE CONTROL (F-783): PROSE may quote the defect — this docblock and the ledger row both do, and a rule that could not be described in its own file would be unmaintainable");
+}
+
 /* RULE 3 (F-715) HAS MOVED. It lived here only because `evidence-redaction.test.mjs` was
  * held by another hand the day it was written, and its own comment said so: "it belongs in
  * 4f and should be folded there". F-718 folded it. The env-id cohort - every `lib/*.mjs`

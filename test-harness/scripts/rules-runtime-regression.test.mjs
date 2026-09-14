@@ -455,6 +455,35 @@ try {
       assert.equal(/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL|BASEURL)_[a-z$]/.test(code), false, `${f} types a provider slot literal — derive it from src/shared/provider-slots.js`);
     }
   });
+  await check("the Documentation Library key names have exactly one home", async () => {
+    // F-862 — `doc_repo_index` / `doc_repo:` / `doc_repo_seed_meta` were module-private
+    // consts in index.js, retyped a second time at index.js's own doc-fetch site and a
+    // third time in test-hook.js's knowledge-snapshot families. They now live in
+    // src/shared/doc-repo-keys.js. Comments may NAME the keys; code may not.
+    const HOME = "shared/doc-repo-keys.js";
+    const homeSrc = readFileSync(new URL(`../../src/${HOME}`, import.meta.url), "utf8");
+    for (const name of ["DOC_REPO_INDEX_KEY", "DOC_REPO_PREFIX", "DOC_SEED_META_KEY"]) {
+      assert.match(homeSrc, new RegExp(`export const ${name}\\s*=`), `${HOME} must export ${name}`);
+    }
+    const scanned = [
+      ...backendModules().map((f) => `src/${f}`),
+      ...readdirSync(new URL("../../src/shared/", import.meta.url))
+        .filter((f) => f.endsWith(".js") && f !== "doc-repo-keys.js").sort().map((f) => `src/shared/${f}`),
+    ];
+    // Sanity: a bad derivation must not let this pass vacuously.
+    assert.ok(scanned.includes("src/index.js") && scanned.includes("src/test-hook.js") && scanned.length >= 20,
+      `doc-key scan found ${scanned.length} files`);
+    for (const rel of scanned) {
+      const code = stripJsComments(readFileSync(new URL(`../../${rel}`, import.meta.url), "utf8"));
+      assert.equal(/doc_repo/.test(code), false,
+        `${rel} types a doc_repo key literal — import it from src/${HOME}`);
+    }
+    // …and the two sites that used to retype them import the home instead.
+    for (const rel of ["src/index.js", "src/test-hook.js"]) {
+      assert.match(readFileSync(new URL(`../../${rel}`, import.meta.url), "utf8"),
+        /from "\.\/shared\/doc-repo-keys\.js"/, `${rel} must import the doc-key home`);
+    }
+  });
   await check("kvSet is still an allowlist, not a KVS write bridge", async () => {
     // F-163 deliberately ADDED pf_memories + COGNIRUNNER_MEMORY_SETTINGS to the allowlist
     // (the harness must be able to seed a 200-row store to prove the F-160/F-161 cap policy

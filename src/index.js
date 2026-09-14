@@ -54,6 +54,8 @@ import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATF
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "./shared/roster-roles.js";
 import { isKeyConflict, safeKeyPart } from "./shared/kvs-keys.js";
+// F-862: the Documentation Library key names have ONE home, like every other knowledge family.
+import { DOC_REPO_INDEX_KEY, DOC_REPO_PREFIX, DOC_SEED_META_KEY } from "./shared/doc-repo-keys.js";
 import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js";
 // The project-key memo mechanics + the cap live with the leak table they serve (F-419).
 import { createProjectKeysMemo, PROJECT_KEY_CAP } from "./shared/identifier-leak.js";
@@ -1726,7 +1728,7 @@ const fetchContextDocsDetailed = async (docIds, { perDocCap = 60000, totalCap = 
   const SEPARATOR = "\n\n---\n\n";
   try {
     const docs = await Promise.all(
-      docIds.slice(0, MAX_FETCH_DOCS).map((id) => storage.get(`doc_repo:${id}`)),
+      docIds.slice(0, MAX_FETCH_DOCS).map((id) => storage.get(`${DOC_REPO_PREFIX}${id}`)),
     );
     const parts = [];
     const applied = [];
@@ -7951,12 +7953,10 @@ resolver.define("commitImport", async ({ payload, context }) => {
 
 // === Shared Documentation Repository ===
 // App-scoped KVS storage for reference documents shared across all users.
-// Keys: doc_repo:{id} for documents, doc_repo_index for the index.
+// The key NAMES (index / per-doc prefix / seed marker) are imported from
+// src/shared/doc-repo-keys.js — F-862: one home, never retyped here.
 
-const DOC_REPO_INDEX_KEY = "doc_repo_index";
-const DOC_REPO_PREFIX = "doc_repo:";
 const MAX_DOCS = 50;
-const DOC_SEED_META_KEY = "doc_repo_seed_meta";
 
 /**
  * Cap the doc index at MAX_DOCS while keeping EVERY builtin row — only

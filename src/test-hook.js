@@ -25,6 +25,8 @@ import { isKvsKey, safeKeyPart, KVS_KEY_PATTERN, KVS_KEY_MAX_CHARS } from "./sha
 import { MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY } from "./memories.js";
 // F-566: same discipline for the knowledge-pack settings slot — the module that owns it.
 import { KNOWLEDGE_SETTINGS_KEY } from "./knowledge-packs.js";
+// F-862: and for the Documentation Library names, which now have a home to import from.
+import { DOC_REPO_INDEX_KEY, DOC_REPO_PREFIX, DOC_SEED_META_KEY } from "./shared/doc-repo-keys.js";
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -421,15 +423,13 @@ const kvWriteAllowList = () => {
  *   pf_memories / the settings row / the store-full marker      — src/memories.js
  *   listener_index / listener:{id}                              — src/listeners.js
  *   job_index / job:{id} / job_sched                            — src/scheduled-jobs.js
- *   doc_repo_index / doc_repo:{id} / doc_repo_seed_meta         — src/index.js, RETYPED
+ *   the doc index / per-doc prefix / seed marker                — src/shared/doc-repo-keys.js
  *
- * THE LAST LINE IS A DEFECT THIS DOOR CANNOT FIX, SO IT IS NAMED. `DOC_REPO_INDEX_KEY`,
- * `DOC_REPO_PREFIX` and `DOC_SEED_META_KEY` are module-private consts in src/index.js and
- * are not exported, so there is no binding to import — and index.js already carries a
- * SECOND home for the prefix itself (`storage.get(\`doc_repo:${id}\`)` at its doc-fetch
- * site, nowhere near the consts). Retyping them here makes a third. The fix is to export
- * the three from index.js (or move them to a shared module) and have all three sites
- * import them; that belongs to whoever owns index.js, not to this door.
+ * THE LAST LINE USED TO BE A DEFECT (F-862): the three doc names were module-private
+ * consts in src/index.js, index.js retyped the prefix a second time at its doc-fetch
+ * site, and this door retyped all three — three homes for one rule. They now live in a
+ * dependency-free shared module (index.js is the 14k-line resolver graph; importing it
+ * to learn three strings is a dependency, not a home) and every site imports them.
  *
  * WHAT IS DELIBERATELY OUT. Every credential family (`isCredentialKey`) — a knowledge
  * snapshot is not a way to move a secret, and `kvStash` already exists for the one case
@@ -448,7 +448,7 @@ export const knowledgeKeyFamilies = async () => {
   return {
     // Rows addressed by their whole name.
     exact: [
-      "doc_repo_index", "doc_repo_seed_meta",
+      DOC_REPO_INDEX_KEY, DOC_SEED_META_KEY,
       skills.SKILL_INDEX_KEY, skills.SKILL_SEED_META_KEY,
       MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY,
       listeners.LISTENER_INDEX_KEY,
@@ -457,7 +457,7 @@ export const knowledgeKeyFamilies = async () => {
     // Families addressed by prefix — `doc_repo:{id}` and friends. A bare prefix with no
     // id after it is NOT a member: `doc_repo:` names no row, and admitting it would let a
     // malformed driver write an empty-id row the product can never read or clean up.
-    prefixes: ["doc_repo:", skills.SKILL_PREFIX, listeners.LISTENER_PREFIX, jobs.JOB_PREFIX],
+    prefixes: [DOC_REPO_PREFIX, skills.SKILL_PREFIX, listeners.LISTENER_PREFIX, jobs.JOB_PREFIX],
   };
 };
 

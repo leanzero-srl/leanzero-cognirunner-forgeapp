@@ -34,6 +34,8 @@ import { autoMatchSkills, fetchSkillsBlock, seedBuiltinSkills, SKILL_INDEX_KEY, 
 import { resolveFieldGuideBlock, saveKnowledgeSettings, invalidateKnowledgeSettingsCache, KNOWN_PACK_IDS } from "../../src/knowledge-packs.js";
 import { FIELD_GUIDE_MARKER, FIELD_GUIDE_GUARD_SENTENCE } from "../../src/shared/knowledge-select.js";
 import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
+// F-862: the doc-repo key names come from their one home — the extracted builder closes over them.
+import { DOC_REPO_PREFIX } from "../../src/shared/doc-repo-keys.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -61,7 +63,7 @@ const factory = new Function(
   "autoMatchSkills", "fetchSkillsBlock", "getMemorySettings", "buildMemoryBlock",
   "buildSystemPromptApiSection", "buildEndpointPromptBlock", "API_USAGE_GUARD",
   "getApiMethodNames", "console", "isKnownEvent", "buildEventPromptBlock", "describeCron",
-  "resolveFieldGuideBlock",
+  "resolveFieldGuideBlock", "DOC_REPO_PREFIX",
   `"use strict";
    ${srcRuntime}
    ${srcPriorSteps}
@@ -76,7 +78,7 @@ const { buildCodegenRequest, buildFixRequest } = factory(
   autoMatchSkills, fetchSkillsBlock, getMemorySettings, buildMemoryBlock,
   buildSystemPromptApiSection, buildEndpointPromptBlock, API_USAGE_GUARD,
   getApiMethodNames, console, isKnownEvent, buildEventPromptBlock, describeCron,
-  resolveFieldGuideBlock,
+  resolveFieldGuideBlock, DOC_REPO_PREFIX,
 );
 
 // ---- helpers ----

@@ -125,6 +125,8 @@ import {
   slimRegistryRow,
   normalizeFunctionsForStorage,
   brakeRefusalText,
+  DOC_CONTENT_MAX_CHARS,
+  DOC_TOO_LARGE_MESSAGE,
 } from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
@@ -7997,8 +7999,10 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
     if (!title || !content) {
       return { success: false, error: "Title and content are required" };
     }
-    if (content.length > 200000) {
-      return { success: false, error: "Document too large (max ~200KB)" };
+    // Cap + wording: src/shared/registry-limits.js (both DocRepository copies gate on the
+    // same export, in the same unit — characters).
+    if (content.length > DOC_CONTENT_MAX_CHARS) {
+      return { success: false, error: DOC_TOO_LARGE_MESSAGE };
     }
 
     const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;

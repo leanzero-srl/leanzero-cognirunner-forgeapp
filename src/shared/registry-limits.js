@@ -53,6 +53,29 @@ export const REGISTRY_HARD_MAX_BYTES = 240 * 1024;
 /** Serialized-byte ceiling for MINTING a new rule (create paths). */
 export const REGISTRY_CREATE_MAX_BYTES = 200000;
 
+/**
+ * Content ceiling for ONE Documentation Library document (`saveContextDoc`).
+ *
+ * CHARACTERS, not bytes, and the name says so: the backend gate is
+ * `content.length > DOC_CONTENT_MAX_CHARS` on a JavaScript string, which counts
+ * UTF-16 code units. A document of CJK or emoji prose therefore passes here and
+ * is larger than this many bytes in KVS — that is fine, the platform value
+ * ceiling is 240KiB and this line sits well under it — but a UI that measured
+ * `new TextEncoder().encode(s).length` would refuse text the backend accepts.
+ * Both DocRepository copies measure `.length`, the same unit as the gate.
+ *
+ * It coincides with REGISTRY_CREATE_MAX_BYTES and is NOT the same rule: that one
+ * bounds the whole shared registry value, this one bounds a single `doc_repo:{id}`
+ * entry. Keep them separate — moving one must not move the other.
+ */
+export const DOC_CONTENT_MAX_CHARS = 200000;
+
+/** How the doc cap is spoken to a user. Derived, never retyped. */
+export const DOC_CONTENT_MAX_LABEL = `${Math.round(DOC_CONTENT_MAX_CHARS / 1000)} KB`;
+
+/** The refusal `saveContextDoc` returns, and the hint the editor shows. */
+export const DOC_TOO_LARGE_MESSAGE = `Document too large (max ~${DOC_CONTENT_MAX_LABEL})`;
+
 /** Serialized-byte ceiling for CLAIMING an already-attached rule (scan paths). */
 export const REGISTRY_CLAIM_MAX_BYTES = 230000;
 

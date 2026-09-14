@@ -26,7 +26,7 @@
  * Kept self-contained (no App.js imports) so the file stays byte-copyable between
  * config-ui and admin-panel, per the duplication convention. The `.doc-size-hint` and
  * `.doc-size-hint.is-over` classes live in each app's own injectStyles()/
- * injectCopiedComponentStyles() and in both styles.css mirrors.
+ * injectCopiedComponentStyles(), which are the only homes that render.
  */
 
 import React, { useMemo } from "react";

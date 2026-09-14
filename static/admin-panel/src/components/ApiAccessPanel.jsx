@@ -33,10 +33,27 @@ import { DEFAULT_ROSTER_ROLE, VALID_ROLES } from "../../../../src/shared/roster-
  * Order is the shared array's order - narrowest reach FIRST - which is also the order the
  * Permissions tab renders, so the product's two grant surfaces read the same way round.
  */
+/*
+ * F-503 - THE COPY NAMES WHAT THE TOKEN MAY DO, AND THE FLOORS SAY SOMETHING NARROWER
+ * THAN THIS PANEL DID.
+ *
+ * Read against the floors in `src/rules-api.js`, all three lines over-stated the grant:
+ *   viewer promised "agent receipts", which are the EDITOR floor on `?resource=agents`
+ *          (`vaDoor`); a viewer token gets nothing at all on that resource.
+ *   editor promised "create and change rules and agents". It may not touch agents:
+ *          every write and every read there is admin. And on listeners and jobs its
+ *          reach is not every row - `ownerGate` (F-471, made reachable by F-503) gives
+ *          an editor token scope "own", so it may change, disable and delete only the
+ *          rows its minting account owns, while still LISTING every rule.
+ *   admin  promised "settings", which is not on this surface at all: there is no
+ *          settings resource and no token can mint another token.
+ * An over-wide capability line on a permission surface is the same defect F-863 fixed
+ * one field lower down: least privilege has to read as least privilege.
+ */
 const ROLE_META = {
-  viewer: { label: "Viewer", desc: "read status, logs and agent receipts only" },
-  editor: { label: "Editor", desc: "create and change rules and agents, no settings" },
-  admin: { label: "Admin", desc: "create and change rules, agents and settings" },
+  viewer: { label: "Viewer", desc: "read rules, execution logs and run results" },
+  editor: { label: "Editor", desc: "create rules, change the ones it owns, read agent status" },
+  admin: { label: "Admin", desc: "every rule and every agent action on this site" },
 };
 const ROLES = VALID_ROLES.map((id) => ({ id, label: (ROLE_META[id] || {}).label || id, desc: (ROLE_META[id] || {}).desc || "" }));
 

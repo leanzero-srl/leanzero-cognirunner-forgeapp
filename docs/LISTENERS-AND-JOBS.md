@@ -197,9 +197,11 @@ Tokens carry a role. Mint one per integration and give it the least it needs:
 | editor | list agents, read one agent's status, caps, health and tick receipts |
 | admin | everything above, plus drafts, effects, memory, create, update, delete, pause, resume, tick, post, approve, reject |
 
-An **editor** token acts as the account that minted it: it may change, disable or delete
-only the listeners and jobs that account owns, through the same ownership gate the
-Listeners and Jobs tabs use, while an **admin** token keeps site-wide scope.
+An **editor** token acts as the account that minted it: it lists and reads every rule on
+the site, and may change, disable or delete only the listeners and jobs that account owns,
+through the same ownership gate the Listeners and Jobs tabs use. It may not create a token
+or reach `?resource=agents` beyond an agent's status. An **admin** token keeps site-wide
+scope.
 
 A token minted before roles existed counts as admin, which is what such a token could
 already do here. The floors match the Agents tab exactly: a REST caller cannot do anything

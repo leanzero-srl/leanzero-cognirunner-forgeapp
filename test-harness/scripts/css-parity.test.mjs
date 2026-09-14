@@ -4,12 +4,16 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-// F-222 — shared component CSS has FOUR homes and nothing kept them equal: the live
-// CSS in config-ui's injectStyles(), admin-panel's injectCopiedComponentStyles()
-// (which carries the components copied from config-ui), and the two styles.css
-// convention mirrors. A class whose declarations drift between them renders
-// differently in the two apps and the mirror silently lies. This test fails naming
-// the FIRST drifted class and the home it drifted in.
+// F-222 — shared component CSS has TWO homes and nothing kept them equal: the live
+// CSS in config-ui's injectStyles() and admin-panel's injectCopiedComponentStyles()
+// (which carries the components copied from config-ui). A class whose declarations
+// drift between them renders differently in the two apps. This test fails naming the
+// FIRST drifted class and the home it drifted in.
+//
+// F-509 — there were FOUR homes until the src/styles.css convention mirrors were
+// deleted. They were imported by nothing, carried under half the live classes, and a
+// test holding them equal to the live CSS only made a dead file look authoritative.
+// Do not add a non-rendering home back to this list.
 //
 // Scope is deliberately a small explicit list, not "every class": these are the
 // shared component classes the duplication convention must carry.
@@ -20,14 +24,14 @@ import path from "node:path";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 // F-236 — `.memory-source-badge` and `.doc-empty` belong to copied components
-// (MemoriesTab, DocRepository) and so must exist, identically, in all four homes.
+// (MemoriesTab, DocRepository) and so must exist, identically, in both homes.
 // F-350 — `.pr-git*` and `.pr-seg*` are PremadeRuleForm's git-param-group CSS. The
-// component is byte-copied into admin-panel, so its CSS has the same four homes and the
+// component is byte-copied into admin-panel, so its CSS has the same two homes and the
 // same drift risk; these two tokens cover every class in the block.
 const SHARED_CSS_CLASSES = [".hard-stop", ".step-busy-note", ".async-error-note", ".memory-card",
   ".memory-source-badge", ".doc-empty", ".pr-git", ".pr-seg",
   // F-388 — the Coder post-function's mode picker and instructions counter live in the
-  // same component and therefore in the same four homes.
+  // same component and therefore in the same two homes.
   ".pr-coder",
   // F-447 — the Confluence param group's controls (placeholder legend chips, the live
   // example block, the mode segment's hue) ship in the same byte-copied component.
@@ -116,8 +120,6 @@ const relatedBlocks = (css, cls) => {
 const homes = [
   { name: "config-ui/src/App.js injectStyles()", css: functionBody(read("static/config-ui/src/App.js"), "const injectStyles = () => {", "config-ui App.js") },
   { name: "admin-panel/src/App.js injectCopiedComponentStyles()", css: functionBody(read("static/admin-panel/src/App.js"), "const injectCopiedComponentStyles = () => {", "admin-panel App.js") },
-  { name: "config-ui/src/styles.css", css: read("static/config-ui/src/styles.css") },
-  { name: "admin-panel/src/styles.css", css: read("static/admin-panel/src/styles.css") },
 ];
 
 const failures = [];
@@ -138,42 +140,13 @@ for (const cls of SHARED_CSS_CLASSES) {
   }
 }
 
-// F-505 — the explicit list above is per-class and so cannot see a WHOLE FAMILY that
-// never reached a mirror: every `api-ref-*` rule lived only in config-ui's
-// injectStyles() and none of them existed in config-ui/src/styles.css. A family-level
-// assertion needs no list to stay current — it takes the family as injectStyles()
-// declares it and requires config-ui's mirror to carry every one of those selectors
-// with identical declarations. Scope is config-ui only: the API reference panel's CSS
-// is not part of admin-panel's copied-component block, so the four-home rule does not
-// apply to it.
-const FAMILY_PREFIX = ".api-ref";
-const liveHome = homes[0];
-const mirrorHome = homes[2];
-const familyOf = (css) => {
-  const map = new Map();
-  for (const rule of flatten(css)) {
-    // Every selector in the rule's prelude must be considered: `.a, .b { }` is one rule.
-    const own = rule.selector.split("»").pop();
-    // `.btn-api-ref` is NOT in the family: a part must BE the prefix or be a
-    // `-`-suffixed sibling of it.
-    if (!own.split(",").some((sel) => sel.trim().split(/[\s>+~]+/).some((part) =>
-      part === FAMILY_PREFIX || part.startsWith(`${FAMILY_PREFIX}-`))))
-      continue;
-    map.set(rule.selector, map.has(rule.selector)
-      ? `${map.get(rule.selector)}\n${rule.declarations}` : rule.declarations);
-  }
-  return map;
-};
-const liveFamily = familyOf(liveHome.css);
-const mirrorFamily = familyOf(mirrorHome.css);
-assert.ok(liveFamily.size > 0, `${FAMILY_PREFIX}: no rules found in ${liveHome.name} — the matcher is broken`);
-for (const [selector, declarations] of liveFamily) {
-  if (!mirrorFamily.has(selector)) failures.push(`${selector}: MISSING from ${mirrorHome.name} (present in ${liveHome.name})`);
-  else if (mirrorFamily.get(selector) !== declarations) failures.push(`${selector}: DRIFTED in ${mirrorHome.name} vs ${liveHome.name}`);
-}
-for (const selector of mirrorFamily.keys()) {
-  if (!liveFamily.has(selector)) failures.push(`${selector}: present in ${mirrorHome.name} but MISSING from ${liveHome.name}`);
-}
+/*
+ * F-505 asserted a whole FAMILY (.api-ref*) reached config-ui's src/styles.css mirror,
+ * because a per-class list cannot see a family that never got mirrored at all. F-509
+ * deleted that mirror — the family had exactly one rendering home, so there is nothing
+ * left to compare it against and the assertion was removed rather than retargeted. The
+ * per-class parity above keeps its meaning: both homes it reads are injected at runtime.
+ */
 
 if (failures.length) {
   console.error(`CSS parity: ${failures.length} problem(s) across ${SHARED_CSS_CLASSES.length} shared classes`);
@@ -181,4 +154,3 @@ if (failures.length) {
   assert.fail(`css parity: ${failures[0]}`);
 }
 console.log(`CSS parity: ${SHARED_CSS_CLASSES.length} shared classes — ${compared} rule/home comparisons identical across ${homes.length} homes`);
-console.log(`CSS parity: ${FAMILY_PREFIX}* family — ${liveFamily.size} rules identical in ${liveHome.name} and ${mirrorHome.name}`);

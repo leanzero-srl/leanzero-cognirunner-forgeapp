@@ -368,9 +368,15 @@ try {
       ok(await page.locator(".apx-role-btn.apx-role-viewer").getAttribute("aria-checked") === "true", `A1 ${theme} mint form defaults to the narrowest role (Viewer)`);
       ok(await page.locator(".apx-role-btn.apx-role-admin").getAttribute("aria-checked") === "false", `A1 ${theme} mint form does not pre-select Admin`);
       const rolesText = await page.locator(".apx-roles-block").innerText();
-      ok(rolesText.includes("create and change rules, agents and settings"), `A1 ${theme} admin copy`);
-      ok(rolesText.includes("create and change rules and agents, no settings"), `A1 ${theme} editor copy`);
-      ok(rolesText.includes("read status, logs and agent receipts only"), `A1 ${theme} viewer copy`);
+      /* F-503 - the role copy is asserted against the FLOORS, not against itself. The old
+         lines promised agents to an editor, receipts to a viewer and settings to an admin,
+         none of which this surface grants; these pin the corrected sentences and the two
+         words that must not come back on the narrower rows. */
+      ok(rolesText.includes("every rule and every agent action on this site"), `A1 ${theme} admin copy`);
+      ok(rolesText.includes("create rules, change the ones it owns, read agent status"), `A1 ${theme} editor copy`);
+      ok(rolesText.includes("read rules, execution logs and run results"), `A1 ${theme} viewer copy`);
+      ok(!/Viewer[\s\S]*?receipts/.test(rolesText.slice(0, rolesText.indexOf("Editor"))), `A1 ${theme} viewer copy does not promise agent receipts`);
+      ok(!rolesText.includes("and settings"), `A1 ${theme} no role claims a settings power this surface has none of`);
       ok(rolesText.includes("Tokens created before roles existed act as Admin."), `A1 ${theme} legacy-token note`);
 
       await page.locator(".apx-input").fill("Status dashboard");

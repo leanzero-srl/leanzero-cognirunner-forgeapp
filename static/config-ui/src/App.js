@@ -3116,9 +3116,9 @@ const injectStyles = () => {
        dead-credential block. Same visual language as the admin Code tab's .code-* rules;
        separate class NAMES because PremadeRuleForm is byte-copied into admin-panel, where
        .code-dead / .code-kind already have a home in injectStyles() and a second copy
-       would be one rule living in two places. FOUR HOMES, kept equal by
-       css-parity.test.mjs on the .pr-git and .pr-seg tokens: config-ui injectStyles(),
-       admin-panel injectCopiedComponentStyles(), and both styles.css mirrors. */
+       would be one rule living in two places. TWO HOMES, kept equal by
+       css-parity.test.mjs on the .pr-git and .pr-seg tokens: config-ui injectStyles()
+       and admin-panel injectCopiedComponentStyles(). */
     .pr-git-chosen { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     .pr-git-chosen-label { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
     .pr-git-kind { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }

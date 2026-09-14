@@ -23,7 +23,7 @@
  */
 
 /** Content fingerprint of the baked corpus. Changes whenever any section changes. */
-export const KNOWLEDGE_CONTENT_VERSION = "4daff10f6d5d5c5b";
+export const KNOWLEDGE_CONTENT_VERSION = "2de3826245571ec9";
 
 /**
  * Fingerprint of this file's METADATA — pack pin lists, the pin map, section audiences.
@@ -69,7 +69,7 @@ export const KNOWLEDGE_PACKS = [
     "id": "forge-app-builder",
     "title": "Forge app builder",
     "sections": 61,
-    "bytes": 144173,
+    "bytes": 144338,
     "pinned": [
       "forge-app-builder#core-forge-concepts"
     ]
@@ -2347,7 +2347,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "c9e43204410bb1e1",
+      "hash": "4aeb901ac1006050",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -2373,11 +2373,11 @@ export const KNOWLEDGE_INDEX = [
       "codegen",
       "review"
     ],
-    "bytes": 2499,
+    "bytes": 2664,
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "c9e43204410bb1e1",
+      "hash": "4aeb901ac1006050",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -2405,7 +2405,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "c9e43204410bb1e1",
+      "hash": "4aeb901ac1006050",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },
@@ -2436,7 +2436,7 @@ export const KNOWLEDGE_INDEX = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "c9e43204410bb1e1",
+      "hash": "4aeb901ac1006050",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     }
   },

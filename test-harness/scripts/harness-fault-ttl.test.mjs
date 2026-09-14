@@ -1190,7 +1190,7 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   /* ── 7i. F-696 — THE PLANT HAS THE SWEEP'S SHAPE: A BUDGET, A PARTIAL ANSWER, A RESUME.
    *
    * MEASURED LIVE: 200 rows in 17–18 s. The documented 500 was therefore ~45 s of paced
-   * writing against a web trigger killed at 25 s, and because the answer was assembled only
+   * writing against a web trigger killed at 55 s (F-680 corrected the 25 s stated here), and because the answer was assembled only
    * after the LAST write, a plant that timed out reported NOTHING — not `planted`, not
    * `failed`, not `keys` — having already written an unknown number of rows under keys a
    * re-POST silently overwrites. The sibling written in the same commit (`clearPlantedFaults`)

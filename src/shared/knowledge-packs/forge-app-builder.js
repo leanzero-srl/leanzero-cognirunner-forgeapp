@@ -357,7 +357,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "c9e43204410bb1e1",
+      "hash": "4aeb901ac1006050",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 259,
@@ -388,11 +388,11 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "c9e43204410bb1e1",
+      "hash": "4aeb901ac1006050",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
-    "bytes": 2499,
-    "body": "# FaaS Limits & Cost Reference\n\nThe hard numbers you need to design around. All values are from `developer.atlassian.com` and current as of the skill's last update.\n\n## Function timeouts\n| Surface | Default | Configurable to |\n|---|---|---|\n| Resolver | 25 s | 25 s (hard ceiling) |\n| Trigger | 25 s | 25 s |\n| Workflow validator / condition / post-function | 25 s | 25 s |\n| Scheduled trigger | 25 s | 25 s |\n| Web trigger | 25 s | 25 s |\n| **Consumer (async event handler)** | 25 s | **`timeoutSeconds:` up to 900 s** |\n| `preUninstall` | 55 s | 55 s |\n\nNeed >25 s? Push to a queue. See `26-async-events-and-queues.md`.\n\n## Memory & CPU\n```yaml\nruntime:\n  name: nodejs22.x   # also: nodejs24.x, nodejs20.x\n  memoryMB: 512      # raises CPU proportionally\n```\n\n- Per-function override: `function.runtime.memoryMB`.\n- Heavier memory ≈ more CPU; useful for CPU-bound work like compression or large JSON transforms.\n\n## KVS (@forge/kvs) limits\n| Limit | Value |\n|---|---|\n| Key length | 500 chars |\n| Key format | `/^(?!\\s+$)[a-zA-Z0-9:._\\s-#]+$/` |\n| Value size | 240 KiB (max single persisted value) |\n| Object depth | 31 |\n| Reads per key | 12 MB/s |\n| Writes per key | 1 MB/s |\n| Queries per index value | 24 MB/s |\n\n## When you hit each:\n- **240 KiB value cap** → split the value across multiple keys (sharding) using a deterministic prefix: `key:{i}` plus an index entry that maps logical id → shard. (PPM-Pro pattern.)\n- **1 MB/s write per key** → you have a hot key. Either shard, or push writes to an async queue with `concurrency.key` to serialize and slow them down.\n- **12 MB/s read per key** → cache the read result in a downstream KVS or in-memory in the same invocation; spread reads across shards.\n- **`RATE_LIMIT_EXCEEDED` (HTTP 429 from KVS)** → exponential backoff, then route the work through a queue.\n\n## Hot-key throughput in practice (observed)\nWhen reading or deleting many sharded keys, batch and pace them rather than firing all at once:\n- **Reads:** batch ~**5 shards in parallel** per round (PPM `getIssuesByKeys`), which keeps you under per-key limits while still parallel.\n- **Deletes:** batches of **~3 with ~200 ms pauses** between rounds — deletes are heavier and a tight loop trips `RATE_LIMIT_EXCEEDED` fast.\n- **Ops budget:** a warm container can exhaust the per-minute KVS ops budget during a bulk transition; cache hot read-only data module-scoped with a short TTL (e.g. a registry, `25-workflow-modules-deep-dive.md`) and invalidate on every write."
+    "bytes": 2664,
+    "body": "# FaaS Limits & Cost Reference\n\nThe hard numbers you need to design around. All values are from `developer.atlassian.com` and current as of the skill's last update.\n\n## Function timeouts\n| Surface | Default | Configurable to |\n|---|---|---|\n| Resolver | 25 s | 25 s (hard ceiling) |\n| Trigger | 25 s | 25 s |\n| Workflow validator / condition / post-function | 25 s | 25 s |\n| Scheduled trigger | 25 s | 25 s |\n| Web trigger | 55 s | 55 s (verified 2026-09-14 against developer.atlassian.com/platform/forge/limits-invocation/: \"Runtime seconds (web trigger, action and rovo:agentConnector modules): 55\") |\n| **Consumer (async event handler)** | 25 s | **`timeoutSeconds:` up to 900 s** |\n| `preUninstall` | 55 s | 55 s |\n\nNeed >25 s? Push to a queue. See `26-async-events-and-queues.md`.\n\n## Memory & CPU\n```yaml\nruntime:\n  name: nodejs22.x   # also: nodejs24.x, nodejs20.x\n  memoryMB: 512      # raises CPU proportionally\n```\n\n- Per-function override: `function.runtime.memoryMB`.\n- Heavier memory ≈ more CPU; useful for CPU-bound work like compression or large JSON transforms.\n\n## KVS (@forge/kvs) limits\n| Limit | Value |\n|---|---|\n| Key length | 500 chars |\n| Key format | `/^(?!\\s+$)[a-zA-Z0-9:._\\s-#]+$/` |\n| Value size | 240 KiB (max single persisted value) |\n| Object depth | 31 |\n| Reads per key | 12 MB/s |\n| Writes per key | 1 MB/s |\n| Queries per index value | 24 MB/s |\n\n## When you hit each:\n- **240 KiB value cap** → split the value across multiple keys (sharding) using a deterministic prefix: `key:{i}` plus an index entry that maps logical id → shard. (PPM-Pro pattern.)\n- **1 MB/s write per key** → you have a hot key. Either shard, or push writes to an async queue with `concurrency.key` to serialize and slow them down.\n- **12 MB/s read per key** → cache the read result in a downstream KVS or in-memory in the same invocation; spread reads across shards.\n- **`RATE_LIMIT_EXCEEDED` (HTTP 429 from KVS)** → exponential backoff, then route the work through a queue.\n\n## Hot-key throughput in practice (observed)\nWhen reading or deleting many sharded keys, batch and pace them rather than firing all at once:\n- **Reads:** batch ~**5 shards in parallel** per round (PPM `getIssuesByKeys`), which keeps you under per-key limits while still parallel.\n- **Deletes:** batches of **~3 with ~200 ms pauses** between rounds — deletes are heavier and a tight loop trips `RATE_LIMIT_EXCEEDED` fast.\n- **Ops budget:** a warm container can exhaust the per-minute KVS ops budget during a bulk transition; cache hot read-only data module-scoped with a short TTL (e.g. a registry, `25-workflow-modules-deep-dive.md`) and invalidate on every write."
   },
   {
     "id": "forge-app-builder/jira-forge/010c4865/queue-forge-events-limits-2",
@@ -417,7 +417,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "c9e43204410bb1e1",
+      "hash": "4aeb901ac1006050",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 2236,
@@ -449,7 +449,7 @@ export const SECTIONS = [
     "provenance": {
       "source": "jira-forge",
       "path": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md",
-      "hash": "c9e43204410bb1e1",
+      "hash": "4aeb901ac1006050",
       "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)"
     },
     "bytes": 2332,

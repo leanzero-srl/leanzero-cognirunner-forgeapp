@@ -408,7 +408,7 @@ process.env.HARNESS_SECRET = SECRET;
   await disarm();
 
   /* F-673 — THE DOOR CARRIES THE BUDGET AND THE CURSOR. This action is a WEB TRIGGER the
-   * platform kills at 25 s; before F-673 a sweep that ran long was killed holding an answer it
+   * platform kills at 55 s (F-680; the 25 s once stated here is the sync-resolver cap); before F-673 a sweep that ran long was killed holding an answer it
    * never sent, so the caller learned neither what it had deleted nor where to carry on. The
    * budget must therefore be reachable FROM THE DOOR (`maxMs`) and the resume cursor must come
    * back THROUGH the door — a bound enforced in the module but unreachable from the only caller

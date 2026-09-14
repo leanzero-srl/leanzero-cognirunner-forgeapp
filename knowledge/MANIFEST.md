@@ -2,7 +2,7 @@
 
 # Knowledge bake manifest
 
-Content version `4daff10f6d5d5c5b` · 179 sections · 9 packs · 28 source documents.
+Content version `2de3826245571ec9` · 179 sections · 9 packs · 28 source documents.
 
 Every section below is bundled with the app and reaches a model. Read this file
 before the packs are committed: the leak scanner proves no shape it recognises got
@@ -16,7 +16,7 @@ through, and this list is how a human proves nothing it does NOT recognise did.
 | `automation-semantics` | 4 | 12.1 KB | — |
 | `cognirunner-sandbox-traps` | 5 | 12.4 KB | `cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt` |
 | `confluence-rest-correctness` | 46 | 112.8 KB | — |
-| `forge-app-builder` | 61 | 140.8 KB | `forge-app-builder#core-forge-concepts` |
+| `forge-app-builder` | 61 | 141.0 KB | `forge-app-builder#core-forge-concepts` |
 | `forge-platform-facts` | 23 | 58.3 KB | — |
 | `jira-rest-correctness` | 11 | 23.7 KB | — |
 | `jsm-correctness` | 11 | 25.8 KB | — |
@@ -159,10 +159,10 @@ Deliberately NOT baked: `jira-forge-templates` (scaffolds).
 | `forge-app-builder/forge-security-review/da20948d/6-scope-over-provisioning-3` | 6. Scope over-provisioning | 2147 | coder, review | forge-security-review `6c772d84056bfab6` |
 | `forge-app-builder/forge-security-review/da20948d/a-turn-boundary-is-not-consent-4` | A turn boundary is not consent | 2003 | coder, review | forge-security-review `6c772d84056bfab6` |
 | `forge-app-builder/forge-security-review/da20948d/what-sast-and-sca-structurally-cannot-see-in-a-forge-app-1` | What SAST and SCA structurally cannot see in a Forge app | 2110 | coder, review | forge-security-review `6c772d84056bfab6` |
-| `forge-app-builder/jira-forge/010c4865/a-custom-ui-resource-is-a-directory-4` | A Custom UI resource is a DIRECTORY | 259 | coder, codegen, review | jira-forge `c9e43204410bb1e1` |
-| `forge-app-builder/jira-forge/010c4865/faas-limits-cost-reference-1` | FaaS Limits & Cost Reference | 2499 | coder, codegen, review | jira-forge `c9e43204410bb1e1` |
-| `forge-app-builder/jira-forge/010c4865/queue-forge-events-limits-2` | Queue (@forge/events) limits | 2236 | coder, codegen, review | jira-forge `c9e43204410bb1e1` |
-| `forge-app-builder/jira-forge/010c4865/when-you-hit-a-wall-3` | When you hit a wall | 2332 | coder, codegen, review | jira-forge `c9e43204410bb1e1` |
+| `forge-app-builder/jira-forge/010c4865/a-custom-ui-resource-is-a-directory-4` | A Custom UI resource is a DIRECTORY | 259 | coder, codegen, review | jira-forge `4aeb901ac1006050` |
+| `forge-app-builder/jira-forge/010c4865/faas-limits-cost-reference-1` | FaaS Limits & Cost Reference | 2664 | coder, codegen, review | jira-forge `4aeb901ac1006050` |
+| `forge-app-builder/jira-forge/010c4865/queue-forge-events-limits-2` | Queue (@forge/events) limits | 2236 | coder, codegen, review | jira-forge `4aeb901ac1006050` |
+| `forge-app-builder/jira-forge/010c4865/when-you-hit-a-wall-3` | When you hit a wall | 2332 | coder, codegen, review | jira-forge `4aeb901ac1006050` |
 | `forge-app-builder/jira-forge/636106f9/2-heartbeat-self-heal-cap-4` | 2. Heartbeat + self-heal cap | 2703 | coder, codegen | jira-forge `f12be3e551a5ccd7` |
 | `forge-app-builder/jira-forge/636106f9/2-hourly-lazy-refresh-scheduled-trigger-3` | 2. Hourly lazy-refresh scheduled trigger | 2608 | coder, codegen | jira-forge `f12be3e551a5ccd7` |
 | `forge-app-builder/jira-forge/636106f9/async-events-queues-forge-events-1` | Async Events & Queues (`@forge/events`) | 2311 | coder, codegen | jira-forge `f12be3e551a5ccd7` |

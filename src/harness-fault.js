@@ -333,6 +333,7 @@ export const HARNESS_UNGATED_EXPORTS = Object.freeze([
   "plantCountClamped",
   "plantPopulationClamped",
   "plantStartIndexClamped",
+  "plantStartRefusal",
   "plantMaxForCall",
   "plantTtlSeconds",
   "plantedFaultKey",
@@ -1342,11 +1343,54 @@ export const plantCountClamped = (n, startIndex = 0) =>
  * WHERE THIS CALL STARTS WRITING (F-696). Anything that is not a finite number is ZERO — a
  * body with a missing or junk `startIndex` is a FRESH plant, never a mystery offset — and the
  * ceiling is the last index the population may hold.
+ *
+ * F-723 — THIS CLAMP IS TOTAL, AND THAT IS WHY IT MAY NOT BE THE JUDGE. It answers a number
+ * for every input, including inputs that are mistakes; `plantStartRefusal` below judges the
+ * RAW value against the population FIRST and the lever clamps only what it has accepted.
+ *
+ * F-723 — AND THE CEILING IS A PARAMETER, because there are two of them and there was one.
+ * The DEFAULT is the last index the keyspace may hold, which is what `plantMaxForCall` asks
+ * about ("is this a fresh plant or a resumed one?"). The LEVER asks a different question —
+ * "where in THIS population does this call start?" — and its ceiling is the population, whose
+ * legal last start is `n` itself (the documented no-op). Sharing the `MAX - 1` ceiling is what
+ * made `startIndex === n` unreachable at `n === HARNESS_FAULT_PLANT_MAX`: the accepted start
+ * was dragged back to 499 and planted a row instead of answering the no-op.
  */
-export const plantStartIndexClamped = (startIndex) => {
+export const plantStartIndexClamped = (startIndex, ceiling = HARNESS_FAULT_PLANT_MAX - 1) => {
   const parsed = Math.floor(Number(startIndex));
   if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, Math.min(HARNESS_FAULT_PLANT_MAX - 1, parsed));
+  return Math.max(0, Math.min(ceiling, parsed));
+};
+
+/**
+ * F-723 — THE RAW `startIndex` IS JUDGED BEFORE IT IS CLAMPED, and this is where.
+ *
+ * F-708 put the `bad-start` refusal behind `plantStartIndexClamped`, whose ceiling is
+ * `HARNESS_FAULT_PLANT_MAX - 1`. At the largest population the two ceilings collide: a
+ * `{ n: 500, startIndex: 505 }` was clamped to 499, 499 is not `> 500`, and the mistake F-708
+ * exists to refuse sailed through as an ordinary resumed call that plants one row and calls
+ * the 500-row population finished. The clamp cannot see this, because by the time it has
+ * answered, the caller's number is gone.
+ *
+ * So the ORDER is the fix, and this predicate is the one home of the judgement:
+ *
+ *  · ABSENT is not a mistake. `undefined` / `null` is a FRESH plant (index 0) — the missing
+ *    half of "missing or junk" that `plantStartIndexClamped` documents, and the shape every
+ *    first POST in this repo sends.
+ *  · A SUPPLIED value that is not a non-negative INTEGER is a mistake, not a fresh plant.
+ *    `-9`, `1.5` and `"banana"` used to silently become 0 and re-plant a population from the
+ *    top — a caller carrying a corrupt handle got its keyspace rewritten instead of an error.
+ *  · PAST THE POPULATION is F-708's refusal, now judged on the number the caller actually
+ *    sent. Exactly AT the population is still the loop's own last answer and is NOT refused.
+ *
+ * Pure, and it returns a reason string or `null` so the lever has nothing left to decide.
+ */
+export const plantStartRefusal = (startIndex, population) => {
+  if (startIndex === undefined || startIndex === null) return null;
+  if (typeof startIndex !== "number" && typeof startIndex !== "string") return "bad-start";
+  const parsed = Number(startIndex);
+  if (!Number.isInteger(parsed) || parsed < 0) return "bad-start";
+  return parsed > population ? "bad-start" : null;
 };
 
 /**
@@ -1481,7 +1525,8 @@ const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
  * `{ ok, planted, failed, n, startIndex, nextIndex, expired, ttlSeconds, budgetMs, keys,
  *    cleared, truncated, reason, complete }`, or `{ ok: false, reason: "bad-start" }`.
  *
- * F-708 — `startIndex` IS JUDGED AGAINST THE POPULATION. Past it is a REFUSAL (`bad-start`),
+ * F-708/F-723 — `startIndex` IS JUDGED AGAINST THE POPULATION, RAW, BEFORE IT IS CLAMPED
+ * (`plantStartRefusal`). Past it is a REFUSAL (`bad-start`),
  * not a no-op that answers `complete: true` over a keyspace it never looked at; exactly AT it
  * is the loop's own last answer and is stated as a no-op. A FRESH call also removes any older
  * population past `n` first (`cleared`), because the keys are `i`-derived and a smaller
@@ -1524,21 +1569,29 @@ const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
  */
 export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
-  const from = plantStartIndexClamped(startIndex);
   /* F-708 — THE POPULATION AND THE CALL'S END INDEX ARE DIFFERENT NUMBERS, and `startIndex`
    * is judged against the POPULATION. Clamped independently, a `startIndex` past the end of
    * `n` simply skipped the loop and answered `ok:true, planted:0, complete:true` with a
    * `nextIndex` BELOW the `startIndex` it was handed — an answer that contradicts itself and
-   * that every documented drain loop reads as "the population is planted". */
+   * that every documented drain loop reads as "the population is planted".
+   *
+   * F-723 — AND IT IS JUDGED RAW, BEFORE THE CLAMP. The refusal used to be tested against
+   * `plantStartIndexClamped`'s output, whose ceiling is `HARNESS_FAULT_PLANT_MAX - 1`, so at
+   * `n === HARNESS_FAULT_PLANT_MAX` the clamp pulled every over-the-end start back INSIDE the
+   * population and the refusal could not fire at all. Judge first (`plantStartRefusal`), clamp
+   * only what has been accepted; the answer echoes the number the CALLER sent, because that is
+   * the number it has to fix. */
   const population = plantPopulationClamped(n);
+  const startRefusal = plantStartRefusal(startIndex, population);
+  if (startRefusal) {
+    return { ok: false, reason: startRefusal, startIndex, n: population, maxStart: population };
+  }
+  const from = plantStartIndexClamped(startIndex, population);
   const count = plantCountClamped(n, from);
   const past = expired === true;
   const budgetMs = sweepBudgetMs(maxMs);
   const t0 = Date.now();
   const overBudget = () => Date.now() - t0 >= budgetMs;
-  if (from > population) {
-    return { ok: false, reason: "bad-start", startIndex: from, n: population, maxStart: population };
-  }
   /* F-697/F-709: the window covers the whole POPULATION's plant — every call of it — plus a
    * full minute after the last row lands. `population`, not `count` and not `count - from`:
    * the drain that is coming walks the whole keyspace, so every row has to outlive the whole

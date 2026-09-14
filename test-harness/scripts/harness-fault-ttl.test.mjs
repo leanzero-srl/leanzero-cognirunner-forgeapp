@@ -1619,10 +1619,81 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       `F-708 (negative control): re-planting the SAME population removes nothing (cleared ${same.cleared}, rows ${await countPrefix(PLANT708)})`);
     await purge();
 
-    ok(/if \(from > population\)/.test(faultCode) && /reason: "bad-start"/.test(faultCode),
-      "F-708.SOURCE: the start is compared against the POPULATION, in one guard");
+    ok(/plantStartRefusal\(startIndex, population\)/.test(faultCode) && /return "bad-start"/.test(faultCode),
+      "F-708/F-723.SOURCE: the start is compared against the POPULATION, in one guard");
     ok(/plantCountClamped = \(n, startIndex = 0\) =>\s*\n?\s*Math\.min\(plantMaxForCall\(startIndex\), plantPopulationClamped\(n\)\)/.test(faultCode),
       "F-708.SOURCE: …and the per-call end index is DERIVED from the population clamp, so the two numbers cannot drift apart");
+  }
+
+
+  /* ═════ 7k-bis. F-723 — THE START IS JUDGED BEFORE IT IS CLAMPED ═════
+   *
+   * MEASURED on this mock: `plantHarnessFaults({ n: 500, startIndex: 505 })` answered
+   * `ok: true` and went to work. F-708's guard was `from > population`, where `from` is
+   * `plantStartIndexClamped(startIndex)` — ceiling `HARNESS_FAULT_PLANT_MAX - 1`. At the
+   * LARGEST population the two ceilings collide: 505 was clamped to 499, 499 is not `> 500`,
+   * and the refusal F-708 exists for could not fire AT ALL at `n = HARNESS_FAULT_PLANT_MAX`.
+   * The caller's corrupt handle became an ordinary resumed call that writes one row and hands
+   * back `nextIndex: 500` — `complete` over a keyspace holding one row of five hundred.
+   *
+   * The clamp is not the defect and is not changed (7g still asserts its totality); the ORDER
+   * is. Judge the raw value, then clamp what was accepted. ── */
+  {
+    await purge();
+    const MAXPOP = fault.HARNESS_FAULT_PLANT_MAX;
+    const PLANT723 = fault.HARNESS_FAULT_PLANT_PREFIX;
+
+    /* THE BREAKER, with the exact inputs. Under the old order this was `ok: true`. */
+    const collide = await fault.plantHarnessFaults({ n: MAXPOP, startIndex: MAXPOP + 5, expired: true });
+    ok(collide.ok === false && collide.reason === "bad-start",
+      `F-723: at n = HARNESS_FAULT_PLANT_MAX a start past the population is STILL refused — the clamp's ceiling no longer swallows the mistake (got ${JSON.stringify(collide)})`);
+    ok(collide.startIndex === MAXPOP + 5 && collide.n === MAXPOP && collide.complete === undefined,
+      `F-723: …and the refusal echoes the number the CALLER sent, not the clamped one it can do nothing about (got ${JSON.stringify(collide)})`);
+    ok((await countPrefix(PLANT723)) === 0, "F-723: …and the refused call planted nothing");
+
+    /* EXACTLY AT the population is the loop's own last POST and is NOT a mistake — unchanged
+     * by this fix, at the same size that produced the collision. */
+    const atEnd = await fault.plantHarnessFaults({ n: MAXPOP, startIndex: MAXPOP, expired: true });
+    ok(atEnd.ok === true && atEnd.noop === true && atEnd.planted === 0
+      && atEnd.nextIndex === MAXPOP && atEnd.complete === true,
+      `F-723 (unchanged): \`startIndex === n\` at the largest population is still the documented no-op (got ${JSON.stringify({ ok: atEnd.ok, noop: atEnd.noop, nextIndex: atEnd.nextIndex, complete: atEnd.complete })})`);
+    ok((await countPrefix(PLANT723)) === 0, "F-723: …and it wrote nothing either");
+
+    /* A SUPPLIED handle that is not a non-negative integer is a MISTAKE, not a fresh plant:
+     * silently becoming 0 rewrote a population from the top for a caller carrying junk. */
+    for (const junk of [-9, 1.5, "banana", {}, NaN]) {
+      const bad = await fault.plantHarnessFaults({ n: 5, startIndex: junk, expired: true });
+      ok(bad.ok === false && bad.reason === "bad-start",
+        `F-723: a supplied \`startIndex\` of ${JSON.stringify(String(junk))} is refused, never silently treated as a fresh plant (got ${JSON.stringify(bad)})`);
+    }
+    ok((await countPrefix(PLANT723)) === 0, "F-723: …and none of those refusals touched the keyspace");
+
+    /* THE NEGATIVE CONTROL: ABSENT is not junk. A first POST carries no `startIndex` at all
+     * and must still be the fresh plant every driver in this repo opens with. */
+    for (const absent of [undefined, null]) {
+      await purge();
+      const fresh = await fault.plantHarnessFaults({ n: 2, startIndex: absent, expired: true, maxMs: 20_000 });
+      ok(fresh.ok === true && fresh.startIndex === 0 && fresh.planted === 2 && fresh.complete === true,
+        `F-723 (negative control): a MISSING start is a fresh plant, exactly as before (got ${JSON.stringify({ ok: fresh.ok, startIndex: fresh.startIndex, planted: fresh.planted })})`);
+    }
+    await purge();
+
+    /* The judgement is PURE and has one home, so the door and the lever cannot disagree. */
+    ok(fault.plantStartRefusal(undefined, 5) === null && fault.plantStartRefusal(null, 5) === null
+      && fault.plantStartRefusal(5, 5) === null && fault.plantStartRefusal(0, 5) === null,
+      "F-723: `plantStartRefusal` accepts absent, zero and exactly-at-the-population");
+    ok(fault.plantStartRefusal(6, 5) === "bad-start" && fault.plantStartRefusal(-1, 5) === "bad-start"
+      && fault.plantStartRefusal("banana", 5) === "bad-start"
+      && fault.plantStartRefusal(MAXPOP + 5, MAXPOP) === "bad-start",
+      "F-723: …and refuses past-the-end and junk, including at the largest population");
+    ok(fault.HARNESS_UNGATED_EXPORTS.includes("plantStartRefusal"),
+      "F-723: …and it is on the UNGATED census, because it reaches no storage");
+
+    ok(faultCode.indexOf("const startRefusal = plantStartRefusal(startIndex, population);")
+      < faultCode.indexOf("const from = plantStartIndexClamped(startIndex, population);"),
+      "F-723.SOURCE: the judgement happens BEFORE the clamp — the order IS the fix");
+    ok(/const from = plantStartIndexClamped\(startIndex, population\);/.test(faultCode),
+      "F-723.SOURCE: …and the lever clamps the accepted start to the POPULATION, never to the keyspace's last index");
   }
 
 

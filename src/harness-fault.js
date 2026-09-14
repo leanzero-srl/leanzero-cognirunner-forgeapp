@@ -298,6 +298,7 @@ export const HARNESS_UNGATED_EXPORTS = Object.freeze([
   "HARNESS_STASH_KEY_PREFIX",
   "harnessStashKey",
   "HARNESS_STASH_MAX_AGE_SECONDS",
+  "HARNESS_STASH_SWEEP_MIN_AGE_SECONDS",
   "harnessStashAgeSeconds",
   "harnessStashReapable",
   "KEY_READ_FAULT_MODES",
@@ -2113,6 +2114,15 @@ export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } =
  * only this door writes these rows and it always stamps one, so a row without it is
  * malformed, and leaving a malformed row is leaving a plaintext credential forever.
  *
+ * F-787 — AND THE AGE HAS A FLOOR, BECAUSE "AGE, NOT EXISTENCE" WAS ONLY A DEFAULT.
+ * The paragraph above stated the rule; the clamp under it was `Math.max(0, …)`, so
+ * `{olderThanSeconds: 0}` — the drain-everything shape every other sweep in this file
+ * invites — made `harnessStashReapable` true for EVERY row and turned this lever into
+ * exactly the unconditional delete it says it must never be. A caller may still reap
+ * sooner than the hour; it may not reap younger than `HARNESS_STASH_SWEEP_MIN_AGE_SECONDS`,
+ * and the answer's `olderThanSeconds` is the EFFECTIVE age after the floor, never the
+ * number that was asked for, so an operator can see the clamp happened.
+ *
  * WHAT IT ANSWERS: `rows[]` of `{key, stashedAt, ageSeconds, expired}` — the LIST that did
  * not exist, so an operator can see a leak is there — and never `value`, never `key` (the
  * KVS key the row restores to is itself named in `kvWriteAllowList`, but this lever's job
@@ -2124,6 +2134,28 @@ export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } =
  * the other two.
  */
 export const HARNESS_STASH_MAX_AGE_SECONDS = 3600;
+/**
+ * F-787 — THE FLOOR UNDER `olderThanSeconds`. ONE HOME, next to the age it bounds.
+ *
+ * The number is a MEASUREMENT, not a round one: it must exceed the longest window any
+ * driver holds a stash open for, because inside that window the stash row is the tenant's
+ * only copy of the credential and reaping it strands the planted fault permanently.
+ *
+ * THE LONGEST WINDOW IS `test-harness/scripts/va-compaction-live.mjs` — the only driver
+ * that stashes at all (`kvStash` at its STEP 3, `kvRestore` in its `finally`). Between
+ * them it waits, worst case: 35s for the provider TTL cache, then TWICE over
+ * `tickOnce(..., {freshBucket:true})` — up to 308s for the next five-minute compaction
+ * bucket plus up to `TICK_WAIT_S` (300s, its default) for the health counter to move plus
+ * a 4s settle — with three Playwright re-seed/read passes (30-60s timeouts each) in
+ * between. That is ≈ 35 + 2x620 + ~180 ≈ 1450s ≈ 24 minutes.
+ *
+ * So 900 (the first number reached for) does NOT clear it: a fifteen-minute floor would
+ * still let a cleanup run reap a live va-compaction stash during either tick wait. 1800
+ * clears the measured worst case with ~6 minutes of margin, and is still only HALF the
+ * 3600s default/TTL — so the lever keeps the thing it is for, reaping a leaked row sooner
+ * than the hour, while no legal value of it can reach a live driver's row.
+ */
+export const HARNESS_STASH_SWEEP_MIN_AGE_SECONDS = 1800;
 /** Age of a stash row in seconds, or `null` when it has no usable `stashedAt`. */
 export const harnessStashAgeSeconds = (row, now) => {
   const at = row && typeof row === "object" ? row.stashedAt : null;
@@ -2142,10 +2174,12 @@ export const sweepHarnessStashes = async ({ dryRun = false, olderThanSeconds, ma
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
   const dry = dryRun === true;
   // Clamped where the constant lives, like every other lever: a caller may reap SOONER than
-  // the hour but never below zero, and a non-number is the default rather than a NaN
-  // comparison that silently reaps nothing.
+  // the hour but never younger than the floor (F-787 — `0` used to be legal and made this an
+  // unconditional delete), and a non-number is the default rather than a NaN comparison that
+  // silently reaps nothing. `maxAge` is what the answer echoes, so the caller reads the age
+  // that was APPLIED.
   const maxAge = typeof olderThanSeconds === "number" && Number.isFinite(olderThanSeconds)
-    ? Math.max(0, Math.floor(olderThanSeconds))
+    ? Math.max(HARNESS_STASH_SWEEP_MIN_AGE_SECONDS, Math.floor(olderThanSeconds))
     : HARNESS_STASH_MAX_AGE_SECONDS;
   const budgetMs = sweepBudgetMs(maxMs);
   const t0 = Date.now();

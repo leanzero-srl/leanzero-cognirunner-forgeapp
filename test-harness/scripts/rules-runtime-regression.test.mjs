@@ -869,6 +869,72 @@ try {
     assert.deepEqual(stashes, [], "no partial stash row survives the refusal");
     assert.equal(storage.__raw(SLOT), REAL, "the tenant's own key is untouched — the stash never got as far as replacing anything");
   });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-789 — THE REFUSAL ASSERTED A CAUSE THE FAILURE DID NOT CONTAIN.
+   *
+   * `error` was the literal "stash-ttl-unavailable" for ANY throw out of the stash write.
+   * A KVS throttle, a value-too-large, a transient platform error: all three told the
+   * driver that this installation has no TTL support — the one cause F-779 had named — and
+   * an operator reads that and goes and reworks the TTL. And the compensating delete of
+   * whatever partially landed had an EMPTY catch, so a plaintext row that could not be
+   * removed looked exactly like one that was, with no `stashId` in the 424 to find it by.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("a stash refusal names the failure it actually had, and reports its compensation (F-789)", async () => {
+    const SLOT = "COGNIRUNNER_KEY_openai";
+    const REAL = "zz-the-tenants-own-key-zz";
+    const { harnessStashKey } = await import("../../src/harness-fault.js");
+
+    // BLOCK 1 — a THROTTLE is not a missing TTL.
+    storage.__seed(SLOT, REAL);
+    storage.__failSetWhen((key) => String(key).startsWith("harness_stash:"),
+      Object.assign(new Error("rate limited"), { name: "ForgeKvsError", code: "THROTTLED" }));
+    const throttled = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    assert.equal(throttled.error, "stash-write-failed",
+      "a throttle is a WRITE failure — telling the driver the TTL is unavailable sends it to rework the one thing that was fine");
+    assert.equal(throttled.reason, "THROTTLED", "…and the class itself still rides along, so a caller is not limited to our two-way split");
+    // THROTTLED literally CONTAINS the letters t-t-l. The split reads a delimited token, not
+    // a substring — a naive test re-commits F-789 inside the fix for it.
+    assert.equal(throttled.stashed, false);
+    assert.equal(throttled.compensation, "deleted", "the partial row was removed, and the answer SAYS so rather than implying it");
+    assert.equal(typeof throttled.stashId, "string");
+    assert.ok(throttled.stashId.length > 0, "the id of the row the failed write was aimed at comes back");
+    assert.deepEqual(await listStashes(), [], "nothing was left behind");
+    assert.equal(storage.__raw(SLOT), REAL, "and the tenant's own key is untouched");
+
+    // BLOCK 2 — a TTL refusal still reads as one. The split is on the CLASS, not on a guess.
+    storage.__failSetWhen((key) => String(key).startsWith("harness_stash:"),
+      Object.assign(new Error("no ttl here"), { name: "ForgeKvsError", code: "TTL_NOT_SUPPORTED" }));
+    const noTtl = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    assert.equal(noTtl.error, "stash-ttl-unavailable", "a class that names the TTL is the cause F-779 named");
+    assert.equal(noTtl.reason, "TTL_NOT_SUPPORTED");
+    assert.equal(noTtl.compensation, "deleted");
+
+    // BLOCK 3 — the compensation ITSELF fails. This is the arm that used to be an empty
+    // catch, and the state it hides is a plaintext credential row nobody can see.
+    storage.__failSetWhen((key) => String(key).startsWith("harness_stash:"),
+      Object.assign(new Error("rate limited"), { name: "ForgeKvsError", code: "THROTTLED" }));
+    const realDelete = storage.delete;
+    storage.delete = async (key) => {
+      if (String(key).startsWith("harness_stash:")) throw Object.assign(new Error("nope"), { name: "ForgeKvsError", code: "THROTTLED" });
+      return realDelete.call(storage, key);
+    };
+    let stranded;
+    try {
+      stranded = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    } finally {
+      storage.delete = realDelete;
+    }
+    assert.equal(stranded.error, "stash-write-failed");
+    assert.equal(stranded.compensation, "delete-failed:THROTTLED",
+      "a compensation that did not land is REPORTED — the empty catch made this indistinguishable from a clean refusal");
+    assert.ok(typeof stranded.stashId === "string" && stranded.stashId.length > 0,
+      "…and the stashId is the handle, because a partial row is otherwise reachable only by stashSweep and only after its age floor");
+    // The handle is USABLE: the id names the row an operator or a restore would clear.
+    storage.__seed(harnessStashKey(stranded.stashId), { key: SLOT, value: REAL, present: true, stashedAt: new Date().toISOString() });
+    assert.equal(JSON.parse((await POST({ action: "kvRestore", stashId: stranded.stashId })).body).restored, true,
+      "the id in the 424 finds the row — which is what the refusal withholding it cost");
+    assert.deepEqual(await listStashes(), [], "and the restore cleared it");
+  });
   await check("a stash that IS given a TTL reports the TTL it actually got (F-779)", async () => {
     const SLOT = "COGNIRUNNER_KEY_openai";
     storage.__seed(SLOT, "zz-key-zz");
@@ -911,6 +977,64 @@ try {
     // Its restore still works, which is the property the age rule exists to protect.
     const live = after[0].key.slice("harness_stash:".length);
     assert.equal(JSON.parse((await POST({ action: "kvRestore", stashId: live })).body).restored, true);
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-787 — `olderThanSeconds: 0` MADE THE AGE RULE OPTIONAL.
+   *
+   * The lever clamped at `Math.max(0, …)`, so the drain-everything shape every other sweep
+   * here invites — `{action:"stashSweep", olderThanSeconds:0}` — made `harnessStashReapable`
+   * true for every row: a cleanup run in the same minute as `va-compaction-live`'s plant
+   * deleted the tenant's only copy of `COGNIRUNNER_KEY_openai`, the driver's `kvRestore`
+   * answered 404, and the credential slot kept the planted dead key with no path back.
+   * The floor is in the lever with the constant, the hook forwards raw, and the answer
+   * echoes the age that was APPLIED.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("stashSweep cannot be talked into an unconditional delete (F-787)", async () => {
+    const { HARNESS_STASH_SWEEP_MIN_AGE_SECONDS: MIN, HARNESS_STASH_MAX_AGE_SECONDS: MAX } =
+      await import("../../src/harness-fault.js");
+    assert.ok(MIN > 0, "a floor of zero is the defect");
+    assert.ok(MIN < MAX, "…and a floor at or above the default would cost the lever its reason to exist: reaping a leaked row SOONER than the TTL hour");
+
+    // A LIVE driver's stash, taken through the real door, exactly as va-compaction-live takes it.
+    storage.__seed("COGNIRUNNER_KEY_openai", "zz-the-tenants-own-key-zz");
+    const live = JSON.parse((await POST({ action: "kvStash", key: "COGNIRUNNER_KEY_openai" })).body);
+    assert.equal(live.stashed, true);
+    // …and a row older than the floor but younger than the hour: the ALLOW case, and the
+    // proof the floor did not simply pin every sweep to the default.
+    storage.__seed("harness_stash:f787-old", {
+      key: "COGNIRUNNER_KEY_azure", value: "zz-abandoned-tenant-key-zz", present: true,
+      stashedAt: new Date(Date.now() - (MIN + 200) * 1000).toISOString(),
+    });
+
+    // BLOCK — the age asked for is 0; the age APPLIED is the floor, and it is what comes back.
+    const dry = JSON.parse((await POST({ action: "stashSweep", dryRun: true, olderThanSeconds: 0 })).body);
+    assert.equal(dry.olderThanSeconds, MIN, "the answer echoes the EFFECTIVE age, not the number that was asked for");
+    const byKey = Object.fromEntries(dry.rows.map((r) => [r.key, r]));
+    assert.equal(byKey[`harness_stash:${live.stashId}`].expired, false,
+      "a live driver's stash is NOT reapable at olderThanSeconds:0 — this is the whole finding");
+    assert.equal(byKey["harness_stash:f787-old"].expired, true, "…while the row past the floor still is");
+
+    // The same, for real, plus the two other spellings of "reap everything".
+    for (const asked of [0, -1, 0.9]) {
+      const swept = JSON.parse((await POST({ action: "stashSweep", olderThanSeconds: asked })).body);
+      assert.equal(swept.olderThanSeconds, MIN, `olderThanSeconds:${asked} is floored like every other value below it`);
+    }
+    assert.equal(storage.__raw(`harness_stash:${live.stashId}`) !== undefined, true,
+      "the live stash SURVIVED the drain-everything sweep");
+    assert.equal(storage.__raw("harness_stash:f787-old"), undefined, "ALLOW: the row past the floor was reaped");
+    // The property the floor exists to protect: the driver can still put the tenant's key back.
+    const restored = JSON.parse((await POST({ action: "kvRestore", stashId: live.stashId })).body);
+    assert.equal(restored.restored, true, "…so kvRestore still finds it, which is what a 404 here would have cost");
+    assert.equal(storage.__raw("COGNIRUNNER_KEY_openai"), "zz-the-tenants-own-key-zz");
+
+    // ONE HOME: the clamp is in the lever, and the hook does not keep a second one.
+    const faultSrc = stripJsComments(readFileSync(new URL("../../src/harness-fault.js", import.meta.url), "utf8"));
+    const sweeper = faultSrc.slice(faultSrc.indexOf("export const sweepHarnessStashes"));
+    assert.match(sweeper.slice(0, sweeper.indexOf("const budgetMs")), /Math\.max\(HARNESS_STASH_SWEEP_MIN_AGE_SECONDS,/,
+      "the floor is applied where the constant lives");
+    const hookSrc787 = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    assert.equal(/olderThanSeconds[\s\S]{0,120}Math\.max\(/.test(hookSrc787), false,
+      "the hook forwards the raw number — a second clamp is the second home that drifts");
   });
   await check("stashSweep stays behind HARNESS_SECRET, and refuses a bad cursor (F-779)", async () => {
     const res = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "stashSweep" }) });
@@ -1020,7 +1144,14 @@ try {
     const constants = new Map(), builders = new Map(), ownConstants = new Map();
     for (const [name, src] of code) {
       const own = new Map();
-      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'`])([^"'`\n]*)\2\s*;/g)) if (!own.has(m[1])) own.set(m[1], m[3]);
+      /* F-788 — A TEMPLATE IS NOT A CONSTANT, and this dictionary is FILE-WIDE. The quote
+         class includes the backtick, so `const key = \`${UI_INTENT_PREFIX}${accountId}\`;`
+         was filed as the file's value for the name `key` and then handed to EVERY
+         `storage.set(key, …)` in index.js — a wrong key, resolved with total confidence,
+         which the coverage rule then asks `isCredentialKey` about. Only plain literals go
+         in the dictionary; a name bound to a template is resolved by the window-local
+         follow below, which reads the declaration that actually precedes the write. */
+      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'`])([^"'`\n]*)\2\s*;/g)) if (!own.has(m[1]) && !m[3].includes("${")) own.set(m[1], m[3]);
       ownConstants.set(name, own);
       for (const [k, v] of own) if (/^[A-Z][A-Z0-9_]*$/.test(k) && !constants.has(k)) constants.set(k, v);
       for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*=>\s*(?:[A-Za-z_$][\w$]*\()?\s*`([^`]*)`/g)) if (!builders.has(m[1])) builders.set(m[1], m[2]);
@@ -1043,6 +1174,11 @@ try {
           const call = e.match(/^([A-Za-z_$][\w$]*)\s*\(/);
           if (call && builders.has(call[1])) e = builders.get(call[1]);
           else {
+            /* F-788 — `"probe:" + name`: a LITERAL prefix concatenated with a runtime part
+               is a family exactly like `PREFIX + id` is, and reading only the identifier
+               form left `executeProbe`'s write site with no key at all. */
+            const litPlus = e.match(/^["']([^"']*)["']\s*\+/);
+            if (litPlus) return litPlus[1];
             const plus = e.match(/^([A-Za-z_$][\w$]*)\s*\+/);
             if (plus && constOf(plus[1]) !== null) return constOf(plus[1]);
             if (/^[A-Za-z_$][\w$]*$/.test(e)) {
@@ -1058,7 +1194,12 @@ try {
         } else e = tpl[1];
         e = e.replace(/\$\{([A-Za-z_$][\w$]*)\}/g, (_s, n) => (constOf(n) !== null ? constOf(n) : " "));
         e = e.replace(/\$\{[\s\S]*?\}/g, " ");
-        return e.split(/\s/)[0] || null;
+        const out = e.split(/\s/)[0] || null;
+        /* F-788 — a key that still carries a `${` is a FAILED resolution wearing the costume
+           of a successful one, and the coverage rule would ask `isCredentialKey` about a
+           string no KVS row is ever named. Unresolved is the honest answer, and the
+           assertion below refuses to let one pass unreviewed. */
+        return out && out.includes("${") ? null : out;
       };
       const WRITE_CALL = /\b(?:storage|kvs|store)\s*\.\s*set\s*\(/g;
       let wm;
@@ -1072,7 +1213,17 @@ try {
         const keyExpr = parts[0].trim(), valueExpr = parts[1].trim();
         const win = lines.slice(Math.max(0, line - 81), line).join("\n");
         const fields = new Set();
-        const scanFields = (txt) => { for (const m of txt.matchAll(/(?:^|[{,\s])["']?([A-Za-z_$][\w$]*)["']?\s*[:=](?!=)/g)) if (isSecretField(m[1])) fields.add(m[1]); };
+        /* F-788 — TWO WAYS A FIELD NAME APPEARS IN AN OBJECT LITERAL, and the scanner only
+           read one. `name:` / `name =` was the whole rule, so `{ url, apiKey }` — the most
+           idiomatic way this repo writes a row, and the exact shape at test-hook.js's
+           `storage.set("probe:webhook:secret", { secret, at })` — yielded `fields.size === 0`
+           and the site was never even reported, so the census of 27 sites simply did not
+           contain it. A SHORTHAND property is an identifier followed by `,` or `}` with no
+           colon, and it names the field just as loudly. */
+        const scanFields = (txt) => {
+          for (const m of txt.matchAll(/(?:^|[{,\s])["']?([A-Za-z_$][\w$]*)["']?\s*[:=](?!=)/g)) if (isSecretField(m[1])) fields.add(m[1]);
+          for (const m of txt.matchAll(/(?:^|[{,])\s*([A-Za-z_$][\w$]*)\s*(?=[,}])/g)) if (isSecretField(m[1])) fields.add(m[1]);
+        };
         if (/^\{[\s\S]*\}$/.test(valueExpr)) scanFields(valueExpr);
         const bare = valueExpr.match(/^([A-Za-z_$][\w$]*)$/);
         if (bare) {
@@ -1102,6 +1253,10 @@ try {
     ["COGNIRUNNER_AI_BUDGET", "`tokensPerMinute` is the TPM pacing number (src/shared/ai-budget.js), not an auth token"],
     ["ai_cost:", "`tokens` is a usage COUNT for the cost meter"],
     ["pf_exec:", "`issueKey` is a Jira issue key (LZPT-1), which is not secret and is in every log line"],
+    // F-788 — the three invocation-claim rows, `{ issueKey, claimedAt }`: SHORTHAND, so the
+    // scanner could not see them at all until now. Same judgement as pf_exec: above.
+    ["pf_inv:", "`issueKey` — a Jira issue key on a once-only invocation claim row"],
+    ["pf_inv:fb:", "`issueKey` — a Jira issue key on the fallback invocation claim row"],
     ["coder_ticket:", "`issueKey` — a Jira issue key"],
     ["coder_pin:", "`issueKey` — a Jira issue key"],
     ["coder_log:", "`issueKey` — a Jira issue key"],
@@ -1135,6 +1290,22 @@ try {
     assert.deepEqual(uncovered.map((s) => `${s.file}:${s.line} ${s.key} {${s.fields.join(",")}}`), [],
       "a KVS row stores a secret-looking field under a key the read ceiling does not mask — declare the family in CREDENTIAL_KEY_FAMILIES, or add it to NOT_A_CREDENTIAL with the reason");
 
+    /* F-788 — THE FINDING, named: the most idiomatic way to store a secret was invisible.
+       `storage.set("probe:webhook:secret", { secret, at })` is a SHORTHAND property, so the
+       old `[:=]`-only scan gave it `fields.size === 0` and never reported the site — it is
+       absent from the 27-site census this check was committed with. It is a real HMAC secret
+       (a tester types it; `gitWebhookProbe` verifies a signature with it), and the answer to
+       "is the read ceiling already over it" is YES twice over: it is a declared family AND
+       its name carries the `secret` catch-all. Asserted, not assumed. */
+    const probeSecret = sites.find((s) => s.key === "probe:webhook:secret");
+    assert.ok(probeSecret && probeSecret.fields.includes("secret"),
+      "the scanner sees the SHORTHAND `{ secret, at }` write at test-hook.js — this is the F-788 site");
+    assert.equal(isCredentialKey("probe:webhook:secret"), true, "…and the read ceiling masks it");
+    assert.equal(isCredentialKey("a:key:named:secret"), true,
+      "…and the name catch-all covers it a second time, because the key says `secret` out loud");
+    assert.equal(isCredentialKey("probe:webhook:signing"), false,
+      "…but ONLY because of that word: rename the key and the DECLARED family is the whole ceiling, which is why the census has to see the site at all");
+
     // THE FINDING ITSELF, named: the third MCP remote is in the census now.
     const context7 = sites.find((s) => s.key === "COGNIRUNNER_CONTEXT7_REMOTE");
     assert.ok(context7 && context7.fields.includes("apiKey"), "the scanner sees saveContext7Remote storing apiKey");
@@ -1147,6 +1318,35 @@ try {
     assert.equal(found[0].key, "cognirunner_new_thing");
     assert.equal(isCredentialKey(found[0].key) || NOT_A_CREDENTIAL.has(found[0].key), false,
       "POSITIVE CONTROL: …and it is UNCOVERED, so the rule above would fail on it");
+    /* POSITIVE CONTROL for F-788: the SHORTHAND fixture — the exact shape the scanner was
+       blind to, and the shape a new `saveXRemote` would copy from line 561's own style. */
+    const shorthand = new Map([["shorthand.js", 'const SLOT = "cognirunner_x_remote";\nawait storage.set(SLOT, { url, apiKey });\n']]);
+    const shortFound = scanSecretWriteSites(shorthand, hints);
+    assert.equal(shortFound.length, 1, "POSITIVE CONTROL: `{ url, apiKey }` IS a secret write site");
+    assert.deepEqual(shortFound[0].fields, ["apiKey"], "…and the shorthand field is named, while `url` is not a secret word");
+    assert.equal(isCredentialKey(shortFound[0].key) || NOT_A_CREDENTIAL.has(shortFound[0].key), false,
+      "…and it is UNCOVERED, so the rule above would fail on it — which it did not before F-788");
+    /* …and the two key-resolution holes this exposed, both of which answered a WRONG key
+       with total confidence rather than answering "unresolved". A template bound to a name
+       is NOT a file-wide constant (`const key = `${UI_INTENT_PREFIX}${accountId}`;` was being
+       handed to every `storage.set(key, …)` in index.js), and a literal prefix concatenated
+       with a runtime part is a family like any other. */
+    const tpl = new Map([["tpl.js", [
+      'const P = "ui_intent:";',
+      "const key = `${P}${accountId}`;",
+      'const other = "probe:" + name;',
+      "await storage.set(other, { apiKey });",
+      "await storage.set(key, { apiKey });",
+    ].join("\n")]]);
+    const tplFound = scanSecretWriteSites(tpl, hints);
+    assert.deepEqual(tplFound.map((s) => s.key), ["probe:", "ui_intent:"],
+      "a literal+identifier key resolves to its prefix, and a template name resolves through the declaration that PRECEDES the write, not through a file-wide dictionary");
+    const wrong = new Map([["wrong.js", [
+      "const key = `${NOPE}/x`;",
+      "await storage.set(key, { apiKey });",
+    ].join("\n")]]);
+    assert.deepEqual(scanSecretWriteSites(wrong, hints).map((s) => s.key), [null],
+      "a key that cannot be resolved answers null — never a string still carrying a ${…}, which the coverage rule would then ask isCredentialKey about");
     // …and a comment that merely NAMES a credential field is prose, not a write site.
     const prose = new Map([["prose.js", '/* the slot stores { apiKey } — see F-778 */\nawait storage.set("plain_row", { count: 1 });\n']]);
     assert.deepEqual(scanSecretWriteSites(prose, hints), [], "POSITIVE CONTROL: a docblock naming apiKey is not a write site");

@@ -2701,7 +2701,7 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
- * ── 4k. F-803 — ONE HOME FOR "WHAT DOES A CREDENTIAL LOOK LIKE" ───────────────────
+ * ── 4m. F-803 — ONE HOME FOR "WHAT DOES A CREDENTIAL LOOK LIKE" ───────────────────
  *
  * There were two, and they disagreed about this app's OWN bearer. `src/test-hook.js`
  * (`SECRET_VALUE_RE` — the dev hook's write refusal AND its read ceiling) knew
@@ -2728,9 +2728,9 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
 
   // ── 1. PARITY ───────────────────────────────────────────────────────────────────
   ok(/from "\.\/shared\/secret-shapes\.js"/.test(hookSrc),
-    "4k (F-803): src/test-hook.js imports the shapes from their one home");
+    "4m (F-803): src/test-hook.js imports the shapes from their one home");
   ok(/from "\.\.\/\.\.\/src\/shared\/secret-shapes\.js"/.test(redactSrc),
-    "4k (F-803): lib/redact.mjs imports the shapes from the SAME one home");
+    "4m (F-803): lib/redact.mjs imports the shapes from the SAME one home");
   /* A private copy is a LITERAL credential prefix inside a regex literal. Comments may name
      a prefix — that is how the reasoning stays readable — so only non-comment source counts. */
   const hookCode = maskComments(hookSrc), redactCode = maskComments(redactSrc);
@@ -2738,15 +2738,15 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     .map((m) => m[0])
     .filter((lit) => /(cgr_|ghp_|github_pat_|glpat-|ATATT|xox[bp]-|AKIA|sk-\[)/.test(lit));
   ok(privateCopy(hookCode).length === 0,
-    `4k (F-803): src/test-hook.js may not carry its own credential-shape regex (found ${privateCopy(hookCode).join(" ")})`);
+    `4m (F-803): src/test-hook.js may not carry its own credential-shape regex (found ${privateCopy(hookCode).join(" ")})`);
   ok(privateCopy(redactCode).length === 0,
-    `4k (F-803): lib/redact.mjs may not carry its own credential-shape regex (found ${privateCopy(redactCode).join(" ")})`);
+    `4m (F-803): lib/redact.mjs may not carry its own credential-shape regex (found ${privateCopy(redactCode).join(" ")})`);
   // POSITIVE CONTROL: the scanner can still SEE a private copy — the exact pre-fix line.
   const preFix = 'const SECRET_VALUE = /(sk-[A-Za-z0-9_\\-]{8,}|ghp_[A-Za-z0-9]{16,}|cgr_[0-9a-f]{48,})/g;';
   ok(privateCopy(preFix).length === 1,
-    "4k (F-803) POSITIVE CONTROL: the pre-fix `SECRET_VALUE` literal IS seen as a private copy");
+    "4m (F-803) POSITIVE CONTROL: the pre-fix `SECRET_VALUE` literal IS seen as a private copy");
   ok(privateCopy("// cgr_ is the app's own bearer — see secret-shapes.js").length === 0,
-    "4k (F-803) NEGATIVE CONTROL: a COMMENT naming a prefix is not a private copy");
+    "4m (F-803) NEGATIVE CONTROL: a COMMENT naming a prefix is not a private copy");
 
   // ── 2. CONTROLS, one specimen per declared prefix ───────────────────────────────
   const SPECIMENS = {
@@ -2767,35 +2767,35 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     const line = `the value is ${specimen} and that is all`;
     const redacted = redactString(line);
     ok(redacted.includes(REDACTED) && !redacted.includes(specimen.replace(/^Bearer /, "")),
-      `4k (F-803): the FILE boundary redacts a ${name} credential`);
+      `4m (F-803): the FILE boundary redacts a ${name} credential`);
     // …and the DOOR, which is the half that was missing. `(root)` = the string itself.
     const hits = findSecretFields(line, { maxDepth: 12 });
     ok(hits.length === 1 && hits[0].why === "value-looks-like-a-credential",
-      `4k (F-803): the ?what=kvs read ceiling SEES a ${name} credential in free text`);
+      `4m (F-803): the ?what=kvs read ceiling SEES a ${name} credential in free text`);
   }
 
   // ── 3. THE STATED NON-CATCH ─────────────────────────────────────────────────────
   const BLOB = "a1b2c3d4e5f60718293a4b5c6d7e8f90";   // 32 hex, no prefix, no shape
   ok(redactString(`const k = '${BLOB}';`).includes(BLOB),
-    "4k (F-803): a bare 32-hex blob in FREE TEXT is NOT redacted — masking every long opaque string would mask the code");
+    "4m (F-803): a bare 32-hex blob in FREE TEXT is NOT redacted — masking every long opaque string would mask the code");
   ok(findSecretFields({ code: `const k = '${BLOB}';` }, { maxDepth: 12 }).length === 0,
-    "4k (F-803): …and the door does not catch it either, which is the residual stated at maskSecretFields");
+    "4m (F-803): …and the door does not catch it either, which is the residual stated at maskSecretFields");
   /* WHERE redact.mjs DOES catch that blob, stated so the two answers are not confused: as
      the VALUE of a `?key=` query parameter, where F-663 made the discriminator the shape
      rather than the parameter NAME. That is a different question — an already-isolated
      value — and it is unaffected by this cut. */
   ok(looksLikeCredentialValue(BLOB) === true,
-    "4k (F-803): `looksLikeCredentialValue` still accepts 20+ chars of pure hex — it is asked only about an isolated ?key= value");
+    "4m (F-803): `looksLikeCredentialValue` still accepts 20+ chars of pure hex — it is asked only about an isolated ?key= value");
   ok(redactString(`https://x/y?key=${BLOB}`).includes(REDACTED),
-    "4k (F-803): …so the same blob IS masked as a query value");
+    "4m (F-803): …so the same blob IS masked as a query value");
   ok(redactString("https://x/y?key=COGNIRUNNER_MEMORY_SETTINGS").includes("COGNIRUNNER_MEMORY_SETTINGS"),
-    "4k (F-803) NEGATIVE CONTROL: a KVS key NAME is still readable (F-663)");
+    "4m (F-803) NEGATIVE CONTROL: a KVS key NAME is still readable (F-663)");
 
   // The prefix census and the shape census must describe the same list.
   for (const prefix of shapes.CREDENTIAL_PREFIXES) {
     ok(shapes.SECRET_VALUE_SHAPES.some((sh) => sh.startsWith(prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
         || new RegExp("^" + sh).test(prefix + "0".repeat(64))),
-      `4k (F-803): the prefix \`${prefix}\` is the head of a declared shape, not a fourteenth list`);
+      `4m (F-803): the prefix \`${prefix}\` is the head of a declared shape, not a fourteenth list`);
   }
 }
 

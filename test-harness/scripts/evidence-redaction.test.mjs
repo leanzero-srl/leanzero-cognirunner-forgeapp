@@ -1374,19 +1374,77 @@ ok(/STAGING_TESTSTATE_URL/.test(guardSrc) && /TESTSTATE_URL/.test(guardSrc),
    and the union is asserted below to be every `*-live.mjs`. Saying otherwise here was a
    docblock outliving its defect, which is F-699's own failure mode.
 
-   THE LIMIT THAT REMAINS IS VISIBILITY (F-737). `callsMutator` is a TOKEN SCAN over one
-   file. It cannot see a write made by CLICKING the product, and it cannot see a write a
+   THE LIMIT THAT REMAINS IS VISIBILITY (F-737, F-751). `callsMutator` is a TOKEN SCAN over
+   one file. It cannot see a write made by CLICKING the product, and it cannot see a write a
    `lib/` helper makes on the driver's behalf unless the helper's name is itself in the
-   list. Both halves are addressed as far as a scanner can: the shared writers are
+   list. The list is no longer a hand-list on the hook side — F-751 derives those doors from
+   `src/test-hook.js` — but the RESOLVER names below are still typed here, and that half
+   carries the same rot. Both halves are addressed as far as a scanner can: the shared
+   writers are
    IMPORT-AWARE (lib/jira.mjs, lib/workflow.mjs, lib/rules-api.mjs), and a driver that
    drives the product UI is marked UNAUDITABLE and excused from the cry-wolf arm only —
    never from the arm that matters. What is NOT closed, and cannot be by this file: a UI
    driver that declares `[]` while clicking a write. That is F-734's shape, it is a human
    judgement, and the honest thing is to say so rather than to imply the scan covers it. */
+/* ── F-751 · THE HOOK'S WRITE DOORS ARE READ FROM THE HOOK, NOT RETYPED HERE ──────────
+ *
+ * The test-hook half of this list was hand-written, and a hand-list of someone else's doors
+ * rots the moment a door is added: it had drifted to miss FIVE writing actions, two of them
+ * the PLURAL of names it already carried — `\bregisterRule\b` does not match
+ * `"registerRules"`, MEASURED. A live driver that registers a workflow rule with
+ * `hook({ action: "registerRules", rules })` and removes it with `"removeRules"` declared
+ * `mutates: []`, `callsMutator` returned `[]`, rule 4g passed, and the run rewrote rule
+ * configs on the shared tenant with no `--i-know-dev-is-shared`. Same for `setDisabled`
+ * (disables a builtin doc or skill for everyone) and `setWebhookProbeSecret` (a git secret
+ * write); `pipelineRow` is already used by a driver whose honest `["git"]` declaration was
+ * saved only by three OTHER tokens in the same file. This is the mechanism F-737's ancestor
+ * was closed for once already, producing the same defect again.
+ *
+ * So the door list is PARSED from `src/test-hook.js`, and what this file keeps is the
+ * judgement a parser cannot make: which doors do NOT mutate. That allow-list is asserted to
+ * be a SUBSET of the parsed doors, so deleting or renaming a door here goes red rather than
+ * silently excusing nothing; every door NOT on it is a mutator the day it is written.
+ *
+ * The two families that are deliberately not mutations:
+ *   · `arm*`/`disarm*`/`read*` FAULT LEVERS — a fault is declared under `faults:`, which is
+ *     its own gate with its own ack; calling it a mutation too would double-count it.
+ *   · the `probe*` READS — with ONE exception, `probeJsmComment`, which really COMMENTS on a
+ *     real JSM issue. The prefix is not the signal, which is why these are named and not
+ *     pattern-matched.
+ *   · `invokeResolver` is the generic proxy door, so it is excused HERE and caught by the
+ *     RESOLVER NAMES below — the driver types `saveListener` either way. A driver that
+ *     proxies a write whose resolver name is not in that list is the F-737 visibility limit,
+ *     restated rather than hidden.
+ *   · `runCodegen` runs design-time AI and touches no tenant object the drivers restore.
+ */
+const HOOK_SRC = readFileSync(path.join(here, "..", "..", "src", "test-hook.js"), "utf8");
+const HOOK_DOORS = [...new Set(
+  [...HOOK_SRC.matchAll(/\baction\s*===\s*"([A-Za-z_$][\w$]*)"/g)].map((m) => m[1]),
+)].sort();
+const HOOK_READ_ONLY_DOORS = [
+  "probe", "probeConfluence", "probeConfluenceFromConsumer", "probeConfluenceInstalled",
+  "probeProperty", "probeRuleDelivery", "probeServiceDesk", "probeServicedeskFromConsumer",
+  "readHarnessProbe", "readProbe",
+  "readDeleteFault", "readGitDispatchFault", "readHookPromoteFault", "readJiraFault", "readKeyReadFault",
+  "armDeleteFault", "armGitDispatchFault", "armHookPromoteFault", "armJiraFault", "armKeyReadFault",
+  "disarmDeleteFault", "disarmGitDispatchFault", "disarmHookPromoteFault", "disarmJiraFault", "disarmKeyReadFault",
+  "invokeResolver", "runCodegen",
+];
+ok(HOOK_DOORS.length >= 40,
+  "F-751: the test-hook's action doors are READ from src/test-hook.js (got " + HOOK_DOORS.length + ")");
+for (const d of HOOK_READ_ONLY_DOORS) {
+  ok(HOOK_DOORS.includes(d),
+    `F-751: the read-only allow-list entry \`${d}\` is a REAL door — the excuse list is a subset of the parsed list, so a renamed door goes red here instead of quietly excusing nothing`);
+}
+const HOOK_MUTATOR_DOORS = HOOK_DOORS.filter((d) => !HOOK_READ_ONLY_DOORS.includes(d));
+for (const d of ["registerRules", "removeRules", "setDisabled", "pipelineRow", "setWebhookProbeSecret", "kvSet", "probeJsmComment"]) {
+  ok(HOOK_MUTATOR_DOORS.includes(d),
+    `F-751: \`${d}\` is a mutator BY DERIVATION — the five the hand-list had drifted to miss, plus the two it had, all arrive from the same place`);
+}
+
 const MUTATOR_CALLS = [
-  /* test-hook actions that write the tenant directly */
-  /\bkvSet\b/, /\bvaTombstone\b/, /\bplantHarnessFaults\b/, /\bclearPlantedFaults\b/,
-  /\bsweepHarnessFaults\b/, /\bplantHookSecret\b/, /\bdeleteHarnessConnection\b/, /\bmintApiToken\b/,
+  /* test-hook actions that write the tenant directly — DERIVED (F-751), never retyped. */
+  ...HOOK_MUTATOR_DOORS.map((d) => new RegExp(`\\b${d}\\b`)),
   /* resolvers that write: knowledge, memories, provider slots, agents, jobs, listeners, tokens */
   /\bsaveSkill\b/, /\bdeleteSkill\b/, /\bsaveContextDoc\b/, /\bdeleteContextDoc\b/,
   /\baddMemory\b/, /\bupdateMemory\b/, /\bdeleteMemory\b/, /\bsaveMemorySettings\b/,
@@ -1407,7 +1465,13 @@ const MUTATOR_CALLS = [
      getters stay out: a dry run and a read are not mutations. */
   /\brulesApi\.[A-Za-z]+\.(?:create|update|remove|run|enable|disable|test)\b/,
   /\bprobeJsmComment\b/,                            // the hook probe that COMMENTS on a real JSM issue
-];
+]
+  /* F-751 — the derivation and the hand-written half OVERLAP on purpose: `seedSkill`,
+     `deleteSkill` and `probeJsmComment` are hook doors AND were reasoned about by name
+     above, and their comments are the record of why. Keeping both and de-duplicating by
+     pattern is what lets those reasons survive without `callsMutator` counting one write
+     twice — several controls below assert an exact hit COUNT. */
+  .filter((re, i, all) => all.findIndex((o) => String(o) === String(re)) === i);
 
 /** `gh api -X POST|PUT|DELETE …` — a repository write driven through the GitHub CLI. It is a
  *  mutation of a real repo, and `pipeline-scaffold-live.mjs` makes several. */
@@ -1557,6 +1621,33 @@ ok(callsMutator('const r = await fetch(HOOK, { method: "POST", body });').length
   "NEGATIVE CONTROL: POSTing to the harness web trigger is how EVERY driver talks to the app — it is not a Jira write");
 ok(callsMutator('await invoke("disarmKeyReadFault", { provider: P });').length === 0,
   "NEGATIVE CONTROL: disarming a lever is a fault concern, declared under faults:, not a mutation");
+/* ── F-751 · THE PLURALS, AND THE FOUR OTHER DOORS THE HAND-LIST HAD DRIFTED TO MISS ──
+   The plural pair is the point: `\bregisterRule\b` does NOT match `"registerRules"`, so the
+   list carried a name that looked like coverage and was not. Both forms must hit, because
+   both are real write doors — the singular is a resolver, the plural is a hook action. */
+ok(callsMutator('await hook({ action: "registerRules", rules });').length === 1,
+  "POSITIVE CONTROL (F-751): the PLURAL hook door matches — measured false before, while the singular sat in the list looking like coverage");
+ok(callsMutator('await invoke("registerRule", { rule });').length === 1,
+  "POSITIVE CONTROL (F-751): …and the SINGULAR resolver still matches — deriving the hook half did not cost the hand-written half");
+ok(callsMutator('await hook({ action: "removeRules", ids });').length === 1,
+  "POSITIVE CONTROL (F-751): `removeRules`, the other plural");
+ok(callsMutator('await hook({ action: "setDisabled", id, disabled: true });').length === 1,
+  "POSITIVE CONTROL (F-751): `setDisabled` disables a builtin doc or skill FOR EVERYONE on the tenant");
+ok(callsMutator('await hook({ action: "setWebhookProbeSecret", secret: s });').length === 1,
+  "POSITIVE CONTROL (F-751): `setWebhookProbeSecret` is a git secret write");
+ok(callsMutator('await hook({ action: "pipelineRow", row });').length === 1,
+  "POSITIVE CONTROL (F-751): `pipelineRow` — already used by pipeline-outdated-live.mjs, whose honest [\"git\"] declaration was saved only by three OTHER tokens in the same file");
+ok(callsMutator('await hook({ action: "commit", rule, bindings });').length === 1,
+  "POSITIVE CONTROL (F-751): `commit` runs commitImportCore, which writes a rule into a real workflow");
+/* The allow-list is a JUDGEMENT, so it gets controls too — otherwise the derivation could be
+   quietly emptied by adding names to the excuse list. */
+ok(callsMutator('await hook({ action: "armJiraFault", path: P });').length === 0,
+  "NEGATIVE CONTROL (F-751): a fault LEVER is declared under `faults:`, which is its own gate with its own ack — counting it as a mutation too would double-count it");
+ok(callsMutator('await hook({ action: "probeRuleDelivery" });').length === 0,
+  "NEGATIVE CONTROL (F-751): a probe READ is not a write…");
+ok(callsMutator('await hook({ action: "probeJsmComment", issue: k });').length === 1,
+  "…but `probeJsmComment` COMMENTS on a real JSM issue, which is why the allow-list names doors instead of matching the `probe` prefix");
+
 /* ── F-733 · THE DOORS THE LIST DID NOT KNOW, each with the shape that found it ──── */
 ok(callsMutator('import { get, post, del } from "../lib/jira.mjs";\nconst k = (await post("/rest/api/3/issue", f)).key;').length === 1,
   "POSITIVE CONTROL (F-733): a Jira write through the SHARED helper is a write — the `method: \"POST\"` literal lives in lib/jira.mjs, and eight honestly-declared drivers were reported as crying wolf because of it");

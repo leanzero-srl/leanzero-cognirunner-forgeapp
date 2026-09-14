@@ -39,13 +39,20 @@
  * actually about. Every substitution is named in the output.
  *
  * STAGING ONLY, in practice: since F-485 an instance whose agent capability is off cannot
- * hold a VA at all, and DEV's is. `--flip-model` points the agent model at a frontier
+ * hold a VA at all, and DEV's is. The model flip points the agent model at a frontier
  * model for the run and REPLAYS THE KVS SLOT afterwards (the resolver answers a fallback
  * when the slot is empty, so restoring "what the resolver said" would leave it dirty).
  *
+ * F-767 — THE FLIP IS ON BY DEFAULT ON STAGING, and a capability that is off is N/V, not
+ * FAIL. The bare documented command used to exit 1 in five seconds with a red that read as a
+ * shadow-door defect when all that was true was that the provider slot pointed nowhere. Both
+ * halves of that decision live in `lib/agent-capability-precondition.mjs`, which carries the
+ * full reasoning; `--no-flip-model` is the explicit opt-out.
+ *
  * Usage (from test-harness/):
- *   node scripts/va-shadow-door-live.mjs --env=staging --flip-model
- *   node scripts/va-shadow-door-live.mjs --env=staging --flip-model --no-ui   # skip Playwright
+ *   node scripts/va-shadow-door-live.mjs --env=staging
+ *   node scripts/va-shadow-door-live.mjs --env=staging --no-ui          # skip Playwright
+ *   node scripts/va-shadow-door-live.mjs --env=staging --no-flip-model  # leave the slot alone
  *
  * Env: STAGING_TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID.
  * NOTHING secret is printed — not the trigger URLs, not the bearer token.
@@ -53,6 +60,7 @@
 
 import { requireEnvAck, forgeEnvId, ENV_NAMES } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { resolveFlipModel, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 
 /* F-752 — `envId` is NOT destructured: this driver's browser half is pinned to staging by
    construction (see STAGING_ENV below), so the settled row's id has no reader here, and a
@@ -66,7 +74,10 @@ const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const PROJECT = arg("project", "JT");
 const FRONTIER = arg("model", "claude-sonnet-5");
-const FLIP_MODEL = flag("flip-model");
+/* F-767 — the flip is DECIDED, not read off one flag: on by default on staging (where the
+   capability gate needs it and where `providerSlot` is already declared and replayed), with
+   `--no-flip-model` as the explicit opt-out. One home, in the lib. */
+const { flipModel: FLIP_MODEL, reason: FLIP_MODEL_REASON } = resolveFlipModel({ envName: ENV_NAME, argv: process.argv.slice(2) });
 const NO_UI = flag("no-ui");
 const KEEP = flag("keep");
 const TICK_WAIT_S = Number(arg("tickwait", "240"));
@@ -306,6 +317,7 @@ async function main() {
   PASS("rules-api web-trigger URL discovered (not printed)");
 
   /* ── STEP 0 — the model the agent capability needs ───────────────────────── */
+  info(`model flip: ${FLIP_MODEL ? "ON" : "OFF"} — ${FLIP_MODEL_REASON}`);
   if (FLIP_MODEL) {
     console.log("\nSTEP 0 — point the agent model at a frontier model for this run");
     const slot = await kvs(AGENT_MODEL_SLOT);
@@ -317,7 +329,11 @@ async function main() {
   }
   const cap = (await invoke("getAgentCapability", {})).body || {};
   info(`getAgentCapability -> enabled=${cap.enabled} reason="${cap.reason}" edition=${cap.edition} provider=${cap.provider} agentModel=${cap.agentModel}`);
-  if (cap.enabled !== true) { FAIL(`the instance cannot hold an agent (${cap.reason}) — nothing below can run`); return; }
+  /* F-767 — a provider-slot precondition is N/V with its remedy named, never a FAIL that
+     reads as a defect in the shadow door. The decision has one home; see the lib. */
+  const capVerdict = judgeAgentCapability({ cap, flipModel: FLIP_MODEL, envName: ENV_NAME, frontier: FRONTIER });
+  ({ PASS, FAIL, NV }[capVerdict.verdict])(capVerdict.what);
+  if (!capVerdict.proceed) return;
 
   /* ── STEP 1 — an agent with THREE shadow ticks ───────────────────────────── */
   console.log(`\nSTEP 1 — create an agent with shadowTicks=${SHADOW_TICKS}`);

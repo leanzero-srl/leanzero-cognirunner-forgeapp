@@ -38,7 +38,7 @@ import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { normalizeStep, armingStamp, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
+import { normalizeStep, armingStamp, resolveSavedByRole, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
 // ONE HOME for "which namespace executors does this run hold" (F-852) — the SAME
 // assembler the listener run site calls, so the two headless surfaces cannot drift into
@@ -85,7 +85,10 @@ export const newJobId = () => `job_${Date.now().toString(36)}${Math.random().toS
 
 // ── Validation / normalisation ───────────────────────────────────────────────
 
-export const normalizeJob = (input = {}, { existing = null, accountId = null, gate = undefined, savedByRole = "editor", watchedTicks = undefined, vaRefused = null } = {}) => {
+export const normalizeJob = (input = {}, { existing = null, accountId = null, gate = undefined, savedByRole = undefined, watchedTicks = undefined, vaRefused = null } = {}) => {
+  // F-882 - ONE role per save, resolved in the same home a listener uses: it gates the
+  // actions, it gates the VA block, and it is what the arming stamp records.
+  const role = resolveSavedByRole({ gate, savedByRole });
   const src = input && typeof input === "object" ? input : {};
   const id = existing ? existing.id : (typeof src.id === "string" && /^[A-Za-z0-9_.-]{3,80}$/.test(src.id) ? src.id : newJobId());
   const name = clampStr(src.name, 120).trim();
@@ -124,7 +127,7 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
     // further down, after this line. `mode` is decided above, from the input, with
     // "script" as the default an unknown value falls to — so a forged mode can only make
     // the answer MORE restrictive, never less.
-    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), surface: mode === "va" ? "va" : "job" }),
+    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), savedByRole: role, surface: mode === "va" ? "va" : "job" }),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
     // Knowledge binding — ONE normalizer, shared with listeners (1.4 commit 13b).
     ...normalizeAgentKnowledge(a),
@@ -157,7 +160,7 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
   const vaResult = mode === "va"
     ? normalizeVa(src.va, {
       existing: existing && existing.va,
-      savedByRole,
+      savedByRole: role,
       ...(vaWatch !== undefined ? { watchedTicks: vaWatch } : {}),
     })
     : null;
@@ -195,7 +198,7 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
     // it is the account the job's authority comes from, not its first author
     // (`firstCreatedBy` keeps that). A job holds no verdict actions today; the fields are
     // here so ALL THREE rule kinds answer "who armed this" the same way, from one home.
-    ...armingStamp({ accountId, savedByRole, existing }),
+    ...armingStamp({ accountId, savedByRole: role, existing }),
     createdAt: existing ? existing.createdAt || nowIso() : nowIso(),
     updatedAt: nowIso(),
   };
@@ -245,7 +248,7 @@ const touchSched = async (id) => {
   try { const m = await readSchedMap(); m[id] = { ...(m[id] || {}), lastCheckedAt: nowIso() }; await writeSchedMap(m); } catch (e) { console.warn("[job] sched touch skipped:", e && e.message); }
 };
 
-export const saveJob = async (input, { accountId = null, gate = undefined, savedByRole = "editor", watchedTicks = undefined } = {}) => {
+export const saveJob = async (input, { accountId = null, gate = undefined, savedByRole = undefined, watchedTicks = undefined } = {}) => {
   const existing = input && input.id ? await getJob(input.id) : null;
   // F-523: the VA door's watch count rides `input` (`VA_SAVE_WATCH_FIELD`) unless a
   // caller passes it explicitly, and the second pass's refusals come back here instead

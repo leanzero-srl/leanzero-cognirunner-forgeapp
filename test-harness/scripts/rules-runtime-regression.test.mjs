@@ -2211,15 +2211,25 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
   const verdictOf = (args) => args.gate === undefined
     ? { allowed: normalizeAllowedActions(args.allowedActions), refused: [{ id: "(arity-1 default)", reason: "no-gate-context" }] }
     : normalizeAllowedActions(args.allowedActions, args.gate);
+  /*
+   * F-882 - the SAVE is always an admin one, and the stored row's role is then set to the
+   * role under test. Before F-882 this fixture passed `gate: saveGate` (admin) beside
+   * `savedByRole: "viewer"` and got the admin verdict at save time and the viewer stamp on
+   * the row - the two-fields-one-name bug itself. There is now ONE role per save, so a
+   * viewer save would refuse `commit_files` at the door and the row under test could not
+   * exist. What this block is about is the RUN gate, so the row is armed by an admin and
+   * the stamp is rewritten afterwards: exactly the shape of a legacy or downgraded row.
+   */
+  const storedRole = (role) => (role === "admin" ? "admin" : "editor");
   const queuedRun = async ({ kind, facts, savedByRole, id }) => {
     const state = reset();
     if (kind === "listener") {
-      const config = normalizeListener({ id, name: id, events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: ACTIONS } }, { gate: saveGate, savedByRole });
-      storage.__seed(`listener:${id}`, config);
+      const config = normalizeListener({ id, name: id, events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: ACTIONS } }, { gate: saveGate, savedByRole: "admin" });
+      storage.__seed(`listener:${id}`, { ...config, savedByRole: storedRole(savedByRole) });
       await handlers(facts).executeQueuedListener({ listenerId: id, eventType: UPDATE, event: { issue: ISSUE }, ctx: { issueKey: ISSUE.key, projectKey: "LZPT" } }, `task-${id}`);
     } else {
-      const config = normalizeJob({ id, name: id, schedule: { cron: "*/5 * * * *" }, mode: "agent", agent: { instructions: "go", allowedActions: ACTIONS } }, { gate: saveGate, savedByRole });
-      storage.__seed(`job:${id}`, config);
+      const config = normalizeJob({ id, name: id, schedule: { cron: "*/5 * * * *" }, mode: "agent", agent: { instructions: "go", allowedActions: ACTIONS } }, { gate: saveGate, savedByRole: "admin" });
+      storage.__seed(`job:${id}`, { ...config, savedByRole: storedRole(savedByRole) });
       await handlers(facts).executeQueuedScheduledJob({ jobId: id, manual: true }, `task-${id}`);
     }
     assert.equal(state.runs.length, 1);
@@ -2429,6 +2439,116 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
     const { args } = await listenerRun({ id: "f852-l-plain", actions: ["get_issue", "add_comment"], connectionId: "gc1" });
     assert.deepEqual(Object.keys(args.executors), ["refusals"]);
     assert.deepEqual(args.executors.refusals, {});
+  });
+}
+
+/* ════ F-882 — ONE ROLE PER SAVE, and the row's stamp IS the role that gated it ════
+ *
+ * `savedByRole` used to reach a normalizer TWICE: as a sibling option, which only stamped
+ * the stored row, and inside `gate`, which is what `assertAllowedActions` read. Two fields
+ * wearing one name, so a caller that passed the option beside a gate built without it got
+ * an admin stamp on an editor verdict, or an editor stamp on a row holding a `confirm`
+ * action. `resolveSavedByRole` in src/listeners.js is now the single home: it picks the
+ * value (explicit option first, gate's role otherwise) and that value is written into BOTH
+ * the gate context and the arming stamp.
+ */
+{
+  const gateFor = (role) => buildAgentGateContext({ provider: "openai", edition: "standard", agentModel: "gpt-5.4", allowanceLevel: null, savedByRole: role });
+  const CONFIRM = ["get_issue", "commit_files"];
+
+  await check("F-882: a save cannot say admin in the argument and editor in the gate", async () => {
+    // The ARGUMENT is the authoritative one (the resolvers and the REST door compute it),
+    // and it now gates as well as stamps: admin here means the confirm action survives.
+    const a = normalizeListener({ id: "f882-a", name: "a", events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: CONFIRM } },
+      { gate: gateFor("editor"), savedByRole: "admin" });
+    assert.equal(a.savedByRole, "admin");
+    assert.deepEqual(a.agent.allowedActions, CONFIRM);
+    // And the reverse refuses rather than storing an editor row that holds a confirm action.
+    assert.throws(() => normalizeListener({ id: "f882-b", name: "b", events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: CONFIRM } },
+      { gate: gateFor("admin"), savedByRole: "editor" }), /only an ADMIN/);
+  });
+
+  await check("F-882: the stored savedByRole equals the role that gated the actions, on both rule kinds", async () => {
+    for (const role of ["admin", "editor"]) {
+      const l = normalizeListener({ id: `f882-l-${role}`, name: "l", events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: ["get_issue"] } }, { gate: gateFor(role) });
+      const j = normalizeJob({ id: `f882-j-${role}`, name: "j", schedule: { cron: "*/5 * * * *" }, mode: "agent", agent: { instructions: "go", allowedActions: ["get_issue"] } }, { gate: gateFor(role) });
+      assert.equal(l.savedByRole, role);
+      assert.equal(j.savedByRole, role);
+      // The gating half of the same value: only the admin row may hold a confirm action.
+      const holds = () => normalizeListener({ id: `f882-c-${role}`, name: "c", events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: CONFIRM } }, { gate: gateFor(role) });
+      if (role === "admin") assert.deepEqual(holds().agent.allowedActions, CONFIRM);
+      else assert.throws(holds, /only an ADMIN/);
+    }
+  });
+
+  await check("F-882: neither normalizer hands the gate a role it did not resolve", () => {
+    for (const file of ["listeners.js", "scheduled-jobs.js"]) {
+      const src = readFileSync(new URL(`../../src/${file}`, import.meta.url), "utf8");
+      const calls = src.split("\n").filter((ln) => ln.includes("assertAllowedActions("));
+      assert.ok(calls.length === 1, `${file}: exactly one save-time gate call`);
+      assert.match(calls[0], /savedByRole: role/, `${file}: the gate context carries the ONE resolved role`);
+      assert.match(src, /armingStamp\(\{ accountId, savedByRole: role, existing \}\)/, `${file}: and the stamp records that same value`);
+    }
+  });
+}
+
+/* ════ F-883 — AN UNNAMED SURFACE IS ITS OWN REFUSAL, and every caller is accounted for ══
+ *
+ * `buildAgentGateContext` defaults `surface` to null, and the gate reads an unnamed
+ * surface restrictively (F-865). That is right, but it used to answer
+ * `wrong-surface:va` — a sentence about the RULE ("a listener has no ledger") for a fact
+ * about the CALL ("nobody said what this rule is"). The reason is now `surface-unset`.
+ *
+ * The assertion below pins WHO may leave it unset. Every `buildAgentGateContext(` caller
+ * in src/, at the time of writing:
+ *
+ *   surface NAMED at the call
+ *     src/listeners.js          — the git-event run site, surface "listener"
+ *     src/scheduled-jobs.js     — the job run site, surface "job"
+ *
+ *   surface left to the NORMALIZER, which stamps it (normalizeListener says "listener",
+ *   normalizeJob says "job" or "va") — these are SAVE doors, and the stamp is the point:
+ *     src/index.js x3           — saveListener / test-listener / saveJob resolvers
+ *     src/index.js (external)   — the REST test door, triggerSource "external"
+ *     src/rules-api.js          — restGateContext, the REST collections door
+ *
+ *   surfaces that hold NO surface-bound action, so unset is the honest answer:
+ *     src/async-handler.js      — resolveFreshCoderGate (the Coder mode)
+ *     src/coder-engine.js x2    — the Coder run sites
+ *
+ * A new caller changes the counts here and has to say which of the three it is.
+ */
+{
+  await check("F-883: an unnamed surface refuses with surface-unset, a wrong one still names the surface", () => {
+    const LEDGER = ["stage_reply"];
+    const base = { capability: true, products: ["jira"], savedByRole: "admin" };
+    assert.deepEqual(normalizeAllowedActions(LEDGER, base).refused, [{ id: "stage_reply", reason: "surface-unset" }]);
+    assert.deepEqual(normalizeAllowedActions(LEDGER, { ...base, surface: "listener" }).refused, [{ id: "stage_reply", reason: "wrong-surface:va" }]);
+    const va = normalizeAllowedActions(LEDGER, { ...base, surface: "va" });
+    assert.deepEqual(va.allowed, LEDGER, "the va surface keeps its ledger ids");
+    assert.deepEqual(va.refused, []);
+  });
+
+  await check("F-883: every buildAgentGateContext caller either names the surface or is a door whose normalizer stamps it", () => {
+    const EXPECTED = {
+      // file: [callers that NAME a surface, callers that leave it to the normalizer or hold no surface-bound action]
+      "listeners.js": [1, 0],
+      "scheduled-jobs.js": [1, 0],
+      "index.js": [0, 4],
+      "rules-api.js": [0, 1],
+      "async-handler.js": [0, 1],
+      "coder-engine.js": [0, 2],
+    };
+    const files = readdirSync(new URL("../../src/", import.meta.url)).filter((f) => f.endsWith(".js"));
+    const seen = {};
+    for (const f of files) {
+      if (f === "shared") continue;
+      const src = stripJsComments(readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8"));
+      const calls = src.split("\n").filter((ln) => ln.includes("buildAgentGateContext("));
+      if (!calls.length) continue;
+      seen[f] = [calls.filter((ln) => /surface:/.test(ln)).length, calls.filter((ln) => !/surface:/.test(ln)).length];
+    }
+    assert.deepEqual(seen, EXPECTED, "a new gate-context caller must be listed in the F-883 comment above and counted here");
   });
 }
 

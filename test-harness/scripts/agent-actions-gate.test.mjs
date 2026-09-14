@@ -144,14 +144,30 @@ eq(normalizeAllowedActions(LEDGER_SNAPSHOT, { surface: "va" }).allowed, LEDGER_S
   const r = normalizeAllowedActions(LEDGER_SNAPSHOT, { surface: "va", triggerSource: "external", savedByRole: null, products: ["jira"] });
   eq(r.refused, [], "ledger.ALLOW_external_non_admin — none of them is confirm or dangerous");
 }
-// BLOCK — every surface that is not a VA, and the UNNAMED surface too: a caller that did
-// not say where the rule lives gets the restrictive answer, not a free pass.
-for (const surface of ["listener", "job", "coder", "", null, undefined]) {
+// BLOCK — every surface that is not a VA. A NAMED wrong surface says so…
+for (const surface of ["listener", "job", "coder"]) {
   const r = normalizeAllowedActions(LEDGER_SNAPSHOT, { surface, savedByRole: "admin", products: ["jira"] });
-  eq(r.allowed, [], `ledger.BLOCK_on_surface_${String(surface) || "(none)"}`);
+  eq(r.allowed, [], `ledger.BLOCK_on_surface_${surface}`);
   eq(r.refused.map((x) => x.reason), LEDGER_SNAPSHOT.map(() => "wrong-surface:va"),
-    `ledger.BLOCK_reason_is_wrong-surface:va_on_${String(surface) || "(none)"}`);
+    `ledger.BLOCK_reason_is_wrong-surface:va_on_${surface}`);
 }
+// …and the UNNAMED surface is refused just as hard, under its OWN reason (F-883): a
+// caller that did not say where the rule lives gets the restrictive answer, and an admin
+// reading the refusal is told that the CALL said nothing, not that the rule is a listener.
+for (const surface of ["", null, undefined]) {
+  const r = normalizeAllowedActions(LEDGER_SNAPSHOT, { surface, savedByRole: "admin", products: ["jira"] });
+  eq(r.allowed, [], `ledger.BLOCK_on_the_unnamed_surface_${String(surface)}`);
+  eq(r.refused.map((x) => x.reason), LEDGER_SNAPSHOT.map(() => "surface-unset"),
+    `ledger.BLOCK_reason_is_surface-unset_on_${String(surface)}`);
+}
+ok(agentActionRefusalText("surface-unset") !== "surface-unset"
+  && /did not say which kind/.test(agentActionRefusalText("surface-unset")),
+  "F-883: the unset-surface refusal has its own sentence, and it names the CALL and not the rule");
+ok(agentActionRefusalText("surface-unset") !== agentActionRefusalText("wrong-surface:va"),
+  "F-883: …and it is not the wrong-surface sentence wearing a second hat");
+// ALLOW is untouched: naming the surface still keeps every ledger id.
+eq(normalizeAllowedActions(LEDGER_SNAPSHOT, { surface: "va", savedByRole: "admin", products: ["jira"] }).allowed, LEDGER_SNAPSHOT,
+  "F-883: surface \"va\" keeps the ledger ids");
 eq(normalizeAllowedActions(LEDGER_SNAPSHOT), [], "ledger.BLOCK_under_the_arity-1_restrictive_default");
 // An ADMIN save does not buy it either: this is not the `confirm` axis.
 eq(normalizeAllowedActions(["stage_reply"], { surface: "listener", savedByRole: "admin", capability: true }).refused,

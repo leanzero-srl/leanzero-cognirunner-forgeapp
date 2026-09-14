@@ -171,6 +171,24 @@ export const SEMANTIC_MAX_PAGES = 3;
 
 /* ── Plain-text templates (titles, comments) — NOT CQL ────────────────────── */
 
+/**
+ * F-915 — "COGNIRUNNER IS NOT ON CONFLUENCE", IN ONE PLACE.
+ *
+ * This app is installed on Jira; the Confluence rules need it installed on Confluence too,
+ * and that is a Jira admin's action on a different page. The statement and the remedy were
+ * written twice: a runtime refusal in src/premade-rules.js and, in the rule form, a
+ * DISABLED PICKER whose placeholder was the only clue. A disabled control is not an
+ * answer - it reads as "this app is broken" - so the form now renders a card that says the
+ * same thing the runtime says, and both read these two constants.
+ *
+ * The remedy names Apps, Manage apps because that is where a Jira admin adds the app to
+ * Confluence. It deliberately does NOT carry a URL: the path is site-relative, this app
+ * renders inside a sandboxed iframe with no reliable base, and a link that 404s on a
+ * customer's site is worse than a named page they can find.
+ */
+export const CONFLUENCE_NOT_INSTALLED = "CogniRunner is not installed on Confluence on this site.";
+export const CONFLUENCE_INSTALL_REMEDY = "A Jira admin installs it under Apps, Manage apps; it needs the same site, and access to the spaces this rule reads.";
+
 /** A page title, and the comment body a deterministic post-function writes. */
 export const TITLE_MAX_CHARS = 200;
 

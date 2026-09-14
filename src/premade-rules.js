@@ -69,6 +69,7 @@ import {
   buildPageExistsCql,
   CQL_PLACEHOLDER_RE,
   SEMANTIC_MAX_PAGES,
+  CONFLUENCE_NOT_INSTALLED,
 } from "./shared/confluence-rules.js";
 import { CONFLUENCE_VALIDATOR_MODE_DEFAULT, CONFLUENCE_VALIDATOR_MODE_IDS } from "./shared/premade-rules-catalog.js";
 import { defangFence } from "./shared/prompt-fencing.js";
@@ -799,7 +800,9 @@ async function runConfluenceValidator(cfg, issueKey, mf, read, deps) {
   // ("unknown", the cold-container case) never short-circuits anything: a negative that
   // authorises a decision has to be PROVEN, and an unread memo proves nothing.
   if (deps.installedHint === false) {
-    return degrade("confluence-unavailable", "CogniRunner is not installed on Confluence on this site, so this check cannot run, and this rule is set to Strict. Install CogniRunner on Confluence, or turn Strict off on this rule.");
+    // F-915 - the STATEMENT has one home (src/shared/confluence-rules.js), which the
+    // rule form reads too; only the clause about THIS rule is composed here.
+    return degrade("confluence-unavailable", `${CONFLUENCE_NOT_INSTALLED} This check cannot run, and this rule is set to Strict. Install CogniRunner on Confluence, or turn Strict off on this rule.`);
   }
 
   // The values the template substitutes. The screen's modified fields win over the

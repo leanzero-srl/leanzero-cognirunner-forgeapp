@@ -6561,6 +6561,14 @@ const injectCopiedComponentStyles = () => {
     .pr-conf-example-label { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; }
     .pr-conf-example-text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12px; font-weight: 600; line-height: 1.45; word-break: break-word; }
     .pr-conf-misconfig { font-weight: 700; color: var(--text-primary); }
+    /* F-915 - the app is not on Confluence. A STATEMENT, not a failure, so it is the
+       neutral slate rather than the red an error uses: nothing is broken, one install is
+       missing and a Jira admin makes it. Solid fill, white text, no rail, no tint, and a
+       dark override for both hues used here. */
+    .pr-conf-missing { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; padding: 9px 12px; border-radius: var(--r-md, 8px); background: #475569; color: #fff; }
+    .pr-conf-missing-title { font-size: 12px; font-weight: 800; }
+    .pr-conf-missing-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
+    html[data-color-mode="dark"] .pr-conf-missing { background: #64748b; color: #fff; }
     .pr-seg-conf .pr-seg-btn.active { background: #1d4ed8; }
     html[data-color-mode="dark"] .pr-conf-ph { background: #3b82f6; }
     html[data-color-mode="dark"] .pr-conf-example { background: #3b82f6; }

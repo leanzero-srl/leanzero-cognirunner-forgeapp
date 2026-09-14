@@ -801,6 +801,12 @@ export const PREMADE_POSTFUNCTIONS = [
     key: "postfunction-coder",
     label: "Coder: build / open branch / open PR / fix / review",
     help: "Hand this transition to the CogniRunner Coder: it reads the issue, works in the repository you pick and reports back on the issue. Pick what it should do. It runs in the BACKGROUND, a coder job takes minutes and a transition cannot wait for it, so the transition completes immediately and the Coder posts its plan, log and result onto the issue.",
+    /* F-915 - `foot` is the ONE LINE the rule form prints under the whole form, and it is
+       per ROW rather than per MODE. It was a single sentence keyed on "is this a
+       post-function", so both Confluence post-functions told their designer that "the
+       Coder works in the background for several minutes" about a rule the Coder has no
+       part in. A row's footer belongs beside its label and its help, which is here. */
+    foot: "This runs AFTER the transition, so it never blocks anyone. The Coder works in the background for several minutes and posts its plan, its log and its result onto the issue.",
     category: "Git",
     network: true,
     requiresCapability: "git",
@@ -821,6 +827,7 @@ export const PREMADE_POSTFUNCTIONS = [
     key: "postfunction-confluence-page",
     label: "Confluence: create or update a page for this issue",
     help: "Write a Confluence page for the issue in the space you pick, created the first time, UPDATED after that, never duplicated. The page body is authored by the AI from the issue, and the issue gets a link back to the page. It runs in the BACKGROUND: authoring plus two Confluence calls does not fit a transition, so the transition completes immediately and the page appears a few seconds later.",
+    foot: "This runs AFTER the transition, so it never blocks anyone. The page is written in the background a few seconds later, and the issue gets a link to it. One AI call per transition writes the page body.",
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",
@@ -839,6 +846,7 @@ export const PREMADE_POSTFUNCTIONS = [
     key: "postfunction-confluence-comment",
     label: "Confluence: comment on the linked page",
     help: "Add a comment to the Confluence page CogniRunner has recorded for this issue. DETERMINISTIC, your text with {issueKey}, {summary} and {field:<id>} filled in, no AI and no token cost, so it runs inside the transition. If no page has been linked yet it does nothing and says so.",
+    foot: "This runs AFTER the transition, so it never blocks anyone. Your text with the issue's values filled in, no AI and no token cost. If no page has been linked to this issue yet, it does nothing and says so in the execution log.",
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",

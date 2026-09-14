@@ -2326,6 +2326,17 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
 
     let considered = 0;
     for (const { issueKey, row } of candidates) {
+      /*
+       * F-925 — AFTER A STOP, THE SCAN FINISHES WITHOUT POSTING.
+       *
+       * F-921 `break`ed, so the receipt counted only the rows the pass had happened to
+       * reach: a pause on the first of forty staged drafts wrote a receipt saying the
+       * agent had two candidates, and the counts an admin reads in the seconds after
+       * pressing Pause were the one thing that had to be complete. Nothing is spent on
+       * these rows and nothing is written to them — they are NAMED as held and stay
+       * staged and unattempted for the next window, exactly as F-921 promised.
+       */
+      if (stoppedBy) { note(issueKey, `held.${stoppedBy}`); continue; }
       if (considered >= cap) { note(issueKey, "over_post_budget"); continue; }
 
       /*
@@ -2347,7 +2358,11 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
       if (stop) {
         stoppedBy = stop;
         note("(agent)", `stopped.${stop}`);
-        break;
+        // F-925 — NOT a `break`. The remainder of the scan runs with `stoppedBy` set,
+        // which posts nothing and completes the receipt's counts; THIS row is the first
+        // one held, and it is named the same way as the rest.
+        note(issueKey, `held.${stop}`);
+        continue;
       }
       considered++;
 
@@ -2524,7 +2539,22 @@ export const runVaPost = async ({ agent, tickId = null, enqueuedAt = null, deps:
       posted++;
     }
 
-    await recordTickHealth(deps.store, agentId, true, { now });
+    /*
+     * F-925 — A STOPPED PASS IS NEITHER HEALTHY NOR FAILED.
+     *
+     * `true` RESET the consecutive-failure counter, so an operator who paused an agent
+     * that had already failed twice had its health record wiped by the very pass their
+     * pause stopped: the instance counted "the admin stopped me" as "I ran fine". It is
+     * not a failure either — nothing is broken about an agent doing what it was told, and
+     * counting it as one walks a paused agent towards a red banner.
+     *
+     * `null` is the third state `recordTickHealth` now understands: the counter is left
+     * EXACTLY as it was, `lastOkAt` does not move, the last failure's id survives, and
+     * only `lastTickAt` advances. The Agents tab's health reader (`agentStatus`,
+     * src/va-admin.js) asks the health row only for `consecutiveFailures`/`banner`, so an
+     * untouched counter is already the honest neutral answer there and no tab changes.
+     */
+    await recordTickHealth(deps.store, agentId, stoppedBy ? null : true, { now });
     return await finish(errors ? `${errors} post(s) could not be verified` : null);
   } catch (e) {
     const error = String((e && e.message) || e).slice(0, 300);

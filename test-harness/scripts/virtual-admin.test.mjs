@@ -3024,5 +3024,70 @@ reset();
 
 
 
+/* ══ F-925 — A STOPPED PASS COUNTS EVERYTHING, AND IS NOT A HEALTHY TICK ══
+ *
+ * F-921's `break` left the receipt's `candidates` and `heldWrites` counting only the
+ * rows the pass had reached, and `recordTickHealth(..., true)` recorded the pass an
+ * admin had just stopped as a clean run — wiping the failure history of the agent they
+ * stopped. The scan now finishes WITHOUT posting, and the health row is left untouched.
+ */
+reset();
+{
+  await stageThree();
+  // A fourth row that is not a candidate, carrying a shadow-held write: the held-write
+  // count must be complete on a stopped pass too, since it is what the Agents tab shows.
+  await L.saveItem(kvs, AG, "SUP-4", { state: "queued", heldWrites: [{ action: "transition", target: "SUP-4", args: "{}" }] }, { now: T0 });
+  const live = vaJob();
+  const d = postDeps({ getJob: async () => live });
+  const inner = d.addComment;
+  d.addComment = async (k, body, opts) => {
+    const written = await inner(k, body, opts);
+    live.va.status = { ...live.va.status, paused: true };
+    return written;
+  };
+  const r = await V.runVaPost({ agent: live, tickId: "t-stop-counts", deps: d });
+  eq(d.__commented.length, 1, "F-925: exactly one comment went out — F-921's brake is unchanged");
+  const held = r.skipped.filter((x) => String(x.reason || "").startsWith("held."));
+  eq(held.length, 2, "F-925.BLOCK_undercount — the two drafts the stop held are NAMED, not dropped off the end of the scan");
+  eq(held.map((x) => x.key).sort().join(","), THREE.filter((k) => k !== d.__commented[0].k).sort().join(","), "F-925: …and they are exactly the drafts that did not go out");
+  eq((await stillStaged(THREE)).length, 2, "F-925: the held drafts are still staged — the finished scan wrote nothing");
+  eq((await attemptsOf(THREE)).join(","), "0,0,0", "F-925: …and counted no attempt");
+  const receipt = (await L.readTick(kvs, AG, "t-stop-counts", "post")).receipt;
+  // Every one of the three staged rows is accounted for — one posted, two named held —
+  // plus the `(agent)` sentinel row that names the stop itself. Before this, the two the
+  // `break` never reached were in neither place.
+  eq(receipt.candidates, 4, "F-925: the receipt counts every candidate the pass had, not the ones it reached");
+  const accounted = new Set(receipt.skipped.filter((x) => x.key !== "(agent)").map((x) => x.key));
+  eq(accounted.size + receipt.staged, 3, "F-925: …so posted + held equals every staged row in the index");
+  eq(receipt.heldWrites, 1, "F-925: the shadow-held write on a row BEYOND the stop is still counted");
+  eq(receipt.reason, "paused", "F-925: the receipt still names what stopped the pass (F-921)");
+  eq(receipt.postedBefore, 1, "F-925: …and how many had gone out");
+}
+
+reset();
+{
+  // HEALTH. The agent has failed twice; the admin pauses it mid-pass. That pass must not
+  // reset the counter to zero (it did not run fine) and must not raise it to three (the
+  // banner is for a broken agent, not an obedient one).
+  await stageThree();
+  await L.recordTickHealth(kvs, AG, false, { reason: "tick:post_failed:boom", now: T0 });
+  await L.recordTickHealth(kvs, AG, false, { reason: "tick:post_failed:boom", now: T0 });
+  eq((await L.readHealth(kvs, AG)).consecutiveFailures, 2, "F-925: two real failures on the record before the pause");
+  const live = vaJob();
+  const d = postDeps({ getJob: async () => live });
+  const inner = d.addComment;
+  d.addComment = async (k, body, opts) => { const w = await inner(k, body, opts); live.va.status = { ...live.va.status, paused: true }; return w; };
+  await V.runVaPost({ agent: live, tickId: "t-stop-health", deps: d });
+  const h = await L.readHealth(kvs, AG);
+  eq(h.consecutiveFailures, 2, "F-925.BLOCK_stopped_counts_as_healthy — the stopped pass did NOT wipe the agent's failure history");
+  eq(h.lastReason, "tick:post_failed", "F-925: …and the last real failure's id survives it");
+  // And a stopped pass is not a failure either: a paused agent must not walk to a banner.
+  eq(h.banner, false, "F-925.ALLOW_stopped_is_not_a_failure — no banner from being stopped");
+  const direct = await L.recordTickHealth(kvs, AG, null, { now: T0 });
+  eq(direct.stopped, true, "F-925: `recordTickHealth` names the third state in its return");
+  eq(direct.consecutiveFailures, 2, "F-925: …and moves nothing");
+  eq((await L.recordTickHealth(kvs, AG, true, { now: T0 })).consecutiveFailures, 0, "F-925: a genuinely clean tick still resets, exactly as before");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

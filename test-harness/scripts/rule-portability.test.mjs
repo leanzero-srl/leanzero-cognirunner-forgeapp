@@ -108,5 +108,46 @@ ok(drift.status === "needs-rebind", "id present but name drifted → needs-rebin
 const docPlan = resolveBindings({ type: "validator", fieldName: "Summary", docNames: ["Jira Field Reference", "Gone"] }, { fields, docNamesToId: { "Jira Field Reference": "doc_9" } });
 ok(docPlan.status === "ready" && docPlan.selectedDocIds.length === 1 && docPlan.notes.some((n) => /dropped/.test(n)), "dangling doc name dropped with note; rule stays ready");
 
+
+/* =====================================================================================
+ * F-889 — `maxStepCodeBytes` is a BYTE cap and must be cut on a code-point boundary.
+ *
+ * Both sites used `.slice(0, EXPORT_CAPS.maxStepCodeBytes)`, which counts UTF-16 code
+ * UNITS. Two defects in one line: a step of CJK/emoji code passed a byte cap while
+ * weighing up to ~4x it, and - the one that produces a malformed file - a non-BMP
+ * character straddling the boundary was cut BETWEEN its surrogates, emitting a LONE
+ * SURROGATE into a JSON-serialised export. JSON.stringify happily writes it; what the
+ * receiver does with it is not the exporter's to gamble on.
+ * ===================================================================================*/
+{
+  const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const cap = EXPORT_CAPS.maxStepCodeBytes;
+  const bytesOf = (t) => new TextEncoder().encode(t).length;
+
+  // Code whose bytes land so a 4-byte emoji STRADDLES the cap: cap-1 bytes of ASCII, then
+  // the emoji (bytes and units cap-1..cap+2). A code-unit slice keeps its high surrogate and drops
+  // the low one.
+  const straddle = "a".repeat(cap - 1) + "\u{1F600}" + "b".repeat(50);
+  ok(LONE.test(straddle.slice(0, cap)), "control: the OLD .slice() cut really did emit a lone surrogate on this fixture");
+  const exported = serializeRule({ config: { type: "postfunction" }, functions: [{ name: "S", code: straddle }] });
+  const outCode = exported.functions[0].code;
+  ok(!LONE.test(outCode), "F-889: the exported step code carries NO lone surrogate");
+  ok(bytesOf(outCode) <= cap, `F-889: ...and is inside the BYTE cap (${bytesOf(outCode)} <= ${cap})`);
+  ok(outCode.length < straddle.length, "F-889: ...and it really was truncated (the fixture was over the cap)");
+  // ...and the whole envelope survives a JSON round trip through import unchanged.
+  const env = buildExportEnvelope([exported], { siteName: "x" });
+  const back = validateImportSchema(JSON.parse(JSON.stringify(env)));
+  ok(back.ok, "F-889: the export round-trips through validateImportSchema");
+  ok(back.ok && !LONE.test(back.rules[0].functions[0].code), "F-889: ...and the imported code carries no lone surrogate either");
+  ok(back.ok && back.rules[0].functions[0].code === outCode, "F-889: ...and the import-side re-check of the same cap does not cut it again");
+
+  // The import side is ALSO the untrusted door: a hostile file may carry over-cap code.
+  const hostileBig = { kind: EXPORT_KIND, schemaVersion: 1, rules: [{ type: "postfunction", functions: [{ code: "\u{1F600}".repeat(cap) }] }] };
+  const hb = validateImportSchema(hostileBig);
+  ok(hb.ok, "F-889: an over-cap step of emoji is accepted (clamped), not rejected");
+  ok(hb.ok && bytesOf(hb.rules[0].functions[0].code) <= cap, "F-889: ...clamped in BYTES on the import side");
+  ok(hb.ok && !LONE.test(hb.rules[0].functions[0].code), "F-889: ...with no lone surrogate at the import cut either");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

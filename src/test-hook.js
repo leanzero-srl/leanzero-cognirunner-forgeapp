@@ -55,6 +55,13 @@ export const JSM_INTERNAL_PROPERTY_KEY = "sd.public.comment";
 
 /** The error CLASS only — a message can carry a URL, an issue key or a token. */
 const errorClassOf = (e) => (e && (e.code || e.name) ? String(e.code || e.name) : "Error").slice(0, 60);
+/* F-789 — WHICH error classes mean "this installation would not give the row a TTL", used
+ * by the stash refusal to name its cause. TTL must be a DELIMITED token: the platform's
+ * codes are SCREAMING_SNAKE (`INVALID_TTL`, `TTL_NOT_SUPPORTED`), and a bare substring test
+ * answers true for `THROTTLED` — which is the exact mis-attribution F-789 is about, arriving
+ * through the fix for it. Anything this does not match is a write failure, and the raw class
+ * rides along in `reason` either way, so nothing depends on this being exhaustive. */
+const STASH_TTL_ERROR_CLASS_RE = /(?:^|[^A-Za-z])TTL(?:[^A-Za-z]|$)/i;
 const keysOf = (data) => (data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 30) : []);
 const jsonOf = async (res) => { try { return JSON.parse(String(await res.text()).slice(0, 200000)); } catch { return null; } };
 
@@ -1708,16 +1715,38 @@ export async function testStateTrigger(req) {
          * hour of TTL is a cause asserted that the write did not contain. So a refused TTL
          * is a refused STASH: delete whatever landed, say so, and let the driver abort
          * BEFORE it plants the fault it would no longer be able to undo. `ttlSeconds` below
-         * is the value that was actually applied, reachable only on the path that applied it. */
+         * is the value that was actually applied, reachable only on the path that applied it.
+         *
+         * F-789 — AND THE REFUSAL MUST NOT ASSERT A CAUSE THE FAILURE DID NOT CONTAIN.
+         * `error` was the literal `"stash-ttl-unavailable"` for ANY throw: a 429, a
+         * value-too-large, a transient platform error all told the driver the one thing
+         * F-779 had named, and an operator reading it reworks a TTL that was never the
+         * problem. The class decides now — a code or name that says TTL is a TTL refusal,
+         * anything else is `stash-write-failed` — and `reason` still carries the class
+         * itself, so a caller is never limited to our two-way split.
+         *
+         * THE COMPENSATION IS REPORTED, TOO. The delete of whatever partially landed had an
+         * empty catch, so a failed delete was indistinguishable from a clean one — while
+         * this file's own sibling idiom (`deleteErrorClass`, in the comment-probe) reports
+         * exactly that. A partial PLAINTEXT row that could not be deleted is the F-779 harm
+         * happening inside F-779's own fix, so it is named, and the `stashId` comes back
+         * with it: without the id, the row is reachable only by `stashSweep` and only after
+         * its age floor, and a 424 that withholds it makes a manual clear impossible. */
         let appliedTtlSeconds;
         try {
           await storage.set(stashRowKey, row, faultTtlOption(HARNESS_STASH_MAX_AGE_SECONDS));
           appliedTtlSeconds = HARNESS_STASH_MAX_AGE_SECONDS;
         } catch (e) {
-          try { await storage.delete(stashRowKey); } catch { /* nothing landed, or it is already gone */ }
+          const errorClass = errorClassOf(e);
+          let compensation = "deleted";
+          try { await storage.delete(stashRowKey); } catch (de) { compensation = `delete-failed:${errorClassOf(de)}`; }
           return json(424, {
-            ok: false, stashed: false, error: "stash-ttl-unavailable", key: body.key,
-            reason: errorClassOf(e),
+            ok: false, stashed: false,
+            error: STASH_TTL_ERROR_CLASS_RE.test(errorClass) ? "stash-ttl-unavailable" : "stash-write-failed",
+            key: body.key, reason: errorClass,
+            // The id of the row the failed write was aimed at — the only handle on a
+            // partial row when the compensation could not remove it.
+            stashId, compensation,
           });
         }
         return json(200, {

@@ -869,6 +869,72 @@ try {
     assert.deepEqual(stashes, [], "no partial stash row survives the refusal");
     assert.equal(storage.__raw(SLOT), REAL, "the tenant's own key is untouched — the stash never got as far as replacing anything");
   });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-789 — THE REFUSAL ASSERTED A CAUSE THE FAILURE DID NOT CONTAIN.
+   *
+   * `error` was the literal "stash-ttl-unavailable" for ANY throw out of the stash write.
+   * A KVS throttle, a value-too-large, a transient platform error: all three told the
+   * driver that this installation has no TTL support — the one cause F-779 had named — and
+   * an operator reads that and goes and reworks the TTL. And the compensating delete of
+   * whatever partially landed had an EMPTY catch, so a plaintext row that could not be
+   * removed looked exactly like one that was, with no `stashId` in the 424 to find it by.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("a stash refusal names the failure it actually had, and reports its compensation (F-789)", async () => {
+    const SLOT = "COGNIRUNNER_KEY_openai";
+    const REAL = "zz-the-tenants-own-key-zz";
+    const { harnessStashKey } = await import("../../src/harness-fault.js");
+
+    // BLOCK 1 — a THROTTLE is not a missing TTL.
+    storage.__seed(SLOT, REAL);
+    storage.__failSetWhen((key) => String(key).startsWith("harness_stash:"),
+      Object.assign(new Error("rate limited"), { name: "ForgeKvsError", code: "THROTTLED" }));
+    const throttled = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    assert.equal(throttled.error, "stash-write-failed",
+      "a throttle is a WRITE failure — telling the driver the TTL is unavailable sends it to rework the one thing that was fine");
+    assert.equal(throttled.reason, "THROTTLED", "…and the class itself still rides along, so a caller is not limited to our two-way split");
+    // THROTTLED literally CONTAINS the letters t-t-l. The split reads a delimited token, not
+    // a substring — a naive test re-commits F-789 inside the fix for it.
+    assert.equal(throttled.stashed, false);
+    assert.equal(throttled.compensation, "deleted", "the partial row was removed, and the answer SAYS so rather than implying it");
+    assert.equal(typeof throttled.stashId, "string");
+    assert.ok(throttled.stashId.length > 0, "the id of the row the failed write was aimed at comes back");
+    assert.deepEqual(await listStashes(), [], "nothing was left behind");
+    assert.equal(storage.__raw(SLOT), REAL, "and the tenant's own key is untouched");
+
+    // BLOCK 2 — a TTL refusal still reads as one. The split is on the CLASS, not on a guess.
+    storage.__failSetWhen((key) => String(key).startsWith("harness_stash:"),
+      Object.assign(new Error("no ttl here"), { name: "ForgeKvsError", code: "TTL_NOT_SUPPORTED" }));
+    const noTtl = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    assert.equal(noTtl.error, "stash-ttl-unavailable", "a class that names the TTL is the cause F-779 named");
+    assert.equal(noTtl.reason, "TTL_NOT_SUPPORTED");
+    assert.equal(noTtl.compensation, "deleted");
+
+    // BLOCK 3 — the compensation ITSELF fails. This is the arm that used to be an empty
+    // catch, and the state it hides is a plaintext credential row nobody can see.
+    storage.__failSetWhen((key) => String(key).startsWith("harness_stash:"),
+      Object.assign(new Error("rate limited"), { name: "ForgeKvsError", code: "THROTTLED" }));
+    const realDelete = storage.delete;
+    storage.delete = async (key) => {
+      if (String(key).startsWith("harness_stash:")) throw Object.assign(new Error("nope"), { name: "ForgeKvsError", code: "THROTTLED" });
+      return realDelete.call(storage, key);
+    };
+    let stranded;
+    try {
+      stranded = JSON.parse((await POST({ action: "kvStash", key: SLOT })).body);
+    } finally {
+      storage.delete = realDelete;
+    }
+    assert.equal(stranded.error, "stash-write-failed");
+    assert.equal(stranded.compensation, "delete-failed:THROTTLED",
+      "a compensation that did not land is REPORTED — the empty catch made this indistinguishable from a clean refusal");
+    assert.ok(typeof stranded.stashId === "string" && stranded.stashId.length > 0,
+      "…and the stashId is the handle, because a partial row is otherwise reachable only by stashSweep and only after its age floor");
+    // The handle is USABLE: the id names the row an operator or a restore would clear.
+    storage.__seed(harnessStashKey(stranded.stashId), { key: SLOT, value: REAL, present: true, stashedAt: new Date().toISOString() });
+    assert.equal(JSON.parse((await POST({ action: "kvRestore", stashId: stranded.stashId })).body).restored, true,
+      "the id in the 424 finds the row — which is what the refusal withholding it cost");
+    assert.deepEqual(await listStashes(), [], "and the restore cleared it");
+  });
   await check("a stash that IS given a TTL reports the TTL it actually got (F-779)", async () => {
     const SLOT = "COGNIRUNNER_KEY_openai";
     storage.__seed(SLOT, "zz-key-zz");

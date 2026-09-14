@@ -18,10 +18,11 @@
  *
  * THE GATE IS `process.env.HARNESS_SECRET`, exactly like src/test-hook.js: development
  * and staging builds carry it, PRODUCTION NEVER DOES. It has ONE home in this file,
- * `harnessEnabled()`, and ALL SEVEN storage-touching exports ask it on their FIRST
+ * `harnessEnabled()`, and ALL NINE storage-touching exports ask it on their FIRST
  * statement, before any storage call: `harnessFaultArmed` returns false,
  * `armHarnessFault`, `disarmHarnessFault`, `armKeyReadFault` (F-629), `armJiraFault`
- * (F-655) and `sweepHarnessFaults` (F-667) return `{ ok: false, reason: "harness-off" }`,
+ * (F-655), `sweepHarnessFaults` (F-667), `plantHarnessFaults` and `clearPlantedFaults`
+ * (F-688) return `{ ok: false, reason: "harness-off" }`,
  * and `readHarnessFault` returns `null`. So on a production deployment this module performs no KVS read and no KVS
  * write, and cannot change any outcome, no matter who imports it. (`keyReadFaultMode` and
  * `jiraFaultStatus` touch storage only THROUGH `readHarnessFault`, so they inherit the
@@ -195,8 +196,9 @@ export class HarnessFault extends Error {
  * builds and NEVER in production, exactly as in src/test-hook.js. ALL SEVEN exports that
  * touch storage ask this — `harnessFaultArmed` (consume), `armHarnessFault` (F-517),
  * `disarmHarnessFault` and `readHarnessFault` (F-522), `armKeyReadFault` (F-629),
- * `armJiraFault` (F-655) and `sweepHarnessFaults` (F-667) — and each asks it as its FIRST statement, before any storage call, so a production
- * deployment performs no KVS access through this module at all. Adding an EIGHTH
+ * `armJiraFault` (F-655), `sweepHarnessFaults` (F-667), `plantHarnessFaults` and
+ * `clearPlantedFaults` (F-688) — and each asks it as its FIRST statement, before any storage call, so a production
+ * deployment performs no KVS access through this module at all. Adding a TENTH
  * storage-touching export means adding this line to it; the offline test counts
  * operations, so a new one that forgets shows up as a non-zero count rather than as a
  * comment nobody read. (`keyReadFaultMode` and `jiraFaultStatus` are not ones: they touch storage only through
@@ -844,6 +846,172 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
     // caller reads "finished" rather than "stopped" - and since F-683 forces `truncated` on
     // any failed delete, null now agrees with `complete` rather than contradicting it.
     // NEVER null while work remains (F-674): the token encodes a null KVS cursor too.
+    cursor: truncated ? encodeSweepCursor(cursor) : null,
+  };
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-688 — THE SWEEP'S MULTI-PAGE PATH HAD NO LIVE DOOR.
+ *
+ * Everything F-673/F-674/F-677/F-682/F-683 built — the resume token, the real KVS cursor
+ * round-trip, the paced deletes, the progress guarantee, `complete` — only engages once the
+ * `harness_fault:` keyspace is bigger than ONE PAGE. And the only way to put a row in that
+ * keyspace was to arm a lever: one row per exact path, one per provider, a handful per
+ * connection. A tester on a real tenant could not reach a second page, so every resume
+ * assertion in this repo was offline-only, against a mock whose cursor is a plain key.
+ *
+ * `plantHarnessFaults` is that door, and it is built so that the ONLY thing it can do is
+ * make the keyspace big:
+ *
+ *  · IT WRITES UNDER ITS OWN KIND, `plant`, and NOTHING READS THAT KIND. Every consumer of
+ *    a fault row names its kind EXACTLY — `harnessFaultArmed(HARNESS_FAULT_GIT_DISPATCH, …)`
+ *    in src/async-handler.js and `(HARNESS_FAULT_HOOK_PROMOTE, …)` in src/git-connections.js,
+ *    `readHarnessFault(HARNESS_FAULT_KEY_READ, …)` inside `keyReadFaultMode`,
+ *    `readHarnessFault(HARNESS_FAULT_JIRA, …)` inside `jiraFaultStatus`, and the four hook
+ *    read actions, which pass those same four constants. Grep the callers: there is no
+ *    wildcard read, no prefix read and no enumeration anywhere except `sweepHarnessFaults`,
+ *    which only ever DELETES. `harnessFaultKey` puts the kind in the second segment, so a
+ *    `plant` row cannot collide with one of the four either.
+ *    A planted row is therefore INERT: it occupies the keyspace and bites nothing. That is
+ *    the whole reason this lever is allowed to write five hundred rows when the dangerous
+ *    ones are capped at one.
+ *  · IT IS GATED LIKE EVERY OTHER LEVER. `harnessEnabled()` first, before any storage call,
+ *    so a production deployment (where HARNESS_SECRET is never set) plants nothing and reads
+ *    nothing. The door in src/test-hook.js is 404 there for the same reason.
+ *  · IT WRITES THROUGH THE ONE WRITE. `setFaultRow` stamps the row and passes the platform
+ *    TTL in the SECONDS shape, so a planted row expires on its own exactly like an armed one
+ *    even if nobody ever calls `clearPlantedFaults`. Sixty seconds, not ten minutes: this is
+ *    ballast for a sweep, not a lever anybody is waiting on.
+ *  · `expired: true` DATES THE ROWS IN THE PAST, which is the only shape the sweep will
+ *    actually delete — that is the population a drain test needs. `expired: false` plants
+ *    LIVE rows instead, which the sweep must list and leave alone.
+ */
+export const HARNESS_FAULT_PLANT = "plant";
+/** The sub-prefix `clearPlantedFaults` is bound to. Derived, never retyped. */
+export const HARNESS_FAULT_PLANT_PREFIX = `${HARNESS_FAULT_KEY_PREFIX}${HARNESS_FAULT_PLANT}:`;
+/** How many rows one call may plant. Five pages of `HARNESS_FAULT_SWEEP_PAGE_SIZE`. */
+export const HARNESS_FAULT_PLANT_MAX = 500;
+/** A planted row's own window. Short on purpose — ballast, not a lever. */
+export const HARNESS_FAULT_PLANT_TTL_SECONDS = 60;
+/** How far in the past an `expired: true` row is dated. Past any reader's clock skew. */
+export const HARNESS_FAULT_PLANT_BACKDATE_SECONDS = 3_600;
+
+/**
+ * THE clamp on `n`, here with the constant it bounds and never at the web trigger. Anything
+ * that is not a finite number is ONE — a body with a missing or junk `n` plants the smallest
+ * possible population rather than the largest.
+ */
+export const plantCountClamped = (n) => {
+  const parsed = Math.floor(Number(n));
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.min(HARNESS_FAULT_PLANT_MAX, parsed));
+};
+
+/** The key of planted row `i`, zero-padded so the keyspace sorts the way it was written. */
+export const plantedFaultKey = (i) =>
+  harnessFaultKey(HARNESS_FAULT_PLANT, String(i).padStart(3, "0"));
+
+/**
+ * Plant `n` INERT rows under `harness_fault:plant:`, so the sweep's multi-page path can be
+ * exercised on a real tenant. Returns `{ ok, planted, failed, n, expired, ttlSeconds, keys }`.
+ *
+ * Writes are paced at the app's own published KVS rate (`KVS_DELETE_BATCH` /
+ * `KVS_DELETE_PAUSE_MS` — the same pair the sweep's deletes use, because it is the same
+ * store and the same guidance), so planting five hundred rows cannot be the thing that
+ * throttles the tenant the sweep is about to walk. A write that refuses is counted in
+ * `failed`, never thrown out of a plant that placed everything else.
+ */
+export const plantHarnessFaults = async ({ n, expired = false } = {}) => {
+  if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
+  const count = plantCountClamped(n);
+  const past = expired === true;
+  const armedAt = new Date(Date.now() - (past ? HARNESS_FAULT_PLANT_BACKDATE_SECONDS * 1000 : 0)).toISOString();
+  // An expired row carries a deadline already gone; a live one gets `armedAt + 60 s`, which
+  // is what `setFaultRow` stamps on its own when no `keepUntil` is handed to it.
+  const keepUntil = past
+    ? new Date(Date.now() - (HARNESS_FAULT_PLANT_BACKDATE_SECONDS - HARNESS_FAULT_PLANT_TTL_SECONDS) * 1000).toISOString()
+    : null;
+  const keys = [];
+  let planted = 0, failed = 0;
+  for (let i = 0; i < count; i += KVS_DELETE_BATCH) {
+    if (i > 0) await sweepPause(KVS_DELETE_PAUSE_MS);
+    const batch = [];
+    for (let j = i; j < Math.min(i + KVS_DELETE_BATCH, count); j++) batch.push(plantedFaultKey(j));
+    const settled = await Promise.allSettled(batch.map((key) =>
+      setFaultRow(key, { count: 1, armedAt, plantedBy: "harness" }, HARNESS_FAULT_PLANT_TTL_SECONDS, keepUntil)));
+    for (let k = 0; k < settled.length; k++) {
+      if (settled[k].status === "fulfilled") { planted++; keys.push(batch[k]); } else failed++;
+    }
+  }
+  return { ok: true, planted, failed, n: count, expired: past, ttlSeconds: HARNESS_FAULT_PLANT_TTL_SECONDS, keys };
+};
+
+/**
+ * Delete the planted ballast — and ONLY the planted ballast.
+ *
+ * This is deliberately NOT `sweepHarnessFaults` with a widened predicate. The sweep deletes
+ * expired rows and nothing else, precisely so it can never cancel a running driver's lever;
+ * a clear must remove LIVE planted rows too, and the only safe way to hold both rules is to
+ * bind the unconditional delete to a prefix nothing else can write into. The prefix is
+ * `HARNESS_FAULT_PLANT_PREFIX` and it is NOT a parameter: no caller gets to say which
+ * keyspace is cleared unconditionally.
+ *
+ * Everything else is the sweep's own vocabulary, in its one home: `sweepBudgetMs` for the
+ * budget, `KVS_DELETE_BATCH`/`KVS_DELETE_PAUSE_MS` for the rate, `encodeSweepCursor` /
+ * `decodeSweepCursor` for the resume token, the F-682 progress gate, and
+ * `complete = !truncated && failed === 0` for the finished signal — so a caller drains this
+ * exactly as it drains the sweep.
+ */
+export const clearPlantedFaults = async ({ maxMs, cursor: startCursor = null } = {}) => {
+  if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
+  const budgetMs = sweepBudgetMs(maxMs);
+  const t0 = Date.now();
+  const overBudget = () => Date.now() - t0 >= budgetMs;
+  let scanned = 0, deleted = 0, failed = 0;
+  let truncated = false, reason = null;
+  // Validated synchronously, before any KVS call, so the door can name `bad-cursor` from the
+  // error itself (F-684) rather than from "a cursor was supplied".
+  let cursor = decodeSweepCursor(startCursor === undefined ? null : startCursor);
+  let progressed = false;
+  let failedResume = null;
+  for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
+    const resume = cursor;
+    if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+    let query = storage.query()
+      .where("key", { condition: "BEGINS_WITH", values: [HARNESS_FAULT_PLANT_PREFIX] })
+      .limit(HARNESS_FAULT_SWEEP_PAGE_SIZE);
+    if (cursor) query = query.cursor(cursor);
+    const result = await query.getMany();
+    const doomed = [];
+    for (const entry of (result && result.results) || []) { scanned++; doomed.push(String(entry && entry.key)); }
+    for (let i = 0; i < doomed.length; i += KVS_DELETE_BATCH) {
+      if (i > 0) {
+        if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+        await sweepPause(KVS_DELETE_PAUSE_MS);
+      }
+      if (progressed && overBudget()) { truncated = true; reason = "budget"; cursor = resume; break; }
+      const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
+      const settled = await Promise.allSettled(batch.map((key) => storage.delete(key)));
+      let landed = 0;
+      for (const outcome of settled) { if (outcome.status === "fulfilled") { deleted++; landed++; } else failed++; }
+      if (landed < settled.length && failedResume === null) failedResume = resume;
+      // F-682: only a delete that LANDED is progress; a batch of pure rejections shrinks
+      // nothing and must not license a mid-page break with this page's own cursor.
+      if (landed > 0) progressed = true;
+      else if (settled.length > 0) { truncated = true; reason = "deletes-failing"; cursor = resume; break; }
+    }
+    if (truncated) break;
+    cursor = (result && result.nextCursor) || null;
+    progressed = true;
+    if (!cursor) break;
+    if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) { truncated = true; reason = "pages"; }
+  }
+  // F-683: a delete that did not land is not a finished clear.
+  if (failed > 0 && !truncated) { truncated = true; reason = "deletes-failed"; cursor = failedResume; }
+  return {
+    ok: true, prefix: HARNESS_FAULT_PLANT_PREFIX, scanned, deleted, failed,
+    truncated, reason, budgetMs,
+    complete: !truncated && failed === 0,
     cursor: truncated ? encodeSweepCursor(cursor) : null,
   };
 };

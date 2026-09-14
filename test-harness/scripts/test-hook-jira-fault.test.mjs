@@ -536,6 +536,174 @@ process.env.HARNESS_SECRET = SECRET;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
+ * F-688 — THE DOOR ONTO THE SWEEP'S MULTI-PAGE PATH.
+ *
+ * F-673/F-674/F-677/F-682/F-683 built a resumable, paced, progress-guaranteed sweep and
+ * proved every bit of it against a keyspace no tester could produce on a real tenant: the
+ * arming actions above write ONE row per exact path and ONE per provider, so
+ * `harness_fault:` never reached a second page and the resume token, the KVS cursor
+ * round-trip and `complete` had no live door. `plantHarnessFaults` is that door.
+ *
+ * IT IS THE MOST WRITE-HAPPY ACTION IN THIS FILE — five hundred rows in one POST — so most
+ * of what is asserted here is, again, when it must NOT work and what it must NOT touch:
+ *  · REFUSED IN PRODUCTION and without the Bearer, like every sibling, and refused by the
+ *    LEVER too, so the gate is not the door's alone;
+ *  · `n` CLAMPED 1..500 in the library, echoed by the door, with junk clamping DOWN to one;
+ *  · THE ROWS ARE INERT — the four read actions on this same hook are asked while 250
+ *    planted rows sit in the keyspace and every one of them answers `null`;
+ *  · THE SWEEP THEN DRAINS THEM through the same `sweepHarnessFaults` action, truncating
+ *    with a resumable cursor and terminating on `complete: true`;
+ *  · `clearPlantedFaults` takes the planted rows and leaves a LIVE Jira lever alone.
+ *
+ * Time is compressed (setTimeout shimmed to fire immediately, delays recorded) because the
+ * paced rate is ~17 s of real waiting for 250 rows; the pacing itself is asserted from the
+ * recorded delays. The pagination, the tokens and the termination are real.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+{
+  const realTimeout = globalThis.setTimeout;
+  const delays = [];
+  globalThis.setTimeout = function compressed(fn, ms, ...rest) {
+    if (typeof ms === "number") delays.push(ms);
+    return realTimeout(fn, 0, ...rest);
+  };
+  const plant = (body, opts) => post({ action: "plantHarnessFaults", ...body }, opts);
+  const clearPlanted = (body, opts) => post({ action: "clearPlantedFaults", ...body }, opts);
+  const countPlanted = async () => {
+    let n = 0, cursor = null;
+    for (let i = 0; i < 20; i++) {
+      let q = kvs.query().where("key", { condition: "BEGINS_WITH", values: [fault.HARNESS_FAULT_PLANT_PREFIX] }).limit(100);
+      if (cursor) q = q.cursor(cursor);
+      const page = await q.getMany();
+      n += ((page && page.results) || []).length;
+      cursor = (page && page.nextCursor) || null;
+      if (!cursor) break;
+    }
+    return n;
+  };
+
+  /* ── THE GATE. Production has no HARNESS_SECRET, so the door is 404 and the lever refuses
+   * on its own account; a wrong or absent Bearer is 404 on a door that does have one. ── */
+  process.env.HARNESS_SECRET = "";
+  ok((await plant({ n: 250, expired: true })).status === 404,
+    "with NO HARNESS_SECRET configured the plant door is 404 — it cannot exist in production");
+  ok((await clearPlanted({})).status === 404, "…and so is the clear door");
+  const offLever = await fault.plantHarnessFaults({ n: 250, expired: true });
+  ok(offLever && offLever.ok === false && offLever.reason === "harness-off",
+    "…and the lever itself refuses harness-off even if something inside the app calls it");
+  process.env.HARNESS_SECRET = SECRET;
+  ok((await countPlanted()) === 0, "…and none of those refusals planted a single row");
+
+  ok((await plant({ n: 5, expired: true }, { bearer: null })).status === 404, "no bearer -> 404");
+  ok((await plant({ n: 5, expired: true }, { bearer: "not-the-secret" })).status === 404, "a wrong bearer -> 404");
+  ok((await clearPlanted({}, { bearer: "not-the-secret" })).status === 404, "…the clear door answers the same to a wrong bearer");
+  ok((await countPlanted()) === 0, "…and neither refused call planted anything either");
+
+  /* ── THE CLAMP, echoed by the door but enforced in the lever, beside the constant. ── */
+  const over = await plant({ n: 10_000, expired: true });
+  ok(over.status === 200 && over.body.n === 500 && over.body.planted === 500,
+    `a request for 10000 rows plants exactly the 500-row ceiling (got n=${over.body && over.body.n} planted=${over.body && over.body.planted})`);
+  ok(over.body.maxN === fault.HARNESS_FAULT_PLANT_MAX && over.body.prefix === "harness_fault:plant:",
+    `…and the answer names the ceiling and the sub-prefix it wrote under (got ${JSON.stringify({ maxN: over.body.maxN, prefix: over.body.prefix })})`);
+  ok((await countPlanted()) === 500, "…five hundred rows, not ten thousand");
+  await clearPlanted({ maxMs: 20_000 });
+  ok((await countPlanted()) === 0, "(fixture) cleared again");
+
+  const junk = await plant({ n: "banana", expired: true });
+  ok(junk.body.n === 1 && junk.body.planted === 1, `a junk \`n\` clamps DOWN to one, never up (got ${junk.body && junk.body.n})`);
+  const zero = await plant({ n: 0, expired: true });
+  ok(zero.body.n === 1, "…and so does zero");
+  await clearPlanted({ maxMs: 20_000 });
+
+  /* ── THE ROWS ARE INERT, asked of the four read actions on this same door while 250 of
+   * them sit in the keyspace. Every consumer exact-matches its own kind; `plant` is none. ── */
+  const planted = await plant({ n: 250, expired: true });
+  ok(planted.status === 200 && planted.body.planted === 250 && planted.body.expired === true,
+    `(fixture) 250 expired rows planted through the door (got ${JSON.stringify({ planted: planted.body && planted.body.planted })})`);
+  ok((planted.body.keys || []).length === 250 && planted.body.keys.every((k) => k.startsWith("harness_fault:plant:")),
+    "…every key under the plant sub-prefix and nowhere else");
+  ok(planted.body.ttlSeconds === 60, "…each with its own 60 s platform TTL, so forgotten ballast leaves on its own");
+
+  ok((await readLever()).body.value === null, "readJiraFault answers null with 250 planted rows in the keyspace");
+  ok((await post({ action: "readKeyReadFault", provider: "openai" })).body.value === null, "…readKeyReadFault too");
+  ok((await post({ action: "readGitDispatchFault", connectionId: "gc_688", deliveryId: "000" })).body.value === null,
+    "…readGitDispatchFault, on the very part id a planted key uses");
+  ok((await post({ action: "readHookPromoteFault", connectionId: "gc_688", repo: "acme/000" })).body.value === null,
+    "…and readHookPromoteFault");
+  const stillReal = await handler({ call: { functionKey: "searchUsers", payload: { query: "mihai" } } }, { principal: { accountId: ADMIN } });
+  ok(stillReal.success === true && stillReal.users.length === 1,
+    `…and the product's own Jira call still runs for real — ballast faults NOTHING (got ${JSON.stringify(stillReal).slice(0, 120)})`);
+  ok((await countPlanted()) === 250, "…with all 250 rows still exactly where they were");
+
+  /* ── THE DRAIN, through the SWEEP action, which is the whole point of the ballast. ── */
+  const firstSweep = await post({ action: "sweepHarnessFaults", maxMs: 1 });
+  ok(firstSweep.status === 200 && firstSweep.body.truncated === true && firstSweep.body.reason === "budget",
+    `a sweep over 250 planted rows truncates on budget (got ${JSON.stringify({ truncated: firstSweep.body && firstSweep.body.truncated, reason: firstSweep.body && firstSweep.body.reason })})`);
+  ok(firstSweep.body.deleted > 0 && firstSweep.body.complete === false,
+    `…having MOVED first, and never calling itself complete (deleted ${firstSweep.body && firstSweep.body.deleted})`);
+  ok(typeof firstSweep.body.cursor === "string" && firstSweep.body.cursor.length > 0,
+    `…and hands back a RESUMABLE token (got ${JSON.stringify(firstSweep.body.cursor)})`);
+
+  let token = firstSweep.body.cursor, calls = 1, lastSweep = firstSweep;
+  while (token && calls < 400) {
+    lastSweep = await post({ action: "sweepHarnessFaults", maxMs: 1, cursor: token });
+    ok(lastSweep.status === 200, "…every resumed POST answers 200");
+    token = lastSweep.body.cursor;
+    calls++;
+  }
+  ok(token === null && lastSweep.body.complete === true && lastSweep.body.truncated === false,
+    `…and POSTing it back to the same action TERMINATES with complete:true (${calls} calls)`);
+  ok(calls > 10, `…after many resumed calls — the multi-page path a one-row keyspace can never reach (${calls})`);
+  ok((await countPlanted()) === 0, "…with the whole 250-row population swept out of the keyspace");
+  ok(delays.filter((d) => d === fault.KVS_DELETE_PAUSE_MS).length > 80,
+    `…and both the planting and the deletes were PACED at the app's published ${fault.KVS_DELETE_PAUSE_MS} ms rate (${delays.filter((d) => d === fault.KVS_DELETE_PAUSE_MS).length} rounds)`);
+
+  /* ── THE CLEAR takes LIVE ballast (which the sweep must never touch) and nothing else. ── */
+  const livePlant = await plant({ n: 120, expired: false });
+  ok(livePlant.body.planted === 120 && livePlant.body.expired === false, "(fixture) 120 LIVE planted rows");
+  const sweepLeavesThem = await post({ action: "sweepHarnessFaults", maxMs: 20_000 });
+  ok(sweepLeavesThem.body.deleted === 0 && (await countPlanted()) === 120,
+    `the sweep LISTS live ballast and deletes none of it — it is a sweep, not a disarm-everything (deleted ${sweepLeavesThem.body && sweepLeavesThem.body.deleted})`);
+
+  await arm({ status: 503, ttlSeconds: 120 });
+  ok((await readLever()).body.value.status === 503, "(fixture) a real, LIVE Jira lever armed beside the ballast");
+
+  let ct = (await clearPlanted({ maxMs: 1 })).body.cursor, clearCalls = 1, lastClear = null;
+  ok(typeof ct === "string" && ct.length > 0, "a budgeted clear truncates with a resumable token, exactly like the sweep");
+  while (ct && clearCalls < 400) {
+    const r = await clearPlanted({ maxMs: 1, cursor: ct });
+    ok(r.status === 200, "…every resumed clear answers 200");
+    lastClear = r; ct = r.body.cursor; clearCalls++;
+  }
+  ok(ct === null && lastClear && lastClear.body.complete === true,
+    `…and drains to complete:true (${clearCalls} calls)`);
+  ok((await countPlanted()) === 0, "…the plant sub-prefix is empty");
+  ok((await readLever()).body.value && (await readLever()).body.value.status === 503,
+    "…while the LIVE Jira lever beside it is untouched — the clear's prefix is bound to `harness_fault:plant:` and is not a parameter");
+  ok((await handler({ call: { functionKey: "searchUsers", payload: { query: "mihai" } } }, { principal: { accountId: ADMIN } })).status === 503,
+    "…so that lever still bites after the ballast is gone");
+  await disarm();
+
+  /* ── The clear's cursor is validated by the SAME one grammar as the sweep's (F-676/F-685),
+   * and only the library's own pre-KVS refusal of a token is `bad-cursor` (F-684). ── */
+  for (const bad of ["../../etc/passwd", "abc def", "A".repeat(2100), 42, "harness_fault:plant:000", "dGhpcy1pcy1ub3QteW91cnM="]) {
+    const r = await clearPlanted({ cursor: bad });
+    ok(r.status === 400 && r.body && r.body.ok === false && r.body.reason === "bad-cursor",
+      `a clear cursor ${JSON.stringify(String(bad).slice(0, 30))} is REFUSED 400 bad-cursor, not a bodyless 500 (got ${JSON.stringify({ status: r.status, body: r.body })})`);
+  }
+  {
+    const victim = await plant({ n: 3, expired: false });
+    ok(victim.body.planted === 3 && (await clearPlanted({ cursor: "../../etc/passwd" })).status === 400
+      && (await countPlanted()) === 3,
+      "…and a refused cursor does no work at all — the ballast it would have cleared is untouched");
+    await clearPlanted({ maxMs: 20_000 });
+  }
+  ok((await clearPlanted({ maxMs: 600_000 })).body.budgetMs === fault.HARNESS_FAULT_SWEEP_MAX_MS,
+    `…and the clear cannot buy more time than the trigger has either (${fault.HARNESS_FAULT_SWEEP_MAX_MS} ms)`);
+
+  globalThis.setTimeout = realTimeout;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
  * F-669 — THE MOCK MUST BE ABLE TO SEE THE TRUSTED-SLOT RISK.
  *
  * F-661 introduced `assumeTrustedRoute`, the one call in the codebase that can put a

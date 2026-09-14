@@ -494,6 +494,66 @@ export async function testStateTrigger(req) {
       // A refusal from the lever overrides the optimistic ok, exactly like the arm actions.
       return json(r.ok === false ? 400 : 200, { ok: true, ...r });
     }
+    /* ===== F-688: THE BALLAST — the only way to give the sweep a second page =====
+     * Everything F-673/F-674/F-677/F-682/F-683 built into `sweepHarnessFaults` — the resume
+     * token, the real KVS cursor round-trip, the paced deletes, the progress guarantee and
+     * `complete` — engages only once the fault keyspace is bigger than one page of
+     * 100. The arming actions above cannot get there: one row per exact path, one per
+     * provider, a handful per connection. So a tester on a real tenant could never prove the
+     * multi-page path, and every resume assertion in this repo stayed offline-only.
+     *
+     * THE PLANTED ROWS ARE INERT, and that is what licenses a lever that writes five hundred
+     * of them when the dangerous ones are capped at one. They go under the kind `plant`, and
+     * NOTHING READS THAT KIND: every consumer names its kind exactly —
+     * `harnessFaultArmed(HARNESS_FAULT_GIT_DISPATCH…)`, `(HARNESS_FAULT_HOOK_PROMOTE…)`,
+     * `readHarnessFault(HARNESS_FAULT_KEY_READ…)` inside `keyReadFaultMode`,
+     * `readHarnessFault(HARNESS_FAULT_JIRA…)` inside `jiraFaultStatus`, and the four read
+     * actions above, which pass those same four constants. There is no wildcard read, no
+     * prefix read and no enumeration anywhere but `sweepHarnessFaults`, which only DELETES.
+     * A planted row therefore occupies the keyspace and bites nothing.
+     *
+     * REFUSED IN PRODUCTION, by the same mechanism as every other action here and one more
+     * inside the lever: `HARNESS_SECRET` is set in development and staging and NEVER in
+     * production, so this door is 404 there, and `plantHarnessFaults` / `clearPlantedFaults`
+     * each ask `harnessEnabled()` as their first statement and answer `harness-off` even if
+     * something inside the app calls them directly.
+     *
+     * `n` IS CLAMPED IN THE LEVER, 1..500, not here — the clamp lives with the constant it
+     * bounds, like the 400-599 status range and the TTL caps. `expired: true` dates the rows
+     * in the past so the sweep will actually delete them; anything else plants live rows the
+     * sweep must list and leave alone. Every row carries a 60 s platform TTL in the SECONDS
+     * shape, so forgotten ballast leaves on its own even if nobody clears it. */
+    if (body.action === "plantHarnessFaults") {
+      const { plantHarnessFaults, HARNESS_FAULT_PLANT_MAX, HARNESS_FAULT_PLANT_PREFIX } = await import("./harness-fault.js");
+      const r = await plantHarnessFaults({ n: body.n, expired: body.expired === true });
+      // A refusal from the lever overrides the optimistic ok, exactly like the arm actions.
+      return json(r.ok === false ? 400 : 200, { ok: true, maxN: HARNESS_FAULT_PLANT_MAX, prefix: HARNESS_FAULT_PLANT_PREFIX, ...r });
+    }
+    /* The other half: delete the ballast, and ONLY the ballast. The prefix is NOT a
+     * parameter — no caller gets to name the keyspace an unconditional delete walks — and it
+     * is bound to `HARNESS_FAULT_PLANT_PREFIX` in the library. The answer is the sweep's own shape
+     * (`truncated` / `reason` / `cursor` / `complete`), validated and diagnosed by the same
+     * two rules: `sweepCursorWellFormed` at the door (F-676/F-685) and only the library's own
+     * pre-KVS refusal of a token is `bad-cursor` (F-684). */
+    if (body.action === "clearPlantedFaults") {
+      const { clearPlantedFaults, sweepCursorWellFormed, BAD_SWEEP_CURSOR_CODE } = await import("./harness-fault.js");
+      const rawCursor = body.cursor;
+      let cursor = null;
+      if (rawCursor !== undefined && rawCursor !== null) {
+        if (!sweepCursorWellFormed(rawCursor)) return json(400, { ok: false, reason: "bad-cursor" });
+        cursor = rawCursor;
+      }
+      let r;
+      try {
+        r = await clearPlantedFaults({ maxMs: typeof body.maxMs === "number" ? body.maxMs : undefined, cursor });
+      } catch (e) {
+        const message = String((e && e.message) || e).slice(0, 300);
+        const code = (e && typeof e.code === "string" && e.code) || null;
+        if (code === BAD_SWEEP_CURSOR_CODE) return json(400, { ok: false, reason: "bad-cursor", error: message });
+        return json(500, { ok: false, reason: "clear-failed", code, error: message });
+      }
+      return json(r.ok === false ? 400 : 200, { ok: true, ...r });
+    }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });

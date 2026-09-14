@@ -22,10 +22,10 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENVS, ENV_NAMES, MUTATION_NAMES } from "../lib/shared-env-guard.mjs";
+import { ENVS, ENV_NAMES, MUTATION_NAMES, positionalArgs } from "../lib/shared-env-guard.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GUARD = path.join(here, "..", "lib", "shared-env-guard.mjs");
@@ -37,7 +37,7 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } 
  * @returns {{code:number, out:string, err:string}}
  */
 function run(body, argv = []) {
-  const src = `import { requireEnvAck, declareMutations, forgeEnvId } from ${JSON.stringify(GUARD)};\n${body}\n`;
+  const src = `import { requireEnvAck, declareMutations, forgeEnvId, positionalArgs } from ${JSON.stringify(GUARD)};\n${body}\n`;
   try {
     const out = execFileSync(process.execPath, ["--input-type=module", "-e", src, "driver.mjs", ...argv], {
       encoding: "utf8",
@@ -197,6 +197,138 @@ console.log("\n3 · F-735 — A PINNED ENVIRONMENT MAY NOT BE ARGUED WITH IN ITS
     ok(!/\[\.\.\.process\.argv\.slice\(2\),\s*"--env=/.test(src),
       `${f}: …and keeps no appended-flag copy of the pin — the shape that lost to the operator's own --env`);
   }
+}
+
+console.log("\n· F-760 — THE HINT MUST BE A COMMAND THAT RUNS");
+{
+  /* The defect: the guard's hints end in `--i-know-dev-is-shared`, a phase driver read its
+     phase as `process.argv[2]`, and so the copy-pasted suggestion put the ACK FLAG in the
+     phase slot and exited 2 a second time with "phase must be one of". The refusal printed a
+     command that could not run, and the operator started guessing — F-735's failure mode
+     moved from the flag to the hint. The tester hit it twice on two different drivers.
+
+     Two halves, tested as two halves:
+       1. `positionalArgs` — a flag is never a positional, WHEREVER it sits; and
+       2. `usage:` — the hint names the phase, so the suggestion is complete.
+     Neither alone closes it: (1) without (2) leaves the operator a command with no phase,
+     and (2) without (1) leaves the phase behind the flag's slot. */
+
+  /* ── 1. THE HELPER, on the shapes this harness actually produces ─────────── */
+  ok(JSON.stringify(positionalArgs(["--i-know-dev-is-shared"])) === "[]",
+    "positionalArgs: a lone ack flag leaves NO positional — the exact argv the old hint produced");
+  ok(JSON.stringify(positionalArgs(["--i-know-dev-is-shared", "window"])) === '["window"]',
+    "positionalArgs: the phase is found AFTER the flag — the slot no longer decides");
+  ok(JSON.stringify(positionalArgs(["window", "--env=dev", "--i-know-dev-is-shared"])) === '["window"]',
+    "positionalArgs: `--name=value` is a flag too, so a valued flag cannot be read as a phase");
+  ok(JSON.stringify(positionalArgs(["fault", "window"])) === '["fault","window"]',
+    "positionalArgs: order is preserved and a second positional is NOT swallowed");
+  ok(JSON.stringify(positionalArgs(["-"])) === '["-"]',
+    "positionalArgs: a BARE dash is a value, not a flag — filtering is on the double dash, which is exact for this harness (`flag`/`arg` accept nothing else)");
+  let threw = false;
+  try { positionalArgs("window"); } catch (e) { threw = true; }
+  ok(threw, "positionalArgs refuses a non-array rather than silently returning nothing");
+
+  /* ── 2. THE HINT CARRIES THE USAGE, read out of a REAL refusal ───────────── */
+  const r = run(
+    'requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["git"], forceEnv: "dev", script: "phase-driver.mjs", usage: "<window|fault>" });\nconsole.log("PROCEEDED");',
+  );
+  ok(r.code === 2 && !/PROCEEDED/.test(r.out), "the phase driver's guard refuses shared dev, as before");
+  ok(!/Missing .env|ENOENT/.test(r.err), "…and it is still the TENANT refusal, not a file complaint — the order is unchanged");
+  const hints = r.err.split("\n").filter((l) => /^\s+node scripts\//.test(l));
+  ok(hints.length > 0, "the refusal prints at least one suggested command");
+  ok(hints.every((l) => l.includes("<window|fault>")),
+    "EVERY suggested command carries the driver's declared usage — a hint that omits it is the defect, and the loop above is why one fixed line was not enough");
+
+  /* THE PROOF THE FINDING ASKED FOR: take the hint VERBATIM, feed its argv to a driver built
+     exactly like the real ones, and assert it reaches the phase instead of refusing again. */
+  const ackHint = hints.find((l) => l.includes("--i-know-dev-is-shared"));
+  ok(!!ackHint, "one of the hints is the ack command — the one an operator copy-pastes");
+  /* `<window|fault>` is a PLACEHOLDER: the operator substitutes one alternative, so the
+     command actually typed is the hint with that token resolved. Resolve it the same way. */
+  const hintArgv = ackHint.trim().split(/\s+/).slice(2)   // drop `node scripts/<name>`
+    .map((a) => (/^<.*>$/.test(a) ? a.slice(1, -1).split("|")[0] : a));
+  ok(hintArgv.includes("window"), "the hint's argv resolves to a phase the driver knows");
+  ok(positionalArgs(hintArgv)[0] === "window",
+    "…and a driver reading positionalArgs gets THAT phase from the hint's argv, flags and all — the property F-760 is about");
+
+  /* END TO END, in a child, through the door that does not need a configured machine.
+     `declareMutations` is the other half of the same defect (three of the four converted
+     drivers use it) and it returns without touching `loadEnv`, so the phase dispatch below
+     is REACHED here and its absence of a refusal is observed rather than inferred. */
+  const r2 = run(
+    'declareMutations(["git"], { script: "phase-driver.mjs", usage: "<window|fault>" });\n' +
+    'const PHASE = positionalArgs(process.argv.slice(2))[0] || "window";\n' +
+    'if (!["window", "fault"].includes(PHASE)) { console.error("phase must be one of: window, fault"); process.exit(2); }\n' +
+    'console.log("RAN phase=" + PHASE);',
+    hintArgv.filter((a) => a !== "--env=dev"),   // declareMutations has no --env; the ack is the whole of it
+  );
+  ok(r2.code === 0 && /RAN phase=window/.test(r2.out),
+    "the hint's EXACT command runs the phase — it no longer exits 2 with `phase must be one of` (F-760)");
+  ok(!/phase must be one of/.test(r2.err), "…and that sentence is not printed at all");
+
+  /* The `requireEnvAck` half ends differently depending on the machine, and the test says so
+     rather than asserting one machine's answer: once the guard is SATISFIED it calls
+     `loadEnv`, which THROWS where there is no `test-harness/.env` (a fresh clone, a worktree)
+     and returns where there is one. Either way the claim is the same and it is the whole of
+     F-760 — the second exit-2 is gone, the run is past the phase decision. Asserting the
+     unconfigured ending unconditionally would make this file pass in a worktree and fail on
+     the maintainer's own checkout, which is a worse defect than the one being fixed. */
+  const CONFIGURED = existsSync(path.join(here, "..", ".env"));
+  const r2b = run(
+    'requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["git"], forceEnv: "dev", script: "phase-driver.mjs", usage: "<window|fault>" });\n' +
+    'const PHASE = positionalArgs(process.argv.slice(2))[0] || "window";\n' +
+    'if (!["window", "fault"].includes(PHASE)) { console.error("phase must be one of: window, fault"); process.exit(2); }\n' +
+    'console.log("RAN phase=" + PHASE);',
+    hintArgv,
+  );
+  ok(!/phase must be one of/.test(r2b.err),
+    "the requireEnvAck driver's hint likewise never lands back on `phase must be one of`");
+  /* On an UNCONFIGURED machine the ending is exact and is asserted. On a configured one it
+     depends on which URLs that `.env` happens to carry — a fact about the operator's file,
+     not about this fix — so only the F-760 claim above is asserted there. The end-to-end
+     "the phase RAN" proof is the `declareMutations` child two paragraphs up, which needs no
+     env file and therefore holds on every machine. */
+  if (!CONFIGURED) {
+    ok(r2b.code !== 2, "…and it is past BOTH the tenant refusal and the phase decision — neither exits 2 any more");
+    ok(/Missing .*\.env/.test(r2b.err),
+      "…stopping only at the env file this worktree has none of, which is the documented order and as far as a refusal test can honestly drive it");
+  }
+
+  /* THE OLD SHAPE, kept as the negative control. Without it, the two assertions above would
+     still pass on a driver that never had the defect, and this section would prove nothing. */
+  const r3 = run(
+    'const PHASE = process.argv[2] || "window";\n' +
+    'if (!["window", "fault"].includes(PHASE)) { console.error("phase must be one of: window, fault"); process.exit(2); }\n' +
+    'console.log("RAN phase=" + PHASE);',
+    ["--i-know-dev-is-shared", "window"],
+  );
+  ok(r3.code === 2 && /phase must be one of/.test(r3.err),
+    "the OLD `process.argv[2]` shape still fails on that same argv — so the two assertions above are measuring the fix and not the weather");
+
+  /* ── 3. EVERY LIVE DRIVER THAT READS A POSITIONAL IS CONVERTED ───────────── */
+  /* The four found by `grep process.argv[2] scripts/*-live.mjs`:
+       git-rotation-window-live.mjs   <window|fault>                (requireEnvAck)
+       git-webhook-setup-live.mjs     <setup|idem|…|cleanup>        (declareMutations)
+       bitbucket-live.mjs             <whoami|…|cleanup>            (declareMutations)
+       pipeline-scaffold-live.mjs     <setup|…|cleanup>             (declareMutations)
+     A fifth file growing the defect is caught by the directory scan below rather than by
+     this list, which is why the list is allowed to be a comment. */
+  for (const f of ["git-rotation-window-live.mjs", "git-webhook-setup-live.mjs", "bitbucket-live.mjs", "pipeline-scaffold-live.mjs"]) {
+    const src = readFileSync(path.join(here, f), "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    ok(/positionalArgs\(process\.argv\.slice\(2\)\)\[0\]/.test(code), `${f}: reads its phase as the first NON-FLAG argument`);
+    ok(/usage:\s*"</.test(code), `${f}: declares a usage line, so the guard's hint can carry it`);
+  }
+
+  /* THE DIRECTORY RULE. `process.argv[2]` in a live driver is the defect itself; the scan is
+     what stops the fifth file, and it reads CODE ONLY because all four now EXPLAIN the old
+     shape in a comment — which is how the next author learns why the read moved. */
+  const offenders = readdirSync(here)
+    .filter((f) => f.endsWith("-live.mjs"))
+    .filter((f) => /process\.argv\[2\]|argv\.slice\(2\)\[0\]/.test(
+      readFileSync(path.join(here, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")));
+  ok(offenders.length === 0,
+    `no *-live.mjs reads a positional by slot — use positionalArgs (F-760). Offenders: ${offenders.join(", ") || "none"}`);
 }
 
 console.log("\nshared-env-guard: " + pass + " passed, " + fail + " failed");

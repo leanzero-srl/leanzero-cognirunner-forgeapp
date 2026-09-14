@@ -34,7 +34,7 @@
  * Env: GH_TOKEN, test-harness/.env (TESTSTATE_URL, HARNESS_SECRET, HARNESS_ADMIN_ACCOUNT_ID,
  *      JIRA_ADMIN_EMAIL, JIRA_API_TOKEN).
  */
-import { forgeEnvId, declareMutations } from "../lib/shared-env-guard.mjs";
+import { forgeEnvId, declareMutations, positionalArgs } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
@@ -48,7 +48,7 @@ import { readJobLog, assertLockRefusal } from "../lib/gh-job-log.mjs";
    written. No environment is resolved and no `.env` is demanded: this is the DECLARATION half
    of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
    web trigger out of the mapping it has no use for (F-699's reasoning). */
-declareMutations(["git"]);
+declareMutations(["git"], { usage: "<setup|workflow|run|drift|cleanup>" });
 
 const env = loadEnv();
 const BASE = "https://wolfaenpak.atlassian.net";
@@ -324,7 +324,9 @@ const phaseCleanup = async () => {
 };
 
 const PHASES = { setup: phaseSetup, workflow: phaseWorkflow, run: phaseRun, drift: phaseDrift, cleanup: phaseCleanup };
-const which = process.argv[2];
+/* F-760 — the phase is the first NON-FLAG argument, so the `--i-know-dev-is-shared` the
+   refusal above prints can sit in slot 2 without being read as a phase. */
+const which = positionalArgs(process.argv.slice(2))[0];
 if (!PHASES[which]) { console.error("usage: pipeline-scaffold-live.mjs <" + Object.keys(PHASES).join("|") + ">"); process.exit(2); }
 await PHASES[which]();
 console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURE(S)"} — phase ${which}`);

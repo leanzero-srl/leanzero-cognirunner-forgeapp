@@ -53,7 +53,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 // F-686 — every driver that arms a harness fault goes through the ONE acknowledgement.
-import { requireEnvAck, forgeEnvId } from "../lib/shared-env-guard.mjs";
+import { requireEnvAck, forgeEnvId, positionalArgs } from "../lib/shared-env-guard.mjs";
 import { gitHookUrl } from "../lib/git-hook-url.mjs";
 
 /* F-686 — DEV-ONLY BY CONSTRUCTION: both hook calls below go to `env.TESTSTATE_URL`, and
@@ -70,6 +70,7 @@ requireEnvAck(process.argv.slice(2), {
   faults: ["hookPromote"],
   mutates: ["git", "kvs"],   /* drives a real secret rotation on a real connection row */
   script: "git-rotation-window-live.mjs",   // count-bounded: one unit, no TTL to quote
+  usage: "<window|fault>",   // F-760 — so the refusal's own command carries the phase
 });
 
 const env = loadEnv();
@@ -464,9 +465,14 @@ async function faultPhase() {
  * `gh api /repos/…/hooks` on GitHub — and FAIL LOUD, named, if it is not. A missing hook
  * here means the NEXT script in the chain will fail for a reason that started in this one.
  */
-const PHASE = process.argv[2] || "window";
+/* F-760 — the phase is the first NON-FLAG argument, not argv[2]. This driver's guard call
+   at the top refuses without `--i-know-dev-is-shared` and PRINTS that flag as the fix; put
+   it in slot 2, as a copy-paste does, and the old `process.argv[2]` read it as the phase
+   and exited 2 again with "phase must be one of". `positionalArgs` and the guard's `usage:`
+   are the two halves of that: the flag can now go anywhere, and the hint names the phase. */
+const PHASE = positionalArgs(process.argv.slice(2))[0] || "window";
 const ENTRY = { window: main, fault: faultPhase }[PHASE];
-if (!ENTRY) { console.error(`phase must be one of: window, fault`); process.exit(2); }
+if (!ENTRY) { console.error(`phase must be one of: window, fault (got ${JSON.stringify(PHASE)})`); process.exit(2); }
 
 ENTRY()
   .catch((e) => { console.error("\nDRIVER ERROR:", e && e.message); process.exitCode = 1; })

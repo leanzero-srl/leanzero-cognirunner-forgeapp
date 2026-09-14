@@ -46,7 +46,7 @@
  *      GH_TOKEN, and test-harness/.env (TESTSTATE_URL, HARNESS_SECRET,
  *      HARNESS_ADMIN_ACCOUNT_ID).
  */
-import { forgeEnvId, declareMutations } from "../lib/shared-env-guard.mjs";
+import { forgeEnvId, declareMutations, positionalArgs } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
@@ -59,7 +59,7 @@ import { gitHookUrl } from "../lib/git-hook-url.mjs";
    written. No environment is resolved and no `.env` is demanded: this is the DECLARATION half
    of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
    web trigger out of the mapping it has no use for (F-699's reasoning). */
-declareMutations(["git", "listeners"]);
+declareMutations(["git", "listeners"], { usage: "<setup|idem|rotate|listener|pr|rerun|property|cleanup>" });
 
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
@@ -525,7 +525,11 @@ const phaseCleanup = async () => {
 };
 
 const PHASES = { setup: phaseSetup, idem: phaseIdem, rotate: phaseRotate, listener: phaseListener, pr: phasePr, rerun: phaseRerun, property: phaseProperty, cleanup: phaseCleanup };
-const name = process.argv[2];
+/* F-760 — the phase is the first NON-FLAG argument. `declareMutations` above refuses
+   without `--i-know-dev-is-shared` and prints that flag as the fix; read as `argv[2]`, as a
+   copy-paste puts it, the flag became the phase and the driver exited 2 a second time with
+   "phase required, one of" — so the refusal suggested a command that could not run. */
+const name = positionalArgs(process.argv.slice(2))[0];
 if (!PHASES[name]) { console.error(`phase required, one of: ${Object.keys(PHASES).join(", ")}`); process.exit(2); }
 if (!TRIGGER && name !== "listener") { console.error("GIT_WEBHOOK_URL is required (and is a secret — keep it out of the repo)."); process.exit(2); }
 if (!process.env.GH_TOKEN) { console.error("GH_TOKEN is required in the environment."); process.exit(2); }

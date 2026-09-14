@@ -245,6 +245,39 @@ function harmLine(fault) {
   return `  - ${f(param)}`;
 }
 
+/* ── F-760 — THE POSITIONAL AND THE FLAG MUST NOT COMPETE FOR argv[2] ─────────────
+ * A phase-driven driver used to read its phase as `process.argv[2]`. The guard's own
+ * refusal hint ends with `node scripts/<name> --i-know-dev-is-shared`, so an operator
+ * who copy-pastes the suggestion puts the ACK FLAG in slot 2 — the driver reads it as
+ * the phase and exits 2 a second time with `phase must be one of: window, fault`. The
+ * refusal therefore prints a command that cannot run, and the operator starts guessing,
+ * which is the F-735 failure mode relocated from the flag to the hint.
+ *
+ * Both halves are fixed, and they are independent:
+ *   - here, a driver reads its positionals through `positionalArgs`, so a flag is never
+ *     mistaken for a phase WHEREVER it appears in the command line; and
+ *   - below, `requireEnvAck`/`declareMutations` take a `usage:` string and splice it into
+ *     every hint they print, so the suggestion carries the phase the driver needs.
+ *
+ * Filtering on the DOUBLE dash is exact for this harness, not a heuristic: every flag in
+ * `lib/` and `scripts/` is `--name` or `--name=value` (see `flag`/`arg` directly above —
+ * neither form can consume a following word, so there is no "flag value" to skip). A bare
+ * `-` or a negative number is a VALUE and is deliberately kept.
+ */
+/**
+ * @param {string[]} argv usually `process.argv.slice(2)`
+ * @returns {string[]} argv without its `--flags`, order preserved
+ */
+export function positionalArgs(argv = process.argv.slice(2)) {
+  if (!Array.isArray(argv)) {
+    throw new Error("positionalArgs: pass an argv array (usually process.argv.slice(2))");
+  }
+  return argv.filter((a) => !String(a).startsWith("--"));
+}
+
+/** The usage line a driver declared, spliced after the script name in a hint (F-760). */
+const usageBit = (usage) => (usage ? ` ${usage}` : "");
+
 /** One exit door, so every refusal in this file reads the same way. */
 function die(lines) {
   console.error(["", ...lines, ""].join("\n"));
@@ -278,10 +311,17 @@ function die(lines) {
  *                                    `defaultEnv`, which is about where a free choice lands.
  * @param {boolean} [opts.requireAck] force the shared-dev refusal even with no faults.
  * @param {string}  [opts.script]     script name for the usage lines (defaults to argv[1])
+ * @param {string}  [opts.usage]      F-760 — the POSITIONALS this driver requires, e.g.
+ *                                    `"<window|fault>"`. Spliced after the script name in
+ *                                    EVERY hint this function prints, so the command the
+ *                                    refusal suggests is one that actually runs. A phase
+ *                                    driver that omits it prints a hint that exits 2 again
+ *                                    for a second, unrelated reason — which is the whole
+ *                                    of F-760.
  * @returns {{ envName: string, hookUrl: string, envId: string, urlVar: string,
  *            shared: boolean, acknowledged: boolean }}
  */
-export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = "staging", forceEnv, requireAck = false, script } = {}) {
+export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = "staging", forceEnv, requireAck = false, script, usage } = {}) {
   if (!Array.isArray(faults)) {
     throw new Error(
       "requireEnvAck: name the faults this driver arms (`faults: []` if it arms none) — an unnamed blast radius is the defect F-686 is about"
@@ -346,7 +386,7 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
         "your argv and the first `--env` won, so this exact command ran against dev with the",
         "shared-tenant refusal skipped, and a TYPO would have been louder than the bypass.",
         "",
-        `  node scripts/${name}${ENVS[forceEnv].shared ? " --i-know-dev-is-shared" : ""}`,
+        `  node scripts/${name}${usageBit(usage)}${ENVS[forceEnv].shared ? " --i-know-dev-is-shared" : ""}`,
         `      # ${forceEnv}, the only environment this driver has`,
       ]);
     }
@@ -377,7 +417,7 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
       "",
       `Legal values (case-sensitive): ${ENV_NAMES.join(", ")}`,
       "",
-      `  node scripts/${name} --env=${defaultEnv}`,
+      `  node scripts/${name}${usageBit(usage)} --env=${defaultEnv}`,
       `      # ${defaultEnv}, which is also where --env lands when it is omitted`,
     ]);
   }
@@ -423,10 +463,10 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
       /* A driver whose DEFAULT is dev must not be told "just run it with no --env": that
          lands right back here. Offer the other environment by name instead. */
       ...(ENVS[defaultEnv].shared
-        ? [`  node scripts/${name} --env=${ENV_NAMES.find((n) => !ENVS[n].shared)}`,
+        ? [`  node scripts/${name}${usageBit(usage)} --env=${ENV_NAMES.find((n) => !ENVS[n].shared)}`,
           `      # the unshared environment — note this driver DEFAULTS to dev`]
-        : [`  node scripts/${name}`, `      # ${defaultEnv}, the default`]),
-      `  node scripts/${name} --env=dev --i-know-dev-is-shared`,
+        : [`  node scripts/${name}${usageBit(usage)}`, `      # ${defaultEnv}, the default`]),
+      `  node scripts/${name}${usageBit(usage)} --env=dev --i-know-dev-is-shared`,
     ]);
   }
 
@@ -460,10 +500,10 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
       "",
       ...(named
         ? [`The id given is ${named}'s. If that is the environment you want, name it:`,
-          `  node scripts/${name} --env=${named}`]
+          `  node scripts/${name}${usageBit(usage)} --env=${named}`]
         : ["The id given is not one this harness knows at all. Environment ids are not typed;",
           "they come out of the one table, which `--env` already reads for you:",
-          `  node scripts/${name} --env=${envName}`]),
+          `  node scripts/${name}${usageBit(usage)} --env=${envName}`]),
       "",
       `\`--envid\` survives only for the identity it already has: --envid=${row.forgeEnvId} is`,
       `what --env=${envName} means, and passing it changes nothing.`,
@@ -535,9 +575,12 @@ export function requireEnvAck(argv, { faults, mutates, maxSeconds, defaultEnv = 
  * @param {object}  [opts]
  * @param {string[]} [opts.argv]   defaults to `process.argv.slice(2)`
  * @param {string}  [opts.script]  script name for the usage line (defaults to argv[1])
+ * @param {string}  [opts.usage]   F-760 — the POSITIONALS this driver requires, e.g.
+ *                                 `"<setup|rotate|cleanup>"`, spliced after the script name
+ *                                 in the hint so the suggested command actually runs.
  * @returns {{ mutates: string[], acknowledged: boolean }}
  */
-export function declareMutations(mutates, { argv = process.argv.slice(2), script } = {}) {
+export function declareMutations(mutates, { argv = process.argv.slice(2), script, usage } = {}) {
   if (!Array.isArray(mutates)) {
     throw new Error(
       "declareMutations: name what this driver CHANGES on the shared dev tenant " +
@@ -567,7 +610,7 @@ export function declareMutations(mutates, { argv = process.argv.slice(2), script
     "job or connection just moved that a harness run did it. Schedule it, or tell whoever is on",
     "the tenant — do not discover it afterwards.",
     "",
-    `  node scripts/${name} --i-know-dev-is-shared`,
+    `  node scripts/${name}${usageBit(usage)} --i-know-dev-is-shared`,
   ]);
 }
 

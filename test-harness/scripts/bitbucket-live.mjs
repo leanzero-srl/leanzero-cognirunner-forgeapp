@@ -49,8 +49,8 @@ import { gitHookUrl } from "../lib/git-hook-url.mjs";
    written. No environment is resolved and no `.env` is demanded: this is the DECLARATION half
    of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
    web trigger out of the mapping it has no use for (F-699's reasoning). */
-import { declareMutations } from "../lib/shared-env-guard.mjs";
-declareMutations(["git"]);
+import { declareMutations, positionalArgs } from "../lib/shared-env-guard.mjs";
+declareMutations(["git"], { usage: "<whoami|repo|redirect|pr|hook|pipeline|cleanup>" });
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(here, "..", "..");
@@ -311,7 +311,9 @@ async function phaseCleanup() {
 }
 
 const phases = { whoami: phaseWhoami, repo: phaseRepo, redirect: phaseRedirect, pr: phasePr, hook: phaseHook, pipeline: phasePipeline, cleanup: phaseCleanup };
-const want = process.argv[2];
+/* F-760 — the phase is the first NON-FLAG argument, so the `--i-know-dev-is-shared` the
+   refusal above prints can sit in slot 2 without being read as a phase. */
+const want = positionalArgs(process.argv.slice(2))[0];
 if (!phases[want]) { console.error("usage: bitbucket-live.mjs " + Object.keys(phases).join("|")); process.exit(2); }
 await phases[want]();
 console.log(failures ? `\n${failures} FAILURE(S) in phase ${want}` : `\nphase ${want}: all checks passed`);

@@ -664,7 +664,9 @@ process.env.HARNESS_SECRET = SECRET;
     `(fixture) 250 expired rows planted through the door in ${planted.calls} call(s) (got ${planted.planted})`);
   ok(planted.keys.length === 250 && planted.keys.every((k) => k.startsWith("harness_fault:plant:")),
     "…every key under the plant sub-prefix and nowhere else, across the resume boundary");
-  ok(planted.body.ttlSeconds === 60, "…each with its own 60 s platform TTL, so forgotten ballast leaves on its own");
+  ok(planted.body.ttlSeconds >= fault.HARNESS_FAULT_PLANT_TTL_SECONDS
+    && planted.body.ttlSeconds === fault.plantTtlSeconds(250),
+    `F-697: …each with a window that COVERS the plant that wrote it plus a minute after it (got ${planted.body && planted.body.ttlSeconds} s, never a flat 60 under a 22 s plant)`);
 
   ok((await readLever()).body.value === null, "readJiraFault answers null with 250 planted rows in the keyspace");
   ok((await post({ action: "readKeyReadFault", provider: "openai" })).body.value === null, "…readKeyReadFault too");

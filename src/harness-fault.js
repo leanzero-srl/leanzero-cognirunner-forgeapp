@@ -1024,7 +1024,7 @@ export const HARNESS_FAULT_PLANT_MAX = 500;
 export const HARNESS_FAULT_PLANT_MS_PER_ROW = 90;
 /** ≈ `HARNESS_FAULT_SWEEP_DEFAULT_MS / HARNESS_FAULT_PLANT_MS_PER_ROW`, rounded down for headroom. */
 export const HARNESS_FAULT_PLANT_CALL_MAX = 150;
-/** A planted row's own window. Short on purpose — ballast, not a lever. */
+/** A planted row's own FLOOR window. Short on purpose — ballast, not a lever. See `plantTtlSeconds`. */
 export const HARNESS_FAULT_PLANT_TTL_SECONDS = 60;
 /** How far in the past an `expired: true` row is dated. Past any reader's clock skew. */
 export const HARNESS_FAULT_PLANT_BACKDATE_SECONDS = 3_600;
@@ -1059,6 +1059,25 @@ export const plantStartIndexClamped = (startIndex) => {
 export const plantMaxForCall = (startIndex) =>
   plantStartIndexClamped(startIndex) > 0 ? HARNESS_FAULT_PLANT_MAX : HARNESS_FAULT_PLANT_CALL_MAX;
 
+/**
+ * F-697 — THE TTL SCALES WITH THE PLANT, because the plant takes TIME.
+ *
+ * A flat sixty seconds is shorter than the plant that writes it: at ~90 ms a row the head of
+ * a 400-row population was written ~36 s before the tail, so by the time the caller got its
+ * answer and POSTed the sweep, rows the `expired: false` contract promises the sweep "must
+ * list and leave alone" had crossed their own `until` and were DELETED — evidence of a broken
+ * expiry predicate, manufactured entirely by the plant's own clock.
+ *
+ * The window is therefore `max(60 s, expected plant time + 60 s)`: every row still gets a full
+ * minute of life AFTER the last row lands, whatever `n` was. The family ceiling
+ * (`HARNESS_FAULT_TTL_SECONDS`) still binds — `setFaultRow` would clamp anyway, and clamping
+ * here too keeps the number this function reports equal to the number that is written.
+ */
+export const plantTtlSeconds = (rows) => {
+  const expectedSeconds = Math.round((Math.max(0, Math.floor(Number(rows) || 0)) * HARNESS_FAULT_PLANT_MS_PER_ROW) / 1000);
+  return Math.min(HARNESS_FAULT_TTL_SECONDS,
+    Math.max(HARNESS_FAULT_PLANT_TTL_SECONDS, expectedSeconds + HARNESS_FAULT_PLANT_TTL_SECONDS));
+};
 
 /** The key of planted row `i`, zero-padded so the keyspace sorts the way it was written. */
 export const plantedFaultKey = (i) =>
@@ -1100,13 +1119,11 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
   const budgetMs = sweepBudgetMs(maxMs);
   const t0 = Date.now();
   const overBudget = () => Date.now() - t0 >= budgetMs;
-  const ttlSeconds = HARNESS_FAULT_PLANT_TTL_SECONDS;
-  const armedAt = new Date(Date.now() - (past ? HARNESS_FAULT_PLANT_BACKDATE_SECONDS * 1000 : 0)).toISOString();
-  // An expired row carries a deadline already gone; a live one gets `armedAt + 60 s`, which
-  // is what `setFaultRow` stamps on its own when no `keepUntil` is handed to it.
-  const keepUntil = past
-    ? new Date(Date.now() - (HARNESS_FAULT_PLANT_BACKDATE_SECONDS - HARNESS_FAULT_PLANT_TTL_SECONDS) * 1000).toISOString()
-    : null;
+  /* F-697: the window covers the whole POPULATION's planting plus a full minute after it —
+   * `count`, not `count - from`. A resumed call must not hand its rows a SHORTER life than
+   * the head already got: the drain that is coming walks the whole keyspace, so every row
+   * has to outlive the whole plant, not just the part of it that wrote that row. */
+  const ttlSeconds = plantTtlSeconds(count);
   const keys = [];
   let planted = 0, failed = 0, truncated = false, reason = null, progressed = false;
   let i = from;
@@ -1116,6 +1133,19 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
       await sweepPause(KVS_DELETE_PAUSE_MS);
     }
     if (progressed && overBudget()) { truncated = true; reason = "budget"; break; }
+    /* F-697 — STAMPED PER BATCH, AT WRITE TIME. One `armedAt` computed before the loop dated
+     * every row from the START of a plant that takes tens of seconds, so the head's window was
+     * already closing while the tail was still being written. Each batch is dated when it is
+     * written, so every row's life begins when the row does. */
+    const nowMs = Date.now();
+    const armedAt = new Date(nowMs - (past ? HARNESS_FAULT_PLANT_BACKDATE_SECONDS * 1000 : 0)).toISOString();
+    /* An expired row carries a deadline already gone; a live one gets `armedAt + ttlSeconds`.
+     * BOTH are derived from the SAME clock read as `armedAt`, and both are passed explicitly
+     * rather than left to `setFaultRow`'s own `Date.now()`: a row whose two stamps come from
+     * two clock reads is a row whose window is not exactly the window this lever reports. */
+    const keepUntil = new Date(past
+      ? nowMs - (HARNESS_FAULT_PLANT_BACKDATE_SECONDS - ttlSeconds) * 1000
+      : nowMs + ttlSeconds * 1000).toISOString();
     const batch = [];
     for (let j = i; j < Math.min(i + KVS_DELETE_BATCH, count); j++) batch.push(plantedFaultKey(j));
     const settled = await Promise.allSettled(batch.map((key) =>

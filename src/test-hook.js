@@ -535,8 +535,8 @@ export async function testStateTrigger(req) {
      * `n` IS CLAMPED IN THE LEVER, not here — the clamp lives with the constant it bounds,
      * like the 400-599 status range and the TTL caps. `expired: true` dates the rows in the
      * past so the sweep will actually delete them; anything else plants live rows the sweep
-     * must list and leave alone. Every row carries a 60 s platform TTL in the SECONDS shape, so
-     * forgotten ballast leaves on its own even if nobody clears it.
+     * must list and leave alone. Every row carries its TTL in the SECONDS shape, so forgotten
+     * ballast leaves on its own even if nobody clears it.
      *
      * F-696 — THIS DOOR HAS A BUDGET AND A RESUME, LIKE THE SWEEP'S. Measured live: 200 rows
      * take 17–18 s, so the documented 500 was ~45 s against a trigger killed at 25 s, and a
@@ -546,7 +546,10 @@ export async function testStateTrigger(req) {
      * SAME `n` back with `startIndex: nextIndex` until `complete: true`. `maxN` is what THIS
      * call may ask for — one call's worth for a fresh plant, the full population for a resumed
      * one — and it is computed by the lever's `plantMaxForCall`, never retyped here.
- */
+     *
+     * F-697 — the TTL is `max(60 s, expected plant time + 60 s)` and each batch is dated when
+     * it is WRITTEN, so the head of a large `expired: false` population is still live when the
+     * sweep the tester is about to run walks over it. */
     if (body.action === "plantHarnessFaults") {
       const { plantHarnessFaults, plantMaxForCall, HARNESS_FAULT_PLANT_PREFIX } = await import("./harness-fault.js");
       const r = await plantHarnessFaults({

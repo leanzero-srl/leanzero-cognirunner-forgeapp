@@ -43,7 +43,12 @@ import { readWorkflow, updateWorkflow, removeTransitionsByName, attachSelfLoopRu
    of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
    web trigger out of the mapping it has no use for (F-699's reasoning). */
 import { declareMutations } from "../lib/shared-env-guard.mjs";
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 declareMutations(["rules"]);
 
 const env = loadEnv();
@@ -167,7 +172,7 @@ async function main() {
   } finally { await ctx.close(); }
 }
 
-try { await main(); } catch (e) { console.error("THREW", e.stack); fails += 1; }
+try { await main(); } catch (e) { crashed = e; console.error("THREW", e.stack); fails += 1; }
 finally {
   if (attached && !KEEP) {
     try {
@@ -183,6 +188,6 @@ finally {
   /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
   ev.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
-  console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/`);
-  process.exit(fails ? 1 : 0);
+  console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/` }));
+  process.exit(resultExitCode({ fails, crashed }));
 }

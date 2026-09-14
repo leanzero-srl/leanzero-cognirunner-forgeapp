@@ -56,6 +56,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
    purpose: on this driver an incapable instance is the SUBJECT (F-485 - the save door must
    refuse), not a precondition, so its FAILs are assertions and must stay FAILs. */
 import { resolveFlipModel } from "../lib/agent-capability-precondition.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "listeners", "providerSlot", "kvs"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -604,8 +605,8 @@ async function main() {
     NV(`F-480's rename is NOT EXERCISABLE on ${ENV_NAME}: the row cannot be CREATED here (${gitCreate.status} reason="${b.reason}" refused=${JSON.stringify(b.refused)} error="${String(b.error || "").slice(0, 180)}"). A capability-gated action can only be armed on an instance where the capability is ON, so there is nothing here to rename - and a 400 on a non-existent row is not the 400 F-480 is about.`);
   }
 
-  console.log(`\nRESULT - ${passes} pass, ${fails} fail, ${unproven} not verified (REC lines are recorded observations, not assertions)`);
-  if (fails) process.exitCode = 1;
+  console.log("\n" + formatResultLine({ passes, fails, unproven, dash: "-", suffix: " (REC lines are recorded observations, not assertions)" }));
+  if (resultExitCode({ fails })) process.exitCode = 1;
 }
 
 main()

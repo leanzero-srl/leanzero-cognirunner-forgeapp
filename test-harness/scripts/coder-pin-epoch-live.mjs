@@ -53,7 +53,12 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
    conversion note at the read below. */
 import { judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
 /* F-787 - the commit this run came from, recorded in the evidence file it writes. */
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 const { hookUrl: URL_, envName: ENV_NAME } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "memories", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -72,10 +77,15 @@ fs.mkdirSync(OUT, { recursive: true });
    names the variable to set; only the two credentials are left to check here. */
 if (!SECRET || !ACCT) { console.error("need HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID"); process.exit(2); }
 
+/* F-796 - THE PASSES ARE COUNTED, NOT INFERRED. This driver only ever counted FAILURES,
+   so a RESULT line through `formatResultLine` could have said `0 pass` over a run that
+   proved a dozen things. The counter is incremented in the same helper that records the
+   row, so the two can never disagree. */
 let failures = 0;
+let passes = 0;
 const evidence = { issue: ISSUE, stamp: STAMP, checks: [], measurements: {} };
 const check = (label, ok, data = {}) => {
-  if (!ok) failures += 1;
+  if (ok) passes += 1; else failures += 1;
   evidence.checks.push({ label, ok, ...data });
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
 };
@@ -268,7 +278,7 @@ const main = async () => {
   evidence.threadId = THREAD;
 };
 
-try { await main(); } catch (e) { console.error("THREW", e.stack); failures += 1; }
+try { await main(); } catch (e) { crashed = e; console.error("THREW", e.stack); failures += 1; }
 finally {
   // 1. every probe memory goes, on every path.
   try {
@@ -299,6 +309,6 @@ finally {
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(evidence, null, 2));
   /* F-786 — the N/V rows are COUNTED here. A summary that says "0 failure(s)" over a run that
      never reached its subject is the same lie in a smaller font than grading it FAIL was. */
-  console.log(`\n${failures} failure(s), ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
-  process.exit(failures ? 1 : 0);
+  console.log("\n" + formatResultLine({ passes, fails: failures, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
+  process.exit(resultExitCode({ fails: failures, crashed }));
 }

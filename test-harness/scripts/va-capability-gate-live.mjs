@@ -43,6 +43,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
    purpose: this driver needs capability OFF and grades an instance where it is ON as
    un-runnable - the inverse of the precondition the lib judges. */
 import { resolveFlipModel } from "../lib/agent-capability-precondition.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -350,8 +351,8 @@ async function main() {
     NV("va_item:{agent}:* could not be tested on this instance: the capability gate refuses the tick BEFORE the sweep, so no item row is ever written. Proving the item-row purge needs an instance where capability is ON.");
   }
 
-  console.log(`\nRESULT - ${passes} pass, ${fails} fail, ${unproven} not verified`);
-  if (fails) process.exitCode = 1;
+  console.log("\n" + formatResultLine({ passes, fails, unproven, dash: "-" }));
+  if (resultExitCode({ fails })) process.exitCode = 1;
 }
 
 main()

@@ -52,6 +52,12 @@ import { execFileSync } from "node:child_process";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
 import { testState } from "../lib/rules-api.mjs";
 import { gitHookUrl } from "../lib/git-hook-url.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -72,11 +78,23 @@ const OUT = new URL("../results/git-webhook-setup", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 const STATE = OUT + "/state.json";
 const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, "utf8")) : { checks: [] };
-const saveState = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
+/* F-799 — WHICH COMMIT PRODUCED THIS FILE. The state file is this driver's evidence: it
+   carries every check of every phase, and it is what a reader opens weeks later. The 4k
+   cohort used to be found by the literal name `evidence.json`, so an artefact under
+   `results/` with another name was outside the rule and carried no commit. */
+const saveState = () => {
+  state.provenance = runProvenance();
+  fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
+};
 
+/* F-796 - THE PASSES ARE COUNTED, NOT INFERRED. This driver only ever counted FAILURES,
+   so a RESULT line through `formatResultLine` could have said `0 pass` over a run that
+   proved a dozen things. The counter is incremented in the same helper that records the
+   row, so the two can never disagree. */
 let failures = 0;
+let passes = 0;
 const check = (label, ok, data = {}) => {
-  if (!ok) failures += 1;
+  if (ok) passes += 1; else failures += 1;
   state.checks.push({ label, ok, ...data, at: new Date().toISOString() });
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${Object.keys(data).length ? " " + JSON.stringify(data) : ""}`);
   saveState();
@@ -533,7 +551,7 @@ const name = positionalArgs(process.argv.slice(2))[0];
 if (!PHASES[name]) { console.error(`phase required, one of: ${Object.keys(PHASES).join(", ")}`); process.exit(2); }
 if (!TRIGGER && name !== "listener") { console.error("GIT_WEBHOOK_URL is required (and is a secret — keep it out of the repo)."); process.exit(2); }
 if (!process.env.GH_TOKEN) { console.error("GH_TOKEN is required in the environment."); process.exit(2); }
-try { await PHASES[name](); } catch (e) { console.error("THREW", e.stack); failures += 1; }
+try { await PHASES[name](); } catch (e) { crashed = e; console.error("THREW", e.stack); failures += 1; }
 saveState();
-console.log(`\n${name}: ${failures} failure(s). State: ${STATE}`);
-process.exit(failures ? 1 : 0);
+console.log("\n" + formatResultLine({ passes, fails: failures, unproven: 0, crashed, suffix: `  ·  phase ${name}. State: ${STATE}` }));
+process.exit(resultExitCode({ fails: failures, crashed }));

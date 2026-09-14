@@ -91,6 +91,12 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 import { drainSweep as runDrain } from "../lib/sweep-drain.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 /* The provider slot this driver faults. Declared up here because the F-679 refusal names
@@ -413,6 +419,7 @@ async function main() {
 try {
   await main();
 } catch (e) {
+  crashed = e;
   FAIL("driver threw", { error: redactString(String((e && e.message) || e)) });
 } finally {
   step("CLEANUP — disarm both levers and prove the rows are gone");
@@ -437,9 +444,13 @@ try {
   }
 
   ev.summary = { passes, fails, unproven };
+  /* F-799 — WHICH COMMIT PRODUCED THIS FILE. The 4k rule used to find evidence writers by
+     the literal name `evidence.json`, so this file — a real evidence artefact under
+     `results/`, just differently named — was outside the cohort and carried no commit. */
+  ev.provenance = runProvenance();
   const file = `${OUT}/${ENV_NAME}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
   fs.writeFileSync(file, JSON.stringify(redactSecrets(ev), null, 2));
-  console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}`);
+  console.log("\n" + formatResultLine({ passes, fails, unproven, crashed }));
   console.log(`evidence: ${file}`);
-  process.exit(fails > 0 ? 1 : 0);
+  process.exit(resultExitCode({ fails, crashed }));
 }

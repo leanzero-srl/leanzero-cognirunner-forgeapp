@@ -31,7 +31,12 @@
 import { forgeEnvId, declareMutations } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -195,7 +200,7 @@ async function main() {
   else FAIL("the skill index changed size", { before: ev.skillCountBefore, after: after.length });
 }
 
-try { await main(); } catch (e) { console.error("THREW", e.stack); fails += 1; }
+try { await main(); } catch (e) { crashed = e; console.error("THREW", e.stack); fails += 1; }
 finally {
   if (restore.builtin) {
     try {
@@ -207,6 +212,6 @@ finally {
   /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
   ev.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
-  console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/`);
-  process.exit(fails ? 1 : 0);
+  console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/` }));
+  process.exit(resultExitCode({ fails, crashed }));
 }

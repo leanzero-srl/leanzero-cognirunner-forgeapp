@@ -61,7 +61,12 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 import { makeShot } from "../lib/roster-ui.mjs";
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
-import { runProvenance } from "../lib/driver-report.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 
 /* F-686 — `--env` now EXISTS here and defaults to `staging`, and the dev tenant needs
  * `--i-know-dev-is-shared`. The longest window this driver arms is step 3's 240s: the UI
@@ -375,6 +380,7 @@ let exitCode = 0;
 try {
   await main();
 } catch (e) {
+  crashed = e;
   FAIL("driver threw", { error: String(e && e.message || e) });
 } finally {
   /* CLEANUP IS PART OF THE PROOF: never leave a lever armed on a live tenant. */
@@ -401,8 +407,8 @@ try {
   /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
   ev.provenance = runProvenance();
   fs.writeFileSync(file, JSON.stringify(redactSecrets(ev), null, 2));
-  console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}`);
+  console.log("\n" + formatResultLine({ passes, fails, unproven, crashed }));
   console.log(`evidence: ${file}`);
-  exitCode = fails > 0 ? 1 : 0;
+  exitCode = resultExitCode({ fails, crashed });
 }
 process.exit(exitCode);

@@ -23,6 +23,12 @@ import { testState } from "../lib/rules-api.mjs";
    of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
    web trigger out of the mapping it has no use for (F-699's reasoning). */
 import { declareMutations } from "../lib/shared-env-guard.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+
+/* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
+   catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
+   is what makes the FIRST WORD of that line say so, which is the only part a grep takes. */
+let crashed = null;
 declareMutations(["listeners", "jobs", "kvs", "issues"]);
 
 const env = loadEnv();
@@ -110,7 +116,7 @@ try {
   if (tv.success && tv.revoked) created.tokens = created.tokens.filter(id => id !== tk.row.id);
   const nonAdmin = await call("getApiTokens", {}, "557058:00000000-0000-0000-0000-000000000000");
   ok(nonAdmin.success === false, "token management denied to a non-admin principal");
-} catch (e) { fail++; console.log("  ✗ threw: " + (e && e.stack || e)); }
+} catch (e) { crashed = e; fail++; console.log("  ✗ threw: " + (e && e.stack || e)); }
 const removeViaResolver = async (name, id) => { const body = await call(name, { id }); return { ok: body.success === true, status: body.success ? 200 : 400, body }; };
 fail += await cleanupFixtures([
   ...created.listeners.map(id => [`listener ${id}`, () => removeViaResolver("deleteListener", id)]),
@@ -118,5 +124,5 @@ fail += await cleanupFixtures([
   ...created.tokens.map(id => [`token ${id}`, () => removeViaResolver("revokeApiToken", id)]),
   ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
 ]);
-console.log(`\nRESOLVERS LIVE: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log("\n" + formatResultLine({ passes: pass, fails: fail, unproven: 0, crashed, suffix: "  ·  RESOLVERS LIVE" }));
+process.exit(resultExitCode({ fails: fail, crashed }));

@@ -62,7 +62,9 @@ import { requireEnvAck, forgeEnvId, ENV_NAMES } from "../lib/shared-env-guard.mj
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { resolveFlipModel, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
 /* F-784 - the RESULT line, and what it must say when the run threw instead of finishing. */
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import fs from "node:fs";
+import { redactSecrets } from "../lib/redact.mjs";
+import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 /* F-752 — `envId` is NOT destructured: this driver's browser half is pinned to staging by
    construction (see STAGING_ENV below), so the settled row's id has no reader here, and a
@@ -154,10 +156,48 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
 /* F-784 - a throw must never be printed as "0 fail". The RESULT line is built from this too. */
 let crashed = null;
-const PASS = (s) => { passes++; console.log(`  PASS  ${s}`); };
-const FAIL = (s) => { fails++; console.log(`  FAIL  ${s}`); };
-const NV = (s) => { unproven++; console.log(`  N/V   ${s}`); };
+/*
+ * F-799 — THIS RUN LEAVES A MACHINE-READABLE ARTEFACT, AND IT NAMES ITS COMMIT.
+ *
+ * This driver's verdicts lived only in the terminal it was run from. A findings row that
+ * says "it passed on 2d7b8204" then rests on scrollback nobody kept, and the assertions
+ * here are not cheap to re-take: the run creates an agent on a live tenant, rewrites an
+ * instance-wide model slot and waits out real windows.
+ *
+ * WHAT GOES IN: every PASS/FAIL/N/V sentence in the order it was decided, the summary
+ * counters, the crash if there was one, and `provenance` from `lib/driver-report.mjs` —
+ * the SAME three fields (`commit`, `dirty`, `at`) every other evidence file carries, from
+ * the same home, because a second spelling of "which commit" is how they come to mean
+ * different things. `dirty` is reported rather than hidden: evidence produced from
+ * uncommitted edits is still evidence, but it is not reproducible from the commit it names.
+ *
+ * IT IS REDACTED ON THE WAY OUT, through `lib/redact.mjs`, on the same terms as every
+ * other writer in this harness — a driver that mints API tokens must not be one query away
+ * from writing one to disk, and `results/` being gitignored is not a reason to relax that.
+ */
+const OUT = new URL("../results/va-shadow-door", import.meta.url).pathname;
+const ev = { driver: "va-shadow-door-live.mjs", env: ENV_NAME, startedAt: new Date().toISOString(), checks: [] };
+const PASS = (s) => { passes++; ev.checks.push({ v: "PASS", s }); console.log(`  PASS  ${s}`); };
+const FAIL = (s) => { fails++; ev.checks.push({ v: "FAIL", s }); console.log(`  FAIL  ${s}`); };
+const NV = (s) => { unproven++; ev.checks.push({ v: "N/V", s }); console.log(`  N/V   ${s}`); };
 const info = (s) => console.log(`        ${s}`);
+/* F-799 — ONE writer, called from the `finally` so a crashed run still leaves its file. */
+const writeEvidence = () => {
+  try {
+    ev.summary = { passes, fails, unproven, crashed: crashed ? String((crashed && crashed.message) || crashed).slice(0, 300) : null };
+    ev.finishedAt = new Date().toISOString();
+    ev.provenance = runProvenance();
+    fs.mkdirSync(OUT, { recursive: true });
+    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
+    return `${OUT}/evidence.json`;
+  } catch (e) {
+    // An evidence write must never be the thing that fails a run, and a SILENT failure
+    // to write is worse than a loud one: the file's absence would otherwise read as
+    // "this driver does not write evidence".
+    console.error(`        EVIDENCE NOT WRITTEN: ${String((e && e.message) || e).slice(0, 200)}`);
+    return null;
+  }
+};
 
 let createdJobId = null;
 const cleanupTokens = [];
@@ -510,7 +550,9 @@ main()
       console.log(`        ${ok ? "RESTORED" : "NOT RESTORED"}: ${AGENT_MODEL_SLOT} reads back ${JSON.stringify(back.value)} (was ${JSON.stringify(agentModelSlotBefore)})`);
       if (!ok) left.push(`${AGENT_MODEL_SLOT} still holds ${JSON.stringify(back.value)}`);
     }
-    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed }));
+    /* F-799 — written BEFORE the RESULT line, so the line can name the file it wrote. */
+    const written = writeEvidence();
+    console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: written ? `  ·  ${written}` : "" }));
     if (left.length) { console.error(`\nCLEANUP FAILED — ${left.join("; ")}`); process.exitCode = 1; }
     process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;
   });

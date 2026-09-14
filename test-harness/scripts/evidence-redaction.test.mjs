@@ -388,7 +388,7 @@ for (const f of permDrivers) {
   ok(/shotMasked|makeShot/.test(src), `${f}: …and it imports the mask helper rather than rolling its own`);
 }
 
-/* ── 4c-ii. F-668 — THE REFUSAL IS ARMED, AND THE ANSWER IS READ ────────────────
+/* ── 4c-ii-a. F-668 — THE REFUSAL IS ARMED, AND THE ANSWER IS READ ──────────────
    `shotMasked` always had the right behaviour: `strict` defaults to true, a readable
    address ABORTS the capture, and the non-strict branch returns `{captured:false, reason}`
    for the caller to record. All nine live call sites disarmed it — `{ strict: false }`
@@ -2073,7 +2073,7 @@ for (const f of armingDrivers) {
     `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);
 }
 
-/* ── 4h. F-702 — THE SWEEP DRAIN HAS ONE HOME, AND THE LEDGER STORES A STRING ────
+/* ── 4h-2. F-702 — THE SWEEP DRAIN HAS ONE HOME, AND THE LEDGER STORES A STRING ──
    F-690 moved the drain DECISION into `lib/sweep-drain.mjs` and left the loop to each
    caller. That held for exactly one driver: `plant-sweep-live.mjs` landed in the SAME
    range with a hand-rolled loop that never imported the module, so the contract had two
@@ -2470,7 +2470,8 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     `${f}: the evidence.json write is redacted too (fields assigned outside PASS/FAIL/NV reach it)`);
 }
 
-/* ── 4i. F-787 — AN EVIDENCE FILE NAMES THE COMMIT THAT PRODUCED IT ─────────────
+/* ── 4k. F-787 / F-799 — AN EVIDENCE FILE NAMES THE COMMIT THAT PRODUCED IT, AND A
+ *              DRIVER THAT PRINTS A VERDICT LEAVES A FILE ──────────────────────
  *
  * `evidence.json` records what a run SAW. It never recorded what CODE produced it, so an
  * evidence file and the driver that wrote it could drift apart with nothing in either to
@@ -2497,34 +2498,97 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
      (name the exemption, prune it when converted) is what a future debt must be written in —
      and an empty list makes "there are no exemptions" a thing the file SAYS. */
   const PROVENANCE_DEBT = [];
-  /* An evidence WRITER is a file that writes an evidence.json, found the same crude textual
-     way rule 4b's redaction check finds it — deliberately the same predicate, so the two
-     rules can never disagree about which files are evidence writers. */
-  const writers = liveFiles.filter((f) => {
-    const s = readFileSync(path.join(here, f), "utf8");
-    return /writeFileSync\(/.test(s) && /evidence\.json/.test(s);
-  });
+  /* An evidence WRITER is a file that writes an artefact a later reader will open beside a
+     findings row, found the same crude textual way rule 4b's redaction check finds it.
+     F-799 WIDENED IT: it used to mean the literal filename `evidence.json`, which let two
+     real evidence artefacts out of the cohort on a naming technicality —
+     `harness-fault-expiry-live.mjs` writes `${OUT}/${ENV_NAME}-<timestamp>.json` and
+     `pipeline-scaffold-live.mjs` writes `state.json`, both under `results/`, and neither
+     carried a commit. What makes a file evidence is WHERE it lands, not what it is called. */
+  const writesArtefact = (s) => /writeFileSync\(/.test(s) && (/evidence\.json/.test(s) || /RESULTS_DIR|["`]\.\.\/results\//.test(s));
+  ok(writesArtefact('fs.writeFileSync(`${OUT}/evidence.json`, x);\nconst OUT = new URL("../results/x", import.meta.url).pathname;'),
+    "4k (F-799) POSITIVE CONTROL: the widened predicate still sees the classic evidence.json writer");
+  ok(writesArtefact('const OUT = new URL("../results/harness-fault-expiry", import.meta.url).pathname;\nfs.writeFileSync(file, y);'),
+    "4k (F-799) POSITIVE CONTROL: …and now also sees a differently-named artefact written under results/, which is the case it was blind to");
+  ok(!writesArtefact('const s = readFileSync(p, "utf8");'),
+    "4k (F-799) NEGATIVE CONTROL: a file that only READS is not an evidence writer");
+  const writers = liveFiles.filter((f) => writesArtefact(readFileSync(path.join(here, f), "utf8")));
   const missing = writers.filter((f) => !/runProvenance/.test(readFileSync(path.join(here, f), "utf8")));
 
   ok(writers.length > 20,
-    `4i (F-787): the evidence-writer cohort is found, not assumed — ${writers.length} files write an evidence.json`);
+    `4k (F-787): the evidence-writer cohort is found, not assumed — ${writers.length} files write an evidence.json`);
   ok(missing.length <= PROVENANCE_DEBT.length,
-    `4i (F-787): the provenance debt did not GROW — ${missing.length} writers record no provenance, ledger allows ${PROVENANCE_DEBT.length}`);
+    `4k (F-787): the provenance debt did not GROW — ${missing.length} writers record no provenance, ledger allows ${PROVENANCE_DEBT.length}`);
   const strangers = missing.filter((f) => !PROVENANCE_DEBT.includes(f));
   ok(strangers.length === 0,
-    `4i (F-787): a NEW evidence writer must record provenance — ${strangers.join(", ")} writes an evidence.json without calling runProvenance() from lib/driver-report.mjs`);
+    `4k (F-787): a NEW evidence writer must record provenance — ${strangers.join(", ")} writes an evidence.json without calling runProvenance() from lib/driver-report.mjs`);
   const stale = PROVENANCE_DEBT.filter((f) => !missing.includes(f));
   ok(stale.length === 0,
-    `4i (F-787): the debt list is PRUNED — ${stale.join(", ")} now records provenance (or no longer writes evidence) and must come off PROVENANCE_DEBT, because a warn-list nobody shortens is a permanent exemption`);
+    `4k (F-787): the debt list is PRUNED — ${stale.join(", ")} now records provenance (or no longer writes evidence) and must come off PROVENANCE_DEBT, because a warn-list nobody shortens is a permanent exemption`);
 
   /* And the helper really is in the lib, so this rule points at a home that exists. */
   ok(/export function runProvenance/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8")),
-    "4i (F-787): lib/driver-report.mjs exports runProvenance — ONE home, so `commit`/`dirty`/`at` cannot come to mean different things in different evidence files");
+    "4k (F-787): lib/driver-report.mjs exports runProvenance — ONE home, so `commit`/`dirty`/`at` cannot come to mean different things in different evidence files");
+
+  /* ── F-799 — THE COHORT THE PROVENANCE RULE COULD NOT SEE AT ALL ────────────────
+   *
+   * Everything above polices files that DO write evidence. It said nothing about a driver
+   * that writes none, which is the worse case and the one F-799 was cut for:
+   * `va-shadow-door-live.mjs` runs 23 assertions and a browser DOM read against a live
+   * tenant, and every one of those verdicts lived in scrollback. A findings row resting on
+   * "it passed on 2d7b8204" then has nothing behind it, and the run is not cheap to re-take
+   * — it creates an agent, rewrites an instance-wide model slot and waits out real windows.
+   *
+   * THE COHORT IS THE ONE RULE 4j ALREADY DEFINES: a driver that prints a COUNTS SUMMARY is
+   * a driver that claims a verdict, and a claimed verdict with no artefact behind it is the
+   * shape this polices. The predicate is imported in spirit but re-derived here on the same
+   * two regexes, because a summary-printing driver that writes nothing is exactly the file
+   * whose only trace is the line rule 4j is about.
+   *
+   * A DEBT LEDGER, in this file's established shape, for this file's established reason: 10
+   * drivers are in it today and turning ten red in one pass makes this the rule people
+   * delete. The named ten are permitted, THE COUNT MAY NOT GROW, a driver NOT on the list
+   * must write an artefact, and a converted entry must come OFF the list. The three F-799
+   * converted (va-shadow-door, va-pinned-survival, va-purge-on-delete) are deliberately
+   * absent from it — that is what "converted" looks like. */
+  const ARTEFACT_DEBT = [
+    "brakes-knowledge-live.mjs", "git-rotation-window-live.mjs", "issue-key-live.mjs",
+    "resolvers-live.mjs", "sandbox-confluence-live.mjs", "va-capability-gate-live.mjs",
+    "va-compaction-live.mjs", "va-rest-doors-live.mjs", "va-shadow-live.mjs",
+    "web-search-live.mjs",
+  ];
+  const LEADING_NL = /console\.(?:log|error)\(\s*(?:"\\n"\s*\+\s*)?[`"']\\n/;
+  const COUNTED = /(?:\$\{[^}]*\}[\s·,:.]*(?:pass|fail|not verified|N\/V)|(?:PASS|FAIL|N\/V)[\s·,:.]*\$\{)/i;
+  const claimsVerdict = (s) => s.split("\n").some((l) => LEADING_NL.test(l) && (/formatResultLine/.test(l) || COUNTED.test(l)));
+
+  ok(claimsVerdict('  console.log("\\n" + formatResultLine({ passes, fails, unproven }));'),
+    "4k (F-799) POSITIVE CONTROL: a driver that prints a RESULT line is recognised as claiming a verdict — a predicate that matched nothing would make this half green by finding no drivers");
+  ok(!claimsVerdict('  console.log(`  PASS  ${s}`);'),
+    "4k (F-799) NEGATIVE CONTROL: a per-check line is not a claimed verdict, so a driver that prints checks and no summary is not asked for an artefact");
+
+  const verdictDrivers = liveFiles.filter((f) => claimsVerdict(readFileSync(path.join(here, f), "utf8")));
+  const noArtefact = verdictDrivers.filter((f) => !writesArtefact(readFileSync(path.join(here, f), "utf8")));
+  ok(verdictDrivers.length > 20,
+    `4k (F-799): the verdict-claiming cohort is found, not assumed — ${verdictDrivers.length} live drivers print a summary`);
+  ok(noArtefact.length <= ARTEFACT_DEBT.length,
+    `4k (F-799): the no-artefact debt did not GROW — ${noArtefact.length} drivers claim a verdict and write no file, ledger allows ${ARTEFACT_DEBT.length}`);
+  const bare = noArtefact.filter((f) => !ARTEFACT_DEBT.includes(f));
+  ok(bare.length === 0,
+    `4k (F-799): a driver that claims a verdict must leave a machine-readable artefact — ${bare.join(", ")} prints a RESULT line and writes nothing, so the run exists only in the terminal it was run from`);
+  const converted = ARTEFACT_DEBT.filter((f) => !noArtefact.includes(f));
+  ok(converted.length === 0,
+    `4k (F-799): the artefact debt list is PRUNED — ${converted.join(", ")} now writes an artefact and must come off ARTEFACT_DEBT, because a warn-list nobody shortens is a permanent exemption`);
+  /* The three this finding converted are asserted BY NAME to be out of the ledger and in
+     the writer cohort, so a revert cannot quietly put them back on the warn-list. */
+  for (const f of ["va-shadow-door-live.mjs", "va-pinned-survival-live.mjs", "va-purge-on-delete-live.mjs"]) {
+    ok(!ARTEFACT_DEBT.includes(f) && writers.includes(f) && !missing.includes(f),
+      `4k (F-799): ${f} writes an evidence file AND records provenance — the three drivers this finding converted are named, so a revert shows up here rather than as a silent re-entry on the debt list`);
+  }
 }
 
 
-/* ── 4j. F-792 — A SUMMARY LINE IS PRINTED THROUGH `formatResultLine`, SO A CRASH
- *              CANNOT BE REPORTED AS `0 fail` ────────────────────────────────────
+/* ── 4j. F-792 / F-796 — EVERY SUMMARY LINE IS PRINTED THROUGH `formatResultLine`,
+ *              SO A CRASH CANNOT BE REPORTED AS `0 fail` ─────────────────────────
  *
  * F-784 found one driver printing `RESULT — 2 pass, 0 fail, 0 not verified` under a
  * TypeError stack. F-792 measured how wide that shape is: fifteen drivers print their
@@ -2538,56 +2602,87 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
  * Drivers with no summary line at all are not in scope: a driver that prints nothing on the
  * crash path tells no lie, and the rule is about lines that CLAIM a verdict.
  *
- * THE DETECTOR IS TEXTUAL AND ITS POSITIVE CONTROL IS THE OLD SHAPE. A regex that quietly
- * stopped matching would turn this rule green by finding nothing, so the old shape is
- * asserted to still be recognised, as a literal, below. The rule is FILE-LEVEL and coarse in
- * the permitting direction: a file that calls `formatResultLine` anywhere counts as wired,
- * which is stated rather than hidden, because the alternative is parsing every console.log.
+ * F-796 — IT IS NOW ABSOLUTE, AND IT IS LINE-LEVEL. Both of those were named defects of the
+ * rule, not of the drivers:
  *
- * AND IT IS A DEBT LEDGER, for exactly F-787's reason. 23 drivers still print the old shape;
- * turning 23 files red in one pass makes this the rule people delete. The named 23 are
- * permitted, THE COUNT MAY NOT GROW, and a driver NOT on the list must be wired — so the rule
- * bites on the next driver somebody writes, which is the one that would otherwise be copied
- * from a neighbour still carrying the defect. A converted entry must come OFF the list, and
- * the last assertion says so, because a warn-list nobody prunes is a permanent exemption. */
+ *   THE DEBT LIST IS GONE, because the debt is. All 23 named drivers were wired in one pass,
+ *   and a warn-list with nothing left on it is an exemption waiting to be re-used. There is
+ *   no longer a permitted set: a live driver that prints a verdict prints it through the
+ *   helper, full stop.
+ *
+ *   THE CHECK IS PER LINE, NOT PER FILE. The old form asked "does this file mention
+ *   `formatResultLine` anywhere", so a converted driver could keep a SECOND hand-rolled
+ *   summary — the likeliest way this defect comes back, because a driver with two arms or
+ *   two phases has two verdict lines and only one of them gets touched. Each matching LINE
+ *   must itself call the helper, and a failure names `file:line` so the reader goes to the
+ *   one that is wrong rather than to the file that contains it.
+ *
+ * THE DETECTOR IS TEXTUAL, AND ITS CONTROLS ARE THE SHAPES THAT REALLY SHIPPED. A regex that
+ * quietly stopped matching would turn an absolute rule green by finding nothing at all — so
+ * the cohort size is asserted, the OLD shape is asserted to still be recognised AND judged
+ * non-compliant, the WIRED shape to be recognised AND judged compliant, a per-check PASS/FAIL
+ * line to be no summary at all, and a two-line body carrying one of each is asserted to fail
+ * — which is the assertion that would have been green under the file-level form. */
 {
-  const SUMMARY_DEBT = [
-    "brakes-knowledge-live.mjs", "coder-pin-epoch-live.mjs", "coder-skills-live.mjs",
-    "config-view-provenance-live.mjs", "delete-fault-drain-live.mjs",
-    "git-rotation-window-live.mjs", "git-webhook-setup-live.mjs",
-    "harness-fault-expiry-live.mjs", "issue-key-live.mjs", "perm-namesake-ui-live.mjs",
-    "plant-sweep-live.mjs", "resolvers-live.mjs", "rules-api-roles-live.mjs",
-    "sandbox-confluence-live.mjs", "skills-knowledge-ui-live.mjs", "user-search-fault-live.mjs",
-    "va-capability-gate-live.mjs", "va-purge-on-delete-live.mjs", "va-receipt-copy-live.mjs",
-    "va-recreate-settle-live.mjs", "va-rest-doors-live.mjs", "va-shadow-live.mjs",
-    "web-search-live.mjs",
-  ];
-  /* A COUNTS SUMMARY: a console line that opens with a newline and carries a counter beside
-     the words a verdict is written in. Deliberately narrow on the opening `\n` — that leading
-     blank line is what separates a run's verdict from its per-check chatter, and per-check
-     PASS/FAIL lines (printed by helpers, never with a leading newline) must not be caught. */
-  const SUMMARY_LINE = /console\.(?:log|error)\(\s*(?:"\\n"\s*\+\s*)?[`"']\\n[^\n]*(?:\$\{[^\n]*\})?[^\n]*(?:pass|fail|FAILURE|not verified|N\/V)/;
-  ok(SUMMARY_LINE.test('console.log(`\\n${passes} pass, ${fails} fail, ${unproven} not verified`);'),
+  /* A COUNTS SUMMARY, IN THREE PARTS — and F-796 had to add the third.
+     (1) it opens a console line with a NEWLINE: that leading blank line is what separates a
+         run's verdict from its per-check chatter, and per-check PASS/FAIL lines (printed by
+         helpers, never with a leading newline) must not be caught;
+     (2) it carries a verdict WORD;
+     (3) F-796 — that word sits against a COUNTER. Without (3) the detector matched every
+         banner a driver prints: `console.log("\nSTEP 4 - the step-3-failure arm")` and
+         `console.log(`\nF-629 — the key-status failure, on ${ENV_NAME}`)` both contain
+         "fail" after a newline and neither claims a verdict. The old FILE-level rule never
+         noticed, because those files also contained a real summary; grading per LINE made
+         the false positives visible immediately, which is the argument for grading per line
+         in one sentence. A counter is an interpolation adjacent to the word, on either side
+         (`${passes} pass` and `PASS ${passes}` are both shapes that really shipped). */
+  const LEADING_NEWLINE = /console\.(?:log|error)\(\s*(?:"\\n"\s*\+\s*)?[`"']\\n/;
+  const COUNTED_VERDICT = /(?:\$\{[^}]*\}[\s·,:.]*(?:pass|fail|not verified|N\/V)|(?:PASS|FAIL|N\/V)[\s·,:.]*\$\{)/i;
+  const SUMMARY_LINE = {
+    test: (l) => LEADING_NEWLINE.test(l) && (/formatResultLine/.test(l) || COUNTED_VERDICT.test(l)),
+  };
+  /** Every offending LINE in a body, as `n: text` — the unit the rule now grades. */
+  const unwiredLines = (src) =>
+    src.split("\n")
+      .map((l, i) => ({ n: i + 1, l }))
+      .filter(({ l }) => SUMMARY_LINE.test(l) && !/formatResultLine/.test(l));
+  const summaryLines = (src) => src.split("\n").filter((l) => SUMMARY_LINE.test(l));
+
+  const OLD_SHAPE = 'console.log(`\\n${passes} pass, ${fails} fail, ${unproven} not verified`);';
+  const WIRED_SHAPE = '  console.log("\\n" + formatResultLine({ passes, fails, unproven, crashed }));';
+  ok(SUMMARY_LINE.test(OLD_SHAPE),
     "4j (F-792) POSITIVE CONTROL: the detector still recognises the OLD summary shape — a regex that matched nothing would make this rule green by finding no drivers at all");
-  ok(SUMMARY_LINE.test('  console.log("\\n" + formatResultLine({ passes, fails, unproven, crashed }));'),
+  ok(SUMMARY_LINE.test(WIRED_SHAPE),
     "4j (F-792) POSITIVE CONTROL: the detector also recognises the WIRED shape, so 'has a summary' and 'is compliant' are two independent questions");
   ok(!SUMMARY_LINE.test('  console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);'),
     "4j (F-792) NEGATIVE CONTROL: a per-check PASS/FAIL line is NOT a summary — without this the rule would demand formatResultLine of every driver that prints checks");
+  for (const banner of [
+    'console.log("\\nSTEP 4 - the step-3-failure arm");',
+    'console.log(`\\nF-629 — the key-status failure, on ${ENV_NAME.toUpperCase()}, provider ${PROVIDER}`);',
+    'if (NO_BREAK) { console.log("\\n--no-break: stopping before the failure arms."); return; }',
+  ]) {
+    ok(!SUMMARY_LINE.test(banner),
+      `4j (F-796) NEGATIVE CONTROL: a STEP BANNER that merely contains the word "fail" is not a verdict — ${banner.slice(0, 70)}…`);
+  }
+  ok(unwiredLines(OLD_SHAPE).length === 1 && unwiredLines(WIRED_SHAPE).length === 0,
+    "4j (F-796) POSITIVE CONTROL: the per-line grader calls the old shape offending and the wired shape clean");
+  /* THE ASSERTION THE FILE-LEVEL FORM COULD NOT MAKE: one wired line does not absolve the
+     hand-rolled one beside it. This is F-796's whole point, stated as a control. */
+  const MIXED = `${WIRED_SHAPE}\n${OLD_SHAPE}`;
+  ok(unwiredLines(MIXED).length === 1 && unwiredLines(MIXED)[0].n === 2,
+    "4j (F-796) POSITIVE CONTROL: a file carrying BOTH a wired line and a hand-rolled one is RED, and the red names line 2 — under the old file-level test this body passed because `formatResultLine` appeared somewhere in it");
 
-  const summarisers = liveFiles.filter((f) =>
-    readFileSync(path.join(here, f), "utf8").split("\n").some((l) => SUMMARY_LINE.test(l)));
-  const unwired = summarisers.filter((f) => !/formatResultLine/.test(readFileSync(path.join(here, f), "utf8")));
-
+  const summarisers = liveFiles.filter((f) => summaryLines(readFileSync(path.join(here, f), "utf8")).length > 0);
   ok(summarisers.length > 20,
     `4j (F-792): the summary-printing cohort is found, not assumed — ${summarisers.length} live drivers print a counts summary`);
-  ok(unwired.length <= SUMMARY_DEBT.length,
-    `4j (F-792): the summary debt did not GROW — ${unwired.length} drivers print a hand-rolled summary, ledger allows ${SUMMARY_DEBT.length}`);
-  const strangers = unwired.filter((f) => !SUMMARY_DEBT.includes(f));
-  ok(strangers.length === 0,
-    `4j (F-792): a driver that prints a verdict must print it through formatResultLine — ${strangers.join(", ")} hand-rolls a summary line, so a crash inside it reports the counters the throw froze instead of saying the run did not finish`);
-  const stale = SUMMARY_DEBT.filter((f) => !unwired.includes(f));
-  ok(stale.length === 0,
-    `4j (F-792): the debt list is PRUNED — ${stale.join(", ")} now uses formatResultLine (or prints no summary) and must come off SUMMARY_DEBT`);
+
+  const offenders = [];
+  for (const f of summarisers) {
+    for (const { n, l } of unwiredLines(readFileSync(path.join(here, f), "utf8"))) offenders.push(`${f}:${n} ${l.trim().slice(0, 90)}`);
+  }
+  ok(offenders.length === 0,
+    `4j (F-792/F-796): EVERY line that prints a verdict prints it through formatResultLine — ${offenders.join(" | ")} hand-rolls a summary, so a crash inside it reports the counters the throw froze instead of saying the run did not finish`);
 
   ok(/export function formatResultLine/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8"))
      && /export function resultExitCode/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8")),
@@ -2603,6 +2698,113 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
   const noRecord = wiredFromFinally.filter((f) => !/crashed\s*=\s*e\b/.test(readFileSync(path.join(here, f), "utf8")));
   ok(noRecord.length === 0,
     `4j (F-792): a driver that reads \`crashed\` must also SET it in a catch — ${noRecord.join(", ")} passes crashed to formatResultLine but never assigns it, so the line can only ever print the clean shape`);
+}
+
+
+/* ── 4l. F-795 — EVERY RULE LABEL IN THIS FILE NAMES EXACTLY ONE RULE ───────────
+ *
+ * THE RECURRENCE THIS CLOSES. This file grew to 27 numbered sections, and three numbers had
+ * been handed out twice: `4c-ii` was both F-660 (the PII rule covers pixels) and F-668 (the
+ * refusal is armed), `4h` was both F-741 (no tenant named in a string) and F-702 (the sweep
+ * drain has one home), and `4i` was both F-769 (the credential read ceiling) and F-787 (an
+ * evidence file names its commit).
+ *
+ * WHY THAT IS A DEFECT AND NOT A TIDINESS COMPLAINT. The label is the ONLY handle a failing
+ * line gives a reader: a red `4i (F-787): ...` sends someone to a rule about credentials,
+ * and prose elsewhere in this file says things like "rule 4g grades the file read-only" —
+ * a cross-reference that silently means two different things once the number is reused. The
+ * F-number inside the parentheses is what disambiguates today, which is to say the number
+ * is decoration and the reader has to know that.
+ *
+ * WHY IT IS PARSED FROM THE FILE AND NOT FROM A LIST. A hand-kept roster of labels is the
+ * same class of artefact as the debt lists above — it goes stale the first time someone adds
+ * a section without updating it, and a stale roster is green. The labels are read out of
+ * THIS FILE'S OWN SOURCE, so a duplicate is caught by the act of writing it.
+ *
+ * THE PARSER'S CONTROLS. A regex that stopped matching would make this rule green by finding
+ * nothing, so the real headers it must see are named as literals, a synthetic duplicate is
+ * fed through the SAME function to prove it detects one, and a prose mention of a rule
+ * number is asserted NOT to count as a declaration — otherwise the sentence explaining a
+ * collision would itself be read as one.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+{
+  const selfSrc = readFileSync(path.join(here, "evidence-redaction.test.mjs"), "utf8");
+
+  /** Section headers only: a banner line whose label STARTS WITH A DIGIT and ends in `. `.
+      `── F-730 · ...` and `── POSITIVE CONTROLS · ...` are deliberately not declarations. */
+  const sectionLabels = (src) =>
+    src.split("\n")
+      .map((l) => /^(?:\/\*|\s\*) ── (\d[0-9A-Za-z-]*)\. /.exec(l))
+      .filter(Boolean)
+      .map((m) => m[1]);
+
+  const labels = sectionLabels(selfSrc);
+  const dupes = [...new Set(labels.filter((l, i) => labels.indexOf(l) !== i))];
+
+  ok(labels.length > 20,
+    `4l (F-795): the section cohort is PARSED, not assumed — ${labels.length} numbered sections found in this file`);
+  for (const lit of ["1", "4c-ii", "4c-ii-a", "4c-ii-b", "4h", "4h-2", "4j", "4k", "5"]) {
+    ok(labels.includes(lit),
+      `4l (F-795) POSITIVE CONTROL: the parser sees the real header "${lit}." — a regex that matched nothing would make this rule green`);
+  }
+  ok(dupes.length === 0,
+    `4l (F-795): a rule number names ONE rule — ${dupes.join(", ")} is used by more than one section, so a red line carrying that number sends the reader to the wrong rule`);
+
+  /* The parser detects a collision when there is one, on the same code path. */
+  const synthetic = sectionLabels([
+    "/* ── 9z. F-001 — FIRST ────────────────────────────────────────────────────────",
+    " * ── 9z. F-002 — SECOND ───────────────────────────────────────────────────────",
+  ].join("\n"));
+  ok(synthetic.length === 2 && synthetic[0] === "9z" && synthetic[1] === "9z",
+    "4l (F-795) POSITIVE CONTROL: the SAME parser reads both banner forms (`/* ──` and ` * ──`) and reports the duplicate label twice");
+  ok(sectionLabels(" * is that same single-quoted shape declares `[]`, rule 4g stays green, and it writes").length === 0,
+    "4l (F-795) NEGATIVE CONTROL: a prose cross-reference to `rule 4g` is not a declaration — otherwise the sentences that EXPLAIN a collision would create one");
+
+  /* The other half: the label a FAILING LINE prints must also bind to one rule. Assertion
+     messages here open with `<label> (F-nnn)`, and that pairing is what a reader greps. */
+  /* THE MESSAGE SCAN READS CODE, NOT COMMENTS — and this rule's OWN docblock is why. The
+     paragraph above quotes the historical bad label verbatim (`a red 4i (F-787): ... sends
+     someone to a rule about credentials`) because naming the collision is how the reason
+     survives; a scan that read comments would grade that sentence as a live print site and
+     turn the rule red on the text explaining it. `maskComments` keeps string literals — the
+     assertion messages ARE string literals — and blanks the prose. The section-label parse
+     above deliberately does the opposite: a header IS a comment. */
+  const codeOnly = maskComments(selfSrc);
+  const byLabel = new Map();
+  for (const m of codeOnly.matchAll(/(?<![\w-])(\d[0-9A-Za-z-]*) \(F-(\d+)/g)) {
+    if (!byLabel.has(m[1])) byLabel.set(m[1], new Set());
+    byLabel.get(m[1]).add(m[2]);
+  }
+  /* THE NEEDLE IS ASSEMBLED, NOT WRITTEN. Spelling the historical label as a literal inside
+     this control's own MESSAGE would put it back into the code-only view and fail the very
+     assertion it makes — the scan reads source text, and an assertion message is source. */
+  const HISTORIC = "4i " + "(F-787)";
+  ok(selfSrc.includes("a red `" + HISTORIC) && !new RegExp("(?<![\\w-])" + HISTORIC.replace(/[()]/g, "\\$&")).test(codeOnly),
+    `4l (F-795) POSITIVE CONTROL: the historical ${HISTORIC} quoted in this rule's own docblock is present in the file and ABSENT from the code-only view — the scan cannot be tripped by the sentence that explains it`);
+  ok(/4j \(F-796\) POSITIVE CONTROL/.test(codeOnly),
+    "4l (F-795) POSITIVE CONTROL: …and a real assertion message SURVIVES the mask, so the code-only view has not simply blanked everything");
+  ok(byLabel.size > 0,
+    `4l (F-795): the message-label cohort is found, not assumed — ${byLabel.size} labels appear in assertion messages`);
+  /* A LABEL MAY CITE MORE THAN ONE FINDING — 4j was cut for F-792 and widened by F-796, and
+     its messages name both. What may NOT happen is a message citing a finding its own SECTION
+     HEADER does not, because then the header and the red line disagree about what the rule is
+     for. The headers are the declaration; the messages must stay inside it. */
+  const headerFindings = new Map();
+  for (const l of selfSrc.split("\n")) {
+    const m = /^(?:\/\*|\s\*) ── (\d[0-9A-Za-z-]*)\. (.*)$/.exec(l);
+    if (m) headerFindings.set(m[1], new Set([...m[2].matchAll(/F-(\d+)/g)].map((x) => x[1])));
+  }
+  const outside = [];
+  for (const [lab, fs] of byLabel) {
+    const declared = headerFindings.get(lab);
+    if (!declared) continue;                       // the undeclared-label assertion below owns this
+    for (const f of fs) if (!declared.has(f)) outside.push(`${lab} prints F-${f}, header declares F-${[...declared].join("/F-")}`);
+  }
+  ok(outside.length === 0,
+    `4l (F-795): a failing message may only cite a finding its own section header declares — ${outside.join(", ")}`);
+  const undeclared = [...byLabel.keys()].filter((l) => !labels.includes(l));
+  ok(undeclared.length === 0,
+    `4l (F-795): a message label has a SECTION — ${undeclared.join(", ")} is printed by an assertion but no numbered section declares it, so the red line points at a rule that does not exist`);
 }
 
 

@@ -41,6 +41,7 @@
 
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["listeners"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -204,8 +205,8 @@ async function main() {
     else if (probeHits > 0) FAIL(`THE WRITE LANDED: ${probeHits} page(s) titled "${PROBE_TITLE}" exist on this site. Simulation did not intercept createPage.`);
   }
 
-  console.log(`\nRESULT - ${passes} pass, ${fails} fail, ${unproven} not verified`);
-  if (fails) process.exitCode = 1;
+  console.log("\n" + formatResultLine({ passes, fails, unproven, dash: "-" }));
+  if (resultExitCode({ fails })) process.exitCode = 1;
 }
 
 main()

@@ -134,6 +134,21 @@ const PLANT_PREFIX = "harness_fault:plant:";
 
 const OUT = new URL("../results/plant-sweep", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
+
+/*
+ * F-774 — ONE EVIDENCE FILE PER ARM, BECAUSE THE TWO ARMS PROVE DIFFERENT THINGS.
+ *
+ * `--stale` and the plain run are not two runs of one driver; they are two drivers sharing
+ * a file. The plain arm ends at a swept keyspace; the `--stale` arm is the ONLY witness to
+ * the re-POST trail — `clearedSoFar`, `remainingStale`, `clearToken`, the lever readings.
+ * Both wrote `evidence.json`, so an operator following the instruction to run BOTH ended up
+ * with whichever they ran SECOND, and running the plain arm last silently destroyed the
+ * only evidence with a `stale` key in it. Nothing failed; the claims just were not there.
+ *
+ * The file NAMES the arm, and the summary line prints the name it actually wrote — a
+ * reporter who copies the path out of the terminal then cannot cite the wrong file.
+ */
+const EV_NAME = STALE ? "evidence.stale.json" : "evidence.json";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let passes = 0, fails = 0, unproven = 0;
@@ -237,7 +252,8 @@ const ok200 = (res) => res.status === 200 && res.json?.ok === true;
  * `resume` nor `clearedSoFar` although `plantPopulation` branches the entire loop on the
  * first and reports all its stale-tail progress in the second. A ledger that omits the field
  * the loop switched on cannot tell a stale-tail resume from a start-index resume, which is
- * exactly the pair an operator reading `results/plant-sweep/evidence.json` needs to tell
+ * exactly the pair an operator reading this run's evidence file (F-774: `evidence.json` for
+ * the plain arm, `evidence.stale.json` for `--stale`) needs to tell
  * apart. One home, so the next field added to the answer is added once.
  */
 const plantTo = (n, expired) => plantPopulation((count, startIndex, clearToken) => plant(count, expired, startIndex, clearToken), n, {
@@ -605,7 +621,8 @@ main()
   .catch((e) => { FAIL(`cleanup threw: ${String((e && e.message) || e).slice(0, 300)}`); })
   .finally(() => {
     ev.summary = { passes, fails, unproven };
-    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
-    console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}  →  results/plant-sweep/evidence.json`);
+    /* F-774 — the arm's OWN file, and the summary names the one it wrote. */
+    fs.writeFileSync(`${OUT}/${EV_NAME}`, JSON.stringify(redactSecrets(ev), null, 2));
+    console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}  →  results/plant-sweep/${EV_NAME}  (${STALE ? "--stale arm: the re-POST trail" : "plain arm: plant + sweep"})`);
     process.exit(fails > 0 ? 1 : 0);
   });

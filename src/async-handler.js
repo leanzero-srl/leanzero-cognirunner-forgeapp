@@ -2946,6 +2946,40 @@ export async function handler(event) {
   // completion claim below and by every status write after it.
   const polled = !UNPOLLED_TASKS.has(taskType);
 
+  // ===== THE BUDGET SETTLE, DEFINED ONCE (F-946) =====
+  //
+  // `runGatedTask` RESERVED `budgetEstimate` tokens in the minute's TPM bucket a few lines
+  // above. Every path that leaves `handler` after that reservation must release it, and
+  // there must be exactly ONE piece of code that does the releasing — the reserve/release
+  // pair is a pair, not two independent sites that can drift.
+  //
+  // WHY NOT "claim BEFORE the gate" (the other candidate fix): a budget DEFERRAL re-pushes
+  // the SAME taskId (see GATE_DEPS.pushDeferred). A completion claim taken before the gate
+  // would be spent by the delivery that only deferred, and the re-push — the delivery that
+  // was supposed to do the work — would be refused as "a redelivery of a completed task".
+  // Pacing would become dropping. So the claim stays AFTER the gate, and the duplicate path
+  // leaves through this same settle.
+  //
+  // Called on exactly two exits: the duplicate-delivery return below, and the end of the
+  // normal path. `learnRuleCost` is guarded on `spent > 0`, so the duplicate (which runs no
+  // model — `resetInvocationTokens` has already zeroed the counter) only releases.
+  let budgetSettled = false;
+  const settleAiBudget = async () => {
+    if (budgetSettled) return;
+    budgetSettled = true;
+    if (!budgetProvider || !budgetEstimate) return;
+    try {
+      await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs || Date.now());
+      const spent = getInvocationTokens();
+      if (spent > 0) await learnRuleCost(budgetRuleId, spent);
+    } catch { /* best-effort */ }
+  };
+
+  // The invocation token counter is zeroed BEFORE the completion claim (it used to sit
+  // after it) so the duplicate path's settle can never read a warm container's leftover
+  // spend and teach `learnRuleCost` a cost no call in this invocation incurred.
+  resetInvocationTokens();
+
   // ===== THE PER-EVENT COMPLETION CLAIM (F-919) =====
   //
   // Forge async events are at-least-once. Everything below this line is written on EVERY
@@ -2975,11 +3009,16 @@ export async function handler(event) {
       storage, taskDoneClaimKey(taskId), TASK_DONE_TTL, "task-done");
     if (!firstDelivery) {
       console.warn(`Async handler: ${taskType} (${taskId}) is a redelivery of a completed task — nothing run, nothing written`);
+      // F-946 — "nothing written" never meant "nothing released": the tokens this delivery
+      // reserved in the minute's bucket are this delivery's to give back, through the one
+      // settle above. Returning without it leaked the whole estimate per redelivery
+      // (measured 0 -> 4000 -> 8000 over three deliveries of one finished review), and a
+      // redelivery burst silently deferred every other queued AI task until the minute
+      // rolled over.
+      await settleAiBudget();
       return;
     }
   }
-
-  resetInvocationTokens();
 
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
@@ -3074,13 +3113,9 @@ export async function handler(event) {
 
   // Settle the budget ledger: release the reservation and learn this rule's real
   // cost from the tokens metered during THIS invocation (recordAiUsage counts them).
-  if (budgetProvider && budgetEstimate) {
-    try {
-      await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs || Date.now());
-      const spent = getInvocationTokens();
-      if (spent > 0) await learnRuleCost(budgetRuleId, spent);
-    } catch { /* best-effort */ }
-  }
+  // ONE HOME (F-946) — the body is `settleAiBudget`, defined above the completion claim
+  // so the duplicate-delivery exit leaves through the same release this one does.
+  await settleAiBudget();
 
   // Best-effort always-honor: after a PF job runs, opportunistically sweep for DROPPED/
   // killed PF jobs and re-drive them. The sweeper is advisory-locked (90s TTL) so this

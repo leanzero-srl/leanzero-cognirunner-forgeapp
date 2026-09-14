@@ -611,7 +611,11 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "the reservation itself is made only when a provider is known");
   // The settle half was already guarded — assert it stays that way (it is the other
   // end of the same invariant: reserve and release must agree on the provider).
-  ok(/if \(budgetProvider && budgetEstimate\) \{/.test(asyncSrc), "the settle still releases only against a known provider");
+  // F-946 moved the settle INTO a named closure (`settleAiBudget`) so the duplicate-delivery
+  // exit releases through the same code the normal exit does; the guard is the same
+  // invariant, expressed as an early return.
+  ok(/const settleAiBudget = async \(\) => \{[\s\S]*?if \(!budgetProvider \|\| !budgetEstimate\) return;/.test(asyncSrc),
+    "the settle still releases only against a known provider");
 }
 
 // =====================================================================================

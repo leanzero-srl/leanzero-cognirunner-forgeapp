@@ -36,6 +36,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
+import { createTokenLease } from "../lib/api-token-lease.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -71,6 +72,11 @@ async function hook(body, method = "POST", qs = "") {
 }
 const invoke = async (functionKey, payload = {}, accountId = ADMIN) =>
   hook({ action: "invokeResolver", functionKey, payload, accountId });
+/* F-812 — the REST token this driver mints (through the hook's `mintApiToken` action) is
+   registered the instant it exists and released by the RESTORE block below. The release
+   goes through lib/api-token-lease.mjs so the name of the revoke door has ONE home: the
+   shadow-door driver held a wrong one behind a silent catch and leaked admin bearers. */
+const tokenLease = createTokenLease(invoke);
 const kvs = async (key) => {
   const r = await hook(null, "GET", `?what=kvs&key=${encodeURIComponent(key)}`);
   return { status: r.status, value: r.json ? (r.json.value ?? null) : null };
@@ -85,6 +91,7 @@ async function restApi() {
   const t = await hook({ action: "mintApiToken", name: `purge-carrier-${Date.now().toString(36)}` });
   const token = t.json && t.json.token;
   if (!token) return null;
+  tokenLease.track((t.json.row && t.json.row.id) || null);
   return {
     id: (t.json.row && t.json.row.id) || null,
     call: async (method, query, body) => readRes(await fetch(`${url}?${query}`, {
@@ -230,7 +237,15 @@ async function main() {
     } else if (jobId) {
       NV("--keep: the planted tombstone and the job were left in place");
     }
-    if (rest && rest.id) { await invoke("revokeApiToken", { id: rest.id }); info("the minted REST token was revoked"); }
+    for (const r of await tokenLease.revokeAll()) {
+      if (r.revoked) info(`the minted REST token ${r.id} was revoked`);
+      else {
+        /* F-650 — the reason is built OUTSIDE the substitution hole; a hole whose text says
+           "tok" is the shape the writer net flags, and it is right to. */
+        const why = r.error || "the revoke door answered revoked:false";
+        FAIL(`the minted REST token ${r.id} was NOT revoked: ${why}`);
+      }
+    }
     /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
     ev.provenance = runProvenance();
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));

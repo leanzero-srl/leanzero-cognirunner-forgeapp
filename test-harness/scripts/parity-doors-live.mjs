@@ -39,6 +39,7 @@ import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
 import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
+import { createTokenLease } from "../lib/api-token-lease.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -72,6 +73,12 @@ async function hook(body, method = "POST", qs = "") {
   }));
 }
 const invoke = (functionKey, payload = {}, accountId = ADMIN) => hook({ action: "invokeResolver", functionKey, payload, accountId });
+/* F-812 — every REST token this run mints is registered here the instant it exists, and
+   the RESTORE block releases the register. Both of this driver's tokens are minted by
+   hand (the admin one through the hook's `mintApiToken` action, which the lease does not
+   own), so they are TRACKED rather than minted through it — the shared part is the
+   RELEASE, which is where the leak was. */
+const tokenLease = createTokenLease(invoke);
 
 let RULES_URL = null;
 const rest = async (token, method, query, body) =>
@@ -116,6 +123,7 @@ async function main() {
     const a = await hook({ action: "mintApiToken", name: `parity-admin-${Date.now().toString(36)}` });
     adminTok = { token: a.json && a.json.token, id: a.json && a.json.row && a.json.row.id, role: a.json && a.json.row && a.json.row.role };
     if (!adminTok.token) { FAIL("no admin token could be minted", { body: JSON.stringify(redactSecrets(a.json)).slice(0, 200) }); return; }
+    tokenLease.track(adminTok.id);
     PASS("an admin-scope token was minted", { id: adminTok.id, role: adminTok.role || "(legacy = scope all)" });
     const e = await invoke("createApiToken", { name: `parity-editor-${Date.now().toString(36)}`, role: "editor" });
     editorTok = { token: e.json && e.json.token, id: e.json && e.json.row && e.json.row.id, role: e.json && e.json.row && e.json.row.role };
@@ -123,6 +131,7 @@ async function main() {
        "editor"), and `createApiToken` returns the plaintext `token` at the TOP LEVEL of
        that body. Never stringify the mint answer raw: redact first, then slice. */
     if (!editorTok.token || editorTok.role !== "editor") { FAIL("no EDITOR token could be minted", { body: JSON.stringify(redactSecrets(e.json)).slice(0, 250) }); return; }
+    tokenLease.track(editorTok.id);
     PASS("an editor-scope token was minted, principal = the harness admin account", { id: editorTok.id, role: editorTok.role });
 
     /* ── STEP 1 — the colleague's rows, written by the OTHER principal ─────── */
@@ -252,9 +261,14 @@ async function main() {
         else FAIL("the colleague job survives", { status: back.status });
       }
     }
-    for (const t of [editorTok, adminTok]) {
-      if (t && t.id) { await invoke("revokeApiToken", { id: t.id }); }
-    }
+    /* F-812 — THROUGH THE LEASE (lib/api-token-lease.mjs), for two reasons. The name of
+       the revoke door now has ONE home — va-shadow-door held the WRONG one
+       (`deleteApiToken`, which is not a resolver) for weeks behind a silent catch and
+       leaked seven admin bearers. And `revokeAll` cannot THROW: the bare `await invoke`
+       this replaces would have abandoned the residue assertion below on any transport
+       blip, so the run would have ended without the line that says a token survived. */
+    const revokes = await tokenLease.revokeAll();
+    for (const r of revokes) if (!r.revoked) info(`revokeApiToken ${r.id} did not revoke: ${r.error || "revoked:false"}`);
     const left = await invoke("getApiTokens", {});
     const live = ((left.json && left.json.tokens) || []).filter((t) => !t.revokedAt && /^parity-(admin|editor)-/.test(t.name || ""));
     if (live.length === 0) PASS("both minted tokens are revoked - a second read of the token list finds none of them live");

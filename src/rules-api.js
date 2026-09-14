@@ -303,11 +303,27 @@ const REST_SAVED_BY_ROLE = "editor";
  * could not read, so an unreadable instance refuses the action instead of granting
  * it — and an incapable instance still refuses this same rename, which is the point.
  */
-const restGateContext = async () => {
+/*
+ * THE ONE FACT READ ON THIS SURFACE (F-850). Every door here — the save doors below and
+ * the `action=test` door — asks for the instance's facts through THIS function and no
+ * other, because two readers in one file are two answers to one question.
+ *
+ * `fresh` is the only axis, and the two values are deliberate:
+ *  · the SAVE doors keep the memo, per the freshness policy written on `agentGateFacts`
+ *    (src/index.js): "src/rules-api.js is memoised too, for the same per-request reason
+ *    and with the same caveat". One read per request, never one per batch item.
+ *  · the TEST door reads FRESH, because a test is judged against what the RUN will do,
+ *    and the run reads fresh (`resolveFreshGateFacts`, src/async-handler.js, F-842). A
+ *    memo here is how a test and its own queued run answer differently.
+ */
+const restGateFacts = async ({ fresh = false } = {}) => {
   const { agentGateFacts } = await idx();
-  const facts = await agentGateFacts(null);
-  return buildAgentGateContext({ ...facts, triggerSource: null, savedByRole: REST_SAVED_BY_ROLE });
+  return agentGateFacts(null, { fresh });
 };
+
+const restGateContext = async (opts) => buildAgentGateContext({
+  ...(await restGateFacts(opts)), triggerSource: null, savedByRole: REST_SAVED_BY_ROLE,
+});
 
 /*
  * The ONE refusal a role floor produces, in the ONE refusal shape (`reason`,
@@ -563,9 +579,30 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     }
     if (!row) return json(404, { error: `${noun} not found` });
     if (action === "enable" || action === "disable") { const saved = await setEnabled(id, action === "enable"); return json(200, { [noun]: saved }); }
+    /*
+     * F-850 — THE TEST GATES LIKE THE RUN, OR IT IS NOT A TEST.
+     *
+     * The test arm below called `testListener` with NO `gateFacts`, so `runListener`
+     * built no gate context and `normalizeAllowedActions` fell to its arity-1 restrictive
+     * default: every capability-gated action and every `confirm` action refused as
+     * `needs-admin`, on a rule an ADMIN armed — while the SAME rule's queued run (F-842)
+     * and the SAME rule's test through the resolver door (src/index.js, `testListener`)
+     * both run it. A test that disagrees with the run is worse than no test, which is
+     * F-302's whole point.
+     *
+     * FRESH, and ONE read for this request: the run this test stands in for reads its
+     * facts fresh at execution time, so this one does too. The facts — never a gate
+     * context — are what crosses: `runListener` builds the context itself, with
+     * `triggerSource:"external"` and the ROW's `savedByRole`, so a REST caller cannot
+     * hand a listener a licence its record does not carry.
+     *
+     * (Keep this note ABOVE the arm: rules-api-tokens.test.mjs reads the arm's first 900
+     * bytes to prove the refusal goes through `errBody`, and a docblock inside it pushes
+     * that catch out of the window.)
+     */
     if (isL && action === "test") {
       try {
-        const r = await L.testListener({ listener: row, issueKey: body && body.issueKey, eventType: body && body.eventType, syntheticEvent: body && body.event, deadline: Date.now() + 20000 });
+        const r = await L.testListener({ listener: row, issueKey: body && body.issueKey, eventType: body && body.eventType, syntheticEvent: body && body.event, deadline: Date.now() + 20000, gateFacts: await restGateFacts({ fresh: true }) });
         return json(200, { result: r });
       // F-337 — the LAST refusal site on this surface that bypassed errBody. A
       // testListener throw can carry raw Jira body text (`JQL check failed: 400 …`);

@@ -1883,11 +1883,12 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const end = asyncSrc.indexOf("\n};\n", at);
   const src = asyncSrc.slice(at, end + 2).replace("const resolveFreshCoderGate = ", "");
   const gateMod = await import("../../src/shared/agent-actions.js");
-  // FRESH facts come from a stub that stands in for agentGateFacts — the ONE reader. The
-  // predicate and the gate builder are the SHIPPED ones: nothing about capability is
-  // re-implemented in this test either.
+  // FRESH facts come from a stub that stands in for `resolveFreshGateFacts` — the
+  // consumer's ONE call on the ONE reader (F-842 generalised it out of this function so
+  // the listener and job paths read the facts the same way). The predicate and the gate
+  // builder are the SHIPPED ones: nothing about capability is re-implemented here either.
   const buildGate = (facts) => new Function(
-    "agentGateFacts", "buildAgentGateContext", "normalizeAllowedActions", "getAgentAction", "isHeadlessTrigger",
+    "resolveFreshGateFacts", "buildAgentGateContext", "normalizeAllowedActions", "getAgentAction", "isHeadlessTrigger",
     `return (${src});`,
   )(async () => facts, gateMod.buildAgentGateContext, gateMod.normalizeAllowedActions, gateMod.getAgentAction,
     (s) => s === "postfunction" || s === "listener" || s === "external");
@@ -1997,6 +1998,49 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "F-829: the false claim 'the engine re-runs the gate' is gone from the freshness policy");
   ok(/F-829/.test(block) && /fresh/i.test(block),
     "F-829: …replaced by the real contract — a memoised producer and a FRESH consumer");
+}
+
+/* ════ F-842 — the QUEUED listener/job run is gated on the instance's real facts ════ */
+// The queue invokes a handler as `(params, taskId)`. Registering the bare exports meant
+// the third argument — the F-302 seam that carries the facts — was `undefined` on every
+// queued delivery, so `runListener`/`runJob` built NO gate context and the arity-1
+// restrictive default refused every capability-gated action and every `confirm` action
+// as `needs-admin`, on an admin-saved rule, while its "Test with an issue" allowed them.
+// The end-to-end BLOCK/ALLOW cases run against the REAL listener and job modules in
+// rules-runtime-regression.test.mjs; what is asserted HERE is the wiring and the reader.
+{
+  const handlers = handlersBlock[1];
+  ok(/"listener": executeQueuedListener,/.test(handlers) && /"scheduledjob": executeQueuedScheduledJob,/.test(handlers),
+    "F-842: TASK_HANDLERS registers the wrappers that supply the run's gate facts");
+  // The BAN: the bare exports are what the defect was. `asyncCode` is comment-masked, so
+  // a docblock naming the old wiring cannot satisfy or break this gate.
+  ok(!/"listener":\s*executeListenerTask/.test(asyncCode) && !/"scheduledjob":\s*executeScheduledJobTask/.test(asyncCode),
+    "F-842: …and never the bare exports, which reach the run site with no facts at all");
+
+  const reader = (asyncSrc.match(/const resolveFreshGateFacts = async \(\) => \{[\s\S]*?\n\};/) || [""])[0];
+  ok(/agentGateFacts\(undefined, \{ fresh: true \}\)/.test(reader),
+    "F-842: the consumer's fact read is the ONE reader, asked FRESH (the producer's memo is the producer's)");
+  ok(/const facts = await resolveFreshGateFacts\(\)/.test(asyncSrc),
+    "F-842: …and the Coder arm reads through the same helper rather than a second call of its own");
+  // A read fault must land on the RESTRICTIVE side, never on "no gate, therefore fine".
+  // eslint-disable-next-line no-eval
+  const readFacts = new Function("agentGateFacts", "console", `return (${reader.replace("const resolveFreshGateFacts = ", "").replace(/;\s*$/, "")});`)(
+    async () => { throw new Error("kvs down"); }, { log() {}, warn() {}, error() {} });
+  ok((await readFacts()) === null, "EXECUTED (F-842): a fact-read fault returns null — the most restrictive context, never a throw that kills the run");
+
+  const wrap = (asyncSrc.match(/const withFreshGateFacts = async \(opts\) => \{[\s\S]*?\n\};/) || [""])[0];
+  const build = (facts) => new Function("resolveFreshGateFacts", `return (${wrap.replace("const withFreshGateFacts = ", "").replace(/;\s*$/, "")});`)(async () => facts);
+  const FRESH = { provider: "openai", edition: "standard", agentModel: "gpt-5.4", allowanceLevel: null };
+  ok((await build(FRESH)(undefined)).gateFacts === FRESH,
+    "EXECUTED (F-842): a queued delivery with no third argument gets the instance's fresh facts");
+  {
+    const explicit = { provider: "anthropic" };
+    const out = await build(FRESH)({ gateFacts: explicit, executors: { git: 1 } });
+    ok(out.gateFacts === explicit && out.executors.git === 1,
+      "EXECUTED (F-842): a caller that supplies facts is preferred, and its executors survive untouched");
+  }
+  ok((await build(null)({})).gateFacts === null,
+    "EXECUTED (F-842): no facts available ⇒ null, which the run sites read as the most restrictive gate");
 }
 
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);

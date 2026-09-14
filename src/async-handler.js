@@ -2103,13 +2103,59 @@ export const executeHarnessProbe = async (params, taskId) => {
  *
  * NEVER THROWS: `agentGateFacts` fails to the restrictive side and the rest is pure.
  */
+/**
+ * THE CONSUMER'S FACT READ, ONE HOME (F-842, generalised from F-829's Coder arm).
+ *
+ * Every queued run that can hold a capability-gated or `confirm` action needs the same
+ * thing: the instance's CURRENT facts, read here, at execution time, through the ONE
+ * fact-reader. `{ fresh: true }` for the reason F-829 wrote down — the producer's memo
+ * is the producer's, and a queued task can sit for minutes.
+ *
+ * No invocation context in a queue consumer: the edition ladder starts at getAppContext()
+ * and falls through to the KVS snapshot, exactly as currentEditionFresh does above.
+ *
+ * NEVER THROWS. `agentGateFacts` already swallows its own read faults to the restrictive
+ * side; the belt here is for an import-time surprise. `null` means "no facts", which the
+ * two run sites read as the most restrictive context — the same answer forgetting to pass
+ * them gave, so a fault can never be the way PAST the gate.
+ */
+const resolveFreshGateFacts = async () => {
+  try { return await agentGateFacts(undefined, { fresh: true }); }
+  catch (e) { console.warn("[gate] fresh facts unavailable, the run is gated restrictively:", (e && e.message) || e); return null; }
+};
+
+/**
+ * F-842 — the queued LISTENER and JOB run gets those same fresh facts.
+ *
+ * `TASK_HANDLERS` invokes a handler as `(params, taskId)`, so the third argument of
+ * `executeListenerTask` / `executeScheduledJobTask` — the seam F-302 built for exactly
+ * this — was `undefined` on every queued delivery. `runListener`/`runJob` then built NO
+ * gate context and `normalizeAllowedActions` fell to its arity-1 restrictive default:
+ * every capability-gated action AND every `confirm` action refused (`needs-admin`, the
+ * rule's own `savedByRole` never consulted) on the live path, while the very same rule's
+ * "Test with an issue" — which DOES thread facts — allowed them. A gate whose verdict
+ * depends on which door called it is not a gate.
+ *
+ * The third argument STAYS, and is PREFERRED when present: a caller that supplies facts
+ * explicitly (a test run, a future dispatcher) is answering the question itself, and this
+ * wrapper must not overwrite that answer with its own read.
+ *
+ * `savedByRole` is NOT here and must never be: it comes from the stored rule row inside
+ * `runListener`/`runJob`, never from the delivery (src/listeners.js).
+ */
+const withFreshGateFacts = async (opts) => {
+  const o = opts || {};
+  return o.gateFacts ? o : { ...o, gateFacts: await resolveFreshGateFacts() };
+};
+const executeQueuedListener = async (params, taskId, opts) =>
+  executeListenerTask(params, taskId, await withFreshGateFacts(opts));
+const executeQueuedScheduledJob = async (params, taskId, opts) =>
+  executeScheduledJobTask(params, taskId, await withFreshGateFacts(opts));
+
 const resolveFreshCoderGate = async (p) => {
   const headless = isHeadlessTrigger(p.triggerSource) || p.headless === true;
   const savedByRole = p.savedByRole || "editor";
-  // No invocation context in a queue consumer — the edition ladder starts at
-  // getAppContext() and falls through to the KVS snapshot, exactly as currentEditionFresh
-  // does a few hundred lines up.
-  const facts = await agentGateFacts(undefined, { fresh: true });
+  const facts = await resolveFreshGateFacts() || {};
   const gate = buildAgentGateContext({ ...facts, triggerSource: headless ? "external" : null, savedByRole });
   const out = { facts, queuedFacts: p.gateFacts || null, allowed: null, refusal: null };
   if (!Array.isArray(p.allowedActions)) return out;
@@ -2277,8 +2323,12 @@ const TASK_HANDLERS = {
   // Listeners (Jira product events → sandbox/agent run) and Scheduled Jobs (cron
   // tick → run). Both write their own execution-log entry; scheduledjob is polled
   // by "Run now" (UI + REST), listener runs are fire-and-forget.
-  "listener": executeListenerTask,
-  "scheduledjob": executeScheduledJobTask,
+  // F-842 — registered through the wrappers that read the instance's FRESH facts, never
+  // the bare exports: the queue calls a handler `(params, taskId)`, so the bare export
+  // reached `runListener`/`runJob` with no gate context at all and every capability-gated
+  // and `confirm` action was refused on the live path only.
+  "listener": executeQueuedListener,
+  "scheduledjob": executeQueuedScheduledJob,
   // Git (1.4): a queued PR review, and the verified webhook delivery that dispatches
   // listener runs (and one of those reviews) — neither is produced by a browser.
   "gitreview": executeGitReview,

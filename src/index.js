@@ -198,7 +198,7 @@ import {
 } from "./shared/confluence-rules.js";
 import { describeCron } from "./shared/cron.js";
 // The ONE code-point-safe text clamp (F-381/F-383) — never `.slice()` on a prompt path.
-import { clampChars, clampUtf8Bytes } from "./shared/text-clamp.js";
+import { clampChars, clampUtf8Bytes, utf8ByteLength } from "./shared/text-clamp.js";
 // The BAKED FIELD GUIDE (1.4 commit 14b) — the third knowledge layer, alongside skills
 // and memories. `resolveFieldGuideBlock` is the ONE call that turns the generated packs
 // into the single fenced <<<FIELD_GUIDE>>> block; no surface in this file builds that
@@ -7822,7 +7822,12 @@ resolver.define("previewImport", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) return needRole("editor");
   const text = typeof payload?.json === "string" ? payload.json : "";
   if (!text) return { success: false, error: "No import text provided" };
-  if (text.length > EXPORT_CAPS.maxBytes) return { success: false, error: "Import file is too large." };
+  // F-875 — the cap is named in BYTES, so it is measured in BYTES. `String.length` counts
+  // UTF-16 code units, so a CJK import walked ~3x the cap past this door (most non-Latin
+  // script ~2x). `utf8ByteLength` (src/shared/text-clamp.js) is the ONE measure, living in
+  // the same home as the clamps that enforce the other byte budgets. Checked BEFORE the
+  // JSON.parse and before any binding work — a refused import does nothing at all.
+  if (utf8ByteLength(text) > EXPORT_CAPS.maxBytes) return { success: false, error: "Import file is too large." };
   let parsed;
   try { parsed = JSON.parse(text); } catch (e) { return { success: false, error: "That file isn't valid JSON." }; }
   const v = validateImportSchema(parsed);

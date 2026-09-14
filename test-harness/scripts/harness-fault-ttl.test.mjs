@@ -562,6 +562,35 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   ok(fault.decodeSweepCursor(null) === null && fault.decodeSweepCursor(undefined) === null,
     "…while an absent cursor is a fresh sweep, which is the only thing that may mean \"start at the top\"");
 
+  /* F-876 - THE 2 KB CEILING IS A BYTE CEILING, MEASURED IN BYTES.
+   * It was compared against `String.length` (UTF-16 code units), so a CJK string of 2048
+   * chars measured 2048 against a budget of 2048 BYTES while weighing 6144. Nothing got
+   * through even then, because the base64 alphabet below refuses every non-ASCII character
+   * anyway - so this asserts the MEASURE directly on the predicate, at the exact boundary,
+   * rather than through a door that a second rule was quietly holding shut. */
+  const asciiAtCap = "A".repeat(fault.SWEEP_CURSOR_MAX_BYTES);
+  ok(fault.sweepCursorWellFormed(asciiAtCap) === true,
+    `a token of exactly ${fault.SWEEP_CURSOR_MAX_BYTES} BYTES is admitted (the boundary is inclusive)`);
+  ok(fault.sweepCursorWellFormed(`${asciiAtCap}A`) === false, "…and one byte more is refused");
+  const cjkUnderCharCount = "一".repeat(fault.SWEEP_CURSOR_MAX_BYTES - 1);
+  ok(cjkUnderCharCount.length < fault.SWEEP_CURSOR_MAX_BYTES
+    && new TextEncoder().encode(cjkUnderCharCount).length > fault.SWEEP_CURSOR_MAX_BYTES,
+    `the multi-byte fixture is under the cap in CHARS (${cjkUnderCharCount.length}) and over it in BYTES (${new TextEncoder().encode(cjkUnderCharCount).length})`);
+  ok(fault.sweepCursorWellFormed(cjkUnderCharCount) === false,
+    "…and it is refused - the ceiling counts bytes, not UTF-16 code units");
+  let cjkCode = null;
+  try { fault.decodeSweepCursor(cjkUnderCharCount); } catch (e) { cjkCode = e && e.code; }
+  ok(cjkCode === fault.BAD_SWEEP_CURSOR_CODE,
+    "…and the door refuses it with the same bad-cursor code, before any KVS call");
+  /* The two assertions above hold on BOTH sides of the fix, because the ASCII-only alphabet
+   * refuses the CJK fixture on its own. The MEASURE itself therefore has to be pinned at the
+   * source, or nothing in this file fails the day the ceiling goes back to counting chars. */
+  ok(/utf8ByteLength\(value\)\s*<=\s*SWEEP_CURSOR_MAX_BYTES/.test(faultSrc),
+    "F-876.SOURCE: the BYTE ceiling is compared against utf8ByteLength, the one shared measure");
+  ok(!/value\.length\s*<=\s*SWEEP_CURSOR_MAX_BYTES/.test(faultSrc),
+    "F-876.SOURCE: …and never against String.length, which counts UTF-16 code units");
+
+
   latencyMs = 0;
   for (const key of keys) await storage.delete(key);
   kvs.delete = realDelete;

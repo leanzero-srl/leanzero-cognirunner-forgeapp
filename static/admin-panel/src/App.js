@@ -1336,9 +1336,11 @@ const injectStyles = () => {
        Email: slate 600 text. Account-id segment: a SOLID slate chip with white text and a
        mono face, so two ids are compared character-by-character. No rail, no tint.
        F-647 — the two are no longer alternatives: when an email exists it sits BESIDE the
-       id chip on one line, because the chip is the string that has to match across the
-       search row and the roster card. The row must stay a single line so a long email
-       ellipsises rather than pushing the chip out of view. */
+       id chip on one line in the search dropdown, because the chip is the string that has
+       to match across the search row and the roster card.
+       F-651 - the email is NEVER ellipsised. In the dropdown the row stays one entry and
+       the email wraps to a second line at narrow widths; on the roster card the row is
+       stacked so the address owns a full line. The chip never shrinks either way. */
     .perm-ident-row {
       display: flex;
       align-items: center;
@@ -1374,9 +1376,35 @@ const injectStyles = () => {
     }
 
     /* The chip never shrinks away: a uuid segment that is half-rendered is a
-       discriminator that cannot be matched, which is the whole defect. */
+       discriminator that cannot be matched, which is the whole defect. It is the LAST
+       thing that gives way at any width.
+       F-651 - the email used to be the shrinkable child of an ellipsising row, which made
+       it the only truncatable part of the discriminator and left +contractor2024 and
+       +contractor2025 rendering as the same visible string. It is never ellipsised now:
+       in the dropdown it wraps to a second line, on the roster card it owns a line. */
     .perm-ident-id { flex: 0 0 auto; }
-    .perm-ident-email { min-width: 0; flex: 0 1 auto; }
+    .perm-ident-email {
+      min-width: 0;
+      flex: 0 1 auto;
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    /* Roster card: the email is on its own line above the chip, full width, no clipping.
+       This is the surface where Remove is armed, so the address has to be readable whole. */
+    .perm-ident-row-stacked {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 3px;
+    }
+    .perm-ident-row-stacked .perm-ident-email {
+      flex: 0 0 auto;
+      width: 100%;
+      max-width: 100%;
+    }
 
     .perm-search-badge {
       font-size: 10px;

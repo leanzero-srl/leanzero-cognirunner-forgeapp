@@ -3624,5 +3624,8 @@ html[data-color-mode="dark"] .perm-ident { color: #64748b; }
 .perm-ident-id { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #475569; color: #ffffff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; letter-spacing: 0.2px; }
 html[data-color-mode="dark"] .perm-ident-id { background: #64748b; color: #ffffff; }
 .perm-ident-id { flex: 0 0 auto; }
-.perm-ident-email { min-width: 0; flex: 0 1 auto; }
+/* F-651 - the email is never ellipsised: it wraps in the dropdown, owns a line on the card. */
+.perm-ident-email { min-width: 0; flex: 0 1 auto; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.perm-ident-row-stacked { flex-direction: column; align-items: flex-start; gap: 3px; }
+.perm-ident-row-stacked .perm-ident-email { flex: 0 0 auto; width: 100%; max-width: 100%; }
 .perm-admin-info .perm-ident-row { margin: 3px 0; }

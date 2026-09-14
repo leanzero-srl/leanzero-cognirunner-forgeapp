@@ -55,8 +55,19 @@ const scopeLabel = (role, scope) => {
      string appears on the search row and on the roster card and the two can be matched
      by eye. (Jira ids are `557058:<uuid>`; the prefix is the shared directory id and
      discriminates nothing.)
-   - the FULL id is the `title` on both parts, on both surfaces, so nothing is truncated
-     away silently and the id never needs a KVS read to recover.
+   - the full id is the `title` on the CHIP (the part that shows only a segment), and the
+     email span's `title` is its OWN full address.
+
+   F-651 — that last line used to read "the FULL id is the title on both parts ... so
+   nothing is truncated away silently", and it was false about the one part that actually
+   truncates. The email is the only shrinkable child of the row, so it is the only thing
+   that can ellipsise, and its tooltip carried the account id - the very string the chip
+   beside it already prints in full. A pair of namesakes at `+contractor2024` and
+   `+contractor2025` therefore rendered identical visible text with no way to recover the
+   difference. Now: the email's title is the email, and the CSS never ellipsises it at all
+   - it wraps. On the roster card the email gets its own line; in the search dropdown it
+   stays beside the chip but wraps to a second line at narrow widths. The chip is still
+   `flex: 0 0 auto`, so it is the last thing that would ever give way.
    `handleAdd` therefore passes `emailAddress` through to `addAppAdmin` and carries it on
    the optimistic roster row, which is what lets the card repeat the email the admin
    clicked. */
@@ -77,12 +88,16 @@ const accountDiscriminator = (row) => {
 
 /* One renderer, both surfaces — a second copy is how the two namespaces diverged in the
    first place. Email first (human-checkable), id chip always (the cross-surface key). */
-function AccountIdent({ disc }) {
+function AccountIdent({ disc, variant }) {
   if (!disc) return null;
+  /* "card" stacks the two parts so the email owns a full line and can never be cut; the
+     search dropdown keeps them side by side (the row is a click target and a two-line
+     entry there costs list density), and lets the email wrap instead. */
+  const stacked = variant === "card";
   return (
-    <div className="perm-ident-row">
+    <div className={`perm-ident-row${stacked ? " perm-ident-row-stacked" : ""}`}>
       {disc.email && (
-        <span className="perm-ident perm-ident-email" title={disc.fullId || disc.email}>
+        <span className="perm-ident perm-ident-email" title={disc.email}>
           {disc.email}
         </span>
       )}
@@ -488,7 +503,7 @@ export default function PermissionsTab({ invoke }) {
                   )}
                   <div>
                     <div className="perm-admin-name">{name}</div>
-                    <AccountIdent disc={disc} />
+                    <AccountIdent disc={disc} variant="card" />
                     <div className="perm-admin-role">{scopeLabel(role, scope)}</div>
                   </div>
                 </div>

@@ -2145,7 +2145,22 @@ function invoke(name, payload) {
           { accountId: ACCT, displayName: "Mihai Perdum", avatarUrl: "https://secure.gravatar.com/avatar/aaa?d=identicon&s=24" },
         ] });
       }
-      return Promise.resolve({ success: true, users: [{ accountId: "557058:55555555-5555-5555-5555-555555555555", displayName: "Alex Newman", avatarUrl: "https://secure.gravatar.com/avatar/ddd?d=identicon&s=24" }, { accountId: "557058:66666666-6666-6666-6666-666666666666", displayName: "Jordan Lee", avatarUrl: null }] });
+      /* F-651 - two namesakes whose addresses differ ONLY in a `+tag` late in a long,
+         common-prefix local part. This is the pair the ellipsis used to erase: same
+         display name, same visible email prefix, and a tooltip that answered with the
+         account id instead of the address. The rows must be tellable apart by VISIBLE
+         text at a narrow width, in both themes. */
+      if (q.includes("contractor")) {
+        return Promise.resolve({ success: true, users: [
+          { accountId: "557058:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", displayName: "Mihai Perdum", avatarUrl: null, emailAddress: "mihai.perdum+contractor2024@wolfaenpak.example" },
+          { accountId: "557058:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", displayName: "Mihai Perdum", avatarUrl: null, emailAddress: "mihai.perdum+contractor2025@wolfaenpak.example" },
+        ] });
+      }
+      /* F-653 - the DEFAULT fixture carried no `emailAddress` at all, so the ordinary
+         search -> grant -> roster journey never once rendered an email end to end (the
+         only fixture that did was the namesake one). Alex Newman now carries a real
+         address, which is what lets the harness assert the whole hop on the plain path. */
+      return Promise.resolve({ success: true, users: [{ accountId: "557058:55555555-5555-5555-5555-555555555555", displayName: "Alex Newman", avatarUrl: "https://secure.gravatar.com/avatar/ddd?d=identicon&s=24", emailAddress: "alex.newman@wolfaenpak.example" }, { accountId: "557058:66666666-6666-6666-6666-666666666666", displayName: "Jordan Lee", avatarUrl: null }] });
     }
     /* F-647 — the grant echoes the emailAddress it was given, which is what makes the
        roster card able to repeat the discriminator the admin actually clicked. A bridge

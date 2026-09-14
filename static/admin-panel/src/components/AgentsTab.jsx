@@ -592,6 +592,7 @@ function Stat({ label, value }) {
 
 function DraftsPane({ client, agent, shadow, canEdit, onChanged }) {
   const [rows, setRows] = useState(null);
+  const [held, setHeld] = useState([]);
   const [busyKey, setBusyKey] = useState(null);
   const token = useRef(0);
   const load = useCallback(async () => {
@@ -599,6 +600,7 @@ function DraftsPane({ client, agent, shadow, canEdit, onChanged }) {
     const r = await client.drafts(agent.id);
     if (mine !== token.current) return;
     setRows(r.success ? arr(r.drafts) : []);
+    setHeld(r.success ? arr(r.heldWrites) : []);
   }, [client, agent.id]);
   useEffect(() => { load(); return () => { token.current += 1; }; }, [load]);
 
@@ -617,9 +619,37 @@ function DraftsPane({ client, agent, shadow, canEdit, onChanged }) {
     if (r.success) { showToast(`${label}d`); load(); onChanged(); } else showToast(r.error || `${label} failed`, "error");
   };
 
+  /*
+   * F-910 — THE CHANGES IT WANTED TO MAKE, beside the sentences it wanted to send.
+   *
+   * In shadow mode the agent is held from ACTIONS as well as from speech: a transition or
+   * a reassignment is recorded on the item row instead of being performed. This table is
+   * where an admin reads them, and it has no Approve button on purpose — approving one
+   * would mean replaying a tool call, which nothing in this release does. The agent
+   * proposes again on its next run, and once it goes live it simply acts.
+   */
+  const heldTable = held.length ? (
+    <>
+      <span className="label">Changes held while it is in shadow mode</span>
+      <table className="table va-table">
+        <thead><tr><th>Issue</th><th>Change</th><th>Details</th></tr></thead>
+        <tbody>
+          {held.map((h, i) => (
+            <tr key={`${h.itemKey}-${h.action}-${h.at}-${i}`}>
+              <td className="va-td-key">{h.itemKey}</td>
+              <td><span className="va-badge va-badge-shadow">{h.action}</span></td>
+              <td className="va-td-body">{h.args}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  ) : null;
+
   if (rows === null) return <div className="empty-state">Loading staged replies…</div>;
-  if (!rows.length) return <div className="empty-state">Nothing is staged right now.</div>;
+  if (!rows.length) return heldTable || <div className="empty-state">Nothing is staged right now.</div>;
   return (
+    <>
     <table className="table va-table">
       <thead><tr><th>Issue</th><th>Audience</th><th>Draft</th><th>Attempts</th>{shadow && canEdit && <th></th>}</tr></thead>
       <tbody>
@@ -639,6 +669,8 @@ function DraftsPane({ client, agent, shadow, canEdit, onChanged }) {
         ))}
       </tbody>
     </table>
+    {heldTable}
+    </>
   );
 }
 

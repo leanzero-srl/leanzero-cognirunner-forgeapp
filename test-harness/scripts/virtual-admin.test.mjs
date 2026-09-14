@@ -2709,5 +2709,155 @@ reset();
     "F-609.behaviour.ORDER — nothing touched va_running at all before the tombstone was cleared");
 }
 
+/* == F-910 - SHADOW MODE HOLDS ACTIONS, NOT ONLY REPLIES =======================
+ *
+ * The item turn used to build its dispatcher from the POWERS alone and consult the shadow
+ * predicate nowhere: shadow was read only at `runVaPost` gate 1, which holds DRAFTS. So an
+ * agent created with assign, transition and edit-fields on, and three watch ticks promised,
+ * transitioned and reassigned real tickets on its FIRST tick while the Agents tab said
+ * SHADOW - silently, with no effects row anywhere.
+ *
+ * The fixture is the cold review's reproduction: shadowUntilTick 3, no prepare receipts
+ * (so `watchedTicks` is 0), a model that calls `transition_issue` and `set_assignee`.
+ */
+reset();
+{
+  const shadowJob = vaJob({
+    powers: { replyInternal: true, assign: true, transition: true, editFields: true },
+    status: { paused: false, shadowUntilTick: 3 },
+  });
+  const loop = scriptedLoop([[
+    { name: "transition_issue", args: { issueKey: "SUP-1", to: "Done" } },
+    { name: "set_assignee", args: { issueKey: "SUP-1", accountId: "u1" } },
+  ]]);
+  const d = itemDeps({ runLoop: loop });
+  const r = await V.runVaItem({ agent: shadowJob, issueKey: "SUP-1", tickId: "t-shadow", deps: d });
+
+  eq(r.ok, true, "F-910: the shadow turn still RUNS - shadow is not a refusal to think");
+  eq(d.__changes.length, 0,
+    `F-910.BLOCK_shadow_holds_free_actions - nothing was dispatched (got ${JSON.stringify(d.__changes)})`);
+  ok(loop.seen.every((c) => c.result && c.result.success === false),
+    "F-910.BLOCK_transition_issue/set_assignee - both writes were refused, not performed");
+  eq(r.held, 2, "F-910: both writes were HELD, not dropped on the floor");
+
+  const row = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(row.heldWrites.length, 2, "F-910: the ROW holds the held writes - the durable record an admin reads");
+  eq(row.heldWrites[0].action, "transition_issue", "F-910: ...named by action");
+  ok(String(row.heldWrites[0].args).includes("Done"), "F-910: ...with the arguments the model asked for");
+  ok((row.history || []).some((h) => h.event === "held"), "F-910: ...and the row's history says a hold happened");
+  eq(row.attempts, 0,
+    "F-910: a turn that held writes is NOT an attempt - parking an agent during the period it exists to be watched is the opposite of the promise");
+
+  // THE MODEL IS STILL OFFERED ITS POWERS. A silently shrunken tool list would make the
+  // agent stage a draft saying it had already moved the ticket.
+  ok(loop.tools.some((t) => t.function.name === "transition_issue"),
+    "F-910: the tool is still offered - the refusal is at the write seam, with a sentence the model can read");
+
+  // THE RECEIPT COUNTS THEM. The post phase is the pass that walks every row once a tick.
+  const post = await V.runVaPost({ agent: shadowJob, tickId: "t-shadow-post", deps: postDeps() });
+  eq(post.heldWrites, 2, "F-910: the post receipt counts the held writes");
+  const receipt = (await L.readTick(kvs, AG, "t-shadow-post", "post")).receipt;
+  eq(receipt.heldWrites, 2, "F-910: ...and it is on the stored receipt, where the Agents tab reads it");
+
+  // ...AND A SURFACE RENDERS THEM.
+  const shown = await A.drafts({ jobId: AG }, { store: kvs, getJob: async () => shadowJob });
+  eq(shown.heldWrites.length, 2, "F-910: the drafts pane is handed the held writes");
+  eq(shown.heldWrites[0].itemKey, "SUP-1", "F-910: ...keyed by the item, like every other row on that pane");
+}
+
+/* ALLOW - the same agent, once it has been watched. */
+reset();
+{
+  const shadowJob = vaJob({
+    powers: { replyInternal: true, assign: true, transition: true, editFields: true },
+    status: { paused: false, shadowUntilTick: 3 },
+  });
+  for (let i = 0; i < 3; i++) await L.recordTickHealth(kvs, AG, true, { phase: "prepare" });
+  const loop = scriptedLoop([[{ name: "transition_issue", args: { issueKey: "SUP-1", to: "Done" } }]]);
+  const d = itemDeps({ runLoop: loop });
+  const r = await V.runVaItem({ agent: shadowJob, issueKey: "SUP-1", tickId: "t-live", deps: d });
+  eq(r.held, 0, "F-910.ALLOW_after_shadow_ticks - nothing is held once the watch is over");
+  ok(d.__changes.some((c) => c.action === "transition_issue"),
+    "F-910.ALLOW_after_shadow_ticks - the transition is dispatched as it is today");
+}
+
+/* == F-912 - THE KILL SWITCH AND THE PAUSE REACH A RUNNING TURN ================
+ *
+ * Gate 1's "kill switch" asked `isJobCancelled("va:<id>")` - `pf_cancel:va:<id>`, a key
+ * nothing writes - so a tenant cancel-all cancelled every surface except its agents, and a
+ * RUNNING item turn had no kill check at all beyond the purge tombstone.
+ */
+reset();
+{
+  // The EPOCH moves mid-turn: the first write goes through, the second is refused.
+  let cancelled = false;
+  const loop = scriptedLoop([[
+    { name: "add_labels", args: { issueKey: "SUP-1", labels: ["triaged"] } },
+    { name: "transition_issue", args: { issueKey: "SUP-1", to: "Done" } },
+  ]]);
+  const d = itemDeps({
+    runLoop: loop,
+    isKillSwitchActive: async (job, enqueuedAt) => {
+      eq(enqueuedAt, "2026-09-13T11:59:00.000Z", "F-912: the turn's own enqueuedAt reaches the epoch comparison");
+      const answer = cancelled;
+      cancelled = true;   // the cancel-all lands between the two tool calls
+      return answer;
+    },
+  });
+  const r = await V.runVaItem({
+    agent: vaJob({ powers: { replyInternal: true, transition: true, editFields: true } }),
+    issueKey: "SUP-1", tickId: "t-cancel", enqueuedAt: "2026-09-13T11:59:00.000Z", deps: d,
+  });
+  eq(d.__changes.length, 1, "F-912.BLOCK_epoch_mid_turn - the write after the cancel never reached the dispatcher");
+  eq(loop.seen[1].result.code, "cancelled", "F-912.BLOCK_epoch_mid_turn - ...it was refused by name");
+  eq(r.reason, "cancelled", "F-912: the turn finishes CLEANLY with the reason on the receipt");
+  eq((await L.readItem(kvs, AG, "SUP-1")).row.attempts, 0,
+    "F-912: a cancelled turn is not the item's failure - it does not count as an attempt");
+}
+
+reset();
+{
+  // PAUSED mid-turn: the flag flips on the RECORD, which the turn re-reads.
+  let paused = false;
+  const loop = scriptedLoop([[
+    { name: "add_labels", args: { issueKey: "SUP-1", labels: ["triaged"] } },
+    { name: "transition_issue", args: { issueKey: "SUP-1", to: "Done" } },
+  ]]);
+  const d = itemDeps({
+    runLoop: loop,
+    isKillSwitchActive: async () => false,
+    getJob: async () => {
+      const j = vaJob({ powers: { replyInternal: true, transition: true, editFields: true }, status: { paused, shadowUntilTick: 0 } });
+      paused = true;
+      return j;
+    },
+  });
+  const r = await V.runVaItem({
+    agent: vaJob({ powers: { replyInternal: true, transition: true, editFields: true } }),
+    issueKey: "SUP-1", tickId: "t-pause", deps: d,
+  });
+  eq(d.__changes.length, 1, "F-912.BLOCK_paused_mid_turn - the write after the pause never reached the dispatcher");
+  eq(r.reason, "paused", "F-912.BLOCK_paused_mid_turn - the turn ends with `paused` as its reason");
+}
+
+reset();
+{
+  // ALLOW - nothing cancelled, nothing paused.
+  const live = vaJob({ powers: { replyInternal: true, transition: true } });
+  const loop = scriptedLoop([[{ name: "transition_issue", args: { issueKey: "SUP-1", to: "Done" } }]]);
+  const d = itemDeps({ runLoop: loop, isKillSwitchActive: async () => false, getJob: async () => live });
+  const r = await V.runVaItem({ agent: live, issueKey: "SUP-1", tickId: "t-ok", deps: d });
+  eq(r.reason, undefined, "F-912.ALLOW_not_cancelled - the turn carries no stop reason");
+  ok(d.__changes.some((c) => c.action === "transition_issue"), "F-912.ALLOW_not_cancelled - the write proceeds");
+}
+
+/* THE DEAD READ IS GONE. `pf_cancel:va:<id>` is a key nothing in this repository writes,
+   and the gate that read it was the only reason a `va:` task id was ever minted. */
+{
+  const src = maskComments(await (await import("node:fs/promises")).readFile(new URL("../../src/virtual-admin.js", import.meta.url), "utf8"));
+  ok(!/pf_cancel/.test(src) && !src.includes("`va:${"),
+    "F-912: no surface mints a `va:<id>` cancel flag any more - the tenant epoch is the one predicate");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -470,6 +470,9 @@ const emptyRow = (issueKey, now) => ({
   state: "seen",
   fingerprint: null,
   staged: null,
+  // F-910 — what a SHADOW turn WOULD have written. Always an array, never absent, so a
+  // reader can count it without asking whether the field exists.
+  heldWrites: [],
   dueAt: null,
   attempts: 0,
   history: [],
@@ -510,6 +513,34 @@ const normalizeStaged = (staged, now) => {
     approvedAt: staged.approvedAt == null ? null : clampChars(staged.approvedAt, 40),
   };
 };
+
+/**
+ * THE HELD WRITES OF ONE SHADOW TURN (F-910), clamped at WRITE time like every other
+ * untrusted string on this row.
+ *
+ * SHADOW MODE HOLDS ACTIONS, NOT ONLY SPEECH. The item turn used to build its dispatcher
+ * from the POWERS alone, so an agent the Agents tab called SHADOW transitioned and
+ * reassigned real tickets on its very first tick while its drafts sat unsent. The turn now
+ * refuses every write-class action while the agent is in shadow and records it here, which
+ * is the only durable place an admin can read what the agent wanted to do.
+ *
+ * THE NEWEST TURN REPLACES THE PREVIOUS ONE, deliberately: the next shadow turn on this
+ * item re-reasons from the same issue and proposes again, so accumulating would grow a row
+ * with restatements of one intention and push the genuinely new proposal past the cap.
+ *
+ * `args` is the model's own JSON, so it is DEFANGED and clamped: it is shown to a human in
+ * the Agents tab and may one day be shown to a model, and a fence token inside a held write
+ * must not be able to close one.
+ */
+const normalizeHeldWrites = (list, now) => (Array.isArray(list) ? list : [])
+  .slice(0, VA_LIMITS.heldWritesMax)
+  .filter((h) => h && typeof h === "object" && h.action)
+  .map((h) => ({
+    action: clampChars(h.action, 40),
+    target: h.target == null ? null : clampChars(h.target, 80),
+    args: safeText(h.args, VA_LIMITS.heldWriteArgsMaxChars),
+    at: h.at ? String(h.at) : nowIso(now),
+  }));
 
 /**
  * Has a HUMAN approved this draft? (F-464)
@@ -709,6 +740,7 @@ export const saveItem = async (store, agent, issueKey, patch = {}, { now = Date.
     state: patch.state != null ? patch.state : base.state,
     fingerprint: patch.fingerprint !== undefined ? patch.fingerprint : base.fingerprint,
     staged: patch.staged !== undefined ? normalizeStaged(patch.staged, now) : base.staged,
+    heldWrites: patch.heldWrites !== undefined ? normalizeHeldWrites(patch.heldWrites, now) : (Array.isArray(base.heldWrites) ? base.heldWrites : []),
     dueAt: patch.dueAt !== undefined ? (patch.dueAt == null ? null : String(patch.dueAt)) : base.dueAt,
     attempts: patch.attempts !== undefined ? Math.max(0, Math.trunc(Number(patch.attempts) || 0)) : base.attempts,
     notes: patch.notes !== undefined ? safeText(patch.notes, VA_LIMITS.notesMaxChars) : base.notes,
@@ -1114,7 +1146,7 @@ export const withItemClaim = async (store, agent, issueKey, tickId, fn) => {
  * no separate task that could deliver without it; a second key here would be a row that is
  * always written in lockstep with this one.
  */
-export const recordTick = async (store, agent, { tickId, phase = "prepare", started = null, candidates = 0, staged = 0, skipped = [], next = null, error = null, compacted = null } = {}) => {
+export const recordTick = async (store, agent, { tickId, phase = "prepare", started = null, candidates = 0, staged = 0, skipped = [], next = null, error = null, compacted = null, heldWrites = 0 } = {}) => {
   const receipt = {
     agent: String(agent),
     phase: phase === "post" ? "post" : "prepare",
@@ -1135,6 +1167,16 @@ export const recordTick = async (store, agent, { tickId, phase = "prepare", star
       })),
     next: next == null ? null : String(next),
     error: error == null ? null : safeText(error, 300),
+    /*
+     * F-910 — HOW MANY WRITES THIS AGENT IS HOLDING because it is in shadow mode.
+     *
+     * A COUNT, like `staged`, and ABSENT WHEN ZERO: a receipt is evidence, and a `0` on
+     * every live agent's every tick would train an admin to ignore the field on the one
+     * tick it is not zero. The named list lives on the item rows the count is summed from
+     * (`heldWrites` there), which is what the Agents tab renders; the receipt only has to
+     * say that the agent wanted to act and was held.
+     */
+    ...(Math.trunc(Number(heldWrites) || 0) > 0 ? { heldWrites: Math.max(0, Math.trunc(Number(heldWrites))) } : {}),
     ...(isObj(compacted)
       ? {
         compacted: {

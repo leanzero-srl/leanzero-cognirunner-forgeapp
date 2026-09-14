@@ -814,6 +814,15 @@ const publicReceipt = (r) => {
      * achieved nothing.
      */
     ...(isObj(r.compacted) ? { compacted: { ...r.compacted } } : {}),
+    /*
+     * F-910 — HOW MANY CHANGES THE AGENT WAS HELD FROM MAKING while it is in shadow.
+     *
+     * `recordTick` writes the key only when it is non-zero, and the projection keeps that:
+     * absent means "this agent wrote what it wanted to", which on a live agent is every
+     * tick. Present means an admin has something to read in the drafts pane, and the
+     * named list is on the item rows (`drafts` returns it as `heldWrites`).
+     */
+    ...(Number(r.heldWrites) > 0 ? { heldWrites: Math.trunc(Number(r.heldWrites)) } : {}),
   };
 };
 
@@ -976,8 +985,27 @@ export const drafts = async ({ jobId } = {}, injected = {}) => {
     }))
     .sort((a, b) => String(b.stagedAt || "").localeCompare(String(a.stagedAt || "")));
 
+  /*
+   * F-910 — THE HELD WRITES, BESIDE THE DRAFTS, because in shadow mode they are the same
+   * review: "what would this agent have done to my instance".
+   *
+   * A SEPARATE LIST, not rows folded into `drafts`: a draft is a SENTENCE with an
+   * approve/reject decision behind it (`approveDraft` writes on `staged`), and a held write
+   * has no such decision yet — approving one would mean replaying a tool call, which
+   * nothing in this release does. They are also on rows in any state, while a draft is only
+   * ever on a `staged` one, so filtering them together would drop most of them.
+   */
+  const held = items.items
+    .filter((i) => Array.isArray(i.heldWrites) && i.heldWrites.length)
+    .flatMap((i) => i.heldWrites.map((h) => ({
+      itemKey: i.issueKey, issueKey: i.issueKey,
+      action: h.action, target: h.target, args: h.args, at: h.at,
+    })))
+    .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+
   return okv({
     drafts: rows,
+    heldWrites: held,
     // The tab renders approve/reject only while this is truthy. Returned rather than
     // re-derived in the UI, so the enable rule has one home.
     shadow: await isInShadow(job, { store: deps.store }),

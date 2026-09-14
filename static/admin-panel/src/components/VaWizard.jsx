@@ -390,7 +390,7 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy }) {
     case "create":
       return (
         <>
-          <p className="hint">It starts in shadow mode: it stages replies for you to read and posts nothing until the shadow ticks are used up.</p>
+          <p className="hint">It starts in shadow mode: it stages replies and records any change it wants to make for you to read, and it touches nothing until the shadow ticks are used up.</p>
           <div className="va-actions"><Next value={{ confirm: true }} label="Create the agent" /></div>
         </>
       );

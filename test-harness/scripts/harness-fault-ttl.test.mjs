@@ -409,10 +409,20 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
    * own users: "batches of ~3 with ~200 ms pauses between rounds". A throttled delete is
    * counted `failed` and the ROW SURVIVES, so the un-paced sweep answered ok:true over a
    * keyspace it had not cleared. Asserted here against the pack text itself, so the two
-   * cannot drift apart without a suite saying so. */
+   * cannot drift apart without a suite saying so.
+   *
+   * F-687 - THE NUMBERS ARE THE INTERFACE; THE PROSE IS NOT. This read the pack's exact
+   * markdown, emphasis included ("batches of **~3 with ~200 ms pauses**"), out of a file
+   * whose own header says GENERATED - DO NOT EDIT, produced by scripts/bake-knowledge.mjs
+   * from living source markdown on an allow-list. Re-word the source, drop the bold or write
+   * "200ms" without the space and this suite FAILS on a line labelled "(fixture)" while
+   * src/harness-fault.js is byte-identical and perfectly correct - a failure pointing at a
+   * knowledge pack rather than at the sweep. The drift worth catching is someone changing
+   * KVS_DELETE_BATCH, and that is asserted on the constants directly one line below. So the
+   * pack is read for its NUMBERS only, through a matcher tolerant of formatting. */
   const packText = readFileSync(new URL("../../src/shared/knowledge-packs/forge-app-builder.js", import.meta.url), "utf8");
-  ok(packText.includes("batches of **~3 with ~200 ms pauses**"),
-    "(fixture) the pack really does publish batches of ~3 with ~200 ms pauses - the source this rate is derived from");
+  ok(/batches of \*{0,2}~?3\b[\s\S]{0,60}?~?200 ?ms/.test(packText),
+    "(fixture) the pack really does publish batches of ~3 with ~200 ms pauses - the source this rate is derived from (numbers matched, wording not)");
   ok(fault.KVS_DELETE_BATCH === 3 && fault.KVS_DELETE_PAUSE_MS === 200,
     `deletes are paced at exactly that rate (got ${fault.KVS_DELETE_BATCH}/${fault.KVS_DELETE_PAUSE_MS})`);
   ok(fault.HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY === fault.KVS_DELETE_BATCH,

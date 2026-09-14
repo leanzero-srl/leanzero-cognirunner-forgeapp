@@ -49,6 +49,7 @@
  *   node scripts/va-shadow-live.mjs --keep           # leave the agent in place
  *   node scripts/va-shadow-live.mjs --postwait=420   # seconds to wait for a planner tick
  *   node scripts/va-shadow-live.mjs --env=staging    # needs STAGING_TESTSTATE_URL
+ *   node scripts/va-shadow-live.mjs --expect-drafts  # this run HAS an item that must stage
  *
  * Env: TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID + the JIRA_* trio.
  * NOTHING secret is printed — not the trigger URL, not the Bearer, not a draft body.
@@ -59,6 +60,24 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+/* F-839 — the receipt list is READ through the lib, and the two waits STOP on a scan fault.
+   `getVaStatus` answers `receipts: []` beside a named `receiptsUnavailable` when its bounded
+   `va_tick:{agent}:*` prefix scan faults. `!!latest(s, phase)` cannot tell "not yet" from
+   "unreadable", so both `pollStatus` calls below spun their FULL wait (TICK_WAIT_S, then
+   POST_WAIT_S) against a door that had already answered, and then read the timeout as
+   "no receipt appeared" — a FAIL against a product that ticked, paid for twice over. */
+/* F-854 — and the SAME reader answers "is this poll ever going to end?". The prepare
+   receipt already carries `worked` (the number of `va-item` tasks that were actually
+   pushed, src/va-admin.js `publicReceipt`: `worked = r.staged = fannedOut`), so on a tick
+   that fanned NOTHING out, `status.staged` can never rise from it — and the draft poll
+   below used to spend the whole 240 s discovering that. `receiptArm` names the refusal
+   arms (settling / paused / gate:*) for the same reason. */
+import { newestReceipt, receiptPoll, receiptArm, unavailableNote } from "../lib/va-tick-receipt.mjs";
+/* F-846 — `applyVerdict` is the ONE verdict-to-reporter dispatch in this directory
+   (live-driver-scope RULE 4/F-784: a driver that writes its own `{PASS, FAIL, NV}[row.verdict]`
+   map is how eight files shipped a TypeError under a green RESULT line). The two draft
+   judges below return its row shape so this file never grows a ninth map. */
+import { applyVerdict } from "../lib/agent-capability-precondition.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "issues"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -76,6 +95,19 @@ const QUEUES = arg("queues", "1,2,3").split(",").filter(Boolean);
 const POST_WAIT_S = Number(arg("postwait", "420"));
 const TICK_WAIT_S = Number(arg("tickwait", "240"));
 const KEEP = flag("keep");
+/* F-846 — IS A DRAFT DUE? Only the operator knows.
+   This fixture stages NOTHING of its own: it points a brand-new agent at whatever issues
+   already exist in PROJECT (intake.jql `project = <PROJECT>`, desk/queues as given) and the
+   drafting is two decisions deep past anything the script controls — `diffCandidates`
+   (va-ledger.js) turns the sweep into candidates, and then EACH ITEM TURN asks the model,
+   which may legitimately end `with nothing staged` and park the item (virtual-admin.js, the
+   F-414 attempts branch). So on a healthy tenant "0 drafts" is a NORMAL outcome, not a
+   defect — it means no issue in PROJECT was owed an answer the model thought worth writing.
+   `--expect-drafts` is the operator asserting the opposite: that this run was set up with an
+   item that MUST stage (a customer comment awaiting a reply). Only then is an empty
+   `listVaDrafts` a FAIL; otherwise it is N/V with the remedy, because a precondition that
+   never held is un-runnable, not broken. */
+const EXPECT_DRAFTS = flag("expect-drafts");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (m) => { console.error("\nFAIL:", m); process.exitCode = 1; throw new Error(m); };
@@ -235,8 +267,9 @@ const vaRecord = () => ({
 
 /* ── receipts ───────────────────────────────────────────────────────────────── */
 
-const receiptsOf = (status) => (status && Array.isArray(status.receipts) ? status.receipts : []);
-const latest = (status, phase) => receiptsOf(status).filter((r) => r.phase === phase)[0] || null;
+/* The local `receiptsOf`/`latest` pair is DELETED. `newestReceipt` returns
+   `{receipt, unavailable}` so the four read sites below can tell an UNREAD ledger from an
+   empty one, and `receiptPoll` makes "the scan faulted" a reason to STOP waiting. */
 
 async function pollStatus(jobId, predicate, seconds, label) {
   const deadline = Date.now() + seconds * 1000;
@@ -249,6 +282,257 @@ async function pollStatus(jobId, predicate, seconds, label) {
   }
   info(`(${label}: gave up after ${seconds}s)`);
   return last;
+}
+
+/*
+ * F-854 — THE DRAFT POLL, WHICH STOPS AS SOON AS THE ANSWER IS KNOWN.
+ *
+ * `pollStatus(jobId, (s) => Number(s.staged) >= 1, ...)` could only ever stop on the
+ * POSITIVE, so a run where nothing was going to stage burned the whole TICK_WAIT_S to learn
+ * what the prepare receipt had already said. The decision is `judgeDraftPollStop` (pure,
+ * proved offline); this function is only the loop and the clock around it, which is why the
+ * measurement below is about the DECISION and not about this.
+ *
+ * The receipt is read through lib/va-tick-receipt.mjs on EVERY iteration rather than taken
+ * once from the caller: a receipt that has not landed yet is the genuine "not yet", and the
+ * arm/worked answer is only worth acting on once there is one.
+ */
+async function pollForDraft(jobId, seconds, label) {
+  const t0 = Date.now();
+  const deadline = t0 + seconds * 1000;
+  let last = null;
+  let reads = 0;
+  let decision = { stop: false, outcome: "no-status", reason: "getVaStatus never answered a status body, so nothing about whether a draft was staged was read at all" };
+  while (Date.now() < deadline) {
+    const r = await invoke("getVaStatus", { jobId });
+    last = r.body && r.body.success ? r.body : null;
+    reads++;
+    if (last) {
+      const { receipt, unavailable } = newestReceipt(last, "prepare");
+      decision = judgeDraftPollStop({ staged: last.staged, receipt, unavailable, arm: receiptArm(receipt) });
+      if (decision.stop) {
+        info(`(${label}: ANSWERED after ${reads} read(s) in ${Math.round((Date.now() - t0) / 1000)}s — ${decision.outcome}: ${decision.reason})`);
+        return { status: last, decision, reads, elapsedS: Math.round((Date.now() - t0) / 1000) };
+      }
+    }
+    await sleep(6000);
+  }
+  info(`(${label}: gave up after ${seconds}s — ${decision.outcome}: ${decision.reason})`);
+  return { status: last, decision, reads, elapsedS: Math.round((Date.now() - t0) / 1000) };
+}
+
+/* ── the draft precondition, judged once (F-846) ─────────────────────────────
+ *
+ * STEP 6 used to grade F-414 with `else if (!drafts2.length) FAIL("no drafts remain after
+ * the second tick, so F-414 could not be judged")`. That sentence IS an N/V — it says the
+ * thing could not be judged — and it fired on exactly the run where STEP 3 had already
+ * FAILED for the same missing drafts. One un-runnable precondition, two red rows, and a
+ * reader counting reds would have opened two investigations into a tenant that simply had
+ * nothing owed. So the rule is: ONE CAUSE, ONE VERDICT, and the step that discovered the
+ * cause is the step that reports it.
+ *
+ * Both judges are PURE and live here rather than in lib/va-tick-receipt.mjs, which is the
+ * RECEIPT library (RULE 6) and owns nothing about drafts. They are exercised offline by
+ * scripts/va-shadow-draft-precondition.test.mjs.
+ */
+
+/**
+ * STEP 3's verdict on "did anything stage?", plus whether STEP 6 can judge F-414 at all.
+ *
+ * @param {{expectedToStage: boolean, drafts: any[], detail?: string,
+ *           causeAlreadyReported?: boolean}} input
+ * @returns {{staged: boolean, count: number, stage: {verdict: string, what: string}|null,
+ *            f414: {verdict: string, what: string}|null}}
+ *   `f414` is non-null ONLY when the precondition never held — it is STEP 6's whole row in
+ *   that case, and it is an N/V that NAMES step 3 so the two rows read as one story.
+ *
+ *   F-854 — `stage` is NULL when `causeAlreadyReported` says an EARLIER row in this same
+ *   step already owns the cause (today: `judgeSweepPrecondition` found the sweep empty, so
+ *   "nothing staged" is not a second fact, it is the same one restated). One cause, one
+ *   verdict is F-846's rule, and it does not stop applying because the cause moved one row
+ *   up. The `f414` hand-off is unaffected: step 6 must still be told it may not judge.
+ */
+export function judgeDraftPrecondition({ expectedToStage = false, drafts = [], detail = "", causeAlreadyReported = false } = {}) {
+  const count = Array.isArray(drafts) ? drafts.length : 0;
+  if (count > 0) {
+    return {
+      staged: true,
+      count,
+      stage: { verdict: "PASS", what: `listVaDrafts: ${count} staged draft(s)` },
+      f414: null,
+    };
+  }
+  const tail = detail ? ` (${detail})` : "";
+  const stage = causeAlreadyReported ? null : (expectedToStage
+    ? {
+      verdict: "FAIL",
+      what: `listVaDrafts returned no staged draft, and --expect-drafts says this run was set up with an item that MUST stage${tail}`,
+    }
+    : {
+      verdict: "N/V",
+      what: "nothing staged on this tick, and nothing in this fixture is REQUIRED to stage — "
+        + "the agent sweeps the issues that already exist and each item turn may end with nothing staged. "
+        + `Remedy: leave an issue owed a reply (a customer comment with no answer after it) in the swept project and re-run with --expect-drafts${tail}`,
+    });
+  return {
+    staged: false,
+    count: 0,
+    stage,
+    f414: {
+      verdict: "N/V",
+      what: "F-414 was not judged: no draft was staged on the first tick (reported in step 3), "
+        + "so there was no staged item for a second tick to re-stage",
+    },
+  };
+}
+
+/* ── THE DRAFT POLL'S STOP CONDITION (F-854) ─────────────────────────────────
+ *
+ * `pollStatus(jobId, (s) => Number(s.staged) >= 1, TICK_WAIT_S, "first staged draft")`
+ * had exactly ONE stop condition — the positive one — so every run where nothing was ever
+ * going to stage paid the FULL `TICK_WAIT_S` (240 s) to arrive at an answer the prepare
+ * receipt, read a dozen lines above, had ALREADY GIVEN. That is the same shape as F-839's
+ * two spinning waits: a predicate that cannot tell "not yet" from "never", against a door
+ * that has already answered.
+ *
+ * WHAT THE RECEIPT ALREADY KNOWS. `runVaTick` (src/virtual-admin.js) pushes one `va-item`
+ * task per candidate it fans out and counts them in `fannedOut`; `recordTick` stores that
+ * as `staged`, and `publicReceipt` (src/va-admin.js:~761) projects it as `worked`, beside
+ * `swept` (= `candidates`) and the `skipped[]` rows for every candidate that did NOT make
+ * it. `status.staged` counts STAGED DRAFTS, which only an item TURN can create. So:
+ *
+ *   worked === 0  ⇒  no `va-item` task exists for this tick  ⇒  `staged` CANNOT rise from
+ *                    it, no matter how long the poll waits. The answer is KNOWN, negatively.
+ *   worked >= 1   ⇒  turns are in flight and each may legitimately end with nothing staged
+ *                    (the F-414 attempts branch) — this is the ONLY case that must wait.
+ *
+ * The three other known answers stop too: `staged >= 1` (the positive), a receipt whose arm
+ * is a refusal (settling / paused / gate:*) — the tick never reached the sweep at all — and
+ * `receiptsUnavailable`, which is F-832's N/V and never a reason to keep asking.
+ *
+ * NOT A STOP: no receipt yet. That is the genuine "not yet", and it is what the wait is for.
+ *
+ * PURE, and ARM/RECEIPT COME IN ALREADY READ — the caller takes them from
+ * lib/va-tick-receipt.mjs (live-driver-scope RULE 6: the receipt list has ONE reader), which
+ * also keeps this function importable by the offline test with no lib in scope.
+ */
+
+/**
+ * @param {{staged: number, receipt: any, unavailable: string|null, arm: string|null}} input
+ * @returns {{stop: boolean, outcome: string, reason: string}} — `outcome` is one of
+ *   `"staged"` | `"unavailable"` | `"gated"` | `"nothing-swept"` | `"all-skipped"` |
+ *   `"no-receipt-yet"` | `"waiting"`. Only the last two leave `stop` false.
+ */
+export function judgeDraftPollStop({ staged = 0, receipt = null, unavailable = null, arm = null } = {}) {
+  const n = Number(staged);
+  if (Number.isFinite(n) && n >= 1) {
+    return { stop: true, outcome: "staged", reason: `status.staged=${n} — a draft is staged, which is the answer this poll is waiting for` };
+  }
+  /* F-832, in the waiting form: a door that has said it cannot read its own ledger will keep
+     saying it, and the timeout would then be read as "nothing staged" rather than "unread". */
+  if (unavailable) {
+    return { stop: true, outcome: "unavailable", reason: `the prepare receipt could not be READ (receiptsUnavailable="${unavailable}") — whether anything was fanned out is unknown, so waiting only spends the wait to reach the same N/V` };
+  }
+  if (!receipt || typeof receipt !== "object") {
+    return { stop: false, outcome: "no-receipt-yet", reason: "no prepare receipt has been written yet — this is the genuine 'not yet', and it is what the wait exists for" };
+  }
+  if (arm && arm !== "prepare") {
+    return { stop: true, outcome: "gated", reason: `the tick was refused before it swept anything (arm=${arm}) — no va-item task was pushed, so status.staged cannot rise from this tick` };
+  }
+  /* `Number(null)` is 0 and `Number(undefined)` is NaN, so a bare `Number()` would read a
+     MISSING `worked` as "nothing was fanned out" and stop the poll on a surface that changed
+     under us. An absent count is not a zero count. */
+  const worked = receipt.worked == null ? NaN : Number(receipt.worked);
+  if (!Number.isFinite(worked)) {
+    return { stop: false, outcome: "waiting", reason: `the receipt carries no usable worked count (worked=${JSON.stringify(receipt.worked)}) — nothing here says the poll may stop` };
+  }
+  if (worked === 0) {
+    const swept = receipt.swept == null ? NaN : Number(receipt.swept);
+    const skips = Array.isArray(receipt.skipped) ? receipt.skipped.filter((r) => r && typeof r === "object") : [];
+    const reasons = skips.map((r) => String(r.gate || r.reason || "?"));
+    const tail = reasons.length ? ` (skipped: ${JSON.stringify(reasons).slice(0, 200)})` : " (and skipped[] is empty)";
+    if (Number.isFinite(swept) && swept >= 1) {
+      return { stop: true, outcome: "all-skipped", reason: `the tick swept ${swept} candidate(s) and fanned out NONE of them${tail} — no va-item task was pushed, so status.staged cannot rise from this tick` };
+    }
+    return { stop: true, outcome: "nothing-swept", reason: `the sweep found nothing to work (swept=${JSON.stringify(receipt.swept)}, worked=0)${tail} — there is no item turn to wait for` };
+  }
+  return { stop: false, outcome: "waiting", reason: `${worked} item turn(s) were fanned out and none has staged yet — each turn may still end with nothing staged, so this is the one case that must wait` };
+}
+
+/* ── THE SWEEP, JUDGED BY THE SAME PRECONDITION RULE (F-854 / F-846) ──────────
+ *
+ * `if (Number(prep.swept) >= 1) PASS(…); else FAIL("the sweep found nothing: swept=…")`
+ * is an N/V graded RED, for the same reason F-846's empty `listVaDrafts` was: this fixture
+ * points a brand-new agent at WHATEVER ISSUES ALREADY EXIST in PROJECT. A project that is
+ * empty, or whose issues are all already tracked, sweeps zero candidates and that is a
+ * NORMAL tenant state, not a product defect. Only `--expect-drafts` — the operator asserting
+ * this run was set up with an item that must stage — makes an empty sweep a real FAIL.
+ *
+ * ONE CAUSE, ONE VERDICT (F-846's rule). When the sweep found nothing, THIS row owns the
+ * cause and `judgeDraftPrecondition` is told so: the "nothing staged" row underneath would
+ * be a second verdict for the same single fact, which is exactly the two-reds shape F-846
+ * was raised to remove.
+ */
+
+/**
+ * @param {{expectedToStage: boolean, swept: any, detail?: string}} input
+ * @returns {{found: boolean|null, row: {verdict: string, what: string}}} — `found === null`
+ *   when the receipt carried no usable count, which is not a statement about the sweep.
+ */
+export function judgeSweepPrecondition({ expectedToStage = false, swept = null, detail = "" } = {}) {
+  /* Same trap as the poll's `worked`: `Number(null)` is 0, and a receipt that carries NO
+     swept count must never be graded as a sweep that found nothing — least of all as a FAIL
+     under --expect-drafts, where a missing field would become evidence against the product. */
+  const n = swept == null ? NaN : Number(swept);
+  const tail = detail ? ` (${detail})` : "";
+  if (!Number.isFinite(n)) {
+    return {
+      found: null,
+      row: { verdict: "N/V", what: `the prepare receipt carries no usable swept count (swept=${JSON.stringify(swept)}) — the sweep was not measured, so neither a PASS nor a FAIL is available${tail}` },
+    };
+  }
+  if (n >= 1) return { found: true, row: { verdict: "PASS", what: `swept ≥ 1: swept=${n}` } };
+  if (expectedToStage) {
+    return {
+      found: false,
+      row: { verdict: "FAIL", what: `the sweep found nothing: swept=0, and --expect-drafts says this run was set up with an item that MUST stage${tail}` },
+    };
+  }
+  return {
+    found: false,
+    row: {
+      verdict: "N/V",
+      what: "the sweep found nothing: swept=0 — this fixture sweeps whatever issues ALREADY EXIST in the project, "
+        + "so an empty or fully-tracked project sweeps zero candidates and nothing in this run REQUIRED otherwise. "
+        + `Remedy: leave an issue owed a reply in the swept project and re-run with --expect-drafts${tail}`,
+    },
+  };
+}
+
+/**
+ * STEP 6's verdict when the precondition DID hold — i.e. step 3 staged `stagedBefore`
+ * drafts and the second tick has just been read. An empty `drafts` here is NOT the
+ * precondition; it means drafts that existed have gone, which is a real product event and
+ * keeps its FAIL.
+ *
+ * @param {{stagedBefore: number, drafts: any[], unchanged: boolean}} input
+ * @returns {{verdict: string, what: string}|null} — null when the per-draft loop has
+ *   already reported every field that moved, so nothing is said twice.
+ */
+export function judgeRestageEvidence({ stagedBefore = 0, drafts = [], unchanged = true } = {}) {
+  const count = Array.isArray(drafts) ? drafts.length : 0;
+  if (count === 0) {
+    return {
+      verdict: "FAIL",
+      what: `the ${stagedBefore} draft(s) staged on the first tick are GONE after the second tick — `
+        + "a staged item must survive a re-tick untouched (F-414)",
+    };
+  }
+  if (!unchanged) return null;
+  return {
+    verdict: "PASS",
+    what: "every previously staged item is unchanged — same stagedAt, same attempts",
+  };
 }
 
 /* ── the body shape, never the body ─────────────────────────────────────────── */
@@ -324,23 +608,46 @@ async function main() {
   if (!(ran.body && ran.body.success)) die(`runScheduledJobNow refused: ${JSON.stringify(ran.body)}`);
   PASS(`va-tick enqueued, taskId=${ran.body.taskId}`);
 
-  const afterTick = await pollStatus(jobId, (s) => !!latest(s, "prepare"), TICK_WAIT_S, "prepare receipt");
-  const prep = latest(afterTick, "prepare");
-  if (!prep) { FAIL("no prepare receipt appeared within the wait"); }
+  const afterTick = await pollStatus(jobId, (s) => receiptPoll(s, "prepare").stop, TICK_WAIT_S, "prepare receipt");
+  const { receipt: prep, unavailable: prepUnavailable } = newestReceipt(afterTick, "prepare");
+  /* F-854 — did the sweep find anything? `null` = not measured (unreadable / no receipt /
+     no usable count), `false` = measured and empty, which is the cause STEP 3's draft row
+     must then NOT report a second time. */
+  let sweepFound = null;
+  if (prepUnavailable) { NV(unavailableNote(prepUnavailable, "the prepare receipt and its swept/worked/skipped numbers")); }
+  else if (!prep) { FAIL("no prepare receipt appeared within the wait"); }
   else {
     PASS(`prepare receipt: ${JSON.stringify(prep).slice(0, 600)}`);
-    if (Number(prep.swept) >= 1) PASS(`swept ≥ 1: swept=${prep.swept}`);
-    else FAIL(`the sweep found nothing: swept=${prep.swept}`);
+    /* F-854 — an empty sweep on a project nobody seeded is an UN-RUNNABLE PRECONDITION, not
+       a product failure; only --expect-drafts makes it red. Same judge shape, same rule and
+       the same dispatch as F-846's draft row. */
+    const sweep = judgeSweepPrecondition({ expectedToStage: EXPECT_DRAFTS, swept: prep.swept, detail: `worked=${prep.worked}` });
+    sweepFound = sweep.found;
+    applyVerdict(sweep.row, { PASS, FAIL, NV });
     info(`worked (fanned out)=${prep.worked} skipped=${JSON.stringify(prep.skipped || []).slice(0, 400)}`);
   }
   info(`status: itemsByState=${JSON.stringify(afterTick && afterTick.itemsByState)} staged=${afterTick && afterTick.staged} health=${JSON.stringify(afterTick && afterTick.health)} shadow=${JSON.stringify(afterTick && afterTick.shadow)}`);
 
-  // The item turns are separate tasks; wait for at least one draft.
-  const withDraft = await pollStatus(jobId, (s) => Number(s.staged) >= 1, TICK_WAIT_S, "first staged draft");
+  /* The item turns are separate tasks, so a draft can only arrive later than the receipt —
+     but F-854: the receipt already says whether any turn was FANNED OUT at all, and when it
+     says none was, there is nothing to wait for. `pollForDraft` stops on that, on the
+     positive, on a refusal arm and on an unreadable ledger; only "turns are in flight"
+     spends the wait. */
+  const draftPoll = await pollForDraft(jobId, TICK_WAIT_S, "first staged draft");
   const dr = await invoke("listVaDrafts", { jobId });
   const drafts = (dr.body && dr.body.drafts) || [];
-  if (drafts.length >= 1) {
-    PASS(`listVaDrafts: ${drafts.length} staged draft(s)`);
+  /* F-846 — the precondition is judged ONCE, here, and step 6 is told what it may judge.
+     F-854 — …unless the empty SWEEP above already reported that same single cause, in which
+     case this row is suppressed and only step 6's hand-off survives. The poll's own stop
+     reason rides in `detail`, so the row names WHY the run stopped waiting. */
+  const draftPrecondition = judgeDraftPrecondition({
+    expectedToStage: EXPECT_DRAFTS,
+    drafts,
+    causeAlreadyReported: sweepFound === false,
+    detail: `poll stopped on ${draftPoll.decision.outcome} after ${draftPoll.elapsedS}s; ${JSON.stringify(dr.body).slice(0, 200)}`,
+  });
+  if (draftPrecondition.stage) applyVerdict(draftPrecondition.stage, { PASS, FAIL, NV });
+  if (draftPrecondition.staged) {
     for (const d of drafts) {
       const sh = shapeOf(d.body);
       const prose = sh.bullets === 0;
@@ -350,8 +657,6 @@ async function main() {
       if (prose) PASS(`  ${d.itemKey}: plain prose — 0 bullet lines`);
       else FAIL(`  ${d.itemKey}: ${sh.bullets} bullet line(s) in the body`);
     }
-  } else {
-    FAIL(`listVaDrafts returned no staged draft (${JSON.stringify(dr.body).slice(0, 300)})`);
   }
 
   // The ROW itself, straight from KVS, so the resolver's answer has a second source.
@@ -366,9 +671,13 @@ async function main() {
 
   /* ── STEP 4 — the POST phase, and the proof that nothing was posted ──────── */
   console.log("\nSTEP 4 — the post phase (the REAL 5-minute planner enqueues va-post; runVaPostNow is not allow-listed)");
-  const postStatus = await pollStatus(jobId, (s) => !!latest(s, "post"), POST_WAIT_S, "post receipt");
-  const post = latest(postStatus, "post");
-  if (!post) {
+  const postStatus = await pollStatus(jobId, (s) => receiptPoll(s, "post").stop, POST_WAIT_S, "post receipt");
+  const { receipt: post, unavailable: postUnavailable } = newestReceipt(postStatus, "post");
+  if (postUnavailable) {
+    /* The comment-count read below is a DIFFERENT door (Jira's own) and still stands as the
+       proof that nothing was posted; what is unproven here is the receipt's own account. */
+    NV(unavailableNote(postUnavailable, "the post receipt, its posted count and whether skipped[] names the shadow gate"));
+  } else if (!post) {
     FAIL(`no post receipt within ${POST_WAIT_S}s — the post phase could not be observed`);
   } else {
     PASS(`post receipt: ${JSON.stringify(post).slice(0, 600)}`);
@@ -398,8 +707,8 @@ async function main() {
   else info(`second va-tick enqueued, taskId=${ran2.body.taskId}`);
   await sleep(45000);
   const st2 = await invoke("getVaStatus", { jobId });
-  const prep2 = latest(st2.body, "prepare");
-  info(`second prepare receipt: ${JSON.stringify(prep2).slice(0, 500)}`);
+  const { receipt: prep2, unavailable: prep2Unavailable } = newestReceipt(st2.body, "prepare");
+  info(`second prepare receipt: ${JSON.stringify(prep2).slice(0, 500)}${prep2Unavailable ? ` (UNREADABLE: receiptsUnavailable="${prep2Unavailable}")` : ""}`);
   const dr2 = await invoke("listVaDrafts", { jobId });
   const drafts2 = (dr2.body && dr2.body.drafts) || [];
   info(`drafts after the second tick: ${drafts2.length}`);
@@ -411,8 +720,17 @@ async function main() {
     if (d.attempts !== wasAttempts) { FAIL(`  ${d.itemKey}: attempts moved ${wasAttempts} → ${d.attempts}`); f414 = false; }
     if (d.stagedAt !== wasStagedAt) { FAIL(`  ${d.itemKey}: the draft was RE-STAGED (stagedAt ${wasStagedAt} → ${d.stagedAt})`); f414 = false; }
   }
-  if (f414 && drafts2.length) PASS(`every previously staged item is unchanged — same stagedAt, same attempts (${JSON.stringify(drafts2.map((d) => ({ k: d.itemKey, a: d.attempts })))})`);
-  else if (!drafts2.length) FAIL("no drafts remain after the second tick, so F-414 could not be judged");
+  /* F-846 — when NOTHING ever staged, step 3 already owns that row and this step says only
+     that F-414 was not judgeable. When drafts DID stage and are now gone, that is a product
+     event of its own and keeps its FAIL. */
+  if (draftPrecondition.f414) {
+    applyVerdict(draftPrecondition.f414, { PASS, FAIL, NV });
+  } else {
+    const row = judgeRestageEvidence({ stagedBefore: drafts.length, drafts: drafts2, unchanged: f414 });
+    /* The evidence rides in `what` rather than in applyVerdict's `detail`, because these three
+       reporters take ONE string and a second argument would be silently dropped. */
+    if (row) applyVerdict({ ...row, what: `${row.what} (${JSON.stringify(drafts2.map((d) => ({ k: d.itemKey, a: d.attempts })))})` }, { PASS, FAIL, NV });
+  }
 
   /* ── STEP 5 — pause ──────────────────────────────────────────────────────── */
   console.log("\nSTEP 5 — pause the agent (saveScheduledJob status.paused; `pauseVa` is not allow-listed)");
@@ -427,12 +745,13 @@ async function main() {
   info(`run-now on a paused agent: ${JSON.stringify(ran3.body).slice(0, 200)}`);
   await sleep(40000);
   const st3 = await invoke("getVaStatus", { jobId });
-  const prep3 = latest(st3.body, "prepare");
-  info(`prepare receipt after the pause: ${JSON.stringify(prep3).slice(0, 400)}`);
+  const { receipt: prep3, unavailable: prep3Unavailable } = newestReceipt(st3.body, "prepare");
+  info(`prepare receipt after the pause: ${JSON.stringify(prep3).slice(0, 400)}${prep3Unavailable ? ` (UNREADABLE: receiptsUnavailable="${prep3Unavailable}")` : ""}`);
   if (st3.body && st3.body.paused === true) PASS("getVaStatus reports paused = true");
   else FAIL(`getVaStatus reports paused = ${st3.body && st3.body.paused}`);
   const pausedSkip = (prep3 && (prep3.skipped || []).some((r) => String(r.reason) === "paused"));
-  if (pausedSkip) PASS(`the tick receipt says paused: ${JSON.stringify(prep3.skipped)}`);
+  if (prep3Unavailable) NV(unavailableNote(prep3Unavailable, "whether the tick after the pause RECORDS the pause (a paused tick records skipped[{reason:\"paused\"}], so its absence here would be read as the engine ignoring the pause)"));
+  else if (pausedSkip) PASS(`the tick receipt says paused: ${JSON.stringify(prep3.skipped)}`);
   else FAIL(`the tick after the pause does not say paused: ${JSON.stringify(prep3 && prep3.skipped).slice(0, 300)}`);
 
   /* ── the agent's memory ──────────────────────────────────────────────────── */

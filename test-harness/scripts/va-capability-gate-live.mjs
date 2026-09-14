@@ -44,6 +44,10 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
    un-runnable - the inverse of the precondition the lib judges. */
 import { resolveFlipModel } from "../lib/agent-capability-precondition.mjs";
 import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+/* F-839 — the receipt list is READ through the lib, never off `.receipts` here: a faulted
+   prefix scan answers `receipts: []` beside a named `receiptsUnavailable`, and this file
+   graded that emptiness as "no prepare receipt" (a FAIL against a product that ticked). */
+import { newestReceipt, receiptPoll, unavailableNote } from "../lib/va-tick-receipt.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -127,8 +131,11 @@ async function kvs(key) {
   return { ok: true, value: r.json.value === undefined ? null : r.json.value };
 }
 
-const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);
-const latest = (s, phase) => receiptsOf(s).filter((r) => r.phase === phase)[0] || null;
+/* The local `receiptsOf`/`latest` pair that used to live here is DELETED. It read
+   `s.receipts` and nothing else, so `receiptsUnavailable` — the named reason the status
+   door gives when its bounded `va_tick:{agent}:*` prefix scan faults — was invisible to it
+   and every scan fault arrived as "no receipt". `newestReceipt` hands back the reason
+   beside the row so the two can be told apart. */
 
 const vaRecord = () => ({
   persona: { name: arg("persona", "Cap"), voice: { register: "terse", greeting: false, maxSentences: 3, language: "auto" }, signature: false },
@@ -216,19 +223,26 @@ async function main() {
   if (!(ran.body && ran.body.success)) throw new Error(`runScheduledJobNow refused: ${JSON.stringify(ran.body)}`);
   PASS(`va-tick enqueued, taskId=${ran.body.taskId}`);
 
+  /* F-839 — the poll STOPS as soon as the answer is known, and "the scan faulted" is an
+     answer. Spinning the full TICK_WAIT_S against a door that has already said
+     `receiptsUnavailable` only arrives at the same unreadable list, and the timeout was
+     then read as an absence. */
   const deadline = Date.now() + TICK_WAIT_S * 1000;
-  let st = null, prep = null;
+  let st = null, prep = null, prepUnavailable = null;
   while (Date.now() < deadline) {
     const r = await invoke("getVaStatus", { jobId });
     st = r.body && r.body.success ? r.body : null;
-    prep = latest(st, "prepare");
-    if (prep) break;
+    const p = receiptPoll(st, "prepare");
+    prep = p.receipt; prepUnavailable = p.unavailable;
+    if (p.stop) break;
     await sleep(6000);
   }
 
   /* ── STEP 3 — the receipt ────────────────────────────────────────────────── */
   console.log("\nSTEP 3 - the receipt must NAME the gate");
-  if (!prep) {
+  if (prepUnavailable) {
+    NV(unavailableNote(prepUnavailable, "every assertion in this step (the agent row, the reason, the gate name, swept/worked and ok:false)"));
+  } else if (!prep) {
     FAIL(`no prepare receipt within ${TICK_WAIT_S}s`);
   } else {
     info(`prepare receipt: ${JSON.stringify(prep).slice(0, 600)}`);
@@ -296,10 +310,14 @@ async function main() {
    * app's - recorded here so the wrong field is not tried a third time.
    */
   const st501 = await invoke("getVaStatus", { jobId });
-  const prep501 = latest(st501.body && st501.body.success ? st501.body : null, "prepare");
-  info(`getVaStatus.receipts[phase=prepare][0] -> ${JSON.stringify(prep501)}`);
+  const { receipt: prep501, unavailable: unavailable501 } = newestReceipt(st501.body && st501.body.success ? st501.body : null, "prepare");
+  info(`getVaStatus newest receipt [phase=prepare] -> ${JSON.stringify(prep501)}`);
   info(`getVaStatus.lastTick (a timestamp, not the receipt) -> ${JSON.stringify(st501.body && st501.body.lastTick)}`);
-  if (!prep501) {
+  if (unavailable501) {
+    /* F-501/F-502 are about what the TAB renders, and on this read the tab renders
+       "Stored history could not be read" — which is neither a held nor a broken finding. */
+    NV(unavailableNote(unavailable501, "F-501 (the gate name) and F-502 (ok:false) on the surface the Agents tab uses"));
+  } else if (!prep501) {
     FAIL("getVaStatus returned no prepare receipt at all, so F-501/F-502 cannot be read off the surface the tab uses");
   } else {
     if (prep501.ok === false) PASS(`F-502 HOLDS: the receipt getVaStatus hands the tab reports ok = false - a tick the engine stopped at a gate is NOT an ok tick`);

@@ -67,6 +67,12 @@ import { readKeySlotWitness, describeKeySlot, sameKeySlot } from "../lib/key-slo
 import { resolveFlipModel, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
 /* F-784 - the RESULT line, and what it must say when the run threw instead of finishing. */
 import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+/* F-839 — the receipt list is READ through the lib. `getVaStatus` answers `receipts: []`
+   beside a named `receiptsUnavailable` when its bounded `va_tick:{agent}:*` prefix scan
+   faults, and all three grade sites below used to read that emptiness as a statement about
+   the agent: twice as a FAIL against a tick that ran, and once — "no compacted{} block on
+   the backoff tick" — as a PASS that is TRUE of a receipt nobody could read. */
+import { newestReceipt, unavailableNote } from "../lib/va-tick-receipt.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "memories", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -184,8 +190,9 @@ const vaRecord = () => ({
   status: { paused: false, shadowUntilTick: 500 },
 });
 
-const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);
-const latestPrepare = (s) => receiptsOf(s).filter((r) => r.phase === "prepare")[0] || null;
+/* The local `receiptsOf`/`latestPrepare` pair is DELETED — it read `s.receipts` and
+   nothing else, so it could not tell an UNREAD ledger from an empty one. `newestReceipt`
+   returns the named reason beside the row. */
 const watchedOf = async (jobId) => {
   const h = await kvs(`va_health:${jobId}`);
   return h.ok && h.value ? Number(h.value.prepareTicks) || 0 : 0;
@@ -223,7 +230,10 @@ async function tickOnce(jobId, label, { freshBucket = false } = {}) {
   // The receipt row lands with the health bump; give the status read a beat to see it.
   await sleep(4000);
   const st = (await invoke("getVaStatus", { jobId })).body;
-  return { st, receipt: latestPrepare(st) };
+  /* `unavailable` travels WITH the receipt, so every caller below can refuse to grade
+     rather than read a scan fault as the agent's behaviour. */
+  const { receipt, unavailable } = newestReceipt(st, "prepare");
+  return { st, receipt, unavailable };
 }
 
 /* ── the admin panel: the seed door, and the two states of the Ticks pane ────── */
@@ -333,9 +343,12 @@ async function main() {
   console.log("\nSTEP 2 — one prepare tick: the compaction turn");
   const t1 = await tickOnce(jobId, "compaction tick", { freshBucket: true });
   const r1 = t1 && t1.receipt;
+  const u1 = t1 && t1.unavailable;
   info(`receipt: ${JSON.stringify(r1).slice(0, 700)}`);
   const c1 = r1 && r1.compacted;
-  if (c1 && typeof c1 === "object") {
+  if (u1) {
+    NV(unavailableNote(u1, "the compacted{} block, its before/after numbers, fellBack and the tick's ok flag"));
+  } else if (c1 && typeof c1 === "object") {
     PASS(`the receipt carries compacted:{before:${c1.before}, after:${c1.after}} — the field is present ONLY when a turn actually ran`);
     if (Number(c1.before) > COMPACT_BYTES) PASS(`before (${c1.before}) is above the threshold, as the seed intended`);
     else FAIL(`before is ${c1.before}, not above ${COMPACT_BYTES}`);
@@ -346,7 +359,8 @@ async function main() {
   } else {
     FAIL(`the receipt carries no compacted{} block: ${JSON.stringify(r1).slice(0, 400)}`);
   }
-  if (r1 && r1.ok !== false) PASS("the tick is ok — a compaction that converged does not fail the tick");
+  if (u1) { /* named once above — the ok flag rides the same unread receipt */ }
+  else if (r1 && r1.ok !== false) PASS("the tick is ok — a compaction that converged does not fail the tick");
   else FAIL(`the tick is marked failed: ${JSON.stringify(r1 && r1.skipped)}`);
   const memAfter = await invoke("getVaMemory", { jobId });
   const bytesAfter = new TextEncoder().encode((memAfter.body && memAfter.body.memory) || "").length;
@@ -454,10 +468,13 @@ async function main() {
   console.log("\nSTEP 4 — the tick that PAYS for a dead summariser: loud, gated, and braked");
   const t2 = await tickOnce(jobId, "failing tick", { freshBucket: true });
   const r2 = t2 && t2.receipt;
+  const u2 = t2 && t2.unavailable;
   info(`receipt: ${JSON.stringify(r2).slice(0, 800)}`);
   const skips2 = (r2 && Array.isArray(r2.skipped) ? r2.skipped : []);
   const memSkip = skips2.find((s) => s.key === "(memory)" || /^compaction:/.test(String(s.reason || "")));
-  if (memSkip) {
+  if (u2) {
+    NV(unavailableNote(u2, "the memory skip row, its gate:compaction, the namespaced reason (F-507) and ok:false (F-506)"));
+  } else if (memSkip) {
     PASS(`the receipt carries the memory skip row: ${JSON.stringify(memSkip)}`);
     if (memSkip.gate === "compaction") PASS('the row names the GATE: gate:"compaction" — a paid-for failure, not housekeeping');
     else FAIL(`the row has no gate:"compaction": ${JSON.stringify(memSkip)}`);
@@ -466,7 +483,8 @@ async function main() {
   } else {
     FAIL(`no memory skip row on the receipt: ${JSON.stringify(skips2).slice(0, 400)}`);
   }
-  if (r2 && r2.ok === false) PASS("the tick is marked ok:false — a compaction that was PAID FOR and did not converge fails the tick (F-506)");
+  if (u2) { /* named once above */ }
+  else if (r2 && r2.ok === false) PASS("the tick is marked ok:false — a compaction that was PAID FOR and did not converge fails the tick (F-506)");
   else FAIL(`the tick is ok=${r2 && r2.ok} after a paid-for failed compaction`);
   const bo2 = await kvs(`va_compact_backoff:${jobId}`);
   if (bo2.ok && bo2.value !== null) PASS(`va_compact_backoff is ARMED: ${JSON.stringify(bo2.value).slice(0, 200)}`);
@@ -518,15 +536,23 @@ async function main() {
   PASS(`the notes are over the threshold again (${re3Bytes} bytes), so this tick HAS something to compact — the only way the backoff can be the reason it does not`);
   const t3 = await tickOnce(jobId, "backoff tick", { freshBucket: true });
   const r3 = t3 && t3.receipt;
+  const u3 = t3 && t3.unavailable;
   info(`receipt: ${JSON.stringify(r3).slice(0, 700)}`);
   const skips3 = (r3 && Array.isArray(r3.skipped) ? r3.skipped : []);
   const boSkip = skips3.find((s) => /compaction-backoff/.test(String(s.reason || "")));
+  /* THE VACUOUS-PASS HALF OF F-839 IS HERE. "no compacted{} block" is TRUE of a receipt
+     that could not be read, so on a faulted scan this arm used to PASS while measuring
+     nothing — a pass that would survive the backoff being deleted entirely. */
+  if (u3) {
+    NV(unavailableNote(u3, "the compaction-backoff row, the tick's ok flag and the ABSENCE of a compacted{} block"));
+  } else {
   if (boSkip) PASS(`the tick answers the backoff by name: ${JSON.stringify(boSkip)}`);
   else FAIL(`no compaction-backoff row on the tick after the failure: ${JSON.stringify(skips3).slice(0, 400)}`);
   if (r3 && r3.ok !== false) PASS("and the tick is ok:true — the engine deliberately not paying for a known-broken call is not a failed tick, and marking it one would bury the banner it already raised");
   else FAIL(`the backoff tick is marked ok:false: ${JSON.stringify(r3 && r3.skipped)}`);
   if (!(r3 && r3.compacted)) PASS("no compacted{} block on the backoff tick — absent means 'no turn was bought', which is exactly what a backoff is");
   else FAIL(`the backoff tick carries a compacted block, so a turn WAS bought: ${JSON.stringify(r3.compacted)}`);
+  }
   /* F-741 — the command this sentence tells an operator to RUN has to name the tenant the
      run actually used, or they read the logs of the other one. */
   info(`whether a model call was made is asserted from \`forge logs -e ${ENV_NAME}\` after this run, not from here.`);

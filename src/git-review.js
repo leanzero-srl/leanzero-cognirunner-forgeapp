@@ -99,6 +99,9 @@ import { claimRuleExecution } from "./shared/execution-claim.js";
 // key part. Re-exported below so the engine and the offline suite share one name.
 import { REVIEW_CLAIM_PREFIX, REVIEW_RATE_PREFIX, reviewClaimKey, reviewRateKey } from "./shared/git-ids.js";
 import { defangFence } from "./memories.js";
+// F-884 — the admin arming-stamp comparison has ONE home; this engine asks it the same
+// way the consumer does. See src/shared/roster-roles.js.
+import { isAdminSavedByRole } from "./shared/roster-roles.js";
 import {
   capDiff,
   // F-287 — ONE truncation rule. This module used to carry its own byte clamp with a
@@ -531,7 +534,7 @@ export const reviewPullRequest = async ({
   // derives both; the engine re-derives the second rather than trusting one caller to
   // have done it. Two independent conditions, both required, both defaulting to false.
   const savedByRole = str(options.savedByRole);
-  const allowVerdictActions = options.allowVerdictActions === true && savedByRole === "admin";
+  const allowVerdictActions = options.allowVerdictActions === true && isAdminSavedByRole(savedByRole);
   const wantInline = options.inlineComments !== false;
 
   if (!provider || typeof provider.getPullRequest !== "function") return failure("invalid_args", "A git provider is required.");

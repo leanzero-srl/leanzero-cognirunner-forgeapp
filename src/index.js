@@ -52,7 +52,7 @@ import {
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "./shared/roster-roles.js";
+import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES, SAVED_BY_ROLES, DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 import { isKeyConflict, safeKeyPart } from "./shared/kvs-keys.js";
 import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js";
 // The project-key memo mechanics + the cap live with the leak table they serve (F-419).
@@ -11294,8 +11294,8 @@ const agentGateFacts = async (context, { fresh = false } = {}) => {
 const savedByRoleFor = async (accountId) => {
   try {
     const perms = await getUserPermissions(accountId);
-    return perms && perms.role === "admin" ? "admin" : "editor";
-  } catch (e) { return "editor"; }
+    return perms && isAdminSavedByRole(perms.role) ? ADMIN_SAVED_BY_ROLE : DEFAULT_SAVED_BY_ROLE;
+  } catch (e) { return DEFAULT_SAVED_BY_ROLE; }
 };
 
 /**
@@ -11315,7 +11315,7 @@ const savedByRoleFor = async (accountId) => {
  * stamps "editor": the lesser power is the safe answer.
  */
 const stampSavedByRole = async (accountId) =>
-  listenersMod.normalizeSavedByRole(accountId ? await savedByRoleFor(accountId) : "editor");
+  listenersMod.normalizeSavedByRole(accountId ? await savedByRoleFor(accountId) : DEFAULT_SAVED_BY_ROLE);
 
 /**
  * F-409 — THE WHOLE ARMING STAMP for a registry row: role AND acting account, resolved
@@ -21524,7 +21524,7 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, privileg
     const savedByRole = listenersMod.normalizeSavedByRole(privilegeRow?.savedByRole);
     // Whether the row carries a stamp at all — a legacy row is treated as "editor", and
     // the F-390 refusal below says so rather than blaming the admin's role.
-    const roleIsStamped = privilegeRow?.savedByRole === "admin" || privilegeRow?.savedByRole === "editor";
+    const roleIsStamped = SAVED_BY_ROLES.includes(String(privilegeRow?.savedByRole || ""));
     if (!ownerAccountId) {
       return await write(false,
         "This Coder rule has no owner account, so there is nobody to run it as and nothing ran.",

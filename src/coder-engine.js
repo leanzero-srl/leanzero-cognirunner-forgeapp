@@ -69,6 +69,8 @@ import { createGitActionExecutor } from "./git-actions.js";
 import { createCoderWorkspace, workspaceEntry, renderWorkspaceSummaryLine, classifyThrow } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
 import { clampChars } from "./shared/text-clamp.js";
+// F-884 — the arming-stamp default and the admin comparison have ONE home.
+import { DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 
 const idx = () => import("./index.js");
 
@@ -629,7 +631,7 @@ export const runCoderTurn = async ({
   // UNDEFINED, not false: "the caller said nothing" and "the caller said live" must be
   // distinguishable, because the thread row is the authority for simulation (F-360).
   simulation = undefined, connectionId = null, maxRounds = CODER_DEFAULT_ROUNDS,
-  gateFacts = null, savedByRole = "editor", deadline = null, cancelToken = null,
+  gateFacts = null, savedByRole = DEFAULT_SAVED_BY_ROLE, deadline = null, cancelToken = null,
   headless = false, allowedActions = null,
   // TRUSTED-BUT-BOUNDED knowledge for this turn: { memoryBlock, skillsBlock,
   // fieldGuideBlock, fieldGuideSections } inside the stable prefix, and
@@ -1435,12 +1437,12 @@ export const stepLinksFromResult = (action, result) => {
  * had, not the role they have.
  */
 const savedByRoleNow = async (accountId, deps) => {
-  if (deps && deps.savedByRole) return deps.savedByRole === "admin" ? "admin" : "editor";
+  if (deps && deps.savedByRole) return isAdminSavedByRole(deps.savedByRole) ? ADMIN_SAVED_BY_ROLE : DEFAULT_SAVED_BY_ROLE;
   try {
     const m = deps && deps.loadIndex ? await deps.loadIndex() : await idx();
     const perms = await m.getUserPermissions(accountId);
-    return perms && perms.role === "admin" ? "admin" : "editor";
-  } catch (e) { return "editor"; }
+    return perms && isAdminSavedByRole(perms.role) ? ADMIN_SAVED_BY_ROLE : DEFAULT_SAVED_BY_ROLE;
+  } catch (e) { return DEFAULT_SAVED_BY_ROLE; }
 };
 
 /** Append one `kind:"decision"` row to a thread, under the thread-write lock. */

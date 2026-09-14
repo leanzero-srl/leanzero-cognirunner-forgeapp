@@ -43,6 +43,9 @@ import {
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { knowledgeBudget, fieldGuideAudience, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText, normalizeGenerationMeta } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
+// F-884 — the arming-stamp vocabulary and its default live in ONE dependency-free home,
+// beside the roster vocabulary they are a subset of. See src/shared/roster-roles.js.
+import { DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
 // ONE HOME for "which namespace executors does this run hold" (F-852) — see the header
@@ -127,8 +130,14 @@ export const newListenerId = () => `lst_${Date.now().toString(36)}${Math.random(
  * (F-311: this field did not exist before 1.4 commit 5c; rows saved earlier carry
  * no `savedByRole` and are therefore treated as "editor" on read.)
  */
-export const SAVED_BY_ROLES = ["admin", "editor"];
-export const normalizeSavedByRole = (role) => (role === "admin" ? "admin" : "editor");
+/*
+ * F-884 — THE VOCABULARY AND THE DEFAULT ARE NOT DECLARED HERE. `SAVED_BY_ROLES` used to
+ * be a second hand-typed enum in this file and `"editor"` a hand-typed default in five
+ * more places. Both now come from src/shared/roster-roles.js, which already owned the
+ * roster vocabulary this one is a subset of. This function stays: it is the NORMALISER
+ * (lenient by design, for reading stored rows), not the vocabulary.
+ */
+export const normalizeSavedByRole = (role) => (isAdminSavedByRole(role) ? ADMIN_SAVED_BY_ROLE : DEFAULT_SAVED_BY_ROLE);
 
 /**
  * F-882 - ONE ROLE PER SAVE. `savedByRole` used to exist TWICE on a normalize call: as a
@@ -175,7 +184,7 @@ export const resolveSavedByRole = ({ gate = undefined, savedByRole = undefined }
  * existing owner: wiping `createdBy` would leave a live Coder rule ownerless, which is a
  * hard error at run time. The previous owner stands and the role still re-stamps.
  */
-export const armingStamp = ({ accountId = null, savedByRole = "editor", existing = null } = {}) => {
+export const armingStamp = ({ accountId = null, savedByRole = DEFAULT_SAVED_BY_ROLE, existing = null } = {}) => {
   const acct = accountId || null;
   const prevOwner = existing ? existing.createdBy || null : null;
   const prevFirst = existing ? existing.firstCreatedBy || prevOwner : null;

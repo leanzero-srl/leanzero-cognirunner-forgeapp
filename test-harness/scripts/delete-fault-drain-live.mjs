@@ -102,7 +102,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 import {
   drainSweep, answerComplete, decideSweepStep, newDrainState,
-  IDENTICAL_ANSWER_LIMIT, DELETES_FAILING_BACKOFF_MS,
+  IDENTICAL_ANSWER_LIMIT, DELETES_FAILING_BACKOFF_MS, plantPopulation,
 } from "../lib/sweep-drain.mjs";
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -420,39 +420,21 @@ async function run(state) {
   const ok200 = (res) => res.status === 200 && res.json?.ok === true;
   DOORS = { hook, sweep, clear, ok200 };
 
-  /* THE PLANT, AS A POPULATION (F-696) AND NOT AS A CALL (F-710). `complete:true` does not mean
-     the rows exist — a fresh call over the per-call cap is clamped SILENTLY and still answered
-     complete — so this counts ROWS, and `writes-failed` is a failure, never a resume. */
-  const plantPopulation = async (n) => {
-    const calls = [];
-    let startIndex = 0, totalPlanted = 0, totalFailed = 0, planted = false, stopReason = null;
-    while (calls.length < MAX_PLANT_CALLS) {
-      const res = await plant(n, startIndex);
-      const nth = calls.length + 1;
-      if (!ok200(res)) { stopReason = `plant call ${nth} did not answer 200/ok (HTTP ${res.status})`; break; }
-      const j = res.json;
-      calls.push({
-        call: nth, n: j.n ?? null, startIndex: j.startIndex ?? null, planted: j.planted ?? null,
-        failed: j.failed ?? null, nextIndex: j.nextIndex ?? null, reason: j.reason ?? null,
-        complete: j.complete ?? null, expired: j.expired ?? null, budgetMs: j.budgetMs ?? null,
-      });
-      totalPlanted += Number(j.planted || 0);
-      totalFailed += Number(j.failed || 0);
-      if (j.reason === "writes-failed") {
-        stopReason = `plant call ${nth} answered reason:"writes-failed" (planted ${j.planted}, failed ${j.failed}) — the store refused writes, so the population is short and nothing downstream may be asserted over it`;
-        break;
-      }
-      if (totalPlanted >= n) { planted = true; break; }
-      const next = Number(j.nextIndex);
-      if (!Number.isFinite(next) || next <= startIndex) {
-        stopReason = `plant call ${nth} answered complete=${j.complete} with only ${totalPlanted}/${n} row(s) and no advancing nextIndex — the population cannot be reached`;
-        break;
-      }
-      startIndex = next;
-    }
-    if (!planted && !stopReason) stopReason = `the plant was still ${totalPlanted}/${n} after the ${MAX_PLANT_CALLS}-call bound`;
-    return { planted, stopReason, calls, totalPlanted, totalFailed };
-  };
+  /* THE PLANT, AS A POPULATION (F-696) AND NOT AS A CALL (F-710) — AND THE LOOP IS THE
+     LIBRARY'S (F-724). It was hand-rolled here and byte-copied from `plant-sweep-live.mjs`,
+     which is how both copies came to read `reason:"clearing"` — the stale-tail clear's
+     "re-POST me unchanged" answer — as "the population cannot be reached" and FAIL a run one
+     more identical POST would have completed. `lib/sweep-drain.mjs` owns it now, with the
+     bounded clearing retry and an offline fixture; only the ledger row stays local. */
+  const plantTo = (n) => plantPopulation((count, startIndex) => plant(count, startIndex), n, {
+    maxCalls: MAX_PLANT_CALLS,
+    row: (j, nth) => ({
+      call: nth, n: j.n ?? null, startIndex: j.startIndex ?? null, planted: j.planted ?? null,
+      failed: j.failed ?? null, nextIndex: j.nextIndex ?? null, reason: j.reason ?? null,
+      complete: j.complete ?? null, expired: j.expired ?? null, cleared: j.cleared ?? null,
+      budgetMs: j.budgetMs ?? null,
+    }),
+  });
 
   /* ARM, THEN READ THE LEVER BACK. The read-back is the POSITIVE CONTROL for the negative
      asserted at the end: "the lever says nothing" is not evidence until this same query has been
@@ -522,7 +504,7 @@ async function run(state) {
   /* ── 1 · THE PLANT. ── */
   step(`1 · PLANT ${N} expired rows, resuming on startIndex until the rows are there`);
   const t0 = Date.now();
-  const p = await plantPopulation(N);
+  const p = await plantTo(N);
   ev.plant = { ms: Date.now() - t0, calls: p.calls.length, totalPlanted: p.totalPlanted, totalFailed: p.totalFailed, perCall: p.calls, ...(p.stopReason ? { stopReason: p.stopReason } : {}) };
   if (!p.planted || p.totalFailed > 0) {
     FAIL(`the plant did not reach ${N} clean rows — ${p.stopReason || `${p.totalFailed} failed write(s)`}`, ev.plant);
@@ -567,7 +549,7 @@ async function run(state) {
 
   /* ── 4 · THE THROTTLE VARIANT — the code F-677/F-682 were written about. ── */
   step(`4 · mode=throttle, count=${KVS_DELETE_BATCH_EXPECTED} — RATE_LIMIT_EXCEEDED must be COUNTED, never escape`);
-  const p2 = await plantPopulation(N_THROTTLE);
+  const p2 = await plantTo(N_THROTTLE);
   ev.throttlePlant = { calls: p2.calls.length, totalPlanted: p2.totalPlanted, totalFailed: p2.totalFailed, ...(p2.stopReason ? { stopReason: p2.stopReason } : {}) };
   if (!p2.planted) {
     FAIL(`the throttle pass could not plant ${N_THROTTLE} rows — ${p2.stopReason}`, ev.throttlePlant);

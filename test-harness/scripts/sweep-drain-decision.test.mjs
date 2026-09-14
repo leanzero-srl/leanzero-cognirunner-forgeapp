@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import {
   decideSweepStep, newDrainState, answerSignature, answerComplete, madeProgress, drainSweep,
   DELETES_FAILING_BACKOFF_MS, IDENTICAL_ANSWER_LIMIT,
+  plantPopulation, PLANT_CLEARING_LIMIT, PLANT_CLEARING_PAUSE_MS,
 } from "../lib/sweep-drain.mjs";
 
 /** Walk a scripted list of answers through the decision, returning every step taken. */
@@ -271,4 +272,111 @@ const fakeClock = () => { const slept = []; return { slept, sleep: async (ms) =>
   assert.match(d.stopReason, /did not answer 200\/ok/);
 }
 
-console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived, and drainSweep is the one loop both live drivers obey (F-702)");
+/* ── §9. F-724 — `reason:"clearing"` IS AN IDENTICAL RE-POST, NOT A STALLED POPULATION ──
+ *
+ * The answer shapes below are `src/harness-fault.js`'s own, verbatim from its return
+ * statements: a stale-tail clear that ran out of budget answers `planted:0` with
+ * `nextIndex === startIndex` and `reason:"clearing"`, whose documented contract is "POST me
+ * again, unchanged". Both live drivers used to read that non-advancing `nextIndex` as proof
+ * the population was unreachable and FAIL — on a tenant where one more identical POST would
+ * have finished the clear and planted. These fixtures are the recorded sequence.
+ */
+{
+  /** The answer a budget-bound stale-tail clear gives. `nextIndex` is the index it was given. */
+  const clearing = (startIndex, cleared) => ({
+    ok: true, planted: 0, failed: 0, n: 60, startIndex, nextIndex: startIndex,
+    cleared, truncated: true, reason: "clearing", complete: false, budgetMs: 15000,
+  });
+  /** A normal plant call that lands rows. */
+  const planted = (startIndex, count) => ({
+    ok: true, planted: count, failed: 0, n: 60, startIndex, nextIndex: startIndex + count,
+    cleared: 0, truncated: false, reason: null, complete: true, budgetMs: 15000,
+  });
+
+  /* THE WHOLE POINT: two clearing answers, then the plant. The loop must re-POST the SAME
+     startIndex — not advance, not stop — and the run must succeed. */
+  {
+    const seen = [];
+    const answers = [clearing(0, 90), clearing(0, 90), planted(0, 60)];
+    const r = await plantPopulation(async (n, startIndex) => {
+      seen.push(startIndex);
+      return { status: 200, json: answers[seen.length - 1] };
+    }, 60, { sleep: async () => {} });
+    assert.equal(r.planted, true, r.stopReason || "");
+    assert.equal(r.stopReason, null);
+    assert.deepEqual(seen, [0, 0, 0], "a `clearing` answer is re-POSTed with the SAME startIndex — that is the contract");
+    assert.equal(r.totalPlanted, 60);
+    assert.equal(r.clearingCalls, 2);
+    assert.equal(r.totalCleared, 180, "the stale rows each call cleared are carried into the ledger");
+    assert.equal(r.pausedMs, PLANT_CLEARING_PAUSE_MS * 2, "each identical re-POST is paced — the clear does not finish sooner for being asked sooner");
+  }
+
+  /* THE PRE-FIX BEHAVIOUR, AS A NEGATIVE CONTROL. Without the `clearing` branch the very
+     first answer trips the advancing-`nextIndex` test, which is the F-724 failure verbatim. */
+  {
+    const r = await plantPopulation(async () => ({ status: 200, json: clearing(0, 90) }), 60, {
+      sleep: async () => {}, clearingLimit: 0,
+    });
+    assert.equal(r.planted, false);
+    assert.match(r.stopReason, /answered reason:"clearing" for the 1th time in a row/);
+    assert.equal(r.calls.length, 1, "clearingLimit:0 spends exactly one call — the bound is honoured at zero too");
+  }
+
+  /* A CLEAR THAT NEVER FINISHES IS STILL A STOP, with its OWN sentence — never the generic
+     "no advancing nextIndex" one, which would assert a cause the answers do not contain. */
+  {
+    const r = await plantPopulation(async () => ({ status: 200, json: clearing(0, 3) }), 60, {
+      sleep: async () => {}, maxCalls: 20,
+    });
+    assert.equal(r.planted, false);
+    assert.match(r.stopReason, /"clearing" for the 5th time in a row/);
+    assert.doesNotMatch(r.stopReason, /no advancing nextIndex/);
+    assert.equal(r.calls.length, PLANT_CLEARING_LIMIT + 1);
+  }
+
+  /* THE RUN COUNTS CONSECUTIVELY. A clear that finishes, a page that lands, then another
+     fresh clear later must not inherit the earlier run's count — the same reasoning F-703
+     applied to `failingTries` on the drain side. */
+  {
+    const answers = [clearing(0, 90), planted(0, 30), clearing(30, 5), clearing(30, 5), clearing(30, 5), planted(30, 30)];
+    let i = 0;
+    const r = await plantPopulation(async () => ({ status: 200, json: answers[i++] }), 60, {
+      sleep: async () => {}, clearingLimit: 3, maxCalls: 10,
+    });
+    assert.equal(r.planted, true, r.stopReason || "");
+    assert.equal(r.totalPlanted, 60);
+    assert.equal(r.clearingCalls, 4, "every clearing answer is counted for the ledger…");
+  }
+
+  /* AND THE OTHER TWO TRAPS STILL BITE. `writes-failed` is a FAILURE, never a resume, and a
+     silent clamp is an OBSERVATION rather than a failure (F-710). */
+  {
+    const r = await plantPopulation(async () => ({
+      status: 200,
+      json: { ok: true, planted: 4, failed: 11, n: 60, startIndex: 0, nextIndex: 15, reason: "writes-failed", complete: false },
+    }), 60, { sleep: async () => {} });
+    assert.equal(r.planted, false);
+    assert.match(r.stopReason, /reason:"writes-failed"/);
+    assert.equal(r.calls.length, 1);
+  }
+  {
+    let i = 0;
+    const r = await plantPopulation(async () => {
+      i++;
+      return i === 1
+        ? { status: 200, json: { ok: true, planted: 150, failed: 0, n: 150, startIndex: 0, nextIndex: 150, reason: null, complete: true } }
+        : { status: 200, json: { ok: true, planted: 50, failed: 0, n: 200, startIndex: 150, nextIndex: 200, reason: null, complete: true } };
+    }, 200, { sleep: async () => {} });
+    assert.equal(r.planted, true);
+    assert.deepEqual(r.clamped, { requested: 200, answered: 150, nextIndex: 150, complete: true });
+    assert.equal(r.totalPlanted, 200, "`complete:true` is not `the population exists` — the loop counts ROWS");
+  }
+  /* A non-200 or `ok:false` plant answer is not a usable answer, exactly as on the drain side. */
+  {
+    const r = await plantPopulation(async () => ({ status: 200, json: { ok: false, reason: "bad-start" } }), 60, { sleep: async () => {} });
+    assert.equal(r.planted, false);
+    assert.match(r.stopReason, /did not answer 200\/ok/);
+  }
+}
+
+console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived, and drainSweep is the one loop both live drivers obey (F-702); plantPopulation re-POSTs a `clearing` answer UNCHANGED and bounded, so a stale-tail clear no longer fails a run the tenant would have completed (F-724)");

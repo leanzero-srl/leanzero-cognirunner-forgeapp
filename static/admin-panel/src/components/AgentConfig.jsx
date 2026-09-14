@@ -6,15 +6,41 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { AGENT_ACTIONS, DEFAULT_AGENT_ACTIONS, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS, agentActionNamespace } from "../../../../src/shared/agent-actions.js";
+import { AGENT_ACTIONS, DEFAULT_AGENT_ACTIONS, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS, agentActionNamespace, getAgentAction } from "../../../../src/shared/agent-actions.js";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 import { MAX_RULE_SKILL_IDS } from "../../../../src/shared/registry-limits.js";
 import { ChipPicker } from "./VaPickers";
+import CustomSelect from "./CustomSelect";
 import { isPermissionRefusal, permissionRefusalText } from "./refusal";
+
+/* F-902 - THE GIT CONNECTION IS A FIELD, NOT AN INFERENCE.
+   `assembleAgentExecutors` (src/agent-executors.js) reads exactly two sources for the
+   account a git action acts as: the delivery's `ctx.connectionId` (git-webhook events
+   only) and the rule's own `agent.connectionId`. There is deliberately NO "the instance
+   has exactly one, so use it" fallback at RUNTIME, because a rule that acts as an account
+   nobody named is a rule whose blast radius is a deployment detail, and it would change
+   meaning the day a second connection is added. Until this row existed no UI wrote the
+   field at all, so an admin could arm `commit_files` on a job, save it, and get a run-time
+   refusal naming a control that did not exist.
+
+   This predicate is the ONE reading of "this draft still owes a connection", exported so
+   the tabs' Save gate and the row's own sentence cannot drift apart. A listener bound to a
+   git event is exempt: the webhook supplies the id, and it wins over the rule's. */
+export const agentNeedsGitConnection = (agent, gitEventBound = false) => {
+  const a = agent && typeof agent === "object" ? agent : {};
+  if (gitEventBound) return false;
+  const ids = Array.isArray(a.allowedActions) ? a.allowedActions : [];
+  const held = ids.some((id) => {
+    const act = getAgentAction(id);
+    return !!act && agentActionNamespace(act) === "git";
+  });
+  if (!held) return false;
+  return !(typeof a.connectionId === "string" && a.connectionId.trim());
+};
 
 // "AI agent" mode editor: plain-language instructions + the allow-list of actions
 // the agent may take (one tool each; src/shared/agent-actions.js is the single source).
-export default function AgentConfig({ value, onChange, runtime = "listener", scoped = false, disabled = false, invoke = null, knowledgeRefusal = null }) {
+export default function AgentConfig({ value, onChange, runtime = "listener", scoped = false, disabled = false, invoke = null, knowledgeRefusal = null, gitEventBound = false }) {
   /* 1.4 commit 6 - THE CODE COLUMN'S GATE.
      The verdict is READ, never derived. A frontend that inferred "Coder is on" from the
      edition would be wrong for three of the five reasons (a BYOK site is enabled on
@@ -58,6 +84,27 @@ export default function AgentConfig({ value, onChange, runtime = "listener", sco
       .catch(() => { if (live) { setSkills([]); setSkillsNote("Skills could not be loaded, so none can be bound right now."); } });
     return () => { live = false; };
   }, [invoke]);
+  /* F-902 - the instance's Git connections, READ from `listGitConnections` (the resolver
+     the Code tab already uses; public row shape `{id, kind, label, repos[]}`, never a
+     token). That resolver is requireAdmin, so a workflow EDITOR gets a permission
+     REFUSAL - which is NOT "this instance has no connections" and must never be spelled
+     as one. A refusal also does not block the save: the reader simply cannot be shown the
+     list, and the backend stays the gate. null = not yet answered. */
+  const [conns, setConns] = useState(null);
+  const [connsRefusal, setConnsRefusal] = useState(null);
+  useEffect(() => {
+    if (!invoke) { setConns([]); return; }
+    let live = true;
+    invoke("listGitConnections")
+      .then((r) => {
+        if (!live) return;
+        if (r && r.success && Array.isArray(r.connections)) { setConns(r.connections); setConnsRefusal(null); }
+        else if (isPermissionRefusal(r)) { setConns([]); setConnsRefusal(permissionRefusalText(r, "the Git connections")); }
+        else { setConns([]); setConnsRefusal(null); }
+      })
+      .catch(() => { if (live) { setConns([]); setConnsRefusal(null); } });
+    return () => { live = false; };
+  }, [invoke]);
   const v = value || { instructions: "", allowedActions: DEFAULT_AGENT_ACTIONS, maxRounds: DEFAULT_AGENT_ROUNDS };
   const allowed = new Set(v.allowedActions || []);
   const set = (patch) => onChange({ ...v, ...patch });
@@ -75,6 +122,25 @@ export default function AgentConfig({ value, onChange, runtime = "listener", sco
   const gitActions = AGENT_ACTIONS.filter((a) => agentActionNamespace(a) === "git");
   const gitReads = gitActions.filter((a) => a.kind === "read");
   const gitWrites = gitActions.filter((a) => a.kind === "write");
+  const gitHeld = gitActions.some((a) => allowed.has(a.id));
+  /* THE PRE-SELECTION, AND ONLY IT. With exactly one connection the row picks it FOR the
+     admin, and writes it into the draft here so the RECORD still carries the name it acts
+     as. Convenience in the editor; the runtime still has no fallback. */
+  useEffect(() => {
+    if (disabled || !gitHeld) return;
+    if (typeof v.connectionId === "string" && v.connectionId.trim()) return;
+    if (!Array.isArray(conns) || conns.length !== 1) return;
+    set({ connectionId: String(conns[0].id) });
+  }, [gitHeld, conns, v.connectionId, disabled]);
+  const connOptions = (conns || []).map((c) => ({
+    value: String(c.id),
+    label: `${String(c.label || c.id)}${c.kind === "github" ? " (GitHub)" : c.kind === "bitbucket" ? " (Bitbucket)" : c.kind ? ` (${c.kind})` : ""}`,
+  }));
+  // The row's own sentence reads the SAME predicate the tabs gate Save with, on the live
+  // draft. A reader who was refused the list is exempt: see the read above.
+  const connMissing = !connsRefusal && conns !== null
+    && agentNeedsGitConnection({ allowedActions: [...allowed], connectionId: v.connectionId }, gitEventBound);
+
   const codeOn = !!(capability && capability.enabled);
   const codeCopy = agentCapabilityCopy(capability ? capability.reason : "unknown");
   const codeDisabled = disabled || !codeOn;
@@ -138,6 +204,43 @@ export default function AgentConfig({ value, onChange, runtime = "listener", sco
         </div>
         <p className="hint"><strong>Finish</strong> is always available: the agent ends every run with a one-line summary that lands in the execution log.</p>
       </div>
+      {/* F-902 - THE GIT CONNECTION ROW. It appears the moment a git action is ticked,
+          because from that moment the record owes an account to act as. */}
+      {gitHeld && (
+        <div className="form-group agc-git-conn">
+          <span className="label">Git connection</span>
+          <p className="hint">
+            {gitEventBound
+              ? "This rule listens to Git events, so each run acts as the connection whose webhook delivered it. Choosing one here is optional, and is used only by a run that arrives without a delivery of its own."
+              : connOptions.length
+              ? "The Git actions above act as this connection. Choose the one whose repositories this rule may read and write."
+              // Nothing to choose from: the sentence must not ask for a pick that cannot
+              // be made. The red line below says where to go instead.
+              : "The Git actions above act as a Git connection, and this instance has none yet."}
+          </p>
+          {conns === null ? (
+            <div className="hint">Loading connections…</div>
+          ) : connsRefusal ? (
+            <div className="access-note" role="note">{connsRefusal}</div>
+          ) : connOptions.length ? (
+            <CustomSelect
+              value={typeof v.connectionId === "string" ? v.connectionId : ""}
+              onChange={(connectionId) => set({ connectionId: connectionId || null })}
+              options={connOptions}
+              placeholder="Choose a connection"
+              ariaLabel="Git connection this rule acts as"
+              disabled={disabled}
+            />
+          ) : null}
+          {connMissing && (
+            <div className="agc-git-refusal" role="alert">
+              {connOptions.length
+                ? "Choose the Git connection this rule acts as"
+                : "Connect a Git provider in Settings before this rule can use Git actions"}
+            </div>
+          )}
+        </div>
+      )}
       {/* F-462 - Knowledge. Same cap the record enforces (MAX_RULE_SKILL_IDS, read from
           registry-limits so the number cannot drift), same ChipPicker the Virtual
           Administrator's "Skills it may use" row uses: a rule binds a VOICE, not a library. */}

@@ -3200,6 +3200,11 @@ const injectStyles = () => {
     /* Skills are purple everywhere in this app, so a bound skill is purple here too. */
     .agc-knowledge .va-chip.on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
     .agc-memories { margin-top: 10px; }
+    /* F-902 - the Git connection row. The refusal is a SOLID red block with white text,
+       never a tint and never a left rail, and it carries its own dark override. */
+    .agc-git-conn { margin-top: 4px; }
+    .agc-git-conn .dropdown { max-width: 420px; }
+    .agc-git-refusal { margin-top: 8px; padding: 9px 12px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; font-size: 12.5px; font-weight: 700; line-height: 1.45; }
     .agc-knowledge-refusal { margin-top: 10px; padding: 10px 12px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; display: flex; flex-direction: column; gap: 6px; }
     .agc-kr-title { font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
     .agc-kr-text { font-size: 12.5px; line-height: 1.45; }
@@ -3232,6 +3237,7 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .lst-premade-btn-blocked:hover { border-color: #f59e0b; }
     html[data-color-mode="dark"] .runres-brake { background: #f59e0b; }
     html[data-color-mode="dark"] .agc-knowledge-refusal { background: #ef4444; }
+    html[data-color-mode="dark"] .agc-git-refusal { background: #ef4444; }
     html[data-color-mode="dark"] .agc-kr-chip { background: #1e293b; }
     html[data-color-mode="dark"] .agc-kr-chip.missing { background: #fff; color: #b91c1c; }
     html[data-color-mode="dark"] .agc-kr-flag { color: #b91c1c; }

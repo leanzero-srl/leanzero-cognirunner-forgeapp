@@ -1106,6 +1106,8 @@ const MEMORY_SETTINGS = () => ({
                                  Set to a reason string for the OFF arms.
      window.__CODE_DEAD__      - the second connection reports `auth_dead` (the red banner).
      window.__CODE_NO_CONNS__  - empty list.
+     window.__CODE_ONE_CONN__  - exactly ONE connection (the sole-connection pre-selection
+                                 arm of F-902; the default fixture has two on purpose).
      window.__CODE_IDENTITY__  - a Forge deploy identity is already stored. */
 const CODE_CAP = () => {
   const raw = (typeof window !== "undefined" && window.__CODE_CAP__) || null;
@@ -1119,8 +1121,9 @@ const CODE_CAP = () => {
 };
 const CODE_CONNS = () => {
   if (typeof window !== "undefined" && window.__CODE_NO_CONNS__) return [];
+  const one = typeof window !== "undefined" && !!window.__CODE_ONE_CONN__;
   const dead = typeof window !== "undefined" && !!window.__CODE_DEAD__;
-  return [
+  const rows = [
     {
       id: "gc_1", kind: "github", label: "Acme engineering", host: null, owner: "acme",
       createdBy: ACCT, createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-09-10T08:00:00.000Z",
@@ -1142,6 +1145,7 @@ const CODE_CONNS = () => {
       capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "Bitbucket does not report scopes on this call. Capability is proven only by the call that needs it." },
     },
   ];
+  return one ? rows.slice(0, 1) : rows;
 };
 const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDENTITY__)
   ? { hasIdentity: true, email: "deploy@acme.example", consent: { accountId: ACCT, at: "2026-09-03T10:00:00.000Z" }, rotation: null, createdAt: "2026-09-03T10:00:00.000Z", updatedAt: "2026-09-03T10:00:00.000Z" }

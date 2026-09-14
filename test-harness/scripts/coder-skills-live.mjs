@@ -19,12 +19,21 @@
  * below still spends real frontier tokens — that is a cost, not a write.
  *
  * WHAT "PROVEN" MEANS FOR AN INJECTED PROMPT BLOCK. There is no read path for the prompt,
- * so the evidence is `src/agent-runner.js`'s own line — `Knowledge injected: skills` —
- * emitted only when `blockText(knowledge.skillsBlock)` is non-empty. It is read from the
- * TURN'S EXECUTION LOG (`getAsyncTaskResult().result.logs`), NOT from `forge logs`: the
- * Coder's `log` sink is an in-memory array, not the console (see the note at the arm
- * itself). A control turn with NO skillIds must not produce that line; without the
- * control, the line proves nothing.
+ * so the evidence is `src/agent-runner.js`'s own line — `Knowledge injected: …` — whose
+ * `skills` TERM is emitted only when `blockText(knowledge.skillsBlock)` is non-empty. It is
+ * read from the TURN'S EXECUTION LOG (`getAsyncTaskResult().result.logs`), NOT from
+ * `forge logs`: the Coder's `log` sink is an in-memory array, not the console (see the note
+ * at the arm itself). Without the control turn, the line proves nothing.
+ *
+ * F-798 — THE CONTROL IS ABOUT SKILLS, NOT ABOUT KNOWLEDGE. This header used to say a
+ * control turn "must not produce that line" at all. Since 1.4 commit 14b the Coder builder
+ * stamps a FIELD GUIDE on every turn, so the control legitimately logs
+ * `Knowledge injected: field guide` with a receipt carrying `skillCount: 0` — and this
+ * driver exited 1 on a healthy instance for it, three runs running, while the
+ * discriminating measurement beside it (skillCount 1 vs 0) passed every time. The control
+ * now asserts the SKILL fields are empty and that the guide is the ONLY other term, which
+ * is a STRONGER claim than "nothing": it would catch a skills block arriving on a turn that
+ * bound no skill, and the old wording could not tell that apart from a field guide.
  *
  * THE AGENT MODEL IS RESTORED. The slot starts ABSENT on the default tenant (Haiku is
  * so restoring means DELETING it, and the script re-reads `getAgentCapability` afterwards
@@ -216,9 +225,34 @@ const main = async () => {
     { skillIds: kWith && kWith.skillIds, expected: skill.id });
   check("with-skill: the receipt counts exactly one skill (skillCount === 1)",
     !!(kWith && kWith.skillCount === 1), { skillCount: kWith && kWith.skillCount });
-  check("control: the SAME field reports no skills (skillCount 0, or no receipt at all) - so the count above is a real measurement",
-    !kCtl || kCtl.skillCount === 0 || !(kCtl.skillIds || []).length,
-    { receipt: kCtl });
+  /*
+   * F-798 — WHAT THE CONTROL IS ACTUALLY CONTROLLING FOR, AND WHAT IT IS NOT.
+   *
+   * These controls were written as "the control turn carries NO knowledge", and that was
+   * true of the build they were written against. It is not true of this one: since 1.4
+   * commit 14b the Coder builder stamps a FIELD GUIDE on every turn, so the control turn
+   * legitimately answers `Knowledge injected: field guide` with a receipt on it. The
+   * driver then exited 1 on a healthy instance, for three runs, while the DISCRIMINATING
+   * measurement beside it (skillCount 1 vs 0) passed every time.
+   *
+   * The control was never about knowledge in general. It is about SKILLS: the pair
+   * (`skillCount` 1 here, 0 there) is what makes "the bound skill reached the model" a
+   * measurement rather than an assertion about a single number. So the controls now name
+   * the two fields that carry skills, and separately assert that whatever else the
+   * control turn carried is THE FIELD GUIDE AND NOTHING ELSE - which is a stronger claim
+   * than "nothing", because it would catch a skills block arriving on a turn that bound
+   * no skill, and the old wording could not tell that from a field guide.
+   *
+   * `!kCtl` is no longer accepted as a pass on its own: an absent receipt was the escape
+   * hatch that let a broken receipt path read as a clean control. It is judged below, on
+   * its own line, where a build that carries no field guide is told apart from one whose
+   * receipt never arrived.
+   */
+  check("control: the receipt's SKILL fields are empty - skillCount === 0 and skillIds [] - so the skillCount 1 above is a real measurement",
+    !!kCtl && kCtl.skillCount === 0 && Array.isArray(kCtl.skillIds) && kCtl.skillIds.length === 0,
+    { skillCount: kCtl && kCtl.skillCount, skillIds: kCtl && kCtl.skillIds, receipt: kCtl });
+  check("control: the receipt reports no memories either, so the only knowledge left to account for is the field guide",
+    !!kCtl && kCtl.memoryCount === 0, { memoryCount: kCtl && kCtl.memoryCount });
 
   /* ── THE `Knowledge injected: …` LINE, and WHERE IT ACTUALLY LIVES ─────────
    *
@@ -233,15 +267,31 @@ const main = async () => {
    */
   const turnLogs = (r) => ((r && r.result && r.result.result && r.result.result.logs) || []).map(String);
   const withLine = turnLogs(withSkill).some((l) => l.startsWith("Knowledge injected:") && l.includes("skills"));
-  const ctlLine = turnLogs(control).some((l) => l.startsWith("Knowledge injected:"));
   console.log(`\n  with-skill logs[0]: ${JSON.stringify(turnLogs(withSkill)[0] || null).slice(0, 120)}`);
   console.log(`  control    logs[0]: ${JSON.stringify(turnLogs(control)[0] || null).slice(0, 120)}`);
   check('with-skill: the turn execution log carries `Knowledge injected: skills`', withLine, { line: turnLogs(withSkill).find((l) => l.startsWith("Knowledge injected:")) || null });
-  check('control: the SAME log has NO `Knowledge injected:` line - the pair is what makes the line evidence', !ctlLine, { logs0: turnLogs(control)[0] || null });
+  /* F-798 — the control's line is the FIELD GUIDE AND NOTHING ELSE. `logKnowledgeInjection`
+     joins the terms it has with " + " in a fixed order (skills, memories, field guide), so
+     "only the guide" is exactly the string `Knowledge injected: field guide` - naming it in
+     full rather than matching /field guide/ is what stops `skills + field guide` passing. */
+  const ctlInjected = turnLogs(control).find((l) => l.startsWith("Knowledge injected:")) || null;
+  check('control: the SAME log names ONLY the field guide - `Knowledge injected: field guide`, with no `skills` and no `memories` term - and that pair is what makes the with-skill line evidence',
+    ctlInjected === "Knowledge injected: field guide",
+    { line: ctlInjected, withSkillLine: turnLogs(withSkill).find((l) => l.startsWith("Knowledge injected:")) || null });
   /* The task RESULT carries the summary too, on the with-skill turn only. */
   const resK = (r) => r && r.result && r.result.result && r.result.result.knowledge;
   check("with-skill: the task result carries the knowledge summary", !!resK(withSkill), { knowledge: resK(withSkill) });
-  check("control: the task result carries NO knowledge summary", !resK(control), { knowledge: resK(control) });
+  /* F-798 — same correction on the task result, which carries the same object. The control
+     DOES carry a summary (the field guide is knowledge); what it must not carry is a skill. */
+  check("control: the task result's knowledge summary carries the field guide and NO skill (skillCount 0, skillIds [])",
+    !!resK(control) && resK(control).skillCount === 0 && (resK(control).skillIds || []).length === 0,
+    { knowledge: resK(control) });
+  /* THE GUIDE IS NAMED, NOT ASSUMED. If a future build stops stamping a field guide the
+     assertions above go red for a reason that has nothing to do with skills, so the guide
+     is asserted on its own line and a red there says which half moved. */
+  check("control: …and that summary is the FIELD GUIDE - `fieldGuideSections` is present on the receipt",
+    Array.isArray(resK(control) && resK(control).fieldGuideSections),
+    { fieldGuideSections: resK(control) && resK(control).fieldGuideSections });
 
   console.log("\nTask ids (the turn execution log, NOT forge logs, is where the line lives):");
   console.log(`  with-skill: ${withSkill.taskId}`);

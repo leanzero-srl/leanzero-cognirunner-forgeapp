@@ -51,14 +51,14 @@
  * NOTHING secret is printed — not the trigger URLs, not the bearer token.
  */
 
+import { requireEnvAck, forgeEnvId } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const flag = (n) => process.argv.slice(2).includes(`--${n}`);
 
-const ENV_NAME = arg("env", "staging");
-const HOOK_URL = ENV_NAME === "staging" ? env.STAGING_TESTSTATE_URL : env.TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const PROJECT = arg("project", "JT");
@@ -72,7 +72,7 @@ const SHADOW_TICKS = 3;
 /* The staging admin panel, for the one question only a browser can answer. */
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const STAGING_ENV = arg("envid", "1abe9beb-537b-43c1-b94f-e877e251f779");
+const STAGING_ENV = arg("envid", forgeEnvId("staging"));
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 
 /* The slot, and the rule the restore follows — see va-rest-doors-live.mjs's note. */

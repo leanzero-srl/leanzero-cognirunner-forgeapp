@@ -28,6 +28,7 @@
  * Usage (from test-harness/):  node scripts/skills-knowledge-ui-live.mjs
  * Env: TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID.
  */
+import { forgeEnvId } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 
@@ -35,7 +36,7 @@ const env = loadEnv();
 const HOOK_URL = env.TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
-const ADMIN_PAGE = "https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772";
+const ADMIN_PAGE = `https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/${forgeEnvId("dev")}`;
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const TAG = `F590probe ${Date.now().toString(36)}`;
 const OUT = new URL("../results/skills-knowledge-ui", import.meta.url).pathname;

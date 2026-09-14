@@ -798,6 +798,11 @@ const writesShotLedger = (code) => /\bev\.shots\s*=/.test(code)
   || /\bev\.[A-Za-z_$][\w$]*\s*=\s*[^=;]*\bshots\b/.test(code);
 /** A `leaked` flag is read AND turned into a FAIL. */
 const failsOnLeak = (code) => /\.leaked\b|\bleaked\s*\(\s*\)/.test(code) && /FAIL\s*\(/.test(code);
+/** F-701 (folded in from f689-drivers.test.mjs) — the leak FAIL names the artefacts. */
+const leakFailNamesArtefacts = (code) => {
+  const m = code.match(/FAIL\([\s\S]{0,120}?REFUSED[\s\S]{0,600}/);
+  return !!m && /\b(paths|leaks)\s*:/.test(m[0]);
+};
 
 /* POSITIVE CONTROLS — the PRE-FIX shapes, written out, so a green rule is evidence that
    the rule can still go red rather than evidence that it forgot how. */
@@ -829,6 +834,16 @@ ok(!failsOnLeak("FAIL('something else went wrong');"),
   "POSITIVE CONTROL: …and when there is a FAIL writer but nothing ever reads `leaked`");
 ok(failsOnLeak("if (shot_.leaked || uiLeaked()) FAIL('a capture was REFUSED', { paths });"),
   "…and ACCEPTS a run-level FAIL driven off either binding's leak flag");
+/* F-701 — the two rules folded in from the deleted `f689-drivers.test.mjs`, with the
+   controls that prove each can still go red. */
+ok(leakFailNamesArtefacts("FAIL('a capture was REFUSED because an address survived', { paths: leaks.map((s) => s.path), leaks });"),
+  "the artefact-naming rule ACCEPTS the `paths:` shape");
+ok(leakFailNamesArtefacts("FAIL('a capture was REFUSED because an address survived', { leaks: shot_.leaks });"),
+  "…and the `leaks:` shape, whose entries each carry a `.path` — the rule is about naming the PNGs, not about one key name");
+ok(!leakFailNamesArtefacts("FAIL('a capture was REFUSED because an address survived');"),
+  "POSITIVE CONTROL (F-701): …and FIRES on a leak FAIL that names nothing, leaving the operator no PNG to destroy");
+ok(!leakFailNamesArtefacts("FAIL('something unrelated', { paths });"),
+  "POSITIVE CONTROL: …and is not satisfied by a `paths:` on some OTHER failure arm");
 
 const shotDrivers = liveFiles.filter((f) => /makeShot\s*\(/.test(stripComments(readFileSync(path.join(here, f), "utf8"))));
 ok(shotDrivers.length >= 4,
@@ -845,6 +860,21 @@ for (const f of shotDrivers) {
     `${f}: the capture ledger is assigned into the evidence object — otherwise the {total, masked, readable} proof dies in a variable`);
   ok(failsOnLeak(code),
     `${f}: a refused capture is a RUN-level FAIL — the step-level seam converts the throw into a sentence and would otherwise exit 0`);
+  /* F-701 — FOLDED IN FROM `f689-drivers.test.mjs`, WHICH THIS RULE SUPERSEDES.
+     That suite named two of the four drivers in a hand-maintained `DRIVERS` array and
+     would have gone RED the moment a third was converted — two homes of one rule, the
+     staler one authoritative-looking. Everything it asserted is here except these two
+     lines, so they come across rather than being lost with the file.
+
+     `names the artefacts` is deliberately NOT `paths:`. The old rule required that exact
+     key and therefore excluded `perm-namesake-ui-live.mjs`, which passes `{ leaks }` —
+     objects that each carry a `.path`. The requirement is that an operator can tell WHICH
+     PNGs to destroy, and both shapes answer it; demanding one key name would be a rule
+     about spelling. */
+  ok(leakFailNamesArtefacts(code),
+    `${f}: the leak FAIL NAMES the artefacts it refused (paths: or leaks:) — an operator has to know which PNGs to destroy`);
+  ok(/process\.exit(Code)?\s*(=|\()\s*/.test(code) && /fails\s*(>|\?)/.test(code),
+    `${f}: …and a FAIL still drives a non-zero exit, or the run-level leak FAIL buys nothing`);
 }
 
 /* ── 4c-iii. F-657 — NO PERMISSION DRIVER PICKS AN ACCOUNT ITS OWN WAY ──────────
@@ -944,6 +974,91 @@ for (const f of armingDrivers) {
      of the refusal is the drift this rule exists to prevent, so it is an offence too. */
   ok(!/console\.error\(\[[\s\S]{0,400}?i-know-dev-is-shared/.test(src),
     `${f}: the refusal TEXT has one home — no driver keeps its own copy of it`);
+}
+
+/* ── 4f. F-699 — THE ENVIRONMENT MAPPING HAS ONE HOME, AND IT IS NOT A DRIVER ────
+   `lib/shared-env-guard.mjs` claimed in its own docblock that it returned the web-trigger
+   URL "so no driver re-decides that mapping" — on a day when SEVENTEEN `*-live.mjs` still
+   carried the env→URL ternary inline, FIVE of them with INVERTED polarity
+   (`ENV_NAME === "staging" ? STAGING : TESTSTATE_URL`), so an unrecognised `--env` there
+   resolved to the SHARED DEV tenant: the exact target the guard defaults away from. The
+   env→Forge-env-id fork — the same decision one line below — sat byte-copied in eighteen
+   more. One rule, thirty-odd homes, two polarities.
+
+   Unifying them without this rule schedules the return: the next driver is written by
+   copying the nearest sibling, and the nearest sibling is where the ternary used to be. So
+   the discriminator is the LITERAL. A driver may not read `STAGING_TESTSTATE_URL`, and may
+   not retype an environment id UUID; both come out of the one table, via `requireEnvAck`
+   (settles one environment, refuses the shared tenant, returns the whole row), `forgeEnvId`
+   (the id alone, for a dev-only Playwright script with no web trigger and no `.env`) or
+   `hookUrlFor`/`hookUrlVar` (for `probes-1.5-live.mjs`, which talks to BOTH environments in
+   one run and so cannot settle on one).
+
+   `TESTSTATE_URL` on its own is NOT an offence: a dev-only driver reading the dev trigger
+   is not deciding a mapping, it is naming the only environment it has. The defect is the
+   FORK and the second copy of the staging half.
+
+   Docblock prose is exempt, as everywhere else in this file — a header that says
+   "Env: STAGING_TESTSTATE_URL + HARNESS_SECRET" is documentation, and a rule that reads it
+   goes red on a correct file. The discriminator is a read, not a mention. */
+const ENV_ID_LITERAL = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/;
+const KNOWN_ENV_IDS = ["989ecaa0-261b-406e-b444-78c01c0d7772", "1abe9beb-537b-43c1-b94f-e877e251f779"];
+function scanEnvMappingHomes(src) {
+  return src.split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => !/^\s*\*/.test(l) && !/^\s*\/\//.test(l))       // prose in a docblock
+    .filter(({ l }) => /STAGING_TESTSTATE_URL/.test(l) || KNOWN_ENV_IDS.some((id) => l.includes(id)))
+    .map(({ n }) => n);
+}
+/* POSITIVE CONTROLS — every shape the directory actually carried, verbatim. */
+ok(scanEnvMappingHomes('const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;').length === 1,
+  "POSITIVE CONTROL (F-699): the mapping rule FIRES on the env→URL ternary seventeen drivers carried");
+ok(scanEnvMappingHomes('const HOOK_URL = ENV_NAME === "staging" ? env.STAGING_TESTSTATE_URL : env.TESTSTATE_URL;').length === 1,
+  "POSITIVE CONTROL: …and on the INVERTED polarity, which landed an unknown --env on the shared dev tenant");
+ok(scanEnvMappingHomes('const URL_ = process.env.STAGING_TESTSTATE_URL || env.STAGING_TESTSTATE_URL || "";').length === 1,
+  "POSITIVE CONTROL: …and on the staging-only read the coder drivers carried, which is the same second home without the fork");
+ok(scanEnvMappingHomes('const ENV_ID = arg("envid", ENV_NAME === "dev" ? "989ecaa0-261b-406e-b444-78c01c0d7772" : "1abe9beb-537b-43c1-b94f-e877e251f779");').length === 1,
+  "POSITIVE CONTROL: …and on the env-id ternary that was byte-copied into four drivers");
+ok(scanEnvMappingHomes('const ADMIN_PAGE = "https://x/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772";').length === 1,
+  "POSITIVE CONTROL: …and on an id buried inside an admin-page URL, which is how nine more drivers hid it");
+/* NEGATIVE CONTROLS — the fixed shapes, and the things that must NOT be dragged in. */
+ok(scanEnvMappingHomes('const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });').length === 0,
+  "NEGATIVE CONTROL: the converted call site is clean");
+ok(scanEnvMappingHomes('const ENV_ID = forgeEnvId("dev");').length === 0,
+  "NEGATIVE CONTROL: …as is the id-only helper");
+ok(scanEnvMappingHomes(' * Env: STAGING_TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID.').length === 0,
+  "NEGATIVE CONTROL: a docblock naming the variable an operator must set is documentation, not a second home");
+ok(scanEnvMappingHomes('const HOOK_URL = env.TESTSTATE_URL;').length === 0,
+  "NEGATIVE CONTROL: a dev-only driver reading the dev trigger decides no mapping and is left alone");
+ok(scanEnvMappingHomes('const APP = "36415848-6868-4697-9554-3c3ad87b8da9";').length === 0,
+  "NEGATIVE CONTROL: the APP id is a UUID too, and is not an environment — the rule names the two env ids, it does not ban UUIDs");
+ok(ENV_ID_LITERAL.test(KNOWN_ENV_IDS[0]) && ENV_ID_LITERAL.test(KNOWN_ENV_IDS[1]),
+  "the two ids this rule polices really are the UUID shape it describes");
+
+const mappingOffenders = [];
+for (const f of liveFiles) {
+  for (const n of scanEnvMappingHomes(readFileSync(path.join(here, f), "utf8"))) mappingOffenders.push(`${f}:${n}`);
+}
+ok(mappingOffenders.length === 0,
+  `F-699: lib/shared-env-guard.mjs is the ONLY home of the environment mapping (second homes at: ${mappingOffenders.join(", ")})`);
+/* …and the guard really is that home, so a green rule above is not green because the
+   table was deleted along with its copies. */
+const guardSrc = readFileSync(path.join(here, "../lib/shared-env-guard.mjs"), "utf8");
+for (const id of KNOWN_ENV_IDS) {
+  ok(guardSrc.includes(id), `F-699: the guard carries the ${id.slice(0, 8)}… environment id — the one home is populated`);
+}
+ok(/STAGING_TESTSTATE_URL/.test(guardSrc) && /TESTSTATE_URL/.test(guardSrc),
+  "F-699: …and both web-trigger variable names, so nothing was unified by deletion");
+
+/* ── 4g. F-686 — AN ARMING DRIVER'S BLAST RADIUS MAY NOT BE EMPTY ───────────────
+   `faults: []` is the legitimate mapping-only form for a driver that arms nothing, and it
+   is also the one-token way to silence the shared-dev refusal on a driver that arms
+   plenty. 4e proves the guard is CALLED; this proves it was told the truth. */
+for (const f of armingDrivers) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  const call = src.match(/requireEnvAck\s*\([\s\S]{0,400}?\n\}\)/);
+  ok(!!call && /faults\s*:\s*\[\s*[^\]\s]/.test(call[0]),
+    `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);
 }
 
 /* ── 5. the hardened drivers redact in the writers themselves ──────────────────── */

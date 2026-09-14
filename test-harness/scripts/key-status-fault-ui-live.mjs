@@ -59,7 +59,7 @@ const SECRET = requireEnv("HARNESS_SECRET");
 const PROVIDER_LABEL = arg("label", "OpenAI");
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
-const ENV_ID = arg("envid", ENV_NAME === "dev" ? "989ecaa0-261b-406e-b444-78c01c0d7772" : "1abe9beb-537b-43c1-b94f-e877e251f779");
+const ENV_ID = arg("envid", ENV_ID_DEFAULT);
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/key-status-fault-ui", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });

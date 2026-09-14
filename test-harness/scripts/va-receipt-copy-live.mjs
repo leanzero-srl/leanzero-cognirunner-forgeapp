@@ -35,13 +35,14 @@
  * Usage (from test-harness/):  node scripts/va-receipt-copy-live.mjs [--keep]
  * Env: STAGING_TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID + the JIRA_* trio.
  */
+import { requireEnvAck, forgeEnvId } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 
+const { hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const flag = (n) => process.argv.slice(2).includes(`--${n}`);
-const HOOK_URL = env.STAGING_TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const PROJECT = arg("project", "JT");
@@ -56,7 +57,7 @@ const KEEP = flag("keep");
    drives the capability row alone, on a fresh agent that was never deleted. */
 const NO_PURGE = flag("no-purge");
 const AGENT_MODEL_SLOT = "COGNIRUNNER_AGENT_MODEL_atlassian";
-const ADMIN_PAGE = "https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/1abe9beb-537b-43c1-b94f-e877e251f779";
+const ADMIN_PAGE = `https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/${forgeEnvId("staging")}`;
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const NAME = `Copyprobe${Date.now().toString(36).slice(-4)}`;
 const OUT = new URL("../results/va-receipt-copy", import.meta.url).pathname;

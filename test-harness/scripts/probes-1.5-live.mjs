@@ -28,6 +28,7 @@
  */
 
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { hookUrlFor, hookUrlVar } from "../lib/shared-env-guard.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => {
@@ -36,13 +37,16 @@ const arg = (n, d) => {
 };
 
 const SECRET = requireEnv("HARNESS_SECRET");
-const URLS = { dev: env.TESTSTATE_URL, staging: env.STAGING_TESTSTATE_URL };
+/* F-699 — the env-to-URL mapping has ONE home. This driver talks to BOTH environments in
+   a single run, so it cannot settle on one `envName` the way `requireEnvAck` does; it
+   reads the same table a field at a time instead of retyping the variable names. */
+const URLS = { dev: hookUrlFor("dev"), staging: hookUrlFor("staging") };
 const die = (m) => { console.error("PROBE FAIL:", m); process.exit(1); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function hook(envName, body, method = "POST") {
   const url = URLS[envName];
-  if (!url) die(`no web-trigger URL for environment "${envName}" (set ${envName === "dev" ? "TESTSTATE_URL" : "STAGING_TESTSTATE_URL"})`);
+  if (!url) die(`no web-trigger URL for environment "${envName}" (set ${hookUrlVar(envName)})`);
   const res = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + SECRET },

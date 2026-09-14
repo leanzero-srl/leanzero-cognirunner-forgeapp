@@ -37,8 +37,10 @@
  * Nothing secret is printed - not the trigger URL, not the Bearer.
  */
 
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "dev" });
 const env = loadEnv();
 const arg = (n, d) => {
   const hit = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`));
@@ -46,8 +48,6 @@ const arg = (n, d) => {
 };
 const flag = (n) => process.argv.slice(2).includes(`--${n}`);
 
-const ENV_NAME = arg("env", "dev");
-const HOOK_URL = ENV_NAME === "dev" ? env.TESTSTATE_URL : env.STAGING_TESTSTATE_URL;
 const SECRET = requireEnv("HARNESS_SECRET");
 const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const PROJECT = arg("project", "JT");

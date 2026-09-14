@@ -40,17 +40,25 @@
  *      the execution log: `va-tick` is not a `listener`/`scheduledjob` task, so no
  *      execution-log entry is written for it and the old probe could only ever answer
  *      "no evidence" for the very arm it exists to measure. See `tick()`.
+ *      F-823 — "no new prepare receipt" is decided by RECEIPT IDENTITY (`{tickId, at}`),
+ *      re-read AFTER liveness, and by the receipt's BODY; a COUNT of receipts cannot see a
+ *      same-bucket overwrite and passed this step for the wrong reason. See `tick()` and
+ *      `lib/va-tick-receipt.mjs`.
  *   4. Tick 1's fan-out claim is WAITED OUT first (`va_running:{agent}`, F-797: it is the
  *      THIRD condition `clearPurgeTombstone` weighs, and aging the tombstone satisfies
  *      only the second), the tombstone is AGED past `VA_PURGE_SETTLE_MS` through the same
- *      door, and the next tick must clear it and produce a NORMAL prepare receipt with no
- *      purge gate. A clear that cannot be attributed to the settle window is N/V, never a
- *      FAIL: the run did not measure what it set out to measure.
+ *      door, and the next tick must clear it and produce a receipt whose arm is NOT the
+ *      settle gate — a genuine prepare here, since the agent is no longer paused when this
+ *      step runs (F-823). A clear that cannot be attributed to the settle window is N/V,
+ *      never a FAIL: the run did not measure what it set out to measure.
  *
- * NOTHING IS POSTED. The agent's only power is `replyInternal`, `shadowUntilTick` is
- * 500, and it is PAUSED for every tick after the first, so the five-minute planner
- * cannot enqueue a post run. The project's comment counts are read before and after
- * anyway.
+ * NOTHING IS POSTED. The agent's only power is `replyInternal` and `shadowUntilTick` is
+ * 500, so the post gate refuses every run this script can cause. F-823 — the agent is
+ * PAUSED only AFTER the settle assertions (pausing before them meant every graded receipt
+ * came back through the paused arm and the steps could not tell that from the gate they
+ * were measuring); the pause still covers the cleanup tail, where a five-minute planner
+ * tick would otherwise be the only way a post run could be enqueued. The project's comment
+ * counts are read before and after and asserted either way.
  *
  * RESTORE. The agent-model KVS SLOT (not the resolver's answer — it answers a fallback
  * it then refuses to re-save) is recorded and replayed in a finally, the planted
@@ -73,6 +81,9 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { resolveFlipModel, judgeAgentCapability, applyVerdict, decideInstanceFlip } from "../lib/agent-capability-precondition.mjs";
 /* F-787 - the commit this run came from, recorded in the evidence file it writes. */
 import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+/* F-823 - "did this tick write a receipt, and which arm wrote it" is an IDENTITY question
+   on an overwritten key, not a count. Pure, and proved offline in va-tick-receipt.test.mjs. */
+import { judgeTickReceipt, receiptIdentity, receiptArm, newestReceipt } from "../lib/va-tick-receipt.mjs";
 
 /* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
    catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
@@ -104,6 +115,13 @@ const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } 
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const info = (s) => console.log(`        ${s}`);
+/* F-823 - ONE reporter for the receipt decision, so a step cannot spell the verdict its
+   own way. The judge's own sentence is the assertion text; nothing is re-worded here. */
+const REPORT = { PASS, FAIL, "N/V": NV };
+const applyTickVerdict = (label, v, extra = {}) => {
+  (REPORT[v.verdict] || NV)(`${label}: ${v.reason}`, { expect: v.expect, arm: v.arm, wrote: v.wrote, sameBucket: v.sameBucket, identity: v.identity, ...extra });
+  return v;
+};
 const restore = { agentId: null, agentModelSlot: undefined, tombstoneFor: null };
 
 async function fetchRetry(url, init, tries = 4) {
@@ -161,8 +179,24 @@ async function commentTotal() {
   return { issues: keys.length, comments: total };
 }
 
-const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);
-const prepareCount = async (jobId) => receiptsOf((await invoke("getVaStatus", { jobId })).body).filter((r) => r.phase === "prepare").length;
+/*
+ * F-823 — THE NEWEST PREPARE RECEIPT, NOT HOW MANY THERE ARE.
+ *
+ * `getVaStatus` returns the receipts already sorted by `finished` descending
+ * (src/va-admin.js `status`), so the first `prepare` row IS the newest one. A COUNT of
+ * this list is the wrong observable: the key is `va_tick:{agent}:prepare-{tickId}` with
+ * `tickId` a five-minute bucket, and `recordTick` `store.set`s it — two ticks inside one
+ * bucket leave one row and the count never moves. `judgeTickReceipt` compares the ROW's
+ * identity instead. The status body rides back alongside so the caller can report it.
+ */
+const newestPrepare = async (jobId) => {
+  const body = (await invoke("getVaStatus", { jobId })).body;
+  // F-832 — `{receipt, unavailable}`, never a bare row. `status` answers `receipts: []`
+  // PLUS `receiptsUnavailable` when its bounded prefix scan faults, and reading `.receipts`
+  // alone turned that fault into "no receipts" — a false PASS in STEP 3 and a false FAIL in
+  // STEP 4. The reason travels with the row so the judge can refuse to grade.
+  return { status: body, ...newestReceipt(body, "prepare") };
+};
 const vaRecord = () => ({
   persona: { name: "Settle", voice: { register: "terse", greeting: false, maxSentences: 3, language: "auto" }, signature: false },
   scope: { read: { site: false, projects: [PROJECT] }, write: { projects: [PROJECT] } },
@@ -203,34 +237,71 @@ const vaRecord = () => ({
  * The three are reported side by side and the strongest available one decides: a receipt
  * says the tick DID WORK, an execution log or a finished async job says it RAN. Nothing at
  * all still means N/V, and now it means the consumer really did not wake up.
+ *
+ * F-823 — AND THE RECEIPT IS READ AGAIN AFTER LIVENESS, AND COMPARED BY IDENTITY.
+ *
+ * Two defects remained in the loop above, and they pointed opposite ways:
+ *
+ *  · THE OBSERVABLE WAS A COUNT, on a key that is OVERWRITTEN IN PLACE. `recordTick`
+ *    writes `va_tick:{agent}:prepare-{tickId}` with `tickId` a FIVE-MINUTE BUCKET
+ *    (src/shared/va-keys.js), so a second tick inside the same five minutes replaces the
+ *    first row and `preps.length > receiptsBefore` is FALSE for a tick that wrote. STEP 3
+ *    asserts "no receipt appeared" — so it PASSED for the wrong reason, and would have
+ *    gone on passing with the settle gate deleted.
+ *
+ *  · THE RECEIPT WAS READ BEFORE `async_job`, IN THE SAME ITERATION. A paused tick
+ *    finishes in about 600 ms, so on a staging run the receipt landed BETWEEN the two
+ *    reads: the loop saw no receipt, then saw `done`, returned `newReceipt:false`, and
+ *    STEP 4 wrote up the product as doing nothing while `forge logs` showed the paused
+ *    arm running and recording.
+ *
+ * So: liveness is established FIRST (the `async_job` read now leads the iteration), and
+ * the receipt is read ONE MORE TIME after a terminal status is observed — the read that
+ * cannot be beaten by a tick that finished mid-poll. Both the before and the after row
+ * are handed to `judgeTickReceipt`, which compares `{tickId, at}` and reads the BODY for
+ * which arm wrote it. This helper no longer grades anything; it only measures.
  */
 async function tick(jobId, label, waitS = TICK_WAIT_S) {
-  const receiptsBefore = await prepareCount(jobId);
+  const first = await newestPrepare(jobId);
+  const before = first.receipt;
+  const beforeUnavailable = first.unavailable;
   const logsBefore = await execLogCount(jobId);
   const ran = await invoke("runScheduledJobNow", { id: jobId });
   if (!(ran.body && ran.body.success)) { FAIL(`${label}: runScheduledJobNow refused`, { body: JSON.stringify(ran.body).slice(0, 300) }); return null; }
   const taskId = ran.body.taskId || null;
-  info(`${label}: va-tick enqueued, taskId=${taskId}`);
+  info(`${label}: va-tick enqueued, taskId=${taskId}, receipt before = ${JSON.stringify(receiptIdentity(before))}`);
   const deadline = Date.now() + waitS * 1000;
   let logsAfter = logsBefore;
   let asyncJob = null;
+  const idBefore = receiptIdentity(before);
   while (Date.now() < deadline) {
-    const st = (await invoke("getVaStatus", { jobId })).body;
-    const preps = receiptsOf(st).filter((r) => r.phase === "prepare");
-    logsAfter = await execLogCount(jobId);
-    const grew = logsBefore != null && logsAfter != null && logsAfter > logsBefore;
-    // The consumer's own row for THIS task. `status` is the only field graded; the rest
-    // rides into the evidence file so a later reader can see how long the tick took.
+    // LIVENESS LEADS. The consumer's own row for THIS task: `status` is the only field
+    // graded; the rest rides into the evidence file so a later reader can see how long
+    // the tick took. Read FIRST so that every receipt read below is NEWER than it.
     asyncJob = taskId ? (await kvs(`async_job:${taskId}`)).value : null;
     const finished = !!(asyncJob && (asyncJob.status === "done" || asyncJob.status === "error"));
-    const base = { status: st, logsBefore, logsAfter, taskId, asyncJob, liveness: null };
-    if (preps.length > receiptsBefore) return { ...base, receipt: preps[0], newReceipt: true, ranAtAll: true, liveness: "prepare-receipt" };
-    // No receipt, but the run is recorded: that IS the skip, and we stop waiting for it.
-    if (grew) return { ...base, receipt: null, newReceipt: false, ranAtAll: true, liveness: "execution-log" };
-    if (finished) return { ...base, receipt: null, newReceipt: false, ranAtAll: true, liveness: `async_job:${asyncJob.status}` };
+    let cur = await newestPrepare(jobId);
+    logsAfter = await execLogCount(jobId);
+    const grew = logsBefore != null && logsAfter != null && logsAfter > logsBefore;
+    // An UNREADABLE list is never "the receipt moved" — F-832. Liveness must come from the
+    // async_job row or the execution log when the ledger cannot be read at all.
+    const moved = !cur.unavailable && !beforeUnavailable && !!cur.receipt
+      && JSON.stringify(receiptIdentity(cur.receipt)) !== JSON.stringify(idBefore);
+    const done = (live) => {
+      // THE SECOND READ. A tick that finished between the liveness read and the receipt
+      // read of THIS iteration is exactly the 600 ms case above, and this is the read
+      // that catches it. Everything the judge sees comes from here.
+      return { status: cur.status, before, beforeUnavailable, after: cur.receipt, afterUnavailable: cur.unavailable, taskDone: true, logsBefore, logsAfter, taskId, asyncJob, ranAtAll: true, liveness: live };
+    };
+    if (finished) { cur = await newestPrepare(jobId); return done(`async_job:${asyncJob.status}`); }
+    // A receipt whose IDENTITY moved is itself proof the tick ran — the ledger cannot be
+    // written by a consumer that never woke up. Same for an execution log that grew.
+    if (moved) return done("prepare-receipt");
+    if (grew) return done("execution-log");
     await sleep(8000);
   }
-  return { receipt: null, status: null, newReceipt: false, ranAtAll: false, logsBefore, logsAfter, taskId, asyncJob, liveness: null };
+  const last = await newestPrepare(jobId);
+  return { status: last.status, before, beforeUnavailable, after: last.receipt, afterUnavailable: last.unavailable, taskDone: false, ranAtAll: false, logsBefore, logsAfter, taskId, asyncJob, liveness: null };
 }
 
 /*
@@ -338,11 +409,35 @@ async function main() {
   const createdAtA = created.body.job.createdAt;
   PASS(`agent A ${jobId} created (createdAt=${createdAtA})`);
   const t1 = await tick(jobId, "tick 1");
-  info(`tick 1: ${JSON.stringify({ newReceipt: t1 && t1.newReceipt, ranAtAll: t1 && t1.ranAtAll })} receipt=${JSON.stringify(t1 && t1.receipt).slice(0, 300)}`);
-  if (t1 && t1.newReceipt) PASS("a normal tick produces a prepare receipt — the control for STEP 3");
-  else NV("the first tick produced no prepare receipt; the 'no receipt' assertion below is weaker for it", { t1: t1 && { ranAtAll: t1.ranAtAll } });
-  await pause(jobId, true);
-  info("agent A is PAUSED so the planner cannot enqueue a post run");
+  info(`tick 1: liveness=${t1 && t1.liveness}, receipt=${JSON.stringify(t1 && t1.after).slice(0, 300)}`);
+  const v1 = applyTickVerdict("tick 1 (the control for STEP 3)", judgeTickReceipt({ ...(t1 || {}), expect: "receipt" }), { liveness: t1 && t1.liveness });
+  ev.control = { verdict: v1.verdict, arm: v1.arm, identity: v1.identity, liveness: t1 && t1.liveness };
+  /*
+   * F-823 — AGENT A IS *NOT* PAUSED HERE ANY MORE. THE PAUSE MOVED BELOW THE SETTLE
+   * ASSERTIONS, AND THAT IS THE POINT OF THIS CHANGE.
+   *
+   * Pausing before STEP 3/STEP 4 meant EVERY tick this script graded came back through
+   * the paused arm — `{key:"(agent)", reason:"paused"}`, src/virtual-admin.js:~726 — and
+   * the assertions never read the body, so:
+   *   · STEP 4's "a NORMAL prepare receipt with no purge gate" was satisfied by a receipt
+   *     that says the agent did nothing because it is paused. The clear was still proved
+   *     (the tombstone read is independent), but the RECEIPT half of the step proved
+   *     nothing about the tick being past the gate and doing work;
+   *   · and STEP 3's "no receipt" could not be told apart from "a paused receipt
+   *     overwritten in the same bucket".
+   * The pause confounded the very rows the steps read.
+   *
+   * IT IS NOT DELETED, BECAUSE IT IS STILL NEEDED — just AFTER. Its job (the docblock at
+   * the top of this file) is to stop the five-minute planner enqueuing a POST run while
+   * the script is still running, and the window this script measures is over by then. For
+   * the ticks it does grade, the no-post guarantee rests on `shadowUntilTick: 500`: the
+   * post gate refuses in shadow, `replyPublic` is false, and the project's comment total
+   * is read before and after and asserted either way.
+   *
+   * The cost of the move is real and accepted: the after-window tick now runs a GENUINE
+   * prepare (a JQL sweep and up to `maxItemsPerTick: 2` item turns on the frontier model)
+   * instead of returning in 600 ms. That spend is what makes STEP 4 a measurement.
+   */
 
   console.log("\nSTEP 2 - the ledger keys, read while A LIVES (the positive control)");
   const idx = (await kvs(`va_index:${jobId}`)).value;
@@ -377,15 +472,29 @@ async function main() {
 
   const tIn = await tick(jobId, "tick inside the window", 180);
   const ageAtTick = Date.now() - plantedAtMs;
-  ev.insideWindow = { newReceipt: tIn && tIn.newReceipt, ranAtAll: tIn && tIn.ranAtAll, logs: tIn && { before: tIn.logsBefore, after: tIn.logsAfter }, ageAtTickMs: ageAtTick, settleMs: SETTLE_MS };
+  ev.insideWindow = {
+    liveness: tIn && tIn.liveness, taskDone: tIn && tIn.taskDone,
+    identity: { before: receiptIdentity(tIn && tIn.before), after: receiptIdentity(tIn && tIn.after) },
+    arm: receiptArm(tIn && tIn.after),
+    // F-832 — the named scan fault rides into the evidence file, so a reader of a N/V run
+    // can tell an unread ledger from an unwritten one.
+    unavailable: { before: (tIn && tIn.beforeUnavailable) || null, after: (tIn && tIn.afterUnavailable) || null },
+    logs: tIn && { before: tIn.logsBefore, after: tIn.logsAfter }, ageAtTickMs: ageAtTick, settleMs: SETTLE_MS,
+  };
   info(`tick inside: ${JSON.stringify(ev.insideWindow)}`);
-  if (!(tIn && tIn.ranAtAll)) {
-    NV("no evidence the in-window tick ran at all (no new receipt AND no new execution log) — nothing to judge", ev.insideWindow);
-  } else if (ageAtTick >= SETTLE_MS) {
+  /*
+   * F-823 — THE BODY, NOT THE COUNT. The product's purge-settling arm is RECEIPT-FREE
+   * (src/virtual-admin.js:~707-720: it returns before `recordTick`), so the expectation is
+   * "no receipt written for this tick, OR a receipt carrying `gate:"purge-settling"`" —
+   * the judge reads whichever the product actually does and says which it saw. What it no
+   * longer accepts is the old evidence: a prepare-receipt COUNT that did not grow because
+   * the previous tick shared this tick's five-minute bucket.
+   */
+  if (ageAtTick >= SETTLE_MS) {
     NV("the in-window tick landed AFTER the settle window had already retired — re-run; the window is not what was measured", ev.insideWindow);
   } else {
-    if (tIn.newReceipt === false) PASS("the tick did NO WORK: it ran (an execution log landed) and produced NO prepare receipt", ev.insideWindow);
-    else FAIL("the tick inside the window produced a prepare receipt — it was not gated", { receipt: JSON.stringify(tIn.receipt).slice(0, 400) });
+    const vIn = applyTickVerdict("tick INSIDE the window", judgeTickReceipt({ ...(tIn || {}), expect: "settling-refused" }), { liveness: tIn && tIn.liveness, ageAtTickMs: ageAtTick });
+    ev.insideWindow.verdict = vIn.verdict;
   }
   /* F-797 — A TOMBSTONE READ IS ONLY EVIDENCE IF A TICK RAN. With no proof the tick ran,
      "it still stands" is satisfied by a consumer that never woke up, which is the vacuous
@@ -410,15 +519,24 @@ async function main() {
   else NV("va_running is STILL live at the wait bound — the after-window clear cannot be attributed to the settle window, so the tombstone is not graded below", ev.claimWait);
 
   const tAfter = await tick(jobId, "tick after the window", 240);
-  const rAfter = tAfter && tAfter.receipt;
-  ev.afterWindow = { newReceipt: tAfter && tAfter.newReceipt, ranAtAll: tAfter && tAfter.ranAtAll, receipt: rAfter };
+  const rAfter = tAfter && tAfter.after;
+  ev.afterWindow = {
+    liveness: tAfter && tAfter.liveness, taskDone: tAfter && tAfter.taskDone,
+    identity: { before: receiptIdentity(tAfter && tAfter.before), after: receiptIdentity(rAfter) },
+    arm: receiptArm(rAfter), receipt: rAfter,
+    unavailable: { before: (tAfter && tAfter.beforeUnavailable) || null, after: (tAfter && tAfter.afterUnavailable) || null },
+  };
   info(`tick after: ${JSON.stringify(ev.afterWindow).slice(0, 600)}`);
-  const skipAfter = (rAfter && Array.isArray(rAfter.skipped) && rAfter.skipped) || [];
-  const gateAfter = skipAfter.find((s) => s && s.gate === "purge-settling");
-  if (rAfter && !gateAfter) PASS("the tick after the window is a NORMAL prepare receipt with no purge gate", { phase: rAfter.phase, swept: rAfter.swept, worked: rAfter.worked, skipped: skipAfter.length });
-  else if (gateAfter) FAIL("the tick after the window is STILL gated", { gate: gateAfter });
-  else if (tAfter && tAfter.ranAtAll) FAIL("the tick after the window ran but produced no prepare receipt — it is still doing nothing", ev.afterWindow);
-  else NV("no evidence the tick after the window ran at all", ev.afterWindow);
+  /*
+   * F-823 — THE RECEIPT MUST EXIST *AND* NOT BE THE SETTLE GATE'S. The old assertion took
+   * ANY receipt with no purge gate as "a NORMAL prepare receipt", which the paused arm
+   * satisfied without the tick ever doing work. The judge names the arm it saw — `prepare`
+   * now that the pause has moved below this step, `paused` if an operator re-introduces it,
+   * `gate:capability` if the instance turned the agent off mid-run — so the line printed can
+   * never claim a normal prepare about a tick that was refused somewhere else.
+   */
+  const vAfter = applyTickVerdict("tick AFTER the window", judgeTickReceipt({ ...(tAfter || {}), expect: "not-settling" }), { liveness: tAfter && tAfter.liveness, swept: rAfter && rAfter.swept, worked: rAfter && rAfter.worked });
+  ev.afterWindow.verdict = vAfter.verdict;
   /* F-797 — THE FAIL THAT ACCUSED THE PRODUCT. This was unconditional: a run whose
      liveness was N/V, or whose clear was refused on the claim check rather than on the
      settle window, still graded a standing tombstone a FAILURE. A measurement that could
@@ -434,6 +552,16 @@ async function main() {
   if (why) NV(`the clear is NOT GRADED: ${why}`, { tombGone, settling: settlingAfter, liveness: tAfter && tAfter.liveness, claimLive: claimWait.live });
   else if (tombGone === null) { PASS(`the tombstone va_purged:${jobId} is GONE (the same read saw it twice above)`, { liveness: tAfter.liveness }); restore.tombstoneFor = null; }
   else FAIL("the tombstone is still standing after the window, with the tick proven to have run and no live claim to refuse on", { tombGone, settling: settlingAfter, liveness: tAfter.liveness });
+
+  /*
+   * F-823 — THE PAUSE, MOVED HERE FROM STEP 1. Every settle assertion above is taken, so
+   * pausing can no longer confound the receipts they read (see the long note in STEP 1).
+   * It still does the job the top-of-file docblock gives it: the script has minutes of
+   * cleanup and a Jira comment sweep left, and a five-minute planner tick landing in that
+   * tail must not enqueue a post run for an agent that is now past its tombstone.
+   */
+  if (await pause(jobId, true)) info("agent A is PAUSED, after the settle assertions — the planner cannot enqueue a post run during cleanup");
+  else NV("agent A could not be paused for the cleanup tail; a planner tick could still enqueue a post run (the comment count below is the backstop)");
 
   const cAfter = await commentTotal();
   ev.comments = { before: cBefore, after: cAfter };

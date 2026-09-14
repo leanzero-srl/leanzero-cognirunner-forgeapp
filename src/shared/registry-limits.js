@@ -422,6 +422,19 @@ export const memoryPlatformCapMessage = (bytesOver) => {
  * answers a whole budget, for the same reason an unknown audience falls to the smallest
  * row rather than the largest. If one of them ever grows a skills block, that number is
  * a decision to make, not a default to inherit.
+ *
+ *   runtime — F-886. The PER-TRANSITION surfaces: validators, conditions and semantic
+ *               post-functions, via `getRuntimeMemorySection` in src/index.js. 4 KB of
+ *               memories was a function-DEFAULT PARAMETER there (`capBytes = 4096`), which
+ *               is a fourth typed budget in exactly the shape F-868/F-873 removed from the
+ *               call sites — a default is a home too, and this one could drift from the
+ *               table without any caller changing. The number is unchanged: this audience
+ *               is doubly opt-in (`runtimeInjection`) and pays its tokens on EVERY
+ *               transition inside the 25 s resolver budget, so it sits at the async
+ *               review's 4 KB rather than codegen's 8 KB. Its `skills` column is the
+ *               SMALLEST row's value for the same reason `endpointAssistant` and
+ *               `configReview` carry one — runtime injects no skills at all, and a whole
+ *               row keeps `knowledgeBudget()` total.
  */
 export const KNOWLEDGE_BUDGET_BYTES = Object.freeze({
   codegen: Object.freeze({ skills: 24576, memories: 8192 }),
@@ -430,6 +443,7 @@ export const KNOWLEDGE_BUDGET_BYTES = Object.freeze({
   prReview: Object.freeze({ skills: 6144, memories: 2048 }),
   endpointAssistant: Object.freeze({ skills: 6144, memories: 2048 }),
   configReview: Object.freeze({ skills: 6144, memories: 4096 }),
+  runtime: Object.freeze({ skills: 6144, memories: 4096 }),
 });
 
 /**

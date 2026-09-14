@@ -475,6 +475,13 @@ try {
         assert.equal(new RegExp(`${fn}\\([^;]*capBytes\\s*:\\s*\\d`).test(code), false,
           `${f} types a numeric capBytes at a ${fn} call — use the default or KNOWLEDGE_BUDGET_BYTES`);
       }
+      // F-886 — WIDENED AGAIN, to the OTHER home a budget can hide in: a function's own
+      // DEFAULT PARAMETER. `getRuntimeMemorySection(projectKey, capBytes = 4096)` was a
+      // fourth typed budget that no call site passed, so the call-site rule above could
+      // never see it, and it could drift from KNOWLEDGE_BUDGET_BYTES without any caller
+      // changing. A default is a home: it names the row (`runtime`) or it is a copy.
+      assert.equal(/capBytes\s*=\s*\d/.test(code), false,
+        `${f} defaults capBytes to a numeric literal — name a KNOWLEDGE_BUDGET_BYTES row instead`);
       if (f !== "index.js") continue;
       // index.js keeps 24576 for PF_FUNCTIONS_OFFLOAD_BYTES (a different, unrelated budget);
       // what must not exist is a SECOND copy of the skills budget.
@@ -487,6 +494,12 @@ try {
     assert.equal(KNOWLEDGE_BUDGET_BYTES.codegen.memories, 8192, "buildMemoryBlock's default row");
     assert.equal(KNOWLEDGE_BUDGET_BYTES.endpointAssistant.memories, 2048, "suggestEndpoint's row, ex-literal 2048");
     assert.equal(KNOWLEDGE_BUDGET_BYTES.configReview.memories, 4096, "the async review task's row, ex-literal 4096");
+    assert.equal(KNOWLEDGE_BUDGET_BYTES.runtime.memories, 4096,
+      "F-886: the per-transition runtime row (validators/conditions/semantic PFs), ex-default-parameter 4096");
+    // …and getRuntimeMemorySection's signature reads that row rather than repeating 4096.
+    assert.match(stripJsComments(readFileSync(new URL("../../src/index.js", import.meta.url), "utf8")),
+      /getRuntimeMemorySection = async \(projectKey, capBytes = KNOWLEDGE_BUDGET_BYTES\.runtime\.memories\)/,
+      "F-886: the runtime memory section's default is the named row");
     // The function's default must come FROM the table, not repeat its number.
     const mem = stripJsComments(readFileSync(new URL("../../src/memories.js", import.meta.url), "utf8"));
     assert.match(mem, /capBytes = KNOWLEDGE_BUDGET_BYTES\.codegen\.memories/,

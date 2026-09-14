@@ -1781,9 +1781,13 @@ const fetchContextDocs = async (docIds) => (await fetchContextDocsDetailed(docId
  * (buildMemoryBlock). Fail-open — runtime paths must never fail because of
  * memories.
  *
+ * The byte budget is `KNOWLEDGE_BUDGET_BYTES.runtime.memories`, not a literal in this
+ * signature (F-886): a default parameter is a home, and a fourth typed budget beside the
+ * table F-868/F-873 built is the same drift those findings removed from the call sites.
+ *
  * @returns {Promise<string>} "" or a "\n\n## ..." block ready to append to a system prompt
  */
-const getRuntimeMemorySection = async (projectKey, capBytes = 4096) => {
+const getRuntimeMemorySection = async (projectKey, capBytes = KNOWLEDGE_BUDGET_BYTES.runtime.memories) => {
   try {
     const settings = await getMemorySettings();
     if (settings.runtimeInjection !== true || settings.injection === false) return "";

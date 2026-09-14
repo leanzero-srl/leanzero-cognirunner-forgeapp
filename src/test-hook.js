@@ -400,6 +400,30 @@ export async function testStateTrigger(req) {
       if (body.action === "disarmJiraFault") return json(200, { ok: true, path, ...(await disarmHarnessFault(HARNESS_FAULT_JIRA, [path])) });
       return json(200, { ok: true, path, ...(await readHarnessFault(HARNESS_FAULT_JIRA, [path])) });
     }
+    /* ===== F-667: THE SWEEP — one call that clears a crashed driver's leftovers =====
+     * F-664 bounded a fault row on the READ, which ends a lever the moment anything looks
+     * at it. It does NOT reach the row nobody will look at again: a driver that dies before
+     * its `finally` leaves a fault on a key only that dead process knew, and Forge KVS
+     * deletes expired keys lazily (up to 48 h). Worse, every row armed by a build before the
+     * F-664 deploy carries no `until` at all — F-667's read-time fix dates those from
+     * `armedAt` + the ten-minute ceiling, and THIS action is how they actually leave storage.
+     *
+     * IT DELETES ONLY EXPIRED ROWS, and it says which: the answer lists every
+     * row in the fault keyspace with its stored `until`, the deadline that BOUNDS it and whether
+     * that has passed. A live lever is listed and left alone — an action that could cancel a
+     * running driver's fault would make every suite's result depend on who else pressed it;
+     * `disarmJiraFault` and friends are still how you end a lever you armed. `dryRun: true`
+     * lists without deleting.
+     *
+     * The enumeration, the page caps and the env gate all live in src/harness-fault.js; this
+     * is wiring behind the same HARNESS_SECRET Bearer as every other action here, and the
+     * sweep is additionally inert wherever that env var is absent (production). */
+    if (body.action === "sweepHarnessFaults") {
+      const { sweepHarnessFaults } = await import("./harness-fault.js");
+      const r = await sweepHarnessFaults({ dryRun: body.dryRun === true });
+      // A refusal from the lever overrides the optimistic ok, exactly like the arm actions.
+      return json(r.ok === false ? 400 : 200, { ok: true, ...r });
+    }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });

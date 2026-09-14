@@ -363,5 +363,46 @@ process.env.HARNESS_SECRET = SECRET;
   await disarm();
 }
 
-console.log(`test-hook-jira-fault (F-655/F-661): ${pass} passed, ${fail} failed`);
+/* ═════ 12. F-667 — THE SWEEP DOOR: a crashed driver's leftovers clear in ONE call ═════
+ *
+ * The lever this file is about is the one that was measured still biting at 615 s, and the
+ * reason it could was that nothing ever looked at the row again. F-664 bounded the READ;
+ * this is the action that reaches the rows nobody will read. It sits behind the SAME Bearer
+ * as every other action here and is inert without HARNESS_SECRET, and — the part that has to
+ * hold — it deletes only rows whose deadline has passed.
+ */
+{
+  await disarm();
+  const legacyKey = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_667", "d-crashed");
+  // THE ROW F-667 IS ABOUT: armed by a build before the F-664 deploy, so no `until` at all,
+  // and `armedAt` an hour ago. Planted straight into the keyspace, past the arming clamp.
+  await storage.set(legacyKey, { count: 3, armedAt: new Date(Date.now() - 3_600_000).toISOString() });
+  await arm({ status: 503, ttlSeconds: 120 });
+
+  const bearerless = await post({ action: "sweepHarnessFaults" }, { bearer: null });
+  ok(bearerless.status === 404, "the sweep needs the Bearer, like every other action here");
+  ok((await storage.get(legacyKey)) !== undefined, "…and refusing it deleted nothing");
+
+  const dry = await post({ action: "sweepHarnessFaults", dryRun: true });
+  ok(dry.status === 200 && dry.body.ok === true && dry.body.deleted === 0 && dry.body.dryRun === true,
+    `a dry run lists without deleting (got ${JSON.stringify(dry.body && { ok: dry.body.ok, deleted: dry.body.deleted })})`);
+  const dryLegacy = (dry.body.rows || []).find((r) => r.key === legacyKey);
+  ok(dryLegacy && dryLegacy.expired === true && dryLegacy.until === null && typeof dryLegacy.deadline === "string",
+    `…and reports the legacy row as expired with no \`until\` of its own (got ${JSON.stringify(dryLegacy)})`);
+
+  const swept = await post({ action: "sweepHarnessFaults" });
+  ok(swept.status === 200 && swept.body.deleted >= 1, `the sweep deletes the expired rows (got deleted=${swept.body && swept.body.deleted})`);
+  ok((await storage.get(legacyKey)) === undefined, "…the pre-deploy row is gone, on a key the caller never had to name");
+  ok((await readLever()).body.value && (await readLever()).body.value.status === 503,
+    "…and THE LIVE Jira lever is untouched — a sweep must never cancel a running driver's fault");
+  ok((await handler({ call: { functionKey: "searchUsers", payload: { query: "mihai" } } }, { principal: { accountId: ADMIN } })).status === 503,
+    "…so it still bites after the sweep");
+  await disarm();
+
+  process.env.HARNESS_SECRET = "";
+  ok((await post({ action: "sweepHarnessFaults" })).status === 404, "with no HARNESS_SECRET configured the sweep door is 404, like the rest of the hook");
+  process.env.HARNESS_SECRET = SECRET;
+}
+
+console.log(`test-hook-jira-fault (F-655/F-661/F-667): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

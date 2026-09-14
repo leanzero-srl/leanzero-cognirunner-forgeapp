@@ -18,11 +18,11 @@
  *
  * THE GATE IS `process.env.HARNESS_SECRET`, exactly like src/test-hook.js: development
  * and staging builds carry it, PRODUCTION NEVER DOES. It has ONE home in this file,
- * `harnessEnabled()`, and ALL SIX storage-touching exports ask it on their FIRST
+ * `harnessEnabled()`, and ALL SEVEN storage-touching exports ask it on their FIRST
  * statement, before any storage call: `harnessFaultArmed` returns false,
- * `armHarnessFault`, `disarmHarnessFault`, `armKeyReadFault` (F-629) and `armJiraFault`
- * (F-655) return `{ ok: false, reason: "harness-off" }`, and `readHarnessFault` returns
- * `null`. So on a production deployment this module performs no KVS read and no KVS
+ * `armHarnessFault`, `disarmHarnessFault`, `armKeyReadFault` (F-629), `armJiraFault`
+ * (F-655) and `sweepHarnessFaults` (F-667) return `{ ok: false, reason: "harness-off" }`,
+ * and `readHarnessFault` returns `null`. So on a production deployment this module performs no KVS read and no KVS
  * write, and cannot change any outcome, no matter who imports it. (`keyReadFaultMode` and
  * `jiraFaultStatus` touch storage only THROUGH `readHarnessFault`, so they inherit the
  * gate rather than restating it — which is the shape any further consuming side copies.)
@@ -192,11 +192,11 @@ export class HarnessFault extends Error {
 
 /**
  * THE gate, in ONE home. `process.env.HARNESS_SECRET` is set in development and staging
- * builds and NEVER in production, exactly as in src/test-hook.js. ALL SIX exports that
+ * builds and NEVER in production, exactly as in src/test-hook.js. ALL SEVEN exports that
  * touch storage ask this — `harnessFaultArmed` (consume), `armHarnessFault` (F-517),
- * `disarmHarnessFault` and `readHarnessFault` (F-522), `armKeyReadFault` (F-629) and
- * `armJiraFault` (F-655) — and each asks it as its FIRST statement, before any storage call, so a production
- * deployment performs no KVS access through this module at all. Adding a SEVENTH
+ * `disarmHarnessFault` and `readHarnessFault` (F-522), `armKeyReadFault` (F-629),
+ * `armJiraFault` (F-655) and `sweepHarnessFaults` (F-667) — and each asks it as its FIRST statement, before any storage call, so a production
+ * deployment performs no KVS access through this module at all. Adding an EIGHTH
  * storage-touching export means adding this line to it; the offline test counts
  * operations, so a new one that forgets shows up as a non-zero count rather than as a
  * comment nobody read. (`keyReadFaultMode` and `jiraFaultStatus` are not ones: they touch storage only through
@@ -227,20 +227,60 @@ export const harnessEnabled = () => Boolean(process.env.HARNESS_SECRET);
  * is answered as ABSENT and DELETED on the way out. The platform TTL stays — it is what
  * removes the row nobody ever reads again — but it is now defence in depth, not the story.
  *
- * A row with NO `until` is NOT treated as expired: that is the hand-planted row the offline
- * suite writes straight into the keyspace to prove a lever re-validates its own payload,
- * and a missing bound is not a passed one. Every row this module writes carries one.
+ * F-667 — A ROW WITH NO `until` IS BOUNDED BY `armedAt` + THE FAMILY CEILING, NOT LEFT
+ * IMMORTAL. F-664's read-time bound shipped answering "no stamp == nothing to judge it by
+ * == not expired", which is exactly the row that CAUSED F-664: every fault armed by a build
+ * before d4896af carries `armedAt` and no `until`, so the new bound did not reach one of
+ * them and a crashed driver's lever stayed live forever. So there is ONE deadline function,
+ * `faultRowDeadline`: the stored `until` when it parses, else `armedAt` + ten minutes (no
+ * lever in this family may outlive that ceiling anyway), else NOTHING — and a row with
+ * neither stamp is EXPIRED, because a row this module cannot date is a row it cannot bound.
+ * Every row this module writes carries both stamps; the offline suites that plant rows by
+ * hand carry `armedAt`, which is what keeps them readable.
+ *
+ * AND THE DECREMENT NEVER EXTENDS A WINDOW. `harnessFaultArmed` re-writes a counted row, and
+ * before F-667 it recomputed the deadline from NOW for any row with no `until` — stamping a
+ * FRESH ten minutes onto the legacy row it had just failed to expire. The existing deadline
+ * is now carried THROUGH the write (`setFaultRow`'s `keepUntil`), never recomputed.
+ *
+ * THE LAST RESORT IS `sweepHarnessFaults` (F-667): one gated call that enumerates the whole
+ * `harness_fault:` keyspace with each row's deadline and deletes the expired ones, so a
+ * crashed driver's leftovers are clearable without knowing which keys it armed.
  */
 
 /** THE one place a fault TTL becomes a platform option. Seconds, because Forge takes a unit. */
 export const faultTtlOption = (seconds) => ({ ttl: { value: seconds, unit: "SECONDS" } });
 
-/** Has this row's own stamped window passed? No stamp == nothing to judge it by == no. */
+/**
+ * F-667 — THE ONE DEADLINE OF A ROW, in ms, or `null` when the row carries no date at all.
+ *
+ * `until` is the row's own stamp and wins whenever it parses. A row with no usable `until`
+ * is a row written by a build before the F-664 deploy (or hand-planted by an offline suite),
+ * and it is bounded by `armedAt` + `HARNESS_FAULT_TTL_SECONDS`: ten minutes is the ceiling
+ * NO lever in this family may exceed, so applying it to an undated row takes nothing from a
+ * legitimate one and ends an abandoned one. Both `faultRowExpired` and `remainingSeconds`
+ * ask THIS — two functions deriving "when does this row end" separately is how F-667 got its
+ * second half (the predicate said "never" while the decrement said "600 seconds from now").
+ */
+export const faultRowDeadline = (row) => {
+  if (!row || typeof row !== "object") return null;
+  const until = typeof row.until === "string" ? Date.parse(row.until) : NaN;
+  if (Number.isFinite(until)) return until;
+  const armedAt = typeof row.armedAt === "string" ? Date.parse(row.armedAt) : NaN;
+  if (Number.isFinite(armedAt)) return armedAt + HARNESS_FAULT_TTL_SECONDS * 1000;
+  return null;
+};
+
+/**
+ * Has this row's window passed? A row with NEITHER stamp is EXPIRED (F-667): a lever nobody
+ * can date is a lever nothing can end, and this family's whole premise is that a forgotten
+ * arm dies on its own. A non-row is not expired — it is absent, which `getFaultRow` already
+ * answers separately.
+ */
 export const faultRowExpired = (row, now = Date.now()) => {
-  const until = row && row.until;
-  if (typeof until !== "string") return false;
-  const t = Date.parse(until);
-  return Number.isFinite(t) && now >= t;
+  if (!row || typeof row !== "object") return false;
+  const deadline = faultRowDeadline(row);
+  return deadline === null ? true : now >= deadline;
 };
 
 /**
@@ -253,9 +293,14 @@ export const faultRowExpired = (row, now = Date.now()) => {
  * exports ask `harnessEnabled()` first" true rather than becoming "all eight, two of which
  * nobody remembered". A caller outside this file that wants to write a fault row arms a lever.
  */
-const setFaultRow = async (key, row, ttlSeconds) => {
+const setFaultRow = async (key, row, ttlSeconds, keepUntil = null) => {
   const seconds = Math.max(1, Math.min(HARNESS_FAULT_TTL_SECONDS, Math.floor(Number(ttlSeconds) || HARNESS_FAULT_TTL_SECONDS)));
-  const until = new Date(Date.now() + seconds * 1000).toISOString();
+  // F-667 — `keepUntil` is a RE-WRITE of a row that already has a deadline (the decrement).
+  // It is carried through verbatim rather than recomputed from now, which is the only way a
+  // repeated consumption cannot walk a lever forward. A fresh arm passes none and gets one.
+  const until = typeof keepUntil === "string" && Number.isFinite(Date.parse(keepUntil))
+    ? keepUntil
+    : new Date(Date.now() + seconds * 1000).toISOString();
   const stored = { ...row, until };
   await storage.set(key, stored, faultTtlOption(seconds));
   return { value: stored, until, ttlSeconds: seconds };
@@ -276,11 +321,18 @@ const getFaultRow = async (key) => {
   return { row, until, expired: false };
 };
 
-/** What is LEFT of a row's window, so a re-write preserves it rather than restarting it. */
+/**
+ * What is LEFT of a row's window, so a re-write preserves it rather than restarting it.
+ *
+ * F-667 — it asks `faultRowDeadline`, so an undated row yields what is left of
+ * `armedAt` + the ceiling instead of a fresh ten minutes. A row with no deadline at all is
+ * already expired and never reaches this (`getFaultRow` answers it as absent); the one
+ * second here is a floor, never a window.
+ */
 const remainingSeconds = (row) => {
-  const t = row && typeof row.until === "string" ? Date.parse(row.until) : NaN;
-  if (!Number.isFinite(t)) return HARNESS_FAULT_TTL_SECONDS;
-  return Math.max(1, Math.ceil((t - Date.now()) / 1000));
+  const deadline = faultRowDeadline(row);
+  if (deadline === null) return 1;
+  return Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
 };
 
 /**
@@ -298,9 +350,14 @@ export const harnessFaultArmed = async (kind, ...parts) => {
     const count = Number(row && row.count) || 0;
     if (count <= 0) return false;
     if (count <= 1) await storage.delete(key);
-    // F-664 — a decrement must not RE-ARM the window. The row is re-written with what is
-    // LEFT of its own `until`, so N consumptions cannot walk a lever forward one TTL at a time.
-    else await setFaultRow(key, { ...row, count: count - 1 }, remainingSeconds(row));
+    // F-664/F-667 — a decrement must not RE-ARM the window. The row's EXISTING deadline is
+    // carried through the write (never recomputed from now), and for a legacy row with no
+    // `until` that deadline is `armedAt` + the ceiling — so a consumption BACKFILLS the stamp
+    // rather than granting a fresh TTL, and N consumptions cannot walk a lever forward.
+    else {
+      const deadline = faultRowDeadline(row);
+      await setFaultRow(key, { ...row, count: count - 1 }, remainingSeconds(row), new Date(deadline).toISOString());
+    }
     return true;
   } catch {
     return false;
@@ -447,4 +504,69 @@ export const jiraFaultStatus = async (path) => {
   } catch {
     return null;
   }
+};
+
+/**
+ * F-667 — THE SWEEP: clear what a crashed driver left behind, without knowing its keys.
+ *
+ * F-664 put the bound on the row and enforced it on the READ, which ends a lever the moment
+ * anything looks at it. That is enough for a lever someone still polls; it is NOT enough for
+ * the rows that caused F-664 in the first place — a driver that died before its `finally`
+ * leaves a row NOBODY will read again, on a key only that dead process knew, and Forge KVS
+ * deletes expired keys lazily (up to 48 h, the fact src/index.js:1206 already records). So
+ * there is one call that enumerates the whole `harness_fault:` keyspace, reports each row's
+ * deadline and whether it has passed, and DELETES the ones that have.
+ *
+ * IT DELETES ONLY EXPIRED ROWS. A live lever is listed and left alone — this is a sweep, not
+ * a disarm-everything, and a harness action that could cancel a running driver's fault mid-run
+ * would make every suite's result depend on who else pressed it. `disarmHarnessFault` is still
+ * the way to end a lever you armed. `dryRun` lists without deleting.
+ *
+ * GATED FIRST, like the other six: a production deployment performs no KVS access here either,
+ * and the enumeration in particular must never run on a real tenant.
+ *
+ * BEST-EFFORT ON EACH DELETE, like every other cleanup in this module: a key that refuses to
+ * go is counted in `failed`, never thrown out of a sweep that cleaned up everything else.
+ */
+export const HARNESS_FAULT_KEY_PREFIX = "harness_fault:";
+
+/** Bounded on purpose: a sweep is a diagnostic call inside one 25 s resolver budget. */
+export const HARNESS_FAULT_SWEEP_PAGE_SIZE = 100;
+export const HARNESS_FAULT_SWEEP_MAX_PAGES = 10;
+
+export const sweepHarnessFaults = async ({ dryRun = false } = {}) => {
+  if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
+  const now = Date.now();
+  const rows = [];
+  let scanned = 0, deleted = 0, failed = 0, truncated = false;
+  let cursor = null;
+  for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
+    let query = storage.query()
+      .where("key", { condition: "BEGINS_WITH", values: [HARNESS_FAULT_KEY_PREFIX] })
+      .limit(HARNESS_FAULT_SWEEP_PAGE_SIZE);
+    if (cursor) query = query.cursor(cursor);
+    const result = await query.getMany();
+    for (const entry of (result && result.results) || []) {
+      const key = String(entry && entry.key);
+      const row = (entry && entry.value) || null;
+      const deadline = faultRowDeadline(row);
+      const expired = faultRowExpired(row, now);
+      scanned++;
+      // `until` is what the ROW says; `deadline` is what BOUNDS it — they differ exactly for
+      // the legacy no-`until` row this sweep exists to reach, and a reader is owed both.
+      rows.push({
+        key,
+        until: (row && typeof row.until === "string" && row.until) || null,
+        deadline: deadline === null ? null : new Date(deadline).toISOString(),
+        expired,
+      });
+      if (expired && !dryRun) {
+        try { await storage.delete(key); deleted++; } catch { failed++; }
+      }
+    }
+    cursor = (result && result.nextCursor) || null;
+    if (!cursor) break;
+    if (page === HARNESS_FAULT_SWEEP_MAX_PAGES - 1) truncated = true;
+  }
+  return { ok: true, dryRun: Boolean(dryRun), scanned, deleted, failed, truncated, rows };
 };

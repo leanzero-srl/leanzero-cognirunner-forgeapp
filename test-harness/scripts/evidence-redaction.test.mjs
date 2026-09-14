@@ -2063,8 +2063,14 @@ ok(guardedDrivers.length === liveFiles.length,
     return out;
   }
   const ENV_SENSE = [
-    /* the shouted tenant name — the banner form F-741 was cut for */
-    /(?<![A-Za-z_])(?:STAGING|DEV)(?![A-Za-z_])/,
+    /* the shouted tenant name — the banner form F-741 was cut for.
+       F-881 — AN ISSUE KEY IS NOT A TENANT. The boundary is "not a letter or underscore" on
+       both sides, and a HYPHEN is neither, so `"DEV-123 was created"` read as the shouted
+       tenant name and BLOCKED — the first sentence a seeding driver prints when its project
+       key happens to be `DEV`, refused by a rule that has no opinion about issue keys. The
+       issue-key SHAPE is excluded by lookahead (a hyphen then a digit); `on DEV`, `-e DEV`
+       and a bare shouted `DEV` are untouched, which is everything F-741 was cut for. */
+    /(?<![A-Za-z_])(?:STAGING|DEV)(?![A-Za-z_])(?!-\d)/,
     /* pointed AT an environment: "on staging", "to staging", "-e staging", "--env staging" */
     /(?:\bon|\bto|\binto|\bfrom|\bagainst|\bin|\bat|\bvia|\benvironment|\benv|-e|--env[= ])\s+staging(?![A-Za-z_])/i,
     /* used AS an environment noun phrase: "staging tenant", "staging site", "staging run" */
@@ -2163,6 +2169,16 @@ ok(guardedDrivers.length === liveFiles.length,
     "POSITIVE CONTROL (F-871): …and a template literal is ONE literal — the apostrophe and the `${}` interpolation both stay inside it");
   ok(tenantLiterals(`  PASS("the draft's staging left the item untouched");`).length === 0,
     "NEGATIVE CONTROL (F-871): joining the fragments does not invent a tenant — the domain sense with an apostrophe is still allowed");
+  /* F-881 — THE ISSUE KEY AND THE TENANT, side by side. The BLOCK half is the claim the
+     shouted branch exists for; the ALLOW half is the sentence a seeding driver prints. */
+  ok(tenantLiterals('  PASS("DEV-123 was created");').length === 0,
+    "NEGATIVE CONTROL (F-881): an issue KEY whose project prefix is DEV is not a tenant claim — the hyphen is not a letter, so the old boundary let the key through as the shouted name");
+  ok(tenantLiterals('  info(`seeded ${n} issues, first DEV-4012`);').length === 0,
+    "NEGATIVE CONTROL (F-881): …and the same key inside a template literal");
+  ok(tenantLiterals('  PASS("deployed to DEV");').length === 1,
+    "POSITIVE CONTROL (F-881): the shouted tenant name with nothing behind it still BLOCKS — the exclusion is the key SHAPE, not the word");
+  ok(tenantLiterals('  info("re-run with -e DEV");').length === 1,
+    "POSITIVE CONTROL (F-881): …and so does the flag form that sends an operator to a tenant");
   /* F-880 — A WRAPPED BANNER. The claim sits on a CONTINUATION line: per-line, the opening
      line is unterminated (skipped) and the continuation has no opening quote, so the whole
      thing was invisible. The offender is reported at the OPENING quote's line, 1. */

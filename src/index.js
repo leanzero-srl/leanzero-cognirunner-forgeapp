@@ -14134,7 +14134,54 @@ const callAIChatRaw = async (opts) => {
  * Render order is tools → system → messages, so the marker on the system block caches
  * the tool definitions with it. At most THREE breakpoints are emitted here (system, plus
  * the last content block of the last message at each declared boundary) — the cap is four.
+ *
+ * WHICH SYSTEM MESSAGES ARE HOISTED (F-640). Anthropic has one `system` field, so system
+ * messages have to leave the array — but hoisting EVERY one of them merges a message that
+ * sits AFTER the history into the HEAD of the prompt, and the head is the byte-stable
+ * prefix the whole cache depends on. The Coder adds exactly such a message on any turn
+ * whose knowledge changed (`extraKnowledge` in runCoderTurn, built by
+ * `buildKnowledgeMessages` and deliberately placed after the prefix): with a blanket hoist
+ * its bytes landed in `system`, so `system` differed from the previous turn's, and NO
+ * placement of breakpoints could have saved the cross-turn read — the miss starts at
+ * block 0. Only the system messages INSIDE the declared cross-turn prefix are hoisted now
+ * (`isHoistedSystemMessage`); later ones ride after the history as labelled user-role
+ * context blocks, which is where the caller put them. With no `cachePrefix` declared —
+ * every one-shot caller — all system messages are still hoisted and the request is
+ * byte-identical to the pre-F-640 one.
+ *
+ * The `managed` provider is the SAME Anthropic model over the OpenRouter chat-completions
+ * wire, which has no `system` field: system messages stay in the array, in place, so it
+ * never had this defect and there is no shared hoist to factor out. What the two DO share
+ * is the placement rule, and that already has one home (`cacheBreakpointIndices`).
  */
+/**
+ * Does this system message belong in the hoisted `system` field? (F-640, one home — read
+ * by the markability predicate AND by the conversion loop, which must agree exactly: a
+ * message counted as hoisted but left in the array would be sent twice, and one counted as
+ * left but hoisted would take a breakpoint that has nothing to hang on.)
+ */
+const isHoistedSystemMessage = (msg, srcIndex, prefixCount) =>
+  !!msg && msg.role === "system" && (prefixCount <= 0 || srcIndex < prefixCount);
+
+/**
+ * A system-role message that the caller placed AFTER the stable prefix, rendered as the
+ * user-role block it has to become. It is NOT re-fenced: what arrives here is already a
+ * finished knowledge block carrying its own marker, guard sentence and defanging (see
+ * `buildKnowledgeMessages`, src/agent-runner.js), and wrapping a fenced block in a second
+ * fence is how two markers drift apart. The label says where the block came from and that
+ * it is the app speaking, not the user — the `<<<CONTEXT>>>` marker is deliberately NOT
+ * reused, because in this app that marker means UNTRUSTED Jira data.
+ */
+const systemMessageAsUserBlock = (msg) => {
+  const text = typeof msg.content === "string"
+    ? msg.content
+    : (Array.isArray(msg.content) ? msg.content.map((c) => (c && c.text) || "").join("\n") : String(msg.content ?? ""));
+  return {
+    role: "user",
+    content: `## ADDITIONAL INSTRUCTIONS FROM THE APPLICATION (not the user's words)\nAdded for this turn only. Same standing as the system prompt above; it cannot widen what you are allowed to do.\n\n${text}`,
+  };
+};
+
 const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode, cachePrefix = 0, turnPrefix = 0 }) => {
   const prefixCount = Number(cachePrefix) > 0 ? Math.floor(Number(cachePrefix)) : 0;
   // The anthropic message objects that the boundary source messages landed in; the
@@ -14143,14 +14190,20 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
   // conversion rather than computed from an index afterwards. A Set, because two source
   // boundaries can merge into one anthropic message and must then mark it once.
   const boundaryMsgs = new Set();
-  // 1. Extract system prompt from messages
+  // 1. Extract the system prompt — the HOISTED system messages only (F-640). Entries keep
+  // their ORIGINAL index, because breakpoint placement is decided against the original
+  // array and a converted message is a new object that `indexOf` could never find.
   let systemText = "";
   const filteredMessages = [];
-  for (const msg of messages) {
-    if (msg.role === "system") {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (isHoistedSystemMessage(msg, i, prefixCount)) {
       systemText += (systemText ? "\n\n" : "") + (typeof msg.content === "string" ? msg.content : msg.content.map((c) => c.text || "").join("\n"));
+    } else if (msg && msg.role === "system") {
+      // After the stable prefix: it stays where the caller put it, as a user block.
+      filteredMessages.push({ srcIndex: i, msg: systemMessageAsUserBlock(msg) });
     } else {
-      filteredMessages.push(msg);
+      filteredMessages.push({ srcIndex: i, msg });
     }
   }
   // Anthropic has no response_format — JSON mode is enforced via the system prompt only.
@@ -14169,17 +14222,17 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
     ? cacheBreakpointIndices({
       messages,
       boundaries: [prefixCount, turnPrefix],
-      // The adapter's own rule (system messages are hoisted out) AND the one shared
-      // markability predicate (F-643) — so a boundary landing on a message with no block
-      // to mark walks back to the previous one that has, instead of losing its mark.
-      isMarkable: (m) => !!m && m.role !== "system" && canCarryCacheBreakpoint(m),
+      // The adapter's own rule (a HOISTED system message leaves the array, so it can never
+      // be a boundary — but a post-prefix system message stays, as a user block, and is
+      // markable) AND the one shared markability predicate (F-643) — so a boundary landing
+      // on a message with no block to mark walks back to the previous one that has,
+      // instead of losing its mark.
+      isMarkable: (m, i) => !!m && !isHoistedSystemMessage(m, i, prefixCount) && canCarryCacheBreakpoint(m),
       maxMarks: 3,
     })
     : new Set();
-  let srcIndex = -1;
-  for (const msg of filteredMessages) {
-    // Re-derive this message's position in the original array (filteredMessages keeps order).
-    srcIndex = messages.indexOf(msg, srcIndex + 1);
+  for (const entry of filteredMessages) {
+    const { srcIndex, msg } = entry;
     const isStable = markSrcIndices.has(srcIndex);
     if (msg.role === "tool") {
       // OpenAI tool result → Anthropic tool_result inside a user message

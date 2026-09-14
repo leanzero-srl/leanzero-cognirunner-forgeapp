@@ -42,7 +42,18 @@ const extract = (decl) => {
   return src.slice(start, end + 3);
 };
 
+// Expression-bodied arrow: slice to the first statement terminator instead of "\n};".
+const extractExpr = (decl) => {
+  const start = src.indexOf(decl);
+  if (start < 0) throw new Error(`could not find ${decl}`);
+  const end = src.indexOf(";\n", start);
+  if (end < 0) throw new Error(`could not close ${decl}`);
+  return src.slice(start, end + 1);
+};
+
 const fnSrc = extract("const convertContentBlock = (block) =>")
+  + "\n" + extractExpr("const isHoistedSystemMessage = (msg, srcIndex, prefixCount) =>")
+  + "\n" + extract("const systemMessageAsUserBlock = (msg) =>")
   + "\n" + extract("const canCarryCacheBreakpoint = (msg) =>")
   + "\n" + extract("const cacheBreakpointIndices = ({ messages, boundaries")
   + "\n" + extract("const callAnthropicChat = async ({ apiKey, model, messages");
@@ -206,10 +217,12 @@ install();
     { role: "user", content: "turn 2 words" },
   ];
   await callAnthropicChat({ apiKey: "k", model: "m", messages: withAddition, baseUrl: "https://x", cachePrefix: 4, turnPrefix: 6 });
-  // source 2,3,5 -> anthropic 0,1,2 (the addition is hoisted into `system`).
+  // F-640: source 2,3,4,5 -> anthropic 0,1,2,3. The post-prefix addition is NO LONGER
+  // hoisted into `system` — it rides as anthropic message 2, a labelled user block — so
+  // the within-turn mark now sits on anthropic 3, the user's own words.
   ok(marked(lastBody).includes(1),
     `F-636 STILL HOLDS: a mark lands INSIDE the history, the span the next turn has to match, got ${JSON.stringify(marked(lastBody))}`);
-  ok(marked(lastBody).includes(2), "...and the within-turn mark is on the user's own words");
+  ok(marked(lastBody).includes(3), "...and the within-turn mark is on the user's own words");
   ok(countCacheControl(lastBody) === 3, `three breakpoints, got ${countCacheControl(lastBody)}`);
 }
 
@@ -277,6 +290,63 @@ install();
   const res = await callAnthropicChat({ apiKey: "k", model: "m", messages: allEmpty, baseUrl: "https://x", cachePrefix: 2, turnPrefix: 3 });
   ok(marked(lastBody).length === 0, "no message mark is invented on a message with no block to carry it");
   ok(res.cacheMarks === 0, `cacheMarks is 0, which is the cause reportPromptCacheDefect names, got ${res.cacheMarks}`);
+}
+
+/* ===================================================================================
+ * F-640 - THE HOISTED `system` MUST NOT MOVE WHEN A TURN ADDS KNOWLEDGE. The adapter
+ * merged EVERY system message into one `systemText`, so the Coder's post-history
+ * `extraKnowledge` message (buildKnowledgeMessages, placed deliberately AFTER the stable
+ * prefix) landed in the HEAD of the prompt. `system` then differed from the previous
+ * turn's and the cross-turn cache missed at block 0, whatever the breakpoints did.
+ * =================================================================================== */
+console.log("\n== 10. F-640 two turns of one thread: `system` is byte-identical, the addition rides at the end ==");
+{
+  const threadPrefix = [
+    { role: "system", content: "STABLE SYSTEM PROMPT" },
+    { role: "system", content: "<<<SKILLS\npinned knowledge\nSKILLS>>>" },
+    { role: "user", content: "turn 1 words" },
+    { role: "assistant", content: "turn 1 answer" },
+  ];
+  install();
+  await callAnthropicChat({
+    apiKey: "k", model: "m", baseUrl: "https://x",
+    messages: [...threadPrefix, { role: "user", content: "turn 2 words" }],
+    cachePrefix: 4, turnPrefix: 5,
+  });
+  const systemTurn1 = JSON.stringify(lastBody.system);
+
+  install();
+  await callAnthropicChat({
+    apiKey: "k", model: "m", baseUrl: "https://x",
+    messages: [
+      ...threadPrefix,
+      { role: "user", content: "turn 2 words" },
+      { role: "assistant", content: "turn 2 answer" },
+      // THE ADDITION this turn: after the history, before the user's words.
+      { role: "system", content: "<<<LEARNED_MEMORIES\nlearned since turn 1\nLEARNED_MEMORIES>>>" },
+      { role: "user", content: "turn 3 words" },
+    ],
+    cachePrefix: 6, turnPrefix: 8,
+  });
+  const systemTurn2 = JSON.stringify(lastBody.system);
+
+  ok(systemTurn2 === systemTurn1,
+    "THE FINDING: the hoisted `system` is byte-identical across the two turns, so the cached prefix still matches");
+  ok(!systemTurn2.includes("learned since turn 1"), "the per-turn knowledge addition is NOT in the system field");
+  {
+    const msgs = lastBody.messages;
+    const extra = msgs[msgs.length - 2];
+    ok(extra.role === "user", "the addition rides as a USER-role block");
+    const text = typeof extra.content === "string" ? extra.content : JSON.stringify(extra.content);
+    ok(text.includes("learned since turn 1") && text.includes("ADDITIONAL INSTRUCTIONS FROM THE APPLICATION"),
+      "...labelled as the application speaking, carrying its own knowledge fence verbatim");
+    ok(!text.includes("<<<CONTEXT"), "...and it does NOT borrow the UNTRUSTED <<<CONTEXT>>> marker");
+    const lastText = JSON.stringify(msgs[msgs.length - 1].content);
+    ok(msgs[msgs.length - 1].role === "user" && lastText.includes("turn 3 words"),
+      "the user's own words still come last");
+    ok(marked(lastBody).includes(msgs.length - 1),
+      `the within-turn mark is on the user's own words, not on the addition, got ${JSON.stringify(marked(lastBody))}`);
+  }
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

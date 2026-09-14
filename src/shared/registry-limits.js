@@ -733,9 +733,11 @@ export const GENERATION_META_LIMITS = Object.freeze({
   maxAppliedDocs: 16,      // selectedDocIds caps at 10, +auto-match, +the inline pseudo-doc
   maxAppliedSkills: 16,    // manual <=4 + auto <=2 today; headroom without being unbounded
   maxTruncatedDocs: 16,    // a subset of appliedDocs, so the same ceiling
-  maxFieldGuide: 12,       // compactMeta already slices to 12 — same number, one home
+  maxFieldGuide: 12,       // the one home: FunctionBlock's compactMeta imports this (F-816)
   maxIdChars: 100,         // doc/skill ids are ~30 chars; this is a bound, not a fit
-  maxTitleChars: 200,      // compactMeta slices titles to 40; room for a legacy row
+  maxTitleChars: 200,      // the CEILING on caller/legacy titles. The editor writes far
+                           // shorter (EDITOR_TITLE_CHARS=40 in FunctionBlock, held under
+                           // this by Math.min) — two numbers on purpose, not drift.
   maxSourceChars: 40,
   maxRecipeKeyChars: 120,
   maxRecipeLabelChars: 200,

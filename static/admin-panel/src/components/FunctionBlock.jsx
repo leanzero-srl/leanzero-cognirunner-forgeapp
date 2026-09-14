@@ -22,6 +22,7 @@ import { BUILTIN_RECIPES, getRecipeByKey } from "../../../../src/shared/builtin-
 import { KNOWN_API_MEMBERS } from "../../../../src/shared/sandbox-api-spec.js";
 import { buildDryRunFacts, countChangeVerbs, CHANGE_VERB_LABEL } from "../../../../src/shared/narrate-utils.js";
 import { codeFingerprint } from "../../../../src/shared/code-fingerprint.js";
+import { GENERATION_META_LIMITS } from "../../../../src/shared/registry-limits.js";
 import FieldGuideChip from "./FieldGuideChip";
 
 // ONE literal for the "another writer holds this step" tooltip — it sits on every
@@ -50,7 +51,25 @@ const SKILL_CATEGORY_BY_OPTYPE = {
 
 // Compacts the codegen/fix meta for persisting on the step config — titles
 // sliced so the rule config stays small.
-const sliceTitle = (t) => (t || "").slice(0, 40);
+//
+// F-816 — the caps here are NOT free literals. `compactMeta` is a WRITER of
+// `generationMeta`, and `normalizeGenerationMeta` (src/shared/registry-limits.js) is the
+// clamp every other writer passes through, so a number this function invents is a second
+// home for a bound that is supposed to have one. `maxFieldGuide` is now read from the
+// shared module rather than re-typed as `12`.
+//
+// The TITLE pair is deliberately two numbers and must stay two numbers. The shared
+// `maxTitleChars` (200) is a CEILING on caller JSON — how long a title the REST API and
+// legacy rows are allowed to carry. `EDITOR_TITLE_CHARS` (40) is this editor's own
+// write-compaction: the rule config is what gets persisted and a long doc title repeated
+// across appliedDocs/appliedSkills/truncatedDocs pushes it toward the 24 KB pf_code
+// offload threshold for a string nobody reads at that length. Reconciling them to 200
+// would not "make storage and the UI agree" — it would raise what this editor writes.
+// The relationship that DOES matter is that the editor never writes above the ceiling,
+// which `Math.min` below makes true by construction rather than by matching numbers.
+const EDITOR_TITLE_CHARS = 40;
+const TITLE_CHARS = Math.min(EDITOR_TITLE_CHARS, GENERATION_META_LIMITS.maxTitleChars);
+const sliceTitle = (t) => (t || "").slice(0, TITLE_CHARS);
 const compactMeta = (meta) => {
   if (!meta) return null;
   return {
@@ -59,13 +78,14 @@ const compactMeta = (meta) => {
     appliedMemories: meta.appliedMemories || 0,
     truncatedDocs: (meta.truncatedDocs || []).map((d) => ({ title: sliceTitle(d.title) })),
     /* 1.4 commit 14b — the baked sections this generation was shown. IDS ONLY, and sliced
-       to 12: the titles live in the generated index that FieldGuideChip resolves against,
-       so storing them here would be a second copy of a string that has one author AND
+       to GENERATION_META_LIMITS.maxFieldGuide: the titles live in the generated index
+       that FieldGuideChip resolves against, so storing them here would be a second copy
+       of a string that has one author AND
        would push a rule config toward the 24 KB pf_code offload threshold for nothing.
        Absent (not an empty array) when the backend sent nothing, so "this path carries no
        field guide" stays distinguishable from "the guide selected nothing". */
     ...(Array.isArray(meta.fieldGuide) && meta.fieldGuide.length
-      ? { fieldGuide: meta.fieldGuide.slice(0, 12).map((id) => String(id)) }
+      ? { fieldGuide: meta.fieldGuide.slice(0, GENERATION_META_LIMITS.maxFieldGuide).map((id) => String(id)) }
       : {}),
   };
 };

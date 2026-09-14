@@ -14,6 +14,9 @@
 import { kvs as storage } from "@forge/kvs";
 import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 import { readBearerToken } from "./shared/http-headers.js";
+// F-803: "what does a credential VALUE look like" has ONE home, shared with the harness
+// evidence redactor — the two used to disagree about this app's own Rules-API bearer.
+import { SECRET_VALUE_SHAPES, SECRET_FIELD_NAME_HINTS } from "./shared/secret-shapes.js";
 // F-770: "is this a legal KVS key" has ONE home, and it is not this file. Same module the
 // key BUILDERS assert against, so this door and the builders cannot drift apart again.
 import { isKvsKey, safeKeyPart, KVS_KEY_PATTERN, KVS_KEY_MAX_CHARS } from "./shared/kvs-keys.js";
@@ -84,10 +87,11 @@ const jsonOf = async (res) => { try { return JSON.parse(String(await res.text())
  *
  * Returns `null` when the body is clean, or `{ error, harnessRefusal, field }`.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
-const SECRET_KEY_HINTS = [
-  "token", "secret", "password", "credential", "apikey", "privatekey", "bearer",
-  "authorization", "cookie", "webtrigger", "webhookurl", "cognirunnerkey", "gitconnection",
-];
+/* F-803 — the hints are NOT this file's list. They are one half of the one answer to
+ * "what does a credential look like" (src/shared/secret-shapes.js); the other half is the
+ * VALUE shapes spliced into `SECRET_VALUE_RE` below. `test-harness/lib/redact.mjs` reads
+ * the same module, because the two used to disagree about this app's own bearer. */
+const SECRET_KEY_HINTS = SECRET_FIELD_NAME_HINTS;
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
  * F-769 — THE CREDENTIAL KEY FAMILIES, AND THE READ CEILING THEY CARRY. ONE HOME.
@@ -311,12 +315,19 @@ const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * A plant body that MENTIONS a credential key family, plus the token/URL SHAPES that no
- * key family can describe (GitHub/Bitbucket/OpenAI/Slack tokens, Forge web-trigger URLs).
- * The family half is DERIVED from `CREDENTIAL_KEY_FAMILIES` above — never retyped.
+ * key family can describe (GitHub/GitLab/OpenAI/Atlassian/Slack/AWS tokens, JWTs, Forge
+ * web-trigger URLs).
+ *
+ * BOTH halves are DERIVED — neither is retyped here:
+ *   · the FAMILY half from `CREDENTIAL_KEY_FAMILIES` above, since F-769;
+ *   · the SHAPE half from `src/shared/secret-shapes.js`, since F-803. It used to be an
+ *     inline alternation that knew `gh[pousr]_`, `github_pat_`, `sk-`, `xoxb-` and the dev
+ *     web-trigger host — and NOT `cgr_`, this app's own Rules-API bearer, nor `ATATT`,
+ *     `glpat-`, `AKIA`, `xoxp-` or a JWT, all of which the evidence redactor at the file
+ *     boundary already knew. Two lists, one question, and the door was the weaker of them.
  */
 const SECRET_VALUE_RE = new RegExp(
-  "(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|")
-  + "|\\bgh[pousr]_[A-Za-z0-9]{8}|\\bgithub_pat_|\\bsk-[A-Za-z0-9_-]{12}|\\bxoxb-|\\.atlassian-dev\\.net/)",
+  "(" + CREDENTIAL_KEY_FAMILIES.map(reEscape).join("|") + "|" + SECRET_VALUE_SHAPES.join("|") + ")",
 );
 
 export const SECRET_PLANT_REFUSAL = "harnessRefusal: a plant body may never carry a credential — this door plants state, never secrets";
@@ -535,6 +546,58 @@ export const maskSecretFields = async (value, { extraFieldNames = [] } = {}) => 
     return out;
   };
   return { value: await rebuild(value, "", 0), maskedFields };
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-802 — ONE ANSWER PROJECTION FOR EVERY READ DOOR THAT RETURNS A STORED ROW.
+ *
+ * The F-794 FIELD ceiling was hung on ONE of the four read arms of the same `what`
+ * switch. `?what=kvs&key=config_registry` masked the secret-looking paths; `?what=registry`
+ * returned the identical row VERBATIM, one query parameter away. The same held for
+ * `validation_logs` (`?what=logs`) and for every `log_entry:*` (`?what=execlogs` ->
+ * `readLogs`) - and `log_entry:` is precisely the key the census test excuses as
+ * `unbounded-field-masked-at-the-door`, naming a door those rows are not read through.
+ * A ceiling with one door open is not a ceiling; it is a query string away from nothing.
+ *
+ * So the projection is no longer a property of the `kvs` arm. `readCeiling` is the ONE
+ * rule - the F-769 per-KEY family mask, then the F-794 per-FIELD mask - and
+ * `answerStored` is the ONE way any arm of this switch may put a stored row on the wire.
+ * A new `what` that reads storage and answers `json(200, ...)` directly is the defect this
+ * paragraph exists to make obvious.
+ *
+ * A LIST OF ENTRIES IS ONE VALUE. `?what=logs`/`?what=execlogs` hand the whole ARRAY to
+ * the same traversal, so every entry is masked and the paths come back aggregated with the
+ * entry INDEX in them (`[3].result.headers.<the header name>`) rather than a per-entry
+ * `maskedFields` a caller would have to zip back together. One row, one `maskedFields`,
+ * whichever door answered - which is the property the F-794 kvSet-echo check pins.
+ *
+ * THE KEY IS NOMINAL for the doors that do not take one (`config_registry`,
+ * `validation_logs`, `log_entry:*`): it is the key those rows actually live under, so
+ * `isCredentialKey` and `extraMaskedFieldsFor` answer the same thing they would if the
+ * driver had come through `?what=kvs`. That equality IS the cut.
+ *
+ * THE RESIDUAL IS UNCHANGED and is the one stated at `maskSecretFields`: free text
+ * (`functions[].code`, `agent.instructions`, a log entry's AI output) is caught only by
+ * SHAPE (`SECRET_VALUE_RE`).
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+export const readCeiling = async (key, value) => {
+  const stored = value === undefined ? null : value;
+  if (isCredentialKey(key)) {
+    return { masked: true, present: stored !== null, fingerprint: await credentialFingerprint(stored) };
+  }
+  const m = await maskSecretFields(stored, { extraFieldNames: extraMaskedFieldsFor(key) });
+  return m ? { value: m.value, maskedFields: m.maskedFields } : { value: stored };
+};
+
+/**
+ * Put a stored row on the wire under this door's own envelope name, through `readCeiling`
+ * and nothing else. `envelope` keeps each arm's historical field (`registry`, `logs`,
+ * `value`) so no driver has to change; `key` is what the row is stored under.
+ */
+const answerStored = async (envelope, key, value) => {
+  const c = await readCeiling(key, value);
+  if (c.masked) return json(200, { key, masked: true, present: c.present, fingerprint: c.fingerprint });
+  return json(200, { key, [envelope]: c.value, ...(c.maskedFields ? { maskedFields: c.maskedFields } : {}) });
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
@@ -2323,11 +2386,15 @@ export async function testStateTrigger(req) {
 
   const what = q(req, "what") || "registry";
   try {
-    if (what === "registry") return json(200, { registry: (await storage.get("config_registry")) || [] });
-    if (what === "provider") return json(200, { provider: (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian" });
-    if (what === "logs") return json(200, { logs: (await storage.get("validation_logs")) || [] });
-    // Real execution logs live under per-entry log_entry:* keys (NOT validation_logs).
-    if (what === "execlogs") { const { readLogs } = await import("./index.js"); return json(200, { logs: await readLogs(q(req, "ruleId") || null) }); }
+    // F-802 - EVERY arm below that answers a stored row goes through `answerStored`
+    // (-> `readCeiling`, above). Adding a `what` that reads storage and calls `json(200, ...)`
+    // itself re-opens the ceiling this switch was one query parameter away from.
+    if (what === "registry") return answerStored("registry", "config_registry", (await storage.get("config_registry")) || []);
+    if (what === "provider") return answerStored("provider", "COGNIRUNNER_AI_PROVIDER", (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian");
+    if (what === "logs") return answerStored("logs", "validation_logs", (await storage.get("validation_logs")) || []);
+    // Real execution logs live under per-entry log_entry:* keys (NOT validation_logs), so the
+    // nominal key is the PREFIX those entries share - the same one SPREAD_BOUNDED_BY judges.
+    if (what === "execlogs") { const { readLogs } = await import("./index.js"); return answerStored("logs", "log_entry:", await readLogs(q(req, "ruleId") || null)); }
     if (what === "rulesApiUrl") {
       const { webTrigger } = await import("@forge/api");
       const r = await webTrigger.getUrl("rules-api");
@@ -2377,19 +2444,9 @@ export async function testStateTrigger(req) {
       // with the field named, rather than 500 with a `ForgeKvsAPIError` message.
       const keyBad = kvsKeyRefusal(key);
       if (keyBad) return json(400, keyBad);
-      const stored = (await storage.get(key)) ?? null;
-      if (isCredentialKey(key)) {
-        return json(200, {
-          key,
-          present: stored !== null,
-          fingerprint: await credentialFingerprint(stored),
-          masked: true,
-        });
-      }
-      // The FIELD ceiling. A clean row answers exactly as it always did.
-      const fieldMask = await maskSecretFields(stored, { extraFieldNames: extraMaskedFieldsFor(key) });
-      if (fieldMask) return json(200, { key, value: fieldMask.value, maskedFields: fieldMask.maskedFields });
-      return json(200, { key, value: stored });
+      // F-802 - the SAME projection the other three arms use, and no longer its own copy
+      // of it. A clean row answers exactly as it always did.
+      return answerStored("value", key, (await storage.get(key)) ?? null);
     }
     return json(400, { error: `unknown what=${what}` });
   } catch (e) {

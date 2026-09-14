@@ -2700,6 +2700,105 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     `4j (F-792): a driver that reads \`crashed\` must also SET it in a catch — ${noRecord.join(", ")} passes crashed to formatResultLine but never assigns it, so the line can only ever print the clean shape`);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * ── 4k. F-803 — ONE HOME FOR "WHAT DOES A CREDENTIAL LOOK LIKE" ───────────────────
+ *
+ * There were two, and they disagreed about this app's OWN bearer. `src/test-hook.js`
+ * (`SECRET_VALUE_RE` — the dev hook's write refusal AND its read ceiling) knew
+ * `gh[pousr]_`, `github_pat_`, `sk-`, `xoxb-` and the dev web-trigger host. This file's
+ * `SECRET_VALUE` knew `cgr_` and `ATATT`, added by F-650 after a measured leak, and nobody
+ * added them to the door. Measured on the pre-fix pair: `cgr_<48hex>` (src/rules-api.js
+ * mints exactly that), `ATATT…`, `glpat-…`, `AKIA…`, `xoxp-…` and a `Bearer <jwt>` all
+ * escaped the DOOR, which is the one that stands between a tenant's row and a driver's
+ * stdout — the redactor below is only crossed at the FILE boundary.
+ *
+ * Both now import `src/shared/secret-shapes.js`. These checks hold three properties:
+ *   1. PARITY — neither file carries its own alternation any more. The defect is not "a
+ *      prefix was missing"; it is "there were two lists", and only this half prevents the
+ *      next divergence.
+ *   2. CONTROLS — every prefix in the census is CAUGHT, by the redactor and by the door.
+ *   3. THE STATED NON-CATCH — a bare 32-hex blob in free text is NOT caught, by either,
+ *      and that is deliberate: masking every long opaque string would mask `functions[].code`.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+{
+  const shapesUrl = pathToFileURL(path.resolve(here, "../../src/shared/secret-shapes.js")).href;
+  const shapes = await import(shapesUrl);
+  const hookSrc = readFileSync(path.resolve(here, "../../src/test-hook.js"), "utf8");
+  const redactSrc = readFileSync(path.join(libDir, "redact.mjs"), "utf8");
+
+  // ── 1. PARITY ───────────────────────────────────────────────────────────────────
+  ok(/from "\.\/shared\/secret-shapes\.js"/.test(hookSrc),
+    "4k (F-803): src/test-hook.js imports the shapes from their one home");
+  ok(/from "\.\.\/\.\.\/src\/shared\/secret-shapes\.js"/.test(redactSrc),
+    "4k (F-803): lib/redact.mjs imports the shapes from the SAME one home");
+  /* A private copy is a LITERAL credential prefix inside a regex literal. Comments may name
+     a prefix — that is how the reasoning stays readable — so only non-comment source counts. */
+  const hookCode = maskComments(hookSrc), redactCode = maskComments(redactSrc);
+  const privateCopy = (code) => [...code.matchAll(/\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\]|\\.)*\])+\/[gimsuy]*/g)]
+    .map((m) => m[0])
+    .filter((lit) => /(cgr_|ghp_|github_pat_|glpat-|ATATT|xox[bp]-|AKIA|sk-\[)/.test(lit));
+  ok(privateCopy(hookCode).length === 0,
+    `4k (F-803): src/test-hook.js may not carry its own credential-shape regex (found ${privateCopy(hookCode).join(" ")})`);
+  ok(privateCopy(redactCode).length === 0,
+    `4k (F-803): lib/redact.mjs may not carry its own credential-shape regex (found ${privateCopy(redactCode).join(" ")})`);
+  // POSITIVE CONTROL: the scanner can still SEE a private copy — the exact pre-fix line.
+  const preFix = 'const SECRET_VALUE = /(sk-[A-Za-z0-9_\\-]{8,}|ghp_[A-Za-z0-9]{16,}|cgr_[0-9a-f]{48,})/g;';
+  ok(privateCopy(preFix).length === 1,
+    "4k (F-803) POSITIVE CONTROL: the pre-fix `SECRET_VALUE` literal IS seen as a private copy");
+  ok(privateCopy("// cgr_ is the app's own bearer — see secret-shapes.js").length === 0,
+    "4k (F-803) NEGATIVE CONTROL: a COMMENT naming a prefix is not a private copy");
+
+  // ── 2. CONTROLS, one specimen per declared prefix ───────────────────────────────
+  const SPECIMENS = {
+    "cgr_":        "cgr_" + "0123456789abcdef".repeat(3),          // 48 hex — this app's Rules-API token
+    "ATATT":       "ATATT3xFfGF0abcdefghijklmnop=A1B2C3D4",
+    "glpat-":      "glpat-ABCdefGHIjklMNOpqr",
+    "AKIA":        "AKIAIOSFODNN7EXAMPLE",
+    "xoxp-":       "xoxp-1234567890-abcdefghij",
+    "xoxb-":       "xoxb-1234567890-abcdefghij",
+    "ghp_":        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+    "gho_":        "gho_abcdefghijklmnopqrstuvwxyz0123456789",
+    "github_pat_": "github_pat_11ABCDEFG0abcdefghijklmnop",
+    "sk-ant-":     "sk-ant-api03-abcdefghijklmnopqrstuv",
+    "Bearer jwt":  "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+  };
+  const { findSecretFields } = await import(pathToFileURL(path.resolve(here, "../../src/test-hook.js")).href);
+  for (const [name, specimen] of Object.entries(SPECIMENS)) {
+    const line = `the value is ${specimen} and that is all`;
+    const redacted = redactString(line);
+    ok(redacted.includes(REDACTED) && !redacted.includes(specimen.replace(/^Bearer /, "")),
+      `4k (F-803): the FILE boundary redacts a ${name} credential`);
+    // …and the DOOR, which is the half that was missing. `(root)` = the string itself.
+    const hits = findSecretFields(line, { maxDepth: 12 });
+    ok(hits.length === 1 && hits[0].why === "value-looks-like-a-credential",
+      `4k (F-803): the ?what=kvs read ceiling SEES a ${name} credential in free text`);
+  }
+
+  // ── 3. THE STATED NON-CATCH ─────────────────────────────────────────────────────
+  const BLOB = "a1b2c3d4e5f60718293a4b5c6d7e8f90";   // 32 hex, no prefix, no shape
+  ok(redactString(`const k = '${BLOB}';`).includes(BLOB),
+    "4k (F-803): a bare 32-hex blob in FREE TEXT is NOT redacted — masking every long opaque string would mask the code");
+  ok(findSecretFields({ code: `const k = '${BLOB}';` }, { maxDepth: 12 }).length === 0,
+    "4k (F-803): …and the door does not catch it either, which is the residual stated at maskSecretFields");
+  /* WHERE redact.mjs DOES catch that blob, stated so the two answers are not confused: as
+     the VALUE of a `?key=` query parameter, where F-663 made the discriminator the shape
+     rather than the parameter NAME. That is a different question — an already-isolated
+     value — and it is unaffected by this cut. */
+  ok(looksLikeCredentialValue(BLOB) === true,
+    "4k (F-803): `looksLikeCredentialValue` still accepts 20+ chars of pure hex — it is asked only about an isolated ?key= value");
+  ok(redactString(`https://x/y?key=${BLOB}`).includes(REDACTED),
+    "4k (F-803): …so the same blob IS masked as a query value");
+  ok(redactString("https://x/y?key=COGNIRUNNER_MEMORY_SETTINGS").includes("COGNIRUNNER_MEMORY_SETTINGS"),
+    "4k (F-803) NEGATIVE CONTROL: a KVS key NAME is still readable (F-663)");
+
+  // The prefix census and the shape census must describe the same list.
+  for (const prefix of shapes.CREDENTIAL_PREFIXES) {
+    ok(shapes.SECRET_VALUE_SHAPES.some((sh) => sh.startsWith(prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        || new RegExp("^" + sh).test(prefix + "0".repeat(64))),
+      `4k (F-803): the prefix \`${prefix}\` is the head of a declared shape, not a fourteenth list`);
+  }
+}
+
 
 /* ── 4l. F-795 — EVERY RULE LABEL IN THIS FILE NAMES EXACTLY ONE RULE ───────────
  *

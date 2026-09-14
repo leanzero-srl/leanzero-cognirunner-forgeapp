@@ -364,6 +364,120 @@ export const judgeRefuseDrain = ({ answers, drained, pausedMs, deleteBatch }) =>
   return out;
 };
 
+/*
+ * F-766 — THE PLANT IS PROVEN FROM THE COUNTERS, BECAUSE THE LIST IS A COURTESY.
+ *
+ * This assertion used to read `plantedExpired >= N`, and `plantedExpired` is derived in
+ * `shape()` by FILTERING `rows` — the answer's row LIST. `src/harness-fault.js` stops that
+ * list at `HARNESS_FAULT_SWEEP_MAX_ROWS` and sets `rowsTruncated`, in its own words because
+ * "the counters are what an operator acts on; the list is a courtesy, and a courtesy must
+ * not be the thing that makes the response too large to return". The counters keep counting.
+ *
+ * So when F-758 raised the default population to 400 — past the 200-row list cap — the
+ * assertion started comparing a capped 200 against N=400 and FAILED on every single run,
+ * while `scanned: 400` sat in the SAME answer proving the plant had landed. A red that is
+ * structural is worse than no red: a genuine plant regression became indistinguishable from
+ * it, and the exit code gated nothing.
+ *
+ * WHAT IS ASSERTED NOW, and why each one:
+ *  · THE DELTA, NOT THE ABSOLUTE. `scanned` counts every `harness_fault:` row on the tenant,
+ *    not just mine, so `scanned >= N` would pass on a tenant that merely HAS N rows. The
+ *    baseline dry run (step 0) is taken before the plant on the same untruncated counter, so
+ *    `before.scanned - baseline.scanned >= N` is the plant's own contribution and nothing else.
+ *  · THE TRUNCATION ITSELF. Whether the list is capped is not noise to be tolerated — it is
+ *    a contract to be checked. Above the cap: `rowsTruncated === true` and the list is exactly
+ *    the cap. At or below it: `rowsTruncated === false`, the list is every scanned row, and
+ *    the stronger per-row claim (`plantedExpired >= N`) is available and IS made.
+ *  · THE CAP IS READ OFF THE ANSWER. When the list is truncated the cap IS `rows.length`, by
+ *    construction — so nothing is retyped and no regression in the cap can hide behind a
+ *    number this file also holds. `HARNESS_FAULT_SWEEP_MAX_ROWS_EXPECTED` below is a
+ *    cross-check in the established `KVS_DELETE_BATCH_EXPECTED` style: an EXPECTATION whose
+ *    disagreement with the tenant is recorded as a finding, never a second home for the value.
+ *  · THE SCAN CEILING. `scanned` is itself bounded by PAGE_SIZE x MAX_PAGES, so a population
+ *    that reaches it makes the delta a floor rather than a count. That is an N/V, not a pass.
+ */
+
+/**
+ * The sweep's row-list cap, as an EXPECTATION (see `KVS_DELETE_BATCH_EXPECTED`). The run
+ * PROVES the operative value from the tenant's own answer — a truncated list is exactly the
+ * cap long — and records a mismatch with this number as a finding rather than trusting it.
+ */
+export const HARNESS_FAULT_SWEEP_MAX_ROWS_EXPECTED = 200;
+
+/**
+ * The sweep's SCAN ceiling: PAGE_SIZE (100) x MAX_PAGES (10). Same expectation contract. A
+ * `scanned` that reaches this is a floor, not a count, and the plant delta stops being exact.
+ */
+export const HARNESS_FAULT_SWEEP_SCAN_CEILING_EXPECTED = 1000;
+
+/**
+ * THE PLANT, JUDGED IN ONE PLACE, graded by the same function offline and live.
+ * `baseline` and `before` are `shape()`d dry-run answers from before and after the plant.
+ */
+export const judgePlantVisibility = ({ baseline, before, n, capExpected = HARNESS_FAULT_SWEEP_MAX_ROWS_EXPECTED, scanCeiling = HARNESS_FAULT_SWEEP_SCAN_CEILING_EXPECTED }) => {
+  const out = [];
+  const add = (verdict, what) => out.push({ verdict, what });
+  if (!before) { add("FAIL", "the post-plant dry run returned no answer at all, so the plant is UNPROVEN"); return out; }
+
+  const scanned = Number(before.scanned);
+  const baseScanned = Number(baseline?.scanned);
+  const listed = Number(before.rowsListed);
+  const rowsTruncated = before.rowsTruncated;
+
+  if (!Number.isFinite(scanned)) {
+    add("FAIL", `the post-plant dry run carries no \`scanned\` counter (got ${JSON.stringify(before.scanned)}) — the one field this assertion is built on`);
+    return out;
+  }
+
+  /* 1 · THE DELTA. */
+  if (!Number.isFinite(baseScanned)) {
+    add("N/V", `the baseline dry run carries no \`scanned\` counter, so the plant's own contribution cannot be isolated; the absolute count is scanned=${scanned} against ${n} planted`);
+  } else {
+    const delta = scanned - baseScanned;
+    if (delta >= n) {
+      add("PASS", `a SECOND READ counts ${scanned} fault row(s) against ${baseScanned} at baseline — the plant added ${delta} >= ${n}, read off the untruncated \`scanned\` counter rather than the capped row list (F-766)`);
+    } else {
+      add("FAIL", `the second read counts ${scanned} fault row(s) against ${baseScanned} at baseline — the plant added only ${delta}, not the ${n} planted`);
+    }
+  }
+
+  /* 2 · THE SCAN CEILING — a floor is not a count. */
+  if (scanned >= scanCeiling) {
+    add("N/V", `\`scanned\`=${scanned} has reached the sweep's own scan ceiling of ${scanCeiling} (PAGE_SIZE x MAX_PAGES), so the delta above is a FLOOR and not a count; a population this size needs a smaller --n or a wider ceiling before it can be counted exactly`);
+  }
+
+  /* 3 · THE LIST CONTRACT — the cap read off the answer, cross-checked against the expectation. */
+  if (scanned > capExpected) {
+    if (rowsTruncated === true && listed > 0 && listed < scanned) {
+      const cap = listed;   // a truncated list IS the cap, by construction
+      add("PASS", `the row list is truncated at ${cap} while the counters kept counting to ${scanned} — the courtesy list is capped and says so (\`rowsTruncated:true\`), which is exactly why nothing above is asserted against it`);
+      if (cap !== capExpected) {
+        add("N/V", `the tenant's list cap is ${cap} where this driver expected HARNESS_FAULT_SWEEP_MAX_ROWS=${capExpected} — either the constant moved in src/harness-fault.js or the list stopped early for another reason; the assertions above are unaffected because they read the counters`);
+      }
+    } else {
+      add("FAIL", `${scanned} row(s) were scanned, past the ${capExpected}-row list cap, yet the answer reports rowsTruncated=${JSON.stringify(rowsTruncated)} with ${listed} row(s) listed — a capped list that does not declare itself makes every row-derived count silently wrong`);
+    }
+  } else {
+    if (rowsTruncated === true) {
+      add("FAIL", `only ${scanned} row(s) were scanned — at or under the ${capExpected}-row cap — yet the answer reports rowsTruncated=true with ${listed} listed`);
+    } else if (listed === scanned) {
+      add("PASS", `the row list is complete at ${listed} row(s) (rowsTruncated=${JSON.stringify(rowsTruncated)}), so the per-row view is the whole view`);
+    } else {
+      add("FAIL", `the answer lists ${listed} row(s) for ${scanned} scanned without declaring truncation (rowsTruncated=${JSON.stringify(rowsTruncated)})`);
+    }
+
+    /* The list is whole, so the STRONGER claim is available: these are MY rows, and expired. */
+    const plantedExpired = Number(before.plantedExpired);
+    if (plantedExpired >= n) {
+      add("PASS", `and ${plantedExpired} of them are EXPIRED PLANTED rows — the ballast whose deletion is about to be refused, identified by prefix and not merely counted`);
+    } else {
+      add("FAIL", `the complete row list holds only ${plantedExpired} expired planted row(s), not the ${n} planted`);
+    }
+  }
+
+  return out;
+};
+
 /** The exact fields of an arm answer that may be RECORDED. Never `key`: it names the prefix. */
 export const armFacts = (j) => ({
   ok: j?.ok ?? null, prefix: j?.prefix ?? null, mode: j?.mode ?? null,
@@ -593,8 +707,9 @@ async function run(state) {
   PASS(`planted ${p.totalPlanted}/${N} rows across ${p.calls.length} call(s), 0 failed, in ${ev.plant.ms} ms`, { calls: p.calls.length, totalPlanted: p.totalPlanted, ms: ev.plant.ms });
   const beforeArm = await sweep({ dryRun: true });
   ev.beforeArm = ok200(beforeArm) ? shape(beforeArm.json) : null;
-  if (ev.beforeArm && ev.beforeArm.plantedExpired >= N) PASS(`a SECOND READ sees ${ev.beforeArm.plantedExpired} expired planted row(s) — the ballast whose deletion is about to be refused`, ev.beforeArm);
-  else FAIL(`the dry run sees only ${ev.beforeArm ? ev.beforeArm.plantedExpired : "?"} expired planted row(s), not the ${N} planted`, ev.beforeArm);
+  /* F-766 — graded on the COUNTERS, not on the row list the sweep caps at
+     HARNESS_FAULT_SWEEP_MAX_ROWS. See `judgePlantVisibility` for why. */
+  record(judgePlantVisibility({ baseline: baseShape, before: ev.beforeArm, n: N }));
 
   /* ── 2 · ARM `refuse`. ── */
   step(`2 · ARM the delete fault: mode=refuse count=${ARM_COUNT} ttlSeconds=${TTL_SECONDS}`);

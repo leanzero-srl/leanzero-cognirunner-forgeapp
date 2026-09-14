@@ -35,10 +35,14 @@
  * (async-handler-helpers.test.mjs counts every KVS operation on the fault key across all
  * six exports and expects zero).
  *
- * SHAPE: `harness_fault:<kind>:<part>:<part>…`, value `{ count, armedAt }`, TTL 10 min so
- * an armed lever that is never consumed disarms itself. Every part goes through
- * `safeKeyPart`/`assertKvsKey` (F-334): a delivery id is a clamped but otherwise raw
- * provider header and must never shape a key.
+ * SHAPE: `harness_fault:<kind>:<part>:<part>…`, value `{ count, armedAt, until }` — plus
+ * `mode` or `status` for the two window kinds. `until` (F-664) is the row's OWN deadline
+ * and it is what actually ends a lever: the platform TTL that rides alongside it is a
+ * lazy cleanup guarantee, not a read-time one, so an armed lever that is never consumed
+ * disarms itself on the first READ after `until`, not whenever KVS gets round to it. Ten
+ * minutes is the family ceiling (`HARNESS_FAULT_TTL_SECONDS`); the two window kinds clamp
+ * themselves to five. Every key part goes through `safeKeyPart`/`assertKvsKey` (F-334): a
+ * delivery id is a clamped but otherwise raw provider header and must never shape a key.
  *
  * Each ARMED read consumes one unit: the row is decremented and deleted at zero, so a
  * count of N produces exactly N failures and the (N+1)-th attempt runs for real. The
@@ -51,8 +55,13 @@ import { safeKeyPart, assertKvsKey } from "./shared/kvs-keys.js";
 /** Never let a test arm more failures than the delivery could survive. */
 export const HARNESS_FAULT_MAX_COUNT = 5;
 
-/** TTL of an armed lever. Short on purpose: a forgotten arm must not outlive the test. */
-export const HARNESS_FAULT_TTL = { value: 10, unit: "MINUTES" };
+/**
+ * TTL of an armed lever, IN SECONDS, because seconds is the unit every caller of this
+ * module thinks in and the one `setFaultRow` writes. Short on purpose: a forgotten arm
+ * must not outlive the test. It is also the CEILING `setFaultRow` clamps to, so no lever
+ * in this family — whatever a caller asks for — can be armed for longer than ten minutes.
+ */
+export const HARNESS_FAULT_TTL_SECONDS = 600;
 
 /** A forced throw at the git-event dispatch seam (F-335). */
 export const HARNESS_FAULT_GIT_DISPATCH = "git-dispatch";
@@ -195,6 +204,85 @@ export class HarnessFault extends Error {
  */
 export const harnessEnabled = () => Boolean(process.env.HARNESS_SECRET);
 
+/*
+ * F-664 — THE ONE WRITE AND THE ONE READ OF A FAULT ROW, AND WHY THE PLATFORM TTL IS NOT
+ * ENOUGH ON ITS OWN.
+ *
+ * MEASURED: a Jira fault armed with `ttlSeconds: 5` was STILL BITING at 615 s on a live
+ * dev tenant — past its own five-second window, past the 300 s cap and past the ten-minute
+ * family ceiling. The option shape was never the bug (`{ ttl: { value, unit } }` IS the
+ * shape `@forge/kvs` takes, and `SECONDS` is a legal unit — both arming levers already
+ * passed it): Forge KVS deletes expired keys LAZILY, the same fact src/index.js:1206
+ * already records for the claim keys ("KVS deletes expired keys lazily (up to 48h)"). A
+ * platform TTL is therefore a CLEANUP guarantee, never a read-time one, and a module whose
+ * only bound on a lever was that TTL had in practice no bound at all: only an explicit
+ * disarm ended a fault, so a driver that crashed before its `finally` left every admin on
+ * that tenant faulted indefinitely.
+ *
+ * THE BOUND IS NOW ON THE ROW AND ENFORCED ON THE READ, exactly like the attachment
+ * capability tokens (src/index.js mints `expiresAt` on the record AND passes the platform
+ * TTL, then `serveAttachment` re-checks `expiresAt` "in case the KVS backend's TTL is
+ * fuzzy"). Here: the row carries `until` (ISO), `setFaultRow` is the only thing that writes
+ * one, `getFaultRow` is the only thing that reads one, and a row whose `until` has passed
+ * is answered as ABSENT and DELETED on the way out. The platform TTL stays — it is what
+ * removes the row nobody ever reads again — but it is now defence in depth, not the story.
+ *
+ * A row with NO `until` is NOT treated as expired: that is the hand-planted row the offline
+ * suite writes straight into the keyspace to prove a lever re-validates its own payload,
+ * and a missing bound is not a passed one. Every row this module writes carries one.
+ */
+
+/** THE one place a fault TTL becomes a platform option. Seconds, because Forge takes a unit. */
+export const faultTtlOption = (seconds) => ({ ttl: { value: seconds, unit: "SECONDS" } });
+
+/** Has this row's own stamped window passed? No stamp == nothing to judge it by == no. */
+export const faultRowExpired = (row, now = Date.now()) => {
+  const until = row && row.until;
+  if (typeof until !== "string") return false;
+  const t = Date.parse(until);
+  return Number.isFinite(t) && now >= t;
+};
+
+/**
+ * THE one write. Clamps to `HARNESS_FAULT_TTL_SECONDS`, stamps `until`, and passes the
+ * platform TTL in the SECONDS shape. Callers with a tighter cap of their own (the key-read
+ * and Jira levers clamp to 300 s) clamp first; this is the family ceiling nobody escapes.
+ *
+ * NOT EXPORTED, deliberately. It touches storage and carries no env gate of its own — it is
+ * reachable only THROUGH the six gated exports, which is what keeps "all SIX storage-touching
+ * exports ask `harnessEnabled()` first" true rather than becoming "all eight, two of which
+ * nobody remembered". A caller outside this file that wants to write a fault row arms a lever.
+ */
+const setFaultRow = async (key, row, ttlSeconds) => {
+  const seconds = Math.max(1, Math.min(HARNESS_FAULT_TTL_SECONDS, Math.floor(Number(ttlSeconds) || HARNESS_FAULT_TTL_SECONDS)));
+  const until = new Date(Date.now() + seconds * 1000).toISOString();
+  const stored = { ...row, until };
+  await storage.set(key, stored, faultTtlOption(seconds));
+  return { value: stored, until, ttlSeconds: seconds };
+};
+
+/**
+ * THE one read. Answers `{ row, until, expired }`; an expired row reads as `row: null` and
+ * is deleted on the way out, so the next reader need not repeat the judgement. Best-effort
+ * on the delete: failing to clean up must never turn a read into a throw.
+ */
+const getFaultRow = async (key) => {
+  const row = (await storage.get(key)) || null;
+  const until = (row && typeof row.until === "string" && row.until) || null;
+  if (row && faultRowExpired(row)) {
+    try { await storage.delete(key); } catch { /* the read is the contract, not the sweep */ }
+    return { row: null, until, expired: true };
+  }
+  return { row, until, expired: false };
+};
+
+/** What is LEFT of a row's window, so a re-write preserves it rather than restarting it. */
+const remainingSeconds = (row) => {
+  const t = row && typeof row.until === "string" ? Date.parse(row.until) : NaN;
+  if (!Number.isFinite(t)) return HARNESS_FAULT_TTL_SECONDS;
+  return Math.max(1, Math.ceil((t - Date.now()) / 1000));
+};
+
 /**
  * Is a fault armed for this key — and if so, consume one unit of it?
  *
@@ -206,11 +294,13 @@ export const harnessFaultArmed = async (kind, ...parts) => {
   if (!harnessEnabled()) return false;
   try {
     const key = harnessFaultKey(kind, ...parts);
-    const row = (await storage.get(key)) || null;
+    const { row } = await getFaultRow(key);
     const count = Number(row && row.count) || 0;
     if (count <= 0) return false;
     if (count <= 1) await storage.delete(key);
-    else await storage.set(key, { ...row, count: count - 1 }, { ttl: HARNESS_FAULT_TTL });
+    // F-664 — a decrement must not RE-ARM the window. The row is re-written with what is
+    // LEFT of its own `until`, so N consumptions cannot walk a lever forward one TTL at a time.
+    else await setFaultRow(key, { ...row, count: count - 1 }, remainingSeconds(row));
     return true;
   } catch {
     return false;
@@ -232,8 +322,8 @@ export const armHarnessFault = async (kind, parts, count) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
   const n = Math.max(1, Math.min(HARNESS_FAULT_MAX_COUNT, Math.floor(Number(count) || 1)));
   const key = harnessFaultKey(kind, ...parts);
-  await storage.set(key, { count: n, armedAt: new Date().toISOString() }, { ttl: HARNESS_FAULT_TTL });
-  return { key, count: n };
+  const { until, ttlSeconds } = await setFaultRow(key, { count: n, armedAt: new Date().toISOString() }, HARNESS_FAULT_TTL_SECONDS);
+  return { key, count: n, until, ttlSeconds };
 };
 
 /**
@@ -262,7 +352,12 @@ export const disarmHarnessFault = async (kind, parts) => {
 export const readHarnessFault = async (kind, parts) => {
   if (!harnessEnabled()) return null;
   const key = harnessFaultKey(kind, ...parts);
-  return { key, value: (await storage.get(key)) || null };
+  // F-664 — the expiry judgement lives in `getFaultRow`, so every consumer that reads
+  // THROUGH this one inherits it (`keyReadFaultMode`, `jiraFaultStatus`, and the hook's
+  // three read actions). `expired` is reported rather than swallowed: a driver that polls
+  // this is entitled to know the row it armed ended on its own window.
+  const { row, until, expired } = await getFaultRow(key);
+  return { key, value: row, until, expired };
 };
 
 /**
@@ -283,8 +378,8 @@ export const armKeyReadFault = async (provider, mode, ttlSeconds) => {
   if (!KEY_READ_FAULT_MODES.includes(mode)) return { ok: false, reason: "bad-mode", modes: KEY_READ_FAULT_MODES };
   const seconds = Math.max(1, Math.min(HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS, Math.floor(Number(ttlSeconds) || HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS)));
   const key = harnessFaultKey(HARNESS_FAULT_KEY_READ, provider);
-  await storage.set(key, { mode, armedAt: new Date().toISOString() }, { ttl: { value: seconds, unit: "SECONDS" } });
-  return { key, mode, ttlSeconds: seconds };
+  const { until } = await setFaultRow(key, { mode, armedAt: new Date().toISOString() }, seconds);
+  return { key, mode, ttlSeconds: seconds, until };
 };
 
 /**
@@ -326,8 +421,8 @@ export const armJiraFault = async (path, status, ttlSeconds) => {
   if (code === null) return { ok: false, reason: "bad-status", range: "400-599" };
   const seconds = Math.max(1, Math.min(HARNESS_JIRA_FAULT_MAX_TTL_SECONDS, Math.floor(Number(ttlSeconds) || HARNESS_JIRA_FAULT_MAX_TTL_SECONDS)));
   const key = harnessFaultKey(HARNESS_FAULT_JIRA, path);
-  await storage.set(key, { status: code, armedAt: new Date().toISOString() }, { ttl: { value: seconds, unit: "SECONDS" } });
-  return { key, path, status: code, ttlSeconds: seconds };
+  const { until } = await setFaultRow(key, { status: code, armedAt: new Date().toISOString() }, seconds);
+  return { key, path, status: code, ttlSeconds: seconds, until };
 };
 
 /**

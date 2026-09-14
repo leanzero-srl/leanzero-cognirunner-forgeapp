@@ -279,6 +279,16 @@ export async function testStateTrigger(req) {
       const r = await deleteHarnessConnection(connId);
       return json(r.ok ? 200 : 400, r);
     }
+    /* F-664 — WHAT THE THREE `read*Fault` ACTIONS ANSWER, for all four kinds.
+     * `readHarnessFault` now returns `{ key, value, until, expired }`, and each read action
+     * below spreads that answer, so a live driver polling a lever sees the row's OWN
+     * deadline and whether it has passed. It matters because the platform TTL does NOT end
+     * a lever: Forge KVS deletes expired keys lazily, and a Jira fault armed for 5 s was
+     * measured still biting at 615 s. The bound is the `until` stamp on the row, enforced
+     * on every read in src/harness-fault.js — so `value: null, expired: true` is a lever
+     * that ended by itself, and `value: null, expired: false` is one that was never armed.
+     * The `?what=kvs` reader below is deliberately UNCHANGED: `until` is a field of the
+     * row, not KVS metadata, so a plain `storage.get` already shows it. */
     // ===== F-335 live proof: the dev-only dispatch fault lever =====
     // Arms N consecutive forced throws at the git-event dispatch seam so the live driver
     // can prove the retry/attempt-cap/claim-release contract without breaking anything

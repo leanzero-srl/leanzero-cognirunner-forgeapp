@@ -210,6 +210,43 @@ process.env.HARNESS_SECRET = SECRET;
   ok(noTtl.body.status === 500, "…and any other failure status rides through (500 here, not just 429)");
 }
 
+/* ═════ 8b. F-664 — THE WINDOW IS ON THE ROW, AND THE HOOK REPORTS IT ═════
+ *
+ * Measured live at e3a1ecb: a lever armed with ttlSeconds:5 was still biting at 615 s.
+ * The option shape was never wrong — Forge KVS simply deletes expired keys lazily, so the
+ * platform TTL cleans up and does not bound. The bound is `until` on the row, refused by
+ * every read, and a live driver polling `readJiraFault` must be able to SEE it: a lever
+ * that ended on its own is `value:null, expired:true`, one never armed is `expired:false`.
+ */
+{
+  await disarm();
+  const armed = await arm({ ttlSeconds: 30 });
+  ok(typeof armed.body.until === "string" && Math.round((Date.parse(armed.body.until) - Date.now()) / 1000) === 30,
+    `arming answers the row's OWN deadline, thirty seconds out (got ${armed.body.until})`);
+  const live = await readLever();
+  ok(live.body.value && live.body.value.until === armed.body.until && live.body.expired === false,
+    "…the read action carries that deadline back, and says the lever has not passed it");
+
+  // The state a crashed driver leaves behind: a row whose window is over, which KVS has
+  // not got round to deleting. Planted straight into the keyspace, past the arming clamp.
+  const key = fault.harnessFaultKey(fault.HARNESS_FAULT_JIRA, PATH);
+  const stale = { status: 429, armedAt: new Date(Date.now() - 700_000).toISOString(), until: new Date(Date.now() - 1_000).toISOString() };
+  await storage.set(key, stale);
+  const gone = await readLever();
+  ok(gone.body.value === null && gone.body.expired === true && gone.body.until === stale.until,
+    `a row past its deadline reads as ABSENT and is reported expired (got ${JSON.stringify(gone.body).slice(0, 160)})`);
+  ok((await storage.get(key)) === undefined, "…and the read deleted it, so nothing has to remember to disarm");
+
+  await storage.set(key, stale);
+  const r = await handler({ call: { functionKey: "searchUsers", payload: { query: "mihai" } } }, { principal: { accountId: ADMIN } });
+  ok(r.success === true && r.users.length === 1,
+    `…and the product search runs for real against the stale row — a dead driver stops faulting the tenant (got ${JSON.stringify(r).slice(0, 160)})`);
+  const after = await readLever();
+  ok(after.body.value === null && after.body.expired === false,
+    "…a lever that was never armed is still distinguishable from one that expired");
+  await disarm();
+}
+
 /* ═════ 9. A ROW IS DATA — a planted 200 is not a licence ═════ */
 {
   await disarm();

@@ -97,7 +97,7 @@ import { claimRuleExecution } from "./shared/execution-claim.js";
 // F-348 — the two key SHAPES that carry a repo id live with every other one, in
 // shared/git-ids.js: Forge KVS refuses "/" in a key, so a repo id may never be a raw
 // key part. Re-exported below so the engine and the offline suite share one name.
-import { REVIEW_CLAIM_PREFIX, REVIEW_RATE_PREFIX, reviewClaimKey, reviewRateKey } from "./shared/git-ids.js";
+import { REVIEW_CLAIM_PREFIX, REVIEW_RATE_PREFIX, reviewClaimKey, reviewRateKey, MAX_INLINE_COMMENTS, REVIEW_RATE_PER_HOUR } from "./shared/git-ids.js";
 import { defangFence } from "./memories.js";
 // F-884 — the admin arming-stamp comparison has ONE home; this engine asks it the same
 // way the consumer does. See src/shared/roster-roles.js.
@@ -123,10 +123,10 @@ export const REVIEW_CLAIM_TTL = { ttl: { value: 24, unit: "HOURS" } };
 export const REVIEW_VERDICTS = ["approve", "request_changes", "comment"];
 export const REVIEW_SEVERITIES = ["blocker", "major", "minor", "nit"];
 export const MAX_FINDINGS = 20;
-/** F-285 — the write brake. At most this many inline comments per run, plus ONE general. */
-export const MAX_INLINE_COMMENTS = 10;
-/** F-285 — and at most this many REVIEW RUNS per repo per clock hour. */
-export const REVIEW_RATE_PER_HOUR = 6;
+/** F-285 — the write brake (inline comments per run, plus ONE general) and the per-repo
+    per-hour run ceiling. Both moved to shared/git-ids.js in F-917 and re-exported here,
+    because the admin editor now states them and a frontend cannot import this file. */
+export { MAX_INLINE_COMMENTS, REVIEW_RATE_PER_HOUR };
 /** The hour bucket a rate slot belongs to. One home — shared/git-ids.js; see the import. */
 export { REVIEW_CLAIM_PREFIX, REVIEW_RATE_PREFIX, reviewClaimKey, reviewRateKey };
 /** A rate slot only has to outlive its own hour. */

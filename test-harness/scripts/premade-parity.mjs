@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import {
   PREMADE_VALIDATORS, PREMADE_CONDITIONS, PREMADE_LISTENERS, getPremadeListener,
-  PREMADE_POSTFUNCTIONS, getPremadePostFunction, CODER_PF_MODES, CODER_PF_MODE_IDS, getCoderPfMode,
+  PREMADE_POSTFUNCTIONS, getPremadePostFunction, CODER_PF_MODES, CODER_PF_MODE_IDS, getCoderPfMode, getAgentlessEngine,
 } from "../../src/shared/premade-rules-catalog.js";
 import { isKnownEvent, requiresRepoFilter, isGitEvent } from "../../src/shared/jira-events.js";
 import {
@@ -129,6 +129,26 @@ for (const row of PREMADE_LISTENERS) {
   }
   if (row.agentlessTaskType && row.agentlessTaskType !== "gitreview") {
     problems.push(`${where} names an unknown agent-less task type "${row.agentlessTaskType}"`);
+  }
+  /* F-917 — AN ENGINE MUST BE DESCRIBABLE. The editor renders an ENGINE CARD instead of
+     the agent form for a row carrying `agentlessTaskType`, and every word on that card
+     comes from AGENTLESS_ENGINES. A task type with no entry there would render a card
+     with no sentence — i.e. would put the admin back where F-917 found them, staring at
+     a rule that says nothing about what it does. */
+  if (row.agentlessTaskType) {
+    const eng = getAgentlessEngine(row.agentlessTaskType);
+    if (!eng) {
+      problems.push(`${where} names agentlessTaskType "${row.agentlessTaskType}" with no AGENTLESS_ENGINES entry — the editor would render an engine card with no description`);
+    } else {
+      if (!String(eng.summary || "").trim()) problems.push(`${where}'s engine "${row.agentlessTaskType}" has no summary sentence for the editor card`);
+      if (!String(eng.label || "").trim()) problems.push(`${where}'s engine "${row.agentlessTaskType}" has no label`);
+      // `connection` decides whether the editor asks for a Git connection AND whether the
+      // Save gate may refuse for a missing one. An unknown value would silently take the
+      // "the rule names it" branch and re-arm the banner F-917 removed.
+      if (eng.connection !== "event" && eng.connection !== "rule") {
+        problems.push(`${where}'s engine "${row.agentlessTaskType}" declares connection "${eng.connection}" — it must be "event" (the delivery supplies it) or "rule" (the admin names it)`);
+      }
+    }
   }
   // F-329 — the field must ride on the SEED, or it is metadata nothing acts on: the
   // seed is what normalizeListener sees and what the saved rule keeps, and the

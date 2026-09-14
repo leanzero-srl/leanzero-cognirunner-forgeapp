@@ -2701,7 +2701,8 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
- * ── 4m. F-803 — ONE HOME FOR "WHAT DOES A CREDENTIAL LOOK LIKE" ───────────────────
+ * ── 4m. F-803 / F-830 — ONE HOME FOR WHAT A CREDENTIAL LOOKS LIKE, AND FOR WHAT IT
+ * ── IS CALLED ────────────────────────────────────────────────────────────────────
  *
  * There were two, and they disagreed about this app's OWN bearer. `src/test-hook.js`
  * (`SECRET_VALUE_RE` — the dev hook's write refusal AND its read ceiling) knew
@@ -2747,6 +2748,74 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     "4m (F-803) POSITIVE CONTROL: the pre-fix `SECRET_VALUE` literal IS seen as a private copy");
   ok(privateCopy("// cgr_ is the app's own bearer — see secret-shapes.js").length === 0,
     "4m (F-803) NEGATIVE CONTROL: a COMMENT naming a prefix is not a private copy");
+
+  /* ── 1b. F-830 — THE SAME PARITY, FOR THE OTHER HALF OF THE QUESTION ────────────
+   *
+   * F-803 unified what a credential LOOKS like and left what it is CALLED with two owners.
+   * `src/test-hook.js` asked `SECRET_FIELD_NAME_HINTS` (`credential`, `privatekey`,
+   * `cookie`, `webtrigger`, `webhookurl`, `cognirunnerkey`, `gitconnection`, …);
+   * `redact.mjs` asked `SECRET_KEY`/`SECRET_KEY_PART`, which knew NONE of those. MEASURED
+   * on the pre-fix file: all four of the names below came back VERBATIM from
+   * `redactSecrets` — masked at the door, printed at the file boundary. The hints are one
+   * list now, and this gate refuses either file a private copy of it. */
+  const HINTS = shapes.SECRET_FIELD_NAME_HINTS;
+  ok(Array.isArray(HINTS) && HINTS.length >= 12 && HINTS.every((h) => /^[a-z0-9]+$/.test(h)),
+    "4m (F-830): the NAME hints are a flat lowercase-alphanumeric list in the one home — both sides flatten a key before asking");
+  ok(/SECRET_FIELD_NAME_HINTS/.test(hookSrc) && /import[\s\S]{0,200}SECRET_FIELD_NAME_HINTS/.test(hookSrc),
+    "4m (F-830): src/test-hook.js imports the NAME hints rather than declaring them");
+  ok(/import[\s\S]{0,200}SECRET_FIELD_NAME_HINTS[\s\S]{0,200}secret-shapes\.js/.test(redactSrc),
+    "4m (F-830): lib/redact.mjs imports the SAME name hints from the SAME one home");
+  /* A private NAME list is a regex literal carrying three or more of the hints — enough to
+     be a list rather than one rule that happens to mention a word. `isDevUrlKey`'s URL-key
+     names and `CREDENTIAL_KEY_FAMILIES`'s KVS key PREFIXES are different questions and
+     carry at most one hint each, which is what keeps this gate honest. */
+  const nameListCopy = (code) => [...code.matchAll(/\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\]|\\.)*\])+\/[gimsuy]*/g)]
+    .map((m) => m[0])
+    .filter((lit) => HINTS.filter((h) => lit.toLowerCase().includes(h)).length >= 3);
+  ok(nameListCopy(hookCode).length === 0,
+    `4m (F-830): src/test-hook.js may not carry its own credential-NAME list (found ${nameListCopy(hookCode).join(" ")})`);
+  ok(nameListCopy(redactCode).length === 0,
+    `4m (F-830): lib/redact.mjs may not carry its own credential-NAME list (found ${nameListCopy(redactCode).join(" ")})`);
+  ok(nameListCopy("const SECRET_KEY = /^(token|apitoken|apikey|secret|password|authorization|bearer)$/i;").length === 1,
+    "4m (F-830) POSITIVE CONTROL: the pre-fix `SECRET_KEY` literal IS seen as a private name list");
+  ok(nameListCopy("const isDevUrlKey = /^(url|baseurl|href|endpoint|hookurl|webtrigger)$/i;").length === 0,
+    "4m (F-830) NEGATIVE CONTROL: a URL-KEY rule that happens to mention one hint is not a second name list");
+  // …and the behaviour the parity exists for, at BOTH layers.
+  const FOUR = { privateKey: "-----BEGIN RSA PRIVATE KEY-----abcdefgh", cookie: "sessionid=abc123def456",
+    credential: "hunter2hunter2hunter2", webhookUrl: "https://example.invalid/y/zz" };
+  const atFile = redactSecrets(FOUR);
+  for (const k of Object.keys(FOUR))
+    ok(atFile[k] === REDACTED,
+      `4m (F-830): the FILE boundary now redacts \`${k}\` — it came back verbatim before, while the door had always masked it`);
+  const atFileString = redactString(JSON.stringify(FOUR));
+  for (const v of Object.values(FOUR))
+    ok(!atFileString.includes(v),
+      "4m (F-830): …and so does the STRINGIFIED form, whose own retyped name alternation was a THIRD home");
+  const { maskSecretFields } = await import(pathToFileURL(path.resolve(here, "../../src/test-hook.js")).href);
+  const atDoor = await maskSecretFields(FOUR);
+  ok(atDoor && Object.keys(FOUR).every((k) => atDoor.maskedFields.includes(k)),
+    "4m (F-830): …and the DOOR still masks all four, which is the side that was already right");
+  /* THE COUNTS SURVIVE — F-650's reason for a string-only tier, kept by the plural. */
+  const counts = redactSecrets({ maxTokens: 4000, promptTokens: 812, tokens: [1, 2], usage: { tokens: 12 } });
+  ok(counts.maxTokens === 4000 && counts.promptTokens === 812 && counts.tokens[0] === 1 && counts.usage.tokens === 12,
+    "4m (F-830): a token COUNT is still readable — `maxtokens` ends with `tokens`, not with `token`, so it is never the any-type tier");
+  ok(redactSecrets({ tokens: "ghp_abcdefghijklmnopqrstuvwxyz0123456789" }).tokens === REDACTED,
+    "4m (F-830): …but the plural holding a STRING is still masked, so the exemption cannot be used to smuggle one");
+  for (const [k, v] of [["apiToken", "plain"], ["api_key", "plain"], ["API-KEY", "plain"], ["harnessSecret", "plain"], ["xAuthorization", "plain"]])
+    ok(redactSecrets({ [k]: v })[k] === REDACTED,
+      `4m (F-830): every spelling of a hinted name is one name — \`${k}\` is flattened before it is asked`);
+  ok(redactSecrets({ accessToken: { v: "deep" } }).accessToken === REDACTED,
+    "4m (F-830): the any-type tier still swallows a SUBTREE under a credential name — the value's shape is not consulted");
+  /* THE QUERY-PARAMETER NAMES, which were a FOURTH list. */
+  for (const name of ["token", "cookie", "credential", "privateKey", "bearer", "api_key", "auth", "access_token"])
+    ok(redactString(`https://x/y?${name}=plainvalue&z=1`) === `https://x/y?${name}=${REDACTED}&z=1`,
+      `4m (F-830): \`?${name}=\` is masked by the SAME name rule, and the parameter name survives so the evidence says which credential was in play`);
+  ok(redactString("https://x/y?what=kvs&key=COGNIRUNNER_MEMORY_SETTINGS") === "https://x/y?what=kvs&key=COGNIRUNNER_MEMORY_SETTINGS",
+    "4m (F-830): F-663 survives the merge — `key=` is still decided by the VALUE's shape, and a KVS key NAME stays readable");
+  ok(redactString(`https://x/y?key=${"a1b2c3d4e5f60718293a4b5c6d7e8f90"}`).includes(REDACTED),
+    "4m (F-830): …and a credential-SHAPED `key=` value is still masked");
+  ok(redactSecrets({ author: "Mihai", oauthClientId: "public-id-1234" }).author === "Mihai",
+    "4m (F-830): `auth` is NOT a shared hint — the door asks the hints with `includes`, and `author` is a Jira field a driver reads");
 
   // ── 2. CONTROLS, one specimen per declared prefix ───────────────────────────────
   const SPECIMENS = {

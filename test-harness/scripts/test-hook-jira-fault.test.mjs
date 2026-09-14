@@ -981,9 +981,19 @@ process.env.HARNESS_SECRET = SECRET;
   ok(armedBody.ok === true && armedBody.prefix === PLANT && armedBody.mode === "refuse" && armedBody.count === 2,
     `F-706: the arm answers the prefix, the mode and the clamped count (got ${JSON.stringify(armedBody)})`);
   ok(armedBody.modes.join(",") === "refuse,throttle"
-    && armedBody.maxCount === fault.HARNESS_DELETE_FAULT_MAX_COUNT
+    && armedBody.maxCount === fault.DELETE_FAULT_DRAINABLE_MAX
     && armedBody.maxTtlSeconds === fault.HARNESS_DELETE_FAULT_MAX_TTL_SECONDS,
     "…and publishes the lever's OWN allow-list and caps, never a literal retyped at the door");
+  /* F-722: the door advertises the DRAINABLE ceiling, by that name. The cap it used to
+   * publish (50) was about five times what a drain survives, so a driver that believed the
+   * door armed more refusal than any drain could spend and then failed its own cleanup. */
+  ok(armedBody.drainableMax === fault.DELETE_FAULT_DRAINABLE_MAX && armedBody.drainableMax === 8,
+    `F-722: …and names the drainable maximum explicitly, so a driver reading the door learns why it is 8 (got ${JSON.stringify({ maxCount: armedBody.maxCount, drainableMax: armedBody.drainableMax })})`);
+  const overArmed = (await armDel({ count: 50, ttlSeconds: 45 })).body;
+  ok(overArmed.count === fault.DELETE_FAULT_DRAINABLE_MAX,
+    `F-722: …and an arm for the OLD legal 50 comes back clamped to it, not accepted (got ${overArmed.count})`);
+  // …and the lever is put back exactly as the assertions below expect to find it.
+  ok((await armDel({ count: 2, ttlSeconds: 45 })).body.count === 2, "(fixture) the lever is re-armed at 2 for the read-back below");
   ok(typeof armedBody.until === "string" && armedBody.key.includes(PLANT),
     `…and the row carries an \`until\` like every lever in this family (got ${armedBody.until})`);
 

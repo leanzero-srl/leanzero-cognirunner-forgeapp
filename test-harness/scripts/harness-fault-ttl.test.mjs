@@ -44,9 +44,9 @@ import { fileURLToPath } from "node:url";
 import storage, { kvs } from "../lib/mock-kvs.mjs";
 /* F-690: the drain loop's decision has ONE home — the pure function the live driver obeys.
  * This suite must not carry a second, hand-written copy of it. */
-import { decideSweepStep, newDrainState, DELETES_FAILING_BACKOFF_MS } from "../lib/sweep-drain.mjs";
+import { decideSweepStep, newDrainState, DELETES_FAILING_BACKOFF_MS, IDENTICAL_ANSWER_LIMIT } from "../lib/sweep-drain.mjs";
 /* F-704: the gated-export contract is a shared rule, not a second hand-written copy. */
-import { gatedExportViolations } from "../lib/gated-export-contract.mjs";
+import { gatedExportViolations, storageTaintedPrivates, exportSources } from "../lib/gated-export-contract.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -163,6 +163,25 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       src: faultSrc.replace(/(export const disarmHarnessFault = async \(kind, parts\) => \{)/, "$1 const k0 = 1;") })
       .some((m) => /disarmHarnessFault/.test(m) && /first statement/.test(m)),
     "F-704 (negative control): a gated export that acts before asking FAILS the contract");
+
+  /* F-719 — "NAMES NO `storage.`" WAS NEVER "TOUCHES NO STORAGE".
+   * The purity rule was a text grep for `storage.` in the export's OWN slice, and this
+   * module's storage homes (`setFaultRow`, `getFaultRow`, `settleDeletes`, the raw planted-
+   * head read) are module-PRIVATE consts callable by bare name. So the one-liner below — the
+   * breaker's exact export — wrote a fault row with no HARNESS_SECRET while passing the
+   * census, the gate-line count and both `storage.<op>(` counts. The homes are DERIVED from
+   * the source now, transitively, so the next private helper is covered the day it is written. */
+  const taintedPrivates = [...storageTaintedPrivates(faultSrc)];
+  ok(["setFaultRow", "getFaultRow", "settleDeletes"].every((n) => taintedPrivates.includes(n)),
+    `F-719: the private storage homes are DERIVED from the source, never listed (got ${taintedPrivates.join(", ")})`);
+  const seedSrc = `${faultSrc}\nexport const seedFaultRow = (k, r) => setFaultRow(k, r, 60);\n`;
+  ok(!/\bstorage\./.test(exportSources(seedSrc).get("seedFaultRow") || ""),
+    "F-719 (fixture): the breaker's export names no `storage.` at all — which is exactly why the old grep passed it");
+  ok(gatedExportViolations({ ...contractArgs,
+      names: [...Object.keys(fault), "seedFaultRow"], src: seedSrc,
+      ungated: [...fault.HARNESS_UNGATED_EXPORTS, "seedFaultRow"] })
+      .some((m) => /seedFaultRow/.test(m) && /setFaultRow/.test(m)),
+    "F-719 (negative control): an UNGATED export that reaches KVS through a private storage home FAILS the contract, by both names");
 }
 
 /* ═════ 2. A ROW PAST `until` READS AS ABSENT, AND IS DELETED ═════ */
@@ -1326,8 +1345,21 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
 
     /* ── BOTH CLAMPS LIVE WITH THE LEVER, never at the web trigger. ── */
     const clamped = await fault.armDeleteFault({ prefix: PLANT, mode: "refuse", count: 10_000, ttlSeconds: 9_999 });
-    ok(clamped.count === fault.HARNESS_DELETE_FAULT_MAX_COUNT && fault.HARNESS_DELETE_FAULT_MAX_COUNT === 50,
-      `F-706: count clamps to 50 (got ${clamped.count})`);
+    /* F-722 — the count ceiling is DERIVED from the drain's own arithmetic, not hand-set.
+     * A faulted sweep spends KVS_DELETE_BATCH units per call and answers byte-identically,
+     * so the drain's spin detector stops at IDENTICAL_ANSWER_LIMIT * KVS_DELETE_BATCH units;
+     * an arm may carry one FEWER than that so the last faulted call leaves a unit for the
+     * call that converges. The old cap, 50, was about five times what any drain tolerates. */
+    ok(fault.DELETE_FAULT_DRAINABLE_MAX === fault.DRAIN_IDENTICAL_ANSWER_LIMIT * fault.KVS_DELETE_BATCH - 1,
+      `F-722: the ceiling is computed from the two constants, never typed (got ${fault.DELETE_FAULT_DRAINABLE_MAX})`);
+    ok(fault.DRAIN_IDENTICAL_ANSWER_LIMIT === IDENTICAL_ANSWER_LIMIT,
+      `F-722: …and src's spin limit is the SAME number lib/sweep-drain.mjs stops on — the lib still hard-codes its own IDENTICAL_ANSWER_LIMIT (src may not import from test-harness), so this is what keeps the two homes equal (src ${fault.DRAIN_IDENTICAL_ANSWER_LIMIT}, lib ${IDENTICAL_ANSWER_LIMIT})`);
+    ok(clamped.count === fault.DELETE_FAULT_DRAINABLE_MAX && fault.DELETE_FAULT_DRAINABLE_MAX === 8,
+      `F-722: count clamps to the drainable max, 8 (got ${clamped.count})`);
+    ok(fault.HARNESS_DELETE_FAULT_MAX_COUNT === undefined,
+      "F-722: …and the old hand-set 50 is GONE — one ceiling, not two that disagree");
+    ok(clamped.count < fault.DRAIN_IDENTICAL_ANSWER_LIMIT * fault.KVS_DELETE_BATCH,
+      `F-722: …strictly under the spin detector's budget, so a drain can still converge (${clamped.count} < ${fault.DRAIN_IDENTICAL_ANSWER_LIMIT * fault.KVS_DELETE_BATCH})`);
     ok(clamped.ttlSeconds === fault.HARNESS_DELETE_FAULT_MAX_TTL_SECONDS && fault.HARNESS_DELETE_FAULT_MAX_TTL_SECONDS === 120,
       `F-706: ttlSeconds clamps to 120 (got ${clamped.ttlSeconds})`);
     ok(secondsUntil(clamped.until) <= 120 && secondsUntil(clamped.until) > 100,

@@ -257,8 +257,19 @@ export const HARNESS_GATED_EXPORTS = Object.freeze([
  *    inherits the gate instead of restating it. This pair used to be a hand-written denylist
  *    inside `harness-fault-ttl.test.mjs` — a THIRD home of the rule, which is why it is here.
  *  · `HARNESS_UNGATED_EXPORTS`        — pure: constants, key builders, clamps, predicates,
- *    encoders and the error class. None of them names `storage.` at all, and the shared
- *    contract asserts that of every one of them, so "pure" is checked and not asserted.
+ *    encoders and the error class. None of them REACHES storage, directly or otherwise.
+ *
+ * F-719 — and "reaches" is the word, because "names `storage.`" was not enough. The purity
+ * check was a text grep over each ungated export's own slice, while this module's storage
+ * homes (`setFaultRow`, `getFaultRow`, `settleDeletes`, `plantPopulationDeadline`,
+ * `clearStalePlantedRows`) are module-PRIVATE consts callable by bare name — so
+ * `export const seedFaultRow = (k, r) => setFaultRow(k, r, 60);` on the ungated list passed
+ * every assertion in both suites and wrote a fault row with no `HARNESS_SECRET`. The contract
+ * now DERIVES the storage homes from the source (a private top-level name whose body says
+ * `storage.`, transitively through private callers) and fails any inherited/ungated export
+ * that names one. Derived, not listed: the next private helper is covered on the day it is
+ * written. Exports are deliberately not taint carriers — reaching storage through a GATED
+ * export is what `HARNESS_INHERITED_GATE_EXPORTS` means.
  *
  * The contract itself has ONE home — `test-harness/lib/gated-export-contract.mjs` — asked by
  * both suites, with a fake extra export as its negative control.
@@ -328,7 +339,8 @@ export const HARNESS_UNGATED_EXPORTS = Object.freeze([
   // The delete fault's kind, modes, caps and code mapping (F-706).
   "HARNESS_FAULT_DELETE",
   "DELETE_FAULT_MODES",
-  "HARNESS_DELETE_FAULT_MAX_COUNT",
+  "DRAIN_IDENTICAL_ANSWER_LIMIT",
+  "DELETE_FAULT_DRAINABLE_MAX",
   "HARNESS_DELETE_FAULT_MAX_TTL_SECONDS",
   "HARNESS_DELETE_FAULT_CODE",
   "DELETE_FAULT_THROTTLE_CODE",
@@ -1015,7 +1027,33 @@ export const sweepBudgetMs = (maxMs) => {
  */
 export const HARNESS_FAULT_DELETE = "delete";
 export const DELETE_FAULT_MODES = Object.freeze(["refuse", "throttle"]);
-export const HARNESS_DELETE_FAULT_MAX_COUNT = 50;
+/*
+ * F-722 — HOW MUCH REFUSAL IS SURVIVABLE IS ONE NUMBER, DERIVED, NOT TWO THAT DISAGREE.
+ *
+ * The lever used to advertise a legal `count` of 50, which is about five times what a drain
+ * will tolerate. A faulted sweep stops mid-page after the FIRST all-rejected batch
+ * (`deletes-failing`, page-0 cursor), so each call spends only `KVS_DELETE_BATCH` units and
+ * answers BYTE-IDENTICALLY — no rows deleted, cursor unmoved, same counters. The drain's spin
+ * detector (`IDENTICAL_ANSWER_LIMIT`) therefore fires on call 3, at
+ * `IDENTICAL_ANSWER_LIMIT * KVS_DELETE_BATCH = 9` spent units, and `drainSweep` returns
+ * `not-converging` with the rest still on the lever — making the transition the `settleDeletes`
+ * docblock documents (`deletes-failing` → resume → `complete`) UNREACHABLE for any arm above
+ * the ceiling. Worse, `clearPlantedFaults` consults the SAME lever through the SAME helper, so
+ * a live driver's cleanup would then report "PLANTED ROWS MAY REMAIN" — a cause the tenant
+ * does not contain: the store never refused anything, the harness did.
+ *
+ * So the ceiling is COMPUTED from the drain's own arithmetic and is the only one: an arm may
+ * carry at most one unit FEWER than the spin detector's budget, so the last faulted call
+ * still has a unit left to spend and the one after it succeeds and CONVERGES. Nothing here is
+ * a literal to be kept in step by hand — change either constant and the cap moves with it.
+ *
+ * `DRAIN_IDENTICAL_ANSWER_LIMIT` is the ONE home of the drain's spin limit. `test-harness/lib/
+ * sweep-drain.mjs` still hard-codes its own `IDENTICAL_ANSWER_LIMIT = 3` (a test-harness file,
+ * not `src`, and `src` may not import from it); `harness-fault-ttl.test.mjs` asserts the two
+ * numbers are equal, so the day the lib is changed without this one, the suite says so.
+ */
+export const DRAIN_IDENTICAL_ANSWER_LIMIT = 3;
+export const DELETE_FAULT_DRAINABLE_MAX = DRAIN_IDENTICAL_ANSWER_LIMIT * KVS_DELETE_BATCH - 1;
 export const HARNESS_DELETE_FAULT_MAX_TTL_SECONDS = 120;
 /** A code no platform emits: a planted refusal is never mistaken for a real one. */
 export const HARNESS_DELETE_FAULT_CODE = "HARNESS_DELETE_FAULT";
@@ -1041,7 +1079,8 @@ export const armDeleteFault = async ({ prefix, mode, count, ttlSeconds } = {}) =
     return { ok: false, reason: "bad-prefix", prefix: HARNESS_FAULT_PLANT_PREFIX };
   }
   if (!DELETE_FAULT_MODES.includes(mode)) return { ok: false, reason: "bad-mode", modes: DELETE_FAULT_MODES };
-  const n = Math.max(1, Math.min(HARNESS_DELETE_FAULT_MAX_COUNT, Math.floor(Number(count) || 1)));
+  // F-722: clamped to what a drain can actually survive, derived — never to a hand-set 50.
+  const n = Math.max(1, Math.min(DELETE_FAULT_DRAINABLE_MAX, Math.floor(Number(count) || 1)));
   const seconds = Math.max(1, Math.min(HARNESS_DELETE_FAULT_MAX_TTL_SECONDS, Math.floor(Number(ttlSeconds) || HARNESS_DELETE_FAULT_MAX_TTL_SECONDS)));
   const key = harnessFaultKey(HARNESS_FAULT_DELETE, prefix);
   const { until } = await setFaultRow(key, { mode, count: n, armedAt: new Date().toISOString() }, seconds);

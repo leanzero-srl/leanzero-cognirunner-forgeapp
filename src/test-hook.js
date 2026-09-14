@@ -489,9 +489,18 @@ export async function testStateTrigger(req) {
      * `HARNESS_FAULT_PLANT_PREFIX` and nothing else, by equality, exactly as `armJiraFault`
      * accepts one path. A lever that could fail an arbitrary delete could strand app data;
      * this one can only refuse to remove inert ballast nothing reads, which expires on its
-     * own in 60 s anyway. The prefix allow-list, the mode allow-list, the count cap (50) and
-     * the TTL cap (120 s) all live in src/harness-fault.js, never retyped here, and the lever
+     * own in 60 s anyway. The prefix allow-list, the mode allow-list, the count cap and the
+     * TTL cap (120 s) all live in src/harness-fault.js, never retyped here, and the lever
      * is consulted in exactly one place: the shared delete batch of the sweep and the clear.
+     *
+     * F-722 — AND THE COUNT CAP THE DOOR PUBLISHES IS THE DRAINABLE ONE. It used to be a
+     * hand-set 50, about five times what a drain tolerates: a faulted sweep spends only
+     * `KVS_DELETE_BATCH` units per call and answers byte-identically, so the drain's spin
+     * detector stops at `IDENTICAL_ANSWER_LIMIT * KVS_DELETE_BATCH` units with the rest still
+     * armed — and the cleanup, which reads the same lever, then fails with "PLANTED ROWS MAY
+     * REMAIN" for a reason the tenant does not contain. `DELETE_FAULT_DRAINABLE_MAX` is
+     * derived from those two constants, and the arm answers it as `maxCount` AND as
+     * `drainableMax`, so a driver reading this door learns the number and its name.
      *
      * It plants no data and returns none: the body carries a prefix, a mode, a count and a
      * TTL. Disarm and read are the generic pair, keyed by the same prefix. */
@@ -499,7 +508,7 @@ export async function testStateTrigger(req) {
       const {
         armDeleteFault, disarmHarnessFault, readHarnessFault,
         HARNESS_FAULT_DELETE, HARNESS_FAULT_PLANT_PREFIX, DELETE_FAULT_MODES,
-        HARNESS_DELETE_FAULT_MAX_COUNT, HARNESS_DELETE_FAULT_MAX_TTL_SECONDS,
+        DELETE_FAULT_DRAINABLE_MAX, HARNESS_DELETE_FAULT_MAX_TTL_SECONDS,
       } = await import("./harness-fault.js");
       // The one prefix this family may touch has ONE home; the door names it, never a literal.
       const prefix = HARNESS_FAULT_PLANT_PREFIX;
@@ -508,7 +517,8 @@ export async function testStateTrigger(req) {
         // The clamps live with the lever; a refusal from it overrides the optimistic ok.
         return json(r.ok === false ? 400 : 200, {
           ok: true, prefix, modes: DELETE_FAULT_MODES,
-          maxCount: HARNESS_DELETE_FAULT_MAX_COUNT, maxTtlSeconds: HARNESS_DELETE_FAULT_MAX_TTL_SECONDS, ...r,
+          maxCount: DELETE_FAULT_DRAINABLE_MAX, drainableMax: DELETE_FAULT_DRAINABLE_MAX,
+          maxTtlSeconds: HARNESS_DELETE_FAULT_MAX_TTL_SECONDS, ...r,
         });
       }
       if (body.action === "disarmDeleteFault") return json(200, { ok: true, prefix, ...(await disarmHarnessFault(HARNESS_FAULT_DELETE, [prefix])) });

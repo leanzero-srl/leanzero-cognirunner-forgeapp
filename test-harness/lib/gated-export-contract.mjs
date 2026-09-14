@@ -36,7 +36,26 @@ export const stripJsComments = (src) =>
  * `storage.set` to whichever pure predicate happens to precede them.
  */
 const TOP_LEVEL = /^(?:export\s+)?(?:const|let|var|class|function|async\s+function)\s+/gm;
+const TOP_LEVEL_DECL = /^(export\s+)?(?:const|let|var|class|function|async\s+function)\s+([A-Za-z0-9_$]+)/gm;
 const EXPORT_DECL = /^export\s+(?:const|class|function|async\s+function)\s+([A-Za-z0-9_$]+)/gm;
+
+/**
+ * Every TOP-LEVEL declaration in the file — exported or not — as `name -> { exported, body }`,
+ * each body bounded by the next top-level declaration of any kind. The PRIVATE half of this is
+ * what F-719 needs: the module's storage homes are module-private consts, so an export that
+ * reaches KVS through one of them names no `storage.` of its own.
+ */
+export const topLevelSources = (src) => {
+  const code = stripJsComments(src);
+  const starts = [...code.matchAll(TOP_LEVEL)].map((m) => m.index);
+  const out = new Map();
+  for (const m of code.matchAll(TOP_LEVEL_DECL)) {
+    const at = m.index;
+    const end = starts.find((i) => i > at);
+    out.set(m[2], { exported: Boolean(m[1]), body: code.slice(at, end === undefined ? code.length : end) });
+  }
+  return out;
+};
 
 export const exportSources = (src) => {
   const code = stripJsComments(src);
@@ -48,6 +67,44 @@ export const exportSources = (src) => {
     out.set(m[1], code.slice(at, end === undefined ? code.length : end));
   }
   return out;
+};
+
+const namesIdentifier = (body, name) => new RegExp(`\\b${name}\\b`).test(body);
+
+/*
+ * F-719 — "NAMES NO `storage.`" IS NOT "TOUCHES NO STORAGE".
+ *
+ * The F-704 census checked purity with a text grep for `storage.` in each ungated export's own
+ * slice. But `setFaultRow`, `getFaultRow`, `settleDeletes` and the raw planted-head read are
+ * module-PRIVATE consts, callable by bare name, so
+ *
+ *     export const seedFaultRow = (k, r) => setFaultRow(k, r, 60);   // listed UNGATED
+ *
+ * passed every assertion in both suites while performing an ungated KVS write in production —
+ * the F-704 scenario one indirection down.
+ *
+ * So the storage homes are DERIVED, never listed: a private top-level name whose body says
+ * `storage.` is tainted, and so, transitively, is any private top-level name that names a
+ * tainted one. Deriving rather than listing is the point — the next private helper is covered
+ * on the day it is written, with no test to edit.
+ *
+ * Exports are deliberately NOT taint carriers: an export that reaches storage through a GATED
+ * export inherits that gate, which is exactly what `HARNESS_INHERITED_GATE_EXPORTS` means.
+ */
+export const storageTaintedPrivates = (src) => {
+  const decls = topLevelSources(src);
+  const privates = [...decls].filter(([, d]) => !d.exported);
+  const tainted = new Set(privates.filter(([, d]) => /\bstorage\./.test(d.body)).map(([n]) => n));
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, d] of privates) {
+      if (tainted.has(name)) continue;
+      for (const t of tainted) {
+        if (t !== name && namesIdentifier(d.body, t)) { tainted.add(name); grew = true; break; }
+      }
+    }
+  }
+  return tainted;
 };
 
 /**
@@ -84,11 +141,18 @@ export const gatedExportViolations = ({ names, src, gated, inherited, ungated })
       problems.push(`the gate is NOT the first statement of gated export \`${n}\``);
     }
   }
+  const taintedPrivates = storageTaintedPrivates(src);
   for (const n of [...inherited, ...ungated]) {
     const body = sources.get(n);
     if (body === undefined) { problems.push(`\`${n}\` has no top-level export declaration to read`); continue; }
     if (/\bstorage\./.test(body)) {
       problems.push(`\`${n}\` is listed as not-directly-gated but names \`storage.\` in its own body — it must carry the gate and join HARNESS_GATED_EXPORTS`);
+      continue;
+    }
+    /* F-719: reaching KVS by calling a private storage home is the same violation, one name down. */
+    const reached = [...taintedPrivates].filter((t) => namesIdentifier(body, t));
+    if (reached.length) {
+      problems.push(`\`${n}\` is listed as not-directly-gated but names the private storage home(s) ${reached.map((t) => `\`${t}\``).join(", ")} — it reaches KVS without asking, so it must carry the gate and join HARNESS_GATED_EXPORTS`);
     }
   }
   return problems;

@@ -757,7 +757,9 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
   const rows = [];
   let scanned = 0, deleted = 0, failed = 0, rowsTruncated = false;
   let truncated = false, reason = null;
-  // Our token, or nothing at all - and NOT a legacy raw KVS cursor any more (F-685).
+  /* Our token, or nothing at all. VALIDATED FIRST, SYNCHRONOUSLY (F-684): this throws
+   * `BAD_SWEEP_CURSOR_CODE` before a single KVS call is made, which is what lets the door
+   * name `bad-cursor` from the error itself instead of from "a cursor was supplied". */
   let cursor = decodeSweepCursor(startCursor === undefined ? null : startCursor);
   let progressed = false;
   // The resume point of the FIRST page a delete failed on - where a retry should pick up.

@@ -35,6 +35,7 @@ import { gatedExportViolations } from "../lib/gated-export-contract.mjs";
    inside a literal. The docblock-PARITY gates in this file (checkProviderHealth, the F-114
    settle block) deliberately read comments and keep reading the RAW source. */
 import { maskComments } from "../lib/js-source-scan.mjs";
+import { FORGE_LLM_DEFAULT } from "../../src/shared/edition.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
@@ -327,8 +328,19 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   for (const sym of ["clampForgeLlmModel", "FORGE_LLM_DEFAULT"]) {
     ok(new RegExp("\\b" + sym + "\\b").test(asyncSrc), `consumer imports ${sym}`);
   }
-  ok(/atlassian: FORGE_LLM_DEFAULT/.test(asyncSrc),
-    "PROVIDER_DEFAULT_MODELS.atlassian is the IMPORTED default, not a re-typed literal that could drift");
+  // F-826 — the consumer no longer OWNS a default-model table at all. It was the third
+  // copy of the model chain; the table (and every policy) now lives once in
+  // src/shared/model-resolution.js, which BOTH processes bind. The property that used to
+  // be "the atlassian default is imported here" is now "there is nothing to import here".
+  ok(!/const PROVIDER_DEFAULT_MODELS = \{/.test(asyncSrc),
+    "the consumer keeps NO second default-model table (F-826)");
+  ok(/import \{ resolveModelForProvider as resolveModelChain \} from "\.\/shared\/model-resolution\.js";/.test(asyncSrc),
+    "…and binds the ONE model chain instead");
+  {
+    const { PROVIDER_DEFAULT_MODELS } = await import("../../src/shared/model-resolution.js");
+    ok(PROVIDER_DEFAULT_MODELS.atlassian === FORGE_LLM_DEFAULT,
+      "PROVIDER_DEFAULT_MODELS.atlassian is the IMPORTED default, not a re-typed literal that could drift");
+  }
   ok(!/atlassian: "claude-/.test(asyncCode), "no hardcoded Forge LLM model literal survives in the consumer");
 
   // The clamp sits inside the Forge LLM branch, before the chat call.

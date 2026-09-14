@@ -586,10 +586,16 @@ ok(/probe \(g\)/.test(readFileSync(path.join(srcDir, "shared/ai-budget.js"), "ut
   ok(gam.length > 0, "found getAgentModelFor");
   ok(/resolveModelForProvider\(provider, \{ agentSlot: true, migrate: false \}\)/.test(gam),
     "…and it derives from the ONE model chain, reading the agent slot and doing NO legacy migration write (F-818)");
-  const rmp = (indexSrc.match(/const resolveModelForProvider = async \(provider, \{[^}]*\} = \{\}\) => \{[\s\S]*?\n\};/) || [, ""])[0] || "";
-  ok(rmp.length > 0, "found resolveModelForProvider — the ONE home of the model chain");
-  ok(!/getProviderConfig\(/.test(gam) && !/getProviderConfig\(/.test(rmp),
+  // F-826 — the chain LEFT src/index.js entirely: it is a pure function in
+  // src/shared/model-resolution.js, because the async consumer is a different process
+  // that cannot import index.js and had drifted to its own copy. index.js keeps only the
+  // BINDING (its storage, its env, its PROVIDERS table); the POLICIES are asserted at the
+  // one home, where they now hold for all three readers.
+  const bind = (indexSrc.match(/const resolveModelForProvider = async \(provider, \{[^}]*\} = \{\}\) => resolveModelChain\(\{[\s\S]*?\n\}\);/) || [, ""])[0] || "";
+  ok(bind.length > 0, "src/index.js binds the ONE model chain rather than restating it (F-826)");
+  ok(!/getProviderConfig\(/.test(gam) && !/getProviderConfig\(/.test(bind),
     "…and NEITHER reads a provider of its own — the provider is the ARGUMENT, which is the whole fix");
+  const rmp = readFileSync(new URL("../../src/shared/model-resolution.js", import.meta.url), "utf8");
   // Every reader of the model slot shares the POLICY: a managed slot holding anything
   // outside the offer is clamped server-side, or the agent path would be the one place a
   // junk id could name a model we never agreed to bill for.
@@ -600,6 +606,11 @@ ok(/probe \(g\)/.test(readFileSync(path.join(srcDir, "shared/ai-budget.js"), "ut
   // Forge LLM cannot run either.
   ok(/provider === "atlassian" && !FORGE_LLM_MODELS\.advanced\.includes\(String\(model\)\)\) return FORGE_LLM_DEFAULT/.test(rmp),
     "…and so does the Forge LLM resolution belt");
+  // …and the CONSUMER binds the same function instead of keeping the third copy (F-826).
+  ok(/import \{ resolveModelForProvider as resolveModelChain \} from "\.\/shared\/model-resolution\.js";/.test(asyncSrc),
+    "src/async-handler.js binds the ONE model chain (F-826)");
+  ok(!/const PROVIDER_DEFAULT_MODELS = \{/.test(asyncSrc),
+    "…and keeps NO second default-model table");
 }
 
 console.log(`managed-provider: ${pass} passed, ${fail} failed`);

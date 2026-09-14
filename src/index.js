@@ -58,6 +58,10 @@ import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js
 import { createProjectKeysMemo, PROJECT_KEY_CAP } from "./shared/identifier-leak.js";
 import { readHeader } from "./shared/http-headers.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
+// F-826 — the model-resolution CHAIN is a pure function in src/shared so the async
+// consumer (a different process, which cannot import this file) binds the SAME one.
+// PROVIDER_DEFAULT_MODELS is its default table and the one home of those literals.
+import { resolveModelForProvider as resolveModelChain, PROVIDER_DEFAULT_MODELS } from "./shared/model-resolution.js";
 // F-629 — the dev-only key-read fault lever, in the same one-home/one-gate family as the
 // git ones (src/harness-fault.js). Inert without HARNESS_SECRET, i.e. in production.
 // F-655 — the sibling lever for a planted Jira transport failure, same file, same gate.
@@ -12988,23 +12992,27 @@ export async function gitWebhook(req) {
 // rather than to whatever `COGNIRUNNER_AI_BASE_URL` holds — the same rule as the sync
 // adapter, from the same literal.
 export const PROVIDER_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+// F-826 — the `defaultModel` values are NOT literals here: src/shared/model-resolution.js
+// owns the one default-model table, because the async consumer needs the same answers and
+// cannot import this file. This map adds only what is local to the sync process: the
+// label and the base URL.
 const PROVIDERS = {
-  openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini" },
+  openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: PROVIDER_DEFAULT_MODELS.openai },
   // Azure OpenAI rides the same OpenAI-compatible request path as `openai` (differs only by
   // the `api-key` auth header and the admin-supplied deployment baseUrl), so OpenAI hardening
   // also covers it. NOTE: Azure OpenAI is MOSTLY UNTESTED end-to-end (no live deployment in the
   // test harness) — treat its runtime behavior as unverified.
-  azure: { label: "Azure OpenAI", baseUrl: null, defaultModel: "gpt-5.4-mini" }, // user must provide URL; mostly untested
-  openrouter: { label: "OpenRouter", baseUrl: PROVIDER_OPENROUTER_BASE_URL, defaultModel: "openai/gpt-5.4-mini" },
-  anthropic: { label: "Anthropic", baseUrl: "https://api.anthropic.com", defaultModel: "claude-haiku-4-5-20251001" },
+  azure: { label: "Azure OpenAI", baseUrl: null, defaultModel: PROVIDER_DEFAULT_MODELS.azure }, // user must provide URL; mostly untested
+  openrouter: { label: "OpenRouter", baseUrl: PROVIDER_OPENROUTER_BASE_URL, defaultModel: PROVIDER_DEFAULT_MODELS.openrouter },
+  anthropic: { label: "Anthropic", baseUrl: "https://api.anthropic.com", defaultModel: PROVIDER_DEFAULT_MODELS.anthropic },
   // LM Studio: user-hosted OpenAI-compatible server. baseUrl is the user's Tailscale Funnel
   // root (e.g. https://your-machine.tailXXXX.ts.net); we append /v1 for inference and /api/v1
   // for model lifecycle. Tailscale Funnel is the only tunnel provider allowlisted in manifest.
-  lmstudio: { label: "LM Studio", baseUrl: null, defaultModel: null },
+  lmstudio: { label: "LM Studio", baseUrl: null, defaultModel: PROVIDER_DEFAULT_MODELS.lmstudio },
   // Atlassian-hosted Forge LLMs (Preview): Claude models served inside the Atlassian
   // platform via @forge/llm. No API key, no egress, no BYOK — token costs are billed
   // to the app vendor's Forge bill. Text-only (no image/file input yet).
-  atlassian: { label: "Atlassian (Forge LLM)", baseUrl: null, defaultModel: "claude-haiku-4-5-20251001" },
+  atlassian: { label: "Atlassian (Forge LLM)", baseUrl: null, defaultModel: PROVIDER_DEFAULT_MODELS.atlassian },
   // AWS Bedrock (BYOK): authenticated with a Bedrock API key as a plain bearer token
   // (Authorization: Bearer …) — NO AWS SigV4 signing. baseUrl is region-derived and stored
   // as a full URL (https://bedrock-runtime.<region>.amazonaws.com) by saveProvider, so the
@@ -13013,13 +13021,13 @@ const PROVIDERS = {
   // defaultModel is an EU cross-region inference-profile id (the test account is in eu-west-2,
   // which belongs to the `eu.` profile group); it is a fallback only — admins pick a model in
   // the panel. Bare model ids 403 for many models, so profile ids (eu./us.) are preferred.
-  bedrock: { label: "AWS Bedrock", baseUrl: null, defaultModel: "eu.anthropic.claude-sonnet-4-6" },
+  bedrock: { label: "AWS Bedrock", baseUrl: null, defaultModel: PROVIDER_DEFAULT_MODELS.bedrock },
   // CogniRunner Cloud AI — the LeanZero-MANAGED engine. It is an OpenRouter account
   // (owner's decision 2026-09-14), so it rides the OpenRouter adapter and the
   // already-allowed openrouter.ai egress; the tenant pastes no key and picks from
   // MANAGED_MODELS only. The baseUrl here is FIXED and is not overridable by the
   // admin's COGNIRUNNER_AI_BASE_URL — see callAIChatRaw's managed branch.
-  managed: { label: MANAGED_PROVIDER_LABEL, baseUrl: PROVIDER_OPENROUTER_BASE_URL, defaultModel: MANAGED_DEFAULT_MODEL },
+  managed: { label: MANAGED_PROVIDER_LABEL, baseUrl: PROVIDER_OPENROUTER_BASE_URL, defaultModel: PROVIDER_DEFAULT_MODELS.managed },
 };
 
 /*
@@ -15259,84 +15267,42 @@ let _cachedModel = null;
 let _cachedModelAt = 0;
 
 /**
- * F-818 — THE ONE HOME OF THE MODEL-RESOLUTION CHAIN.
+ * F-818 / F-826 — THE SYNC PROCESS'S BINDING OF THE ONE MODEL CHAIN.
  *
- * agent slot (agent readers only) → ordinary model slot → legacy slot (migrating readers
- * only) → `OPENAI_MODEL` env var (OpenAI-shaped providers only) → `PROVIDERS[provider].defaultModel`.
+ * The chain itself — agent slot → ordinary model slot → legacy slot → `OPENAI_MODEL` env
+ * var → the provider's default — is a PURE function in `src/shared/model-resolution.js`,
+ * together with every policy it applies (the managed clamp, the Atlassian resolution
+ * belt, the faulted-read tail). Read the contract there; it is not restated here.
  *
- * F-811 built the agent reader self-contained rather than extracting this, which left the
- * chain with TWO homes: a policy added to one (a clamp, a migration, a belt) silently
- * missed the other. Both readers now derive from here and differ ONLY in the two options:
+ * F-811 built the agent reader self-contained, which left the chain with TWO homes inside
+ * this file; F-818 merged them. F-826 found the THIRD, in `src/async-handler.js` — a
+ * different process, which cannot import this file at all, and which had drifted to no
+ * belt, no migration, a second default table and a different faulted-read answer. So the
+ * chain moved to src/shared, where BOTH processes bind it, and this function is now only
+ * the sync binding: this process's storage, this process's env, this process's PROVIDERS
+ * table (whose `defaultModel` values themselves come from the shared one home).
  *
- *   `agentSlot` — read `COGNIRUNNER_AGENT_MODEL_{provider}` first. Agent surfaces only;
- *                 the ordinary path must never serve the agent's pick to a validator.
- *   `migrate`   — the one-time legacy-slot write. ACTIVE-provider path only: it must not
+ * The two options are all that any reader may vary:
+ *   `agentSlot` — read the agent model slot first. Agent surfaces only; the ordinary path
+ *                 must never serve the agent's pick to a validator.
+ *   `migrate`   — the one-time legacy-slot WRITE. ACTIVE-provider path only: it must not
  *                 fire for a provider that is not even active (that write would plant a
  *                 model in a slot nobody asked about).
  *
- * The provider is an ARGUMENT and is read NOWHERE in here — that is F-811's fix and it is
- * now structural for both readers. A null provider yields null and writes nothing (F-112):
- * `COGNIRUNNER_MODEL_null` is not a slot, and a memoised default would outlive the fault.
- *
- * THE POLICIES ARE THE SHARED ONES (src/shared/edition.js), applied server-side AFTER the
- * read, and they are here — not at one call site — because they belong to EVERY reader:
- *
- *  - `clampManagedModel` on the managed engine: a slot outside the offer resolves to
- *    Sonnet 5 rather than being sent to OpenRouter on our account. A billing backstop is
- *    not an agent concern.
- *  - THE ATLASSIAN BELT on Forge LLM: a slot written while another provider was active can
- *    hold that vendor's id (`anthropic/claude-opus-5`). F-811 put this on the agent reader
- *    only, and that is exactly the asymmetry F-818 is about — "what would this provider
- *    actually run" is a question every reader asks, and the ordinary reader answering
- *    another vendor's id is the same half-and-half fact set one surface over. It is a
- *    RESOLUTION belt, never access control: `agentCapability` still refuses Haiku for
- *    agents, and the EDITION clamp (`clampForgeLlmModel`) still runs at dispatch, where
- *    Standard-vs-Coder is known. NOT a prefix strip — the exact-id policy in edition.js is
- *    a pricing decision, so "anthropic/claude-opus-5" does not become "claude-opus-5".
+ * The provider is an ARGUMENT and is read NOWHERE in the chain — that is F-811's fix, and
+ * it is now structural for all three readers. A null provider yields null and writes
+ * nothing (F-112).
  */
-const resolveModelForProvider = async (provider, { migrate = false, agentSlot = false } = {}) => {
-  // F-112 — refuse BEFORE any slot read and before any memo write upstream.
-  if (!provider) return null;
-  let model = null;
-  try {
-    if (agentSlot) {
-      const savedAgent = await storage.get(providerAgentModelSlot(provider));
-      if (savedAgent) model = String(savedAgent);
-    }
-    if (!model) {
-      // Read the saved per-provider model UNCONDITIONALLY. Gating this on a BYOK key
-      // broke keyless providers: LM Studio (auth optional) and Forge LLM (no key at all)
-      // would silently ignore the admin's saved model and fall through to a default that
-      // doesn't exist on those providers. The slot is cleared when reverting to factory
-      // (removeOpenAIKey deletes it), so reading it is always safe.
-      const saved = await storage.get(providerModelSlot(provider));
-      if (saved) model = String(saved);
-    }
-    if (!model && migrate) {
-      // Migrate the legacy slot to the per-provider one (only meaningful when a key exists).
-      const byokKey = await storage.get(providerKeySlot(provider));
-      if (byokKey) {
-        const legacy = await storage.get("COGNIRUNNER_OPENAI_MODEL");
-        if (legacy) {
-          await storage.set(providerModelSlot(provider), legacy);
-          console.log(`Migrated legacy model to ${providerModelSlot(provider)}`);
-          model = String(legacy);
-        }
-      }
-    }
-    if (model && provider === MANAGED_PROVIDER_ID) model = clampManagedModel(model);
-  } catch (error) {
-    // Restrictive: an unread slot falls through to the env var / provider default rather
-    // than answering null, which would take a working instance offline over a read blip.
-    console.error("Error reading model from storage:", error);
-  }
-  // The OPENAI_MODEL env var names an OpenAI model — applying it to Anthropic, LM Studio
-  // or Forge LLM would 404 at inference time.
-  if (!model && process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) model = process.env.OPENAI_MODEL;
-  if (!model) model = (PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || "gpt-5.4-mini";
-  if (provider === "atlassian" && !FORGE_LLM_MODELS.advanced.includes(String(model))) return FORGE_LLM_DEFAULT;
-  return model;
-};
+const resolveModelForProvider = async (provider, { migrate = false, agentSlot = false } = {}) => resolveModelChain({
+  provider,
+  readSlot: (key) => storage.get(key),
+  onMigrate: (key, value) => storage.set(key, value),
+  env: process.env,
+  providers: PROVIDERS,
+  agentSlot,
+  migrate,
+  log: console,
+});
 
 /**
  * The ACTIVE provider's ordinary model — `resolveModelForProvider` for the memoised

@@ -37,39 +37,22 @@
  * a fourth knowledge hue with no relationship to anything would just be decoration. Both
  * themes are defined in App.js injectStyles(); there is no faded tint and no left rail.
  *
- * NO BAKE DATE, AND NO PER-PACK PURPOSE — and both stay absent until the BAKE emits them
- * (F-917 re-confirmed this by reading the generated index, not by trusting this comment).
+ * THE BAKE DATE AND THE PER-PACK PURPOSE (F-933). Both are rendered now, and both come
+ * from the GENERATED index by way of the resolver - never from text typed here.
  *
- * `src/shared/knowledge-index.js` exports `KNOWLEDGE_PACKS` with exactly five keys —
- * id, title, sections, bytes, pinned — and `KNOWLEDGE_INDEX` sections whose `provenance`
- * is { source, path, hash, licence }. There is NO `bakedAt`, no `generatedAt`, and no
- * pack description anywhere in it. So:
+ *   • `packs[].purpose` is one plain sentence per pack, authored in knowledge/sources.json
+ *     and emitted by scripts/bake-knowledge.mjs beside the title. It is what tells an admin
+ *     what a switch actually turns off. Re-typing it here would mint a second home for text
+ *     that has one, and the two would diverge on the next bake.
+ *   • `bakedAt` is `KNOWLEDGE_BAKED_AT`, the wall clock at the moment the packs were
+ *     written. It is NOT part of either fingerprint, on purpose: a clock inside a hash would
+ *     make every re-bake look like a metadata change and `npm run bake:check` would fail on
+ *     the clock. So the fingerprint still says WHICH corpus this is, and the date says when
+ *     it was last written - two different questions, two different answers.
  *
- *   • A DATE would have to be invented here from the build clock, and a number that looks
- *     like provenance and is not is worse than no number. The corpus FINGERPRINT is the
- *     honest identity of a bake and the foot line prints it, now saying what it is.
- *   • A PURPOSE cannot be imported either. The text exists — `knowledge/sources.json`
- *     carries `packs.<id>.purpose`, one plain sentence per pack — but that file also
- *     carries the `never` refusal list, which names real client engagements, and it is not
- *     a shared/ module. Bundling it into a shipped Custom UI to reach one sentence is not
- *     a trade this tab may make. Re-typing the sentences here would mint a second home for
- *     text that already has one, and the two would diverge on the next bake.
- *
- * WHAT `scripts/bake-knowledge.mjs` WOULD HAVE TO EMIT, precisely — two fields, both from
- * data it already holds at the moment it writes the file:
- *
- *   KNOWLEDGE_PACKS[].purpose   — `cfg.packs?.[pack]?.purpose`, read one line below the
- *                                 `title` it already emits (bake-knowledge.mjs ~line 930).
- *                                 Zero new inputs; the allow-list already carries it.
- *   KNOWLEDGE_BAKED_AT          — a module-level ISO string written at bake time, beside
- *                                 KNOWLEDGE_CONTENT_VERSION. It must be a SEPARATE export
- *                                 and must NOT feed KNOWLEDGE_INDEX_META_VERSION, or every
- *                                 bake would report a metadata change it did not make and
- *                                 `npm run bake:check` would fail on the clock.
- *
- * Both are one-line additions to a GENERATED file's emitter, and neither is this tab's to
- * make. When they land, this component renders `pack.purpose` under the title and the
- * baked date in the provenance block, and the note below comes out.
+ * Neither is invented from the build clock in this file. If the resolver sends no date, the
+ * sentence simply stops at the licence: a number that looks like provenance and is not is
+ * worse than no number, which was the whole F-917 finding.
  */
 
 import React, { useState, useEffect, useCallback } from "react";
@@ -102,12 +85,28 @@ const fmtBytes = (n) => {
   return v < 1024 ? `${Math.round(v)} bytes` : `${Math.round(v / 1024)} KB`;
 };
 
+/**
+ * The bake date as an admin reads it. `en-GB` is named explicitly rather than left to the
+ * browser's locale, because this string is asserted in the screenshot journeys and a date
+ * that changed shape with the reader's machine would be untestable. An unparseable or
+ * absent value returns "" and the caller simply omits the clause.
+ */
+const fmtDate = (iso) => {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+};
+
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 export default function KnowledgeTab({ invoke, isAdmin }) {
   const [packs, setPacks] = useState([]);
   const [budgets, setBudgets] = useState(null);
   const [versions, setVersions] = useState(null);
+  /* The bake date rides beside the versions because it answers the same family of question
+     ("what am I looking at, and how old is it?"), and it is only ever read from the
+     resolver - this tab never falls back to its own clock. */
+  const [bakedAt, setBakedAt] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   /* The two refusal families kept APART, exactly as MemoriesAdminTab keeps them (F-296):
@@ -132,6 +131,7 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
         setPacks(Array.isArray(res.packs) ? res.packs : []);
         setBudgets(res.budgets || null);
         setVersions({ knowledge: res.knowledgeVersion, content: res.contentVersion });
+        setBakedAt(typeof res.bakedAt === "string" ? res.bakedAt : "");
       } else if (isUpgradeRequired(res)) {
         setUpgradeRefusal(res);
       } else if (isPermissionRefusal(res)) {
@@ -217,6 +217,7 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
     );
   }
 
+  const bakedDate = fmtDate(bakedAt);
   const onCount = packs.filter((p) => p.enabled).length;
   const onBytes = packs.reduce((sum, p) => sum + (p.enabled ? Number(p.bytes) || 0 : 0), 0);
   const onSections = packs.reduce((sum, p) => sum + (p.enabled ? Number(p.sections) || 0 : 0), 0);
@@ -262,6 +263,11 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
                 <span className={`kn-state${pack.enabled ? " is-on" : ""}`}>{pack.enabled ? "On" : "Off"}</span>
               )}
             </div>
+            {/* F-933 - WHAT THE SWITCH TURNS OFF, in one sentence. Above the numbers,
+                because "9 sections, 23 KB" cannot tell an admin whether the pack is the one
+                their Coder needs. Authored in knowledge/sources.json, baked into the index,
+                printed verbatim. */}
+            {pack.purpose && <span className="kn-pack-purpose">{pack.purpose}</span>}
             <div className="kn-pack-facts">
               <span className="kn-pack-fact">{plural(Number(pack.sections) || 0, "section", "sections")}</span>
               <span className="kn-pack-fact">{fmtBytes(pack.bytes)}</span>
@@ -285,7 +291,13 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
               <div className="kn-pack-prov">
                 <span className="kn-prov-head">Source and licence</span>
                 {pack.provenance.map((line, i) => (
-                  <span className="kn-prov-line" key={i}>{line}</span>
+                  <span className="kn-prov-line" key={i}>
+                    From {line}
+                    {/* F-933 - the bake date closes the LAST source line, so the block reads
+                        as one sentence ("From x, y, baked 14 September 2026") instead of a
+                        date repeated once per source. No date, no clause. */}
+                    {i === pack.provenance.length - 1 && bakedDate ? `, baked ${bakedDate}` : ""}
+                  </span>
                 ))}
               </div>
             )}
@@ -328,7 +340,7 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
           <span className="kn-version-note">
             The corpus fingerprint identifies this bake of the packs. It changes whenever any
             section of the text changes, so two sites showing the same fingerprint are reading
-            exactly the same knowledge.
+            exactly the same knowledge.{bakedDate ? ` These packs were baked on ${bakedDate}.` : ""}
           </span>
         </p>
       )}

@@ -26,6 +26,13 @@
 export const KNOWLEDGE_CONTENT_VERSION = "58c15fd5c7e54c25";
 
 /**
+ * When these bytes were written, ISO-8601. Deliberately OUTSIDE both fingerprints (F-933):
+ * a clock in a hash would make every re-bake look like a metadata change, and
+ * `npm run bake:check` normalises this line away before it compares.
+ */
+export const KNOWLEDGE_BAKED_AT = "2026-09-14T19:42:10.977Z";
+
+/**
  * Fingerprint of this file's METADATA — pack pin lists, the pin map, section audiences.
  * `KNOWLEDGE_CONTENT_VERSION` only hashes bodies, so it cannot see a hand edit here;
  * `npm run bake:check` compares BOTH and fails on either (F-570).
@@ -36,6 +43,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "administrator-practice",
     "title": "Administrator practice",
+    "purpose": "The confidence ladder, proven negatives, speaking vs changing, blast radius, the effects ledger, guard discipline, unattended operation, burstiness. Pinned for every Virtual Administrator turn.",
     "sections": 9,
     "bytes": 23557,
     "pinned": [
@@ -45,6 +53,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "automation-semantics",
     "title": "Automation semantics",
+    "purpose": "Smart values, loops, and what Jira Automation can and cannot be driven to do over REST.",
     "sections": 4,
     "bytes": 12385,
     "pinned": []
@@ -52,6 +61,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "cognirunner-sandbox-traps",
     "title": "CogniRunner sandbox traps",
+    "purpose": "The traps this app has paid for, re-keyed to the sandbox API. Pinned for codegen and fix, because these are the mistakes the model makes unprompted.",
     "sections": 5,
     "bytes": 12702,
     "pinned": [
@@ -61,6 +71,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "confluence-rest-correctness",
     "title": "Confluence REST correctness",
+    "purpose": "Confluence modules, auth, macros, ADF and storage format, points-based rate limiting.",
     "sections": 46,
     "bytes": 115555,
     "pinned": []
@@ -68,6 +79,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "forge-app-builder",
     "title": "Forge app builder",
+    "purpose": "What the Coder needs to produce a Forge app that deploys: modules, manifest shape, resolver and Custom UI patterns, production patterns, FaaS limits and cost, async events, Forge LLM, the security golden rules.",
     "sections": 61,
     "bytes": 144374,
     "pinned": [
@@ -77,6 +89,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "forge-platform-facts",
     "title": "Forge platform facts",
+    "purpose": "The reconciled traps: what the platform actually does, as opposed to what the docs imply. Rate limits, quotas, the gotchas.",
     "sections": 23,
     "bytes": 59949,
     "pinned": []
@@ -84,6 +97,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "jira-rest-correctness",
     "title": "Jira REST correctness",
+    "purpose": "Problem patterns and gotchas for the Jira Cloud REST API.",
     "sections": 11,
     "bytes": 24317,
     "pinned": []
@@ -91,6 +105,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "jsm-correctness",
     "title": "Jira Service Management correctness",
+    "purpose": "Queues, sd.public.comment, agent visibility, audience.",
     "sections": 11,
     "bytes": 26437,
     "pinned": []
@@ -98,6 +113,7 @@ export const KNOWLEDGE_PACKS = [
   {
     "id": "voice-rules",
     "title": "Voice rules",
+    "purpose": "DATA tables consumed by src/shared/voice-lint.js, not prose for the model.",
     "sections": 9,
     "bytes": 21923,
     "pinned": []

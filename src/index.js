@@ -211,6 +211,7 @@ import {
   knowledgeAudienceBudgets,
   KNOWLEDGE_VERSION,
   KNOWLEDGE_CONTENT_VERSION,
+  KNOWLEDGE_BAKED_AT,
 } from "./knowledge-packs.js";
 // Skill repository (skill packs injected into codegen/fix prompts).
 import {
@@ -8777,6 +8778,9 @@ resolver.define("getKnowledgePacks", async ({ context }) => {
       // shift in behaviour.
       knowledgeVersion: KNOWLEDGE_VERSION,
       contentVersion: KNOWLEDGE_CONTENT_VERSION,
+      // F-933 - WHEN this corpus was baked. The fingerprints say which corpus it is; the
+      // date says how old it is, which is the question an admin actually arrives with.
+      bakedAt: KNOWLEDGE_BAKED_AT,
     };
   } catch (error) {
     console.error("Failed to read knowledge packs:", error);

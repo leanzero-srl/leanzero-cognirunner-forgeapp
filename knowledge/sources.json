@@ -90,7 +90,7 @@
     },
     "voice-rules": {
       "title": "Voice rules",
-      "purpose": "DATA tables consumed by src/shared/voice-lint.js — not prose for the model.",
+      "purpose": "DATA tables consumed by src/shared/voice-lint.js, not prose for the model.",
       "pinned": []
     }
   },

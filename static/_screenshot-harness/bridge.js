@@ -79,7 +79,7 @@ import { createWizard, resumeWizard, stepWizard, serializeWizardState } from "..
    pack titles and a budget table would let the tab and the mock agree while both drifted
    from the corpus the backend actually ships. The one thing the mock owns is the tenant's
    `disabled` list, which is per-INSTALL state and has no home in the bundle. */
-import { KNOWLEDGE_PACKS, KNOWLEDGE_INDEX, KNOWLEDGE_CONTENT_VERSION } from "../../src/shared/knowledge-index.js";
+import { KNOWLEDGE_BAKED_AT, KNOWLEDGE_PACKS, KNOWLEDGE_INDEX, KNOWLEDGE_CONTENT_VERSION } from "../../src/shared/knowledge-index.js";
 import { KNOWLEDGE_VERSION } from "../../src/shared/knowledge-select.js";
 import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
 import { VA_LIMITS } from "../../src/shared/va-config.js";
@@ -1064,6 +1064,9 @@ const describePacks = () => KNOWLEDGE_PACKS.map((pack) => {
   return {
     id: pack.id,
     title: pack.title,
+    // F-933 - the purpose the BAKE emits, passed through exactly as describeKnowledgePacks
+    // passes it. A mock that invented a sentence would prove the tab renders a mock.
+    purpose: typeof pack.purpose === "string" ? pack.purpose : "",
     sections: pack.sections,
     bytes: pack.bytes,
     pinned: Array.isArray(pack.pinned) ? pack.pinned.slice() : [],
@@ -2295,6 +2298,8 @@ function invoke(name, payload) {
       },
       knowledgeVersion: KNOWLEDGE_VERSION,
       contentVersion: KNOWLEDGE_CONTENT_VERSION,
+      // F-933 - the real KNOWLEDGE_BAKED_AT from the generated index, never a fresh clock.
+      bakedAt: KNOWLEDGE_BAKED_AT,
     });
     case "saveKnowledgeSettings": {
       if (typeof window !== "undefined") window.__KN_LAST_SAVE__ = payload;

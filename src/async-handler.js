@@ -2655,8 +2655,10 @@ const GATE_DEPS = {
    * So a `coder` deferral is re-pushed under the SAME per-issue key its producer used
    * (src/index.js, both the turn push and the confirm resume). Everything else keeps
    * `ai-budget`, which is what paces deferrals. For the Coder the guarantee is then the
-   * pair: the per-issue queue key serialises the deliveries, and `coder_exec` is the
-   * claim that makes a re-delivery of one of them a no-op rather than a second turn.
+   * pair: the per-issue queue key serialises the deliveries, and the per-EVENT COMPLETION
+   * CLAIM (`task_done:<taskId>`, src/shared/execution-claim.js) is what makes a redelivery
+   * of one of them a no-op rather than a second turn. NOT `coder_exec:<issueKey>` - that is
+   * the per-issue LOCK, released in `finally`, and it stops nothing once a turn has ended.
    * Pacing is not lost either — a coder turn that cannot fit the minute is still deferred
    * by this same gate on its next delivery.
    */

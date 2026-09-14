@@ -18,6 +18,10 @@
  * Run: node --import ./lib/register-mocks.mjs scripts/virtual-admin.test.mjs
  */
 import kvs from "../lib/mock-kvs.mjs";
+/* F-805 — the BANS below ("__agentHalt", any *consent* identifier, "awaiting", the
+   long-queue shape) name the very spellings their own docblocks must write down, so they
+   read the source with comments blanked. Literals stay visible: `"awaiting"` IS a literal. */
+import { maskComments } from "../lib/js-source-scan.mjs";
 
 /** The app's own accountId. Every dep that tells our comments from theirs uses it. */
 const SELF = "app-user";
@@ -598,7 +602,10 @@ reset();
   // THE PROOF THAT NO CONSENT TICKET EXISTS ON THIS SURFACE: the halt protocol the Coder
   // uses (`__agentHalt`) appears nowhere in the engine, and neither does a consent issue.
   const { readFileSync } = await import("node:fs");
-  const vsrc = readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8");
+  const vsrc = maskComments(readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8"));
+  ok(!/__agentHalt/.test(maskComments("// the Coder halt protocol (__agentHalt) is not used here\nlet x;\n"))
+    && /__agentHalt/.test(maskComments("if (res.__agentHalt) return;\n")),
+    "F-805: the halt name in a COMMENT is not a use; in CODE it is");
   ok(!/__agentHalt/.test(vsrc), "confirm.BLOCK_no_halt_path — a headless VA turn never opens a consent ticket");
   // No IDENTIFIER carrying the word either — the prose above may discuss consent tickets,
   // but a variable, function or field named for one would be a code path toward one.
@@ -1132,7 +1139,7 @@ reset();
 /* ══ 8. THE WIRING ═════════════════════════════════════════════════════════ */
 {
   const { readFileSync } = await import("node:fs");
-  const async = readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8");
+  const async = maskComments(readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8"));
   for (const t of ["va-tick", "va-item", "va-post"]) {
     ok(new RegExp(`"${t}": executeVa`).test(async), `wiring: "${t}" is a TASK_HANDLERS row`);
   }
@@ -1144,7 +1151,7 @@ reset();
   eq(estimateTaskTokens("va-tick", {}), 0, "budget: va-tick is explicitly priced at zero");
   ok(TOKEN_SPENDING_TASK_TYPES.includes("va-item") && TOKEN_SPENDING_TASK_TYPES.includes("va-post"), "budget: the two tasks that DO call a model are paced");
 
-  const jobs = readFileSync(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
+  const jobs = maskComments(readFileSync(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8"));
   ok(/isVaJob/.test(jobs), "wiring: the planner asks `isVaJob`, the ONE home for the question");
   ok(/enqueueVaPostRuns/.test(jobs), "wiring: the post phase is enqueued by the SAME 5-minute planner — no second trigger");
   // The RUN PATH asks `isVaJob` (which requires the `va` BLOCK, not just the mode), so a
@@ -1612,7 +1619,7 @@ reset();
    dep is the production reader and the suite injects around it. */
 {
   const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8");
+  const src = maskComments(readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8"));
   ok(/model: await m\.getAgentModel\(\)/.test(src), "model: the VA loop runs on the AGENT model");
   /*
    * SCOPED TO `runLoop`, not to the whole file (F-494).
@@ -2582,9 +2589,11 @@ reset();
    * that is every comment shape in this engine, and a naive string-aware stripper would be
    * a second parser to get wrong.
    */
-  const stripComments = (s) => s
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  /* F-805: the stripper this block used to carry lived here and in three other suites, and
+     dropped a whole-line `//` only — an INLINE trailing comment survived it. maskComments is
+     the one home for the question, and it preserves LENGTH, so the marker offsets below
+     still index the same bytes. */
+  const stripComments = maskComments;
 
   const bodyOf = (name, endMarker) => {
     const from = vaSource.indexOf(`export const ${name} = `) >= 0

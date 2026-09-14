@@ -1335,6 +1335,12 @@ export const plantedFaultKey = (i) =>
  * `failed`, never thrown out of a plant that placed everything else — and `failed > 0` is
  * never `complete`, by the same `sweepAnswerTail` the sweep and the clear answer through.
  *
+ * F-707 — AND A REFUSED WRITE OWNS THE RESUME HANDLE. `nextIndex` is the LOWEST index that
+ * did not land whenever `failed > 0`, not the end of the population: the handle used to come
+ * off the budget flag alone, so a plant with holes in it sent its caller PAST them and the
+ * next call answered `complete: true` over a keyspace missing rows. Re-planting an index is
+ * idempotent, so coming back to the first hole re-writes it and everything after it.
+ *
  * F-696 — THE BUDGET IS THE SWEEP'S, CHECKED BEFORE EVERY BATCH (`sweepBudgetMs`: default
  * 15 s, ceiling 20 s, under the trigger's 25 s) and honoured only once the call has actually
  * written something, so a tiny `maxMs` cannot produce a call that places nothing and asks to
@@ -1359,6 +1365,15 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
   const ttlSeconds = plantTtlSeconds(count);
   const keys = [];
   let planted = 0, failed = 0, truncated = false, reason = null, progressed = false;
+  /* F-707 — THE RESUME HANDLE BELONGS TO THE FAILURE, NOT TO THE BUDGET. `nextIndex` was
+   * `truncated ? i : count`, read off the LOCAL budget flag, so a call whose writes were
+   * refused answered `writes-failed` with `nextIndex: n` — past the holes it had just made.
+   * The documented loop then POSTed `startIndex: n`, wrote nothing, and answered
+   * `complete: true`: a failure reported as success over a population with missing rows.
+   * The keys are `i`-derived and re-planting is idempotent, so the honest handle is the
+   * LOWEST index that did not land — resuming there rewrites the failures and everything
+   * after them, and costs nothing but a few duplicate writes. */
+  let firstFailedIndex = null;
   let i = from;
   for (; i < count; i += KVS_DELETE_BATCH) {
     if (i > from) {
@@ -1384,7 +1399,8 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
     const settled = await Promise.allSettled(batch.map((key) =>
       setFaultRow(key, { count: 1, armedAt, plantedBy: "harness" }, ttlSeconds, keepUntil)));
     for (let k = 0; k < settled.length; k++) {
-      if (settled[k].status === "fulfilled") { planted++; keys.push(batch[k]); } else failed++;
+      if (settled[k].status === "fulfilled") { planted++; keys.push(batch[k]); }
+      else { failed++; if (firstFailedIndex === null) firstFailedIndex = i + k; }
     }
     progressed = true;
   }
@@ -1396,11 +1412,18 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
     truncated, reason, cursor: null,
     unresolved: failed > 0, failedResume: null, unresolvedReason: "writes-failed",
   });
+  /* F-707 — a refused write OUTRANKS a budget break in both halves of the answer. The
+   * caller must come back to the earliest hole, so the reason it is sent back for is the
+   * hole and not the clock; everything the budget stopped lies AFTER that index and is
+   * rewritten by the same resumed call. `complete` is still the tail's alone. */
+  const failureFirst = failed > 0;
   return {
     ok: true, planted, failed, n: count, startIndex: from,
-    nextIndex: truncated ? i : count,
+    nextIndex: failureFirst ? firstFailedIndex : (truncated ? i : count),
     expired: past, ttlSeconds, budgetMs, keys,
-    truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
+    truncated: tail.truncated,
+    reason: failureFirst ? "writes-failed" : tail.reason,
+    complete: tail.complete,
   };
 };
 

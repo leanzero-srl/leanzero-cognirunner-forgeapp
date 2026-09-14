@@ -852,7 +852,11 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       last = await fault.plantHarnessFaults({ n, expired, startIndex: next || undefined, ...opts });
       if (last.ok === false) return { ...last, planted, failed, calls };
       planted += last.planted; failed += last.failed; calls++;
-      if (last.nextIndex <= next && last.planted === 0) break;   // no progress: do not spin
+      /* F-707: NO FORWARD PROGRESS IS THE STOP, whatever the call placed. A plant whose
+       * writes are refused now answers with the FIRST failed index, so a resumed call can
+       * place rows and still hand back the index it was given — that is a stuck drain, not
+       * a working one, and `planted === 0` no longer describes it. */
+      if (last.nextIndex <= next) break;
       next = last.nextIndex;
     }
     return { ...last, planted, failed, calls, nextIndex: next };
@@ -1400,6 +1404,69 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       "F-706.SOURCE: and spent through the ONE counted-consumption home, in one place");
     ok(/if \(prefix !== HARNESS_FAULT_PLANT_PREFIX\)/.test(faultCode),
       "F-706.SOURCE: the prefix is tested by EQUALITY against the plant's — never by `startsWith` at the arming side");
+  }
+
+
+  /* ═════ 7j. F-707 — THE RESUME HANDLE BELONGS TO THE FAILURE, NOT TO THE BUDGET ═════
+   *
+   * MEASURED on this mock (writes to `plant:004`/`plant:005` refused): the lever answered
+   * `truncated:true, reason:"writes-failed"` — and `nextIndex: 9`, because the index half of
+   * the answer was read off the LOCAL budget flag (`truncated ? i : count`) while the
+   * finishedness half came from `sweepAnswerTail`. The documented loop then POSTed
+   * `startIndex: 9`, wrote nothing, and was answered `complete: true`: a failed plant
+   * reported as a finished one, over a keyspace with two holes in it, and the sweep test
+   * that followed counted 7 rows and blamed the sweep.
+   *
+   * The keys are `i`-derived and re-planting is idempotent, so the only honest handle is the
+   * LOWEST index that did not land. Driven here with the breaker's exact inputs. */
+  {
+    await purge();
+    const PLANT707 = fault.HARNESS_FAULT_PLANT_PREFIX;
+    const setBefore707 = kvs.set;
+    const refused707 = new Set([fault.plantedFaultKey(4), fault.plantedFaultKey(5)]);
+    kvs.set = async function refusingSet707(key, value, options) {
+      if (refused707.has(String(key))) {
+        const e = new Error("HARNESS_WRITE_FAULT"); e.code = "HARNESS_WRITE_FAULT"; throw e;
+      }
+      return setBefore707.call(this, key, value, options);
+    };
+
+    const call1 = await fault.plantHarnessFaults({ n: 9, expired: true, maxMs: 20_000 });
+    ok(call1.ok === true && call1.planted === 7 && call1.failed === 2,
+      `(fixture) a 9-row plant with two refused writes places 7 (planted ${call1.planted}, failed ${call1.failed})`);
+    ok(call1.truncated === true && call1.reason === "writes-failed" && call1.complete === false,
+      `F-707: a plant that could not write what it named is NOT finished (got ${JSON.stringify({ truncated: call1.truncated, reason: call1.reason, complete: call1.complete })})`);
+    ok(call1.nextIndex === 4,
+      `F-707: …and \`nextIndex\` is the FIRST index that did not land — never \`n\`, which is where the old answer pointed (got ${call1.nextIndex})`);
+
+    /* THE LOOP THE DOOR DOCUMENTS, DRIVEN VERBATIM. Under the old answer this second call
+     * was the bug: `startIndex: 9` over a 9-row population wrote nothing and answered
+     * `complete: true`. It must now land back ON the holes. */
+    const resumed = await fault.plantHarnessFaults({ n: 9, expired: true, startIndex: call1.nextIndex, maxMs: 20_000 });
+    ok(resumed.startIndex === 4 && resumed.complete === false && resumed.reason === "writes-failed" && resumed.nextIndex === 4,
+      `F-707: the resumed call lands on the failures and still refuses to call itself complete (got ${JSON.stringify({ startIndex: resumed.startIndex, nextIndex: resumed.nextIndex, complete: resumed.complete })})`);
+    ok((await countPrefix(PLANT707)) === 7,
+      "F-707: …and the keyspace never pretends to hold nine rows while two of them do not exist");
+
+    const stuck = await plantAll(9, true);
+    ok(stuck.complete === false && stuck.calls <= 3,
+      `F-707: the fixture's own drain loop TERMINATES on the stuck plant and reports it unfinished (calls ${stuck.calls}, complete ${stuck.complete})`);
+
+    /* ── THE NEGATIVE CONTROL: the identical fixture with the refusing write PUT BACK the way
+     * it was. If this also answered `writes-failed` the section above would be measuring the
+     * loop and not the lever. ── */
+    kvs.set = setBefore707;
+    await purge();
+    const clean = await fault.plantHarnessFaults({ n: 9, expired: true, maxMs: 20_000 });
+    ok(clean.planted === 9 && clean.failed === 0 && clean.nextIndex === 9 && clean.reason === null && clean.complete === true,
+      `F-707 (negative control): with the write fault removed the SAME 9-row plant completes in one call (got ${JSON.stringify({ planted: clean.planted, nextIndex: clean.nextIndex, complete: clean.complete })})`);
+    ok((await countPrefix(PLANT707)) === 9, "…with all nine rows really in the store");
+    await purge();
+
+    ok(/failureFirst \? firstFailedIndex/.test(faultCode),
+      "F-707.SOURCE: the resume handle is taken from the first failed index, in one expression");
+    ok(!/nextIndex: truncated \? i : count,/.test(faultCode),
+      "F-707.SOURCE: …and the budget-only expression is no longer the whole of it");
   }
 
   globalThis.setTimeout = realTimeout;

@@ -583,7 +583,10 @@ process.env.HARNESS_SECRET = SECRET;
       if (last.status !== 200 || !last.body || last.body.ok === false) break;
       planted += last.body.planted; failed += last.body.failed; calls++;
       keys = keys.concat(last.body.keys || []);
-      if (last.body.nextIndex <= next && last.body.planted === 0) break;
+      // F-707: no FORWARD progress is the stop, whatever the call placed — a plant whose
+      // writes are refused answers with the first failed index and can place rows while
+      // handing back the index it was given.
+      if (last.body.nextIndex <= next) break;
       next = last.body.nextIndex;
     }
     return { status: last && last.status, body: last && last.body, planted, failed, calls, keys, nextIndex: next };
@@ -650,6 +653,39 @@ process.env.HARNESS_SECRET = SECRET;
     "…and the keyspace holds exactly what the partial answer claims — the count is never unknown again");
   await clearPlanted({ maxMs: 20_000 });
   ok((await countPlanted()) === 0, "(fixture) cleared again");
+
+  /* ── F-707 AT THE DOOR: a plant whose writes are REFUSED must send the caller back to the
+   * first hole. The answer used to carry `reason: "writes-failed"` with `nextIndex: n`, so
+   * the loop this very door documents POSTed past the holes, wrote nothing and was answered
+   * `complete: true` — a failed plant reported through the web trigger as a finished one. ── */
+  {
+    const setBefore = kvs.set;
+    const refusedWrites = new Set([fault.plantedFaultKey(4), fault.plantedFaultKey(5)]);
+    kvs.set = async function refusingSet707(key, value, options) {
+      if (refusedWrites.has(String(key))) {
+        const e = new Error("HARNESS_WRITE_FAULT"); e.code = "HARNESS_WRITE_FAULT"; throw e;
+      }
+      return setBefore.call(this, key, value, options);
+    };
+    const holed = await plant({ n: 9, expired: true, maxMs: 20_000 });
+    ok(holed.status === 200 && holed.body.planted === 7 && holed.body.failed === 2,
+      `(fixture) two refused writes through the door (planted ${holed.body && holed.body.planted}, failed ${holed.body && holed.body.failed})`);
+    ok(holed.body.reason === "writes-failed" && holed.body.complete === false && holed.body.nextIndex === 4,
+      `F-707: the door hands back the FIRST failed index and never calls it complete (got ${JSON.stringify({ reason: holed.body && holed.body.reason, nextIndex: holed.body && holed.body.nextIndex, complete: holed.body && holed.body.complete })})`);
+    const back = await plant({ n: 9, expired: true, startIndex: holed.body.nextIndex, maxMs: 20_000 });
+    ok(back.body.complete === false && back.body.nextIndex === 4,
+      `F-707: …and POSTing that handle back lands ON the holes rather than past them (got ${JSON.stringify({ nextIndex: back.body && back.body.nextIndex, complete: back.body && back.body.complete })})`);
+    const stuck = await plantAll(9, true);
+    ok(stuck.body.complete === false && stuck.calls <= 3,
+      `F-707: the fixture's drain loop terminates and reports the plant UNFINISHED (calls ${stuck.calls})`);
+    kvs.set = setBefore;
+    await clearPlanted({ maxMs: 20_000 });
+    const control = await plant({ n: 9, expired: true, maxMs: 20_000 });
+    ok(control.body.planted === 9 && control.body.failed === 0 && control.body.nextIndex === 9 && control.body.complete === true,
+      `F-707 (negative control): with the write fault removed the SAME body completes in one call (got ${JSON.stringify({ planted: control.body && control.body.planted, complete: control.body && control.body.complete })})`);
+    await clearPlanted({ maxMs: 20_000 });
+    ok((await countPlanted()) === 0, "(fixture) cleared after the F-707 arm");
+  }
 
   const junk = await plant({ n: "banana", expired: true });
   ok(junk.body.n === 1 && junk.body.planted === 1, `a junk \`n\` clamps DOWN to one, never up (got ${junk.body && junk.body.n})`);

@@ -1797,7 +1797,7 @@ ok(guardedDrivers.length === liveFiles.length,
    `faults: []` is the legitimate mapping-only form for a driver that arms nothing, and it
    is also the one-token way to silence the shared-dev refusal on a driver that arms
    plenty. 4e proves the guard is CALLED; this proves it was told the truth. */
-/* F-749 — THE EXTRACTOR MAY NOT ASSUME THE CALL SITS AT COLUMN 0. The first shape of this
+/* F-756 — THE EXTRACTOR MAY NOT ASSUME THE CALL SITS AT COLUMN 0. The first shape of this
    rule ended its match at `\n})`, a closing brace with NO indentation, and `[\s\S]{0,400}?`
    capped the call at 400 characters. Both are true of a driver that calls the guard at
    module scope and false of one that calls it inside `async function run()` — which
@@ -1820,15 +1820,15 @@ function guardCallSource(src, fn = "requireEnvAck") {
 }
 /* POSITIVE CONTROLS — the two shapes that exist in the directory, including the one that broke. */
 ok(/faults: \["deleteFault"\]/.test(guardCallSource('  const r = requireEnvAck(argv, {\n    faults: ["deleteFault"],\n    mutates: ["kvs"],\n  });') || ""),
-  "POSITIVE CONTROL (F-749): the call extractor reads an INDENTED call inside a function — the shape delete-fault-drain-live.mjs has, which the old `\\n})` anchor could not match at all");
+  "POSITIVE CONTROL (F-756): the call extractor reads an INDENTED call inside a function — the shape delete-fault-drain-live.mjs has, which the old `\\n})` anchor could not match at all");
 ok(/faults: \[\]/.test(guardCallSource('const { envName } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [] });') || ""),
-  "POSITIVE CONTROL (F-749): …and the one-line module-scope call every other driver uses");
+  "POSITIVE CONTROL (F-756): …and the one-line module-scope call every other driver uses");
 ok(/faults: \["real"\]/.test(guardCallSource(stripComments('/* the old shape was requireEnvAck([...argv, "--env=dev"], { faults: [] }) */\nrequireEnvAck(argv, { faults: ["real"] });')) || ""),
-  "NEGATIVE CONTROL (F-749/F-735): a docblock QUOTING an old call shape is prose — the extractor reads the real call, or documenting a defect would fail the rule that documents it");
+  "NEGATIVE CONTROL (F-756/F-735): a docblock QUOTING an old call shape is prose — the extractor reads the real call, or documenting a defect would fail the rule that documents it");
 ok(guardCallSource("const r = await other(1);") === null,
-  "NEGATIVE CONTROL (F-749): a file with no such call yields null rather than a stray slice");
+  "NEGATIVE CONTROL (F-756): a file with no such call yields null rather than a stray slice");
 ok(!/mutates/.test(guardCallSource('requireEnvAck(a, { faults: ["x"] });\nsomethingElse({ mutates: ["roster"] });') || ""),
-  "NEGATIVE CONTROL (F-749): the extractor stops at the call's OWN closing paren and does not swallow the next statement");
+  "NEGATIVE CONTROL (F-756): the extractor stops at the call's OWN closing paren and does not swallow the next statement");
 
 for (const f of armingDrivers) {
   /* PROSE IS NOT A CALL — the discriminator every scan in this file uses, and this one

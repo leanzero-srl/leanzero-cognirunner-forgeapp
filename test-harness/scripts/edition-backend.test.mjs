@@ -25,9 +25,14 @@ import path from "node:path";
 // the id string has ONE home and the extracted source must resolve it (F-098).
 import { ADVANCED_FEATURES, EDITIONS, EDITION_IDS, resolveEdition, isFeatureAllowed } from "../../src/shared/edition.js";
 
+import { maskComments } from "../lib/js-source-scan.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
-const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
-const asyncSrc = readFileSync(path.join(here, "../../src/async-handler.js"), "utf8");
+/* F-805 — the BANS in this suite (no private `context.license ?` top rung, "never awaited")
+   name shapes a comment would write; the source is read with comments blanked and string
+   literals kept. `indexRaw` stays for the one anchor that IS a comment. */
+const indexRaw = readFileSync(path.join(here, "../../src/index.js"), "utf8");
+const indexSrc = maskComments(indexRaw);
+const asyncSrc = maskComments(readFileSync(path.join(here, "../../src/async-handler.js"), "utf8"));
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -125,7 +130,9 @@ ok(shapeOf(null).features.length === ADVANCED_FEATURES.length, "features list is
   ok(!/await editionFromInvocation/.test(vHead), "the refresh is never awaited in validate()");
 }
 {
-  const p = indexSrc.slice(indexSrc.indexOf("// License check: skip silently if unlicensed"));
+  /* F-805 — the ANCHOR here is a comment, so it is found in the RAW source; the mask
+     preserves length, so the same index slices the masked copy at the same byte. */
+  const p = indexSrc.slice(indexRaw.indexOf("// License check: skip silently if unlicensed"));
   const pHead = p.slice(0, 1200);
   ok(/try \{ editionFromInvocation\(license\); \} catch/.test(pHead),
     "executePostFunction() refreshes the edition snapshot inside a try/catch");
@@ -235,6 +242,9 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
     ok(r.ok === false, "SNAPSHOT: a live getAppContext license:null still wins over the snapshot");
   }
   // The source keeps ONE top-rung test: no private truthiness check survives.
+  ok(!/context && context\.license \? editionFromInvocation/.test(maskComments("// was: context && context.license ? editionFromInvocation(...) : …\nlet x;\n"))
+    && /context && context\.license \? editionFromInvocation/.test(maskComments("const e = context && context.license ? editionFromInvocation(l) : null;\n")),
+    "F-805 control: the old top rung quoted in a COMMENT is not a check; in CODE it is");
   ok(!/context && context\.license \? editionFromInvocation/.test(indexSrc),
     "requireAdvanced keeps no private `context.license ?` top rung");
   ok(/ed = await currentEdition\(context\);/.test(mReq ? mReq[0] : ""),

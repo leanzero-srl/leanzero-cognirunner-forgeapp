@@ -856,10 +856,41 @@ for (const f of permDrivers) {
    THE SCAN READS CODE, NOT PROSE. These drivers now document their own history — "this
    used to be `makeShot(NV)`" is a sentence three of them carry — and a rule reading the
    comments goes red on a file that is CORRECT. Block and line comments are stripped
-   first; `://` is spared so a URL on a code line survives. */
+   first; `://` is spared so a URL on a code line survives.
+
+   F-887 — A STRIPPED COMMENT LEAVES ITS NEWLINES BEHIND, OR EVERY LINE NUMBER IN THIS FILE
+   IS FICTION. The block-comment replacement collapsed the whole comment to ONE SPACE, so the
+   stripped text of a driver is shorter, by lines, than the driver: MEASURED across the 57
+   `*-live.mjs` drivers, ALL of them shrink, `delete-fault-drain-live.mjs` from 872 lines to
+   593. Every rule that reports `file:line` off stripped source — 4h below is the one that
+   does today — therefore sends a reader 279 lines away from the literal it is refusing, and
+   the further down the file the offender sits the worse the miss. The rule would be RIGHT
+   and the address WRONG, which is the failure mode that costs the most time: the operator
+   goes to the named line, finds nothing, and disbelieves the rule.
+
+   So a comment is replaced by the same number of NEWLINES it contained (plus a space, so
+   two tokens either side of a one-line comment cannot fuse into one identifier). A line
+   comment already keeps its newline —
+   `[^\n]*` stops at it — and needs nothing. Nothing in the stripped text moves line-wise,
+   so a reported line is the line in the file. */
 const stripComments = (src) => src
-  .replace(/\/\*[\s\S]*?\*\//g, " ")
+  .replace(/\/\*[\s\S]*?\*\//g, (m) => " " + "\n".repeat((m.match(/\n/g) || []).length))
   .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+/* CONTROL — the property every line-numbered rule rests on, asserted on a source shaped like
+   the drivers: a 20-line docblock, then a known offender at a KNOWN file line. */
+{
+  const doc = "/*\n" + " * filler\n".repeat(18) + " */\n";          // 20 lines, 1..20
+  const synth = doc + 'const a = 1;\n' + 'PASS("hook reachable on staging");\n';
+  const offenderLine = synth.split("\n").findIndex((l) => l.includes("hook reachable")) + 1;
+  ok(offenderLine === 22, "CONTROL (F-887): the planted offender is on line 22 of the synthetic source");
+  const stripped = stripComments(synth);
+  ok(stripped.split("\n").length === synth.split("\n").length,
+    "CONTROL (F-887): stripping comments does not change the LINE COUNT of a source");
+  ok(stripped.split("\n").findIndex((l) => l.includes("hook reachable")) + 1 === offenderLine,
+    "CONTROL (F-887): …and the offender is still on line 22 AFTER stripping — a reported line is a file line");
+  ok(!/filler/.test(stripped), "CONTROL (F-887): …while the comment's PROSE is still gone, which is what stripping is for");
+  ok(stripComments("a/*x*/b") === "a b", "CONTROL (F-887): a one-line comment still separates its neighbours rather than joining them");
+}
 
 /*
  * THE ARGUMENT AND OBJECT WALKERS LIVE IN `lib/js-source-scan.mjs` (F-716, F-730).

@@ -1026,8 +1026,15 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
    * LIVE rows in front of the expired ones and page 0 has nothing to delete: it ADVANCES, and
    * the next token carries the platform's own cursor string. ── */
   await plantAll(250, true);
-  await plantAll(120, false);   // overwrites plant:000..119
-  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 250, "(fixture) 120 live rows in front of 130 expired ones");
+  /* F-708 — THE FIXTURE CANNOT BE BUILT BY RE-PLANTING SMALLER ANY MORE, and that is the cut:
+   * a fresh plant of 120 over a 250-row population now REMOVES `plant:120..249` instead of
+   * leaving it alive under an answer that says `n: 120`. The live head is therefore written
+   * by one call of the SAME population (150 rows, one call's worth), which overwrites
+   * `plant:000..149` in place and leaves the expired tail exactly where it is. */
+  const liveHead = await fault.plantHarnessFaults({ n: 250, expired: false, maxMs: 20_000 });
+  ok(liveHead.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX && liveHead.cleared === 0,
+    `(fixture) one call's worth of LIVE rows written over the head of the expired population, clearing nothing (planted ${liveHead.planted}, cleared ${liveHead.cleared})`);
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 250, "(fixture) 150 live rows in front of 100 expired ones");
   const advanced = await fault.sweepHarnessFaults({ maxMs: 1 });
   ok(advanced.truncated === true && typeof advanced.cursor === "string",
     `a sweep whose first page is all-live still stops on budget with a token (got ${JSON.stringify({ truncated: advanced.truncated, reason: advanced.reason })})`);
@@ -1038,8 +1045,8 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   let t2 = advanced.cursor, c2 = 0, last2 = advanced;
   while (t2 && c2 < 400) { last2 = await fault.sweepHarnessFaults({ maxMs: 1, cursor: t2 }); t2 = last2.cursor; c2++; }
   ok(t2 === null && last2.complete === true, `…and that drain terminates too (${c2} resumed calls)`);
-  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 120,
-    "…having deleted the 130 expired rows and LEFT every live one — a sweep never cancels a lever somebody is using");
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+    "…having deleted the 100 expired rows and LEFT every live one — a sweep never cancels a lever somebody is using");
 
   /* ── 7g. THE CLEAR TAKES THE BALLAST AND NOTHING ELSE. It must delete LIVE planted rows
    * (which the sweep may not), so the only thing keeping it safe is that its prefix is bound
@@ -1055,7 +1062,7 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     ct = lastClear.cursor;
     cc++;
   } while (ct && cc < 400);
-  ok(ct === null && lastClear.complete === true && cleared === 120,
+  ok(ct === null && lastClear.complete === true && cleared === fault.HARNESS_FAULT_PLANT_CALL_MAX,
     `clearPlantedFaults drains the live ballast the sweep will not touch (${cleared} deleted in ${cc} calls, complete ${lastClear.complete})`);
   ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 0, "…the plant sub-prefix is empty");
   ok(lastClear.prefix === fault.HARNESS_FAULT_PLANT_PREFIX && lastClear.prefix === "harness_fault:plant:",
@@ -1394,12 +1401,12 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
 
     /* ── SOURCE: ONE CONSULT SITE. The sweep and the clear ran two byte-identical copies of
      * the delete batch; a lever consulted in two places is a lever with two behaviours. ── */
-    ok((faultCode.match(/await settleDeletes\(batch, deleteFault\)/g) || []).length === 2,
-      "F-706.SOURCE: both drains go through the ONE shared delete batch");
+    ok((faultCode.match(/await settleDeletes\(batch, deleteFault\)/g) || []).length === 3,
+      "F-706.SOURCE: all THREE drains go through the ONE shared delete batch (the sweep, the clear, and F-708's stale-tail removal)");
     ok(!/Promise\.allSettled\(batch\.map\(\(key\) => storage\.delete\(key\)\)\)/.test(faultCode),
       "F-706.SOURCE: …and neither keeps its own copy of it any more");
-    ok((faultCode.match(/await loadDeleteFault\(\)/g) || []).length === 2,
-      "F-706.SOURCE: the lever is read ONCE PER CALL, not once per batch");
+    ok((faultCode.match(/await loadDeleteFault\(\)/g) || []).length === 3,
+      "F-706.SOURCE: the lever is read ONCE PER CALL, not once per batch — three call sites, one per drain");
     ok((faultCode.match(/harnessFaultArmed\(HARNESS_FAULT_DELETE/g) || []).length === 1,
       "F-706.SOURCE: and spent through the ONE counted-consumption home, in one place");
     ok(/if \(prefix !== HARNESS_FAULT_PLANT_PREFIX\)/.test(faultCode),
@@ -1467,6 +1474,74 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       "F-707.SOURCE: the resume handle is taken from the first failed index, in one expression");
     ok(!/nextIndex: truncated \? i : count,/.test(faultCode),
       "F-707.SOURCE: …and the budget-only expression is no longer the whole of it");
+  }
+
+
+  /* ═════ 7k. F-708 — `startIndex` IS JUDGED AGAINST THE POPULATION ═════
+   *
+   * MEASURED: `plantHarnessFaults({ n: 5, startIndex: 400 })` answered
+   * `{planted:0, n:5, startIndex:400, nextIndex:5, complete:true}` — a no-op whose own
+   * `nextIndex` is BELOW the `startIndex` it was handed, over a keyspace it never looked at,
+   * and every documented drain loop reads `complete: true` as "the population is planted".
+   * The input is not hypothetical: F-707's old answer produced exactly this `startIndex`, and
+   * any caller carrying a `nextIndex` from a larger previous population produces it too.
+   *
+   * The mirror case is the same defect from the other side: the keys are `i`-derived, so a
+   * SMALLER re-plant used to overwrite the head and leave the old tail alive for the rest of
+   * its window, under an answer whose `n` and `keys` described a population the store did not
+   * hold. ── */
+  {
+    await purge();
+    const PLANT708 = fault.HARNESS_FAULT_PLANT_PREFIX;
+
+    const past = await fault.plantHarnessFaults({ n: 5, startIndex: 400, expired: true });
+    ok(past.ok === false && past.reason === "bad-start",
+      `F-708: a \`startIndex\` past the population is REFUSED, never a green no-op (got ${JSON.stringify(past)})`);
+    ok(past.n === 5 && past.startIndex === 400 && past.complete === undefined,
+      `F-708: …and the refusal names both numbers and carries no finished signal at all (got ${JSON.stringify(past)})`);
+    ok((await countPrefix(PLANT708)) === 0, "F-708: …and the refused call planted nothing");
+
+    const noop = await fault.plantHarnessFaults({ n: 5, startIndex: 5, expired: true });
+    ok(noop.ok === true && noop.planted === 0 && noop.nextIndex === 5 && noop.complete === true && noop.noop === true,
+      `F-708: \`startIndex === n\` is the ONE start past the last row that is not a mistake — the loop's own final answer — and it says so explicitly (got ${JSON.stringify({ planted: noop.planted, nextIndex: noop.nextIndex, complete: noop.complete, noop: noop.noop })})`);
+    ok(noop.startIndex === noop.nextIndex,
+      "F-708: …with an answer that no longer contradicts itself by pointing BEHIND its own start");
+    ok((await countPrefix(PLANT708)) === 0, "F-708: …and it wrote nothing either");
+
+    /* ── THE SMALLER RE-PLANT. Twenty rows, then five: the tail must GO, and be reported. ── */
+    await purge();
+    const twenty = await fault.plantHarnessFaults({ n: 20, expired: false, maxMs: 20_000 });
+    ok(twenty.planted === 20 && twenty.cleared === 0 && (await countPrefix(PLANT708)) === 20,
+      `(fixture) a 20-row population in the store, having cleared nothing (planted ${twenty.planted}, cleared ${twenty.cleared})`);
+    const five = await fault.plantHarnessFaults({ n: 5, expired: false, maxMs: 20_000 });
+    ok(five.planted === 5 && five.n === 5 && five.complete === true,
+      `(fixture) a smaller re-plant of five (planted ${five.planted})`);
+    ok(five.cleared === 15,
+      `F-708: …which REMOVED the fifteen rows of the old population it no longer names, and reported them (cleared ${five.cleared})`);
+    ok((await countPrefix(PLANT708)) === 5,
+      "F-708: …so the keyspace holds exactly the population the answer describes, not the union of two plants");
+
+    /* A RESUMED call is mid-population and must NOT pay for the scan or remove anything. */
+    await purge();
+    await fault.plantHarnessFaults({ n: 20, expired: false, maxMs: 20_000 });
+    const resumedClear = await fault.plantHarnessFaults({ n: 10, startIndex: 5, expired: false, maxMs: 20_000 });
+    ok(resumedClear.cleared === 0 && (await countPrefix(PLANT708)) === 20,
+      `F-708: a RESUMED call clears nothing — it is inside a population, not replacing one (cleared ${resumedClear.cleared})`);
+
+    /* ── THE NEGATIVE CONTROL: the identical pair of calls with the SAME population size,
+     * which is the case the clear must not touch. If the tail vanished here the section
+     * above would be measuring the re-plant and not the shrink. ── */
+    await purge();
+    await fault.plantHarnessFaults({ n: 20, expired: false, maxMs: 20_000 });
+    const same = await fault.plantHarnessFaults({ n: 20, expired: false, maxMs: 20_000 });
+    ok(same.cleared === 0 && same.planted === 20 && (await countPrefix(PLANT708)) === 20,
+      `F-708 (negative control): re-planting the SAME population removes nothing (cleared ${same.cleared}, rows ${await countPrefix(PLANT708)})`);
+    await purge();
+
+    ok(/if \(from > population\)/.test(faultCode) && /reason: "bad-start"/.test(faultCode),
+      "F-708.SOURCE: the start is compared against the POPULATION, in one guard");
+    ok(/plantCountClamped = \(n, startIndex = 0\) =>\s*\n?\s*Math\.min\(plantMaxForCall\(startIndex\), plantPopulationClamped\(n\)\)/.test(faultCode),
+      "F-708.SOURCE: …and the per-call end index is DERIVED from the population clamp, so the two numbers cannot drift apart");
   }
 
   globalThis.setTimeout = realTimeout;

@@ -687,6 +687,33 @@ process.env.HARNESS_SECRET = SECRET;
     ok((await countPlanted()) === 0, "(fixture) cleared after the F-707 arm");
   }
 
+  /* ── F-708 AT THE DOOR: `startIndex` is judged against the POPULATION, and past it is the
+   * refusal path the door already has (`ok === false` → 400). It used to be a 200 whose
+   * `nextIndex` pointed BEHIND its own `startIndex` and whose `complete: true` told every
+   * documented drain loop that a keyspace it never looked at was fully planted. ── */
+  {
+    await clearPlanted({ maxMs: 20_000 });
+    const past = await plant({ n: 5, startIndex: 400, expired: true });
+    ok(past.status === 400 && past.body.ok === false && past.body.reason === "bad-start",
+      `F-708: the door REFUSES a start past the population (got ${past.status} ${JSON.stringify(past.body && past.body.reason)})`);
+    ok(past.body.complete !== true && (await countPlanted()) === 0,
+      "F-708: …never answering complete, and never planting a row on the way out");
+    const noop = await plant({ n: 5, startIndex: 5, expired: true });
+    ok(noop.status === 200 && noop.body.planted === 0 && noop.body.noop === true && noop.body.complete === true,
+      `F-708: …while \`startIndex === n\` — the loop's own last POST — is an explicit no-op (got ${JSON.stringify({ planted: noop.body && noop.body.planted, noop: noop.body && noop.body.noop, complete: noop.body && noop.body.complete })})`);
+    const twenty = await plant({ n: 20, expired: true, maxMs: 20_000 });
+    ok(twenty.body.planted === 20 && twenty.body.cleared === 0, "(fixture) a 20-row population through the door");
+    const five = await plant({ n: 5, expired: true, maxMs: 20_000 });
+    ok(five.body.cleared === 15 && (await countPlanted()) === 5,
+      `F-708: a SMALLER re-plant takes the old tail with it and reports it (cleared ${five.body && five.body.cleared}, rows ${await countPlanted()})`);
+    await clearPlanted({ maxMs: 20_000 });
+    const same = await plant({ n: 5, expired: true, maxMs: 20_000 });
+    const again = await plant({ n: 5, expired: true, maxMs: 20_000 });
+    ok(same.body.cleared === 0 && again.body.cleared === 0 && (await countPlanted()) === 5,
+      `F-708 (negative control): re-planting the SAME population removes nothing (cleared ${again.body && again.body.cleared})`);
+    await clearPlanted({ maxMs: 20_000 });
+  }
+
   const junk = await plant({ n: "banana", expired: true });
   ok(junk.body.n === 1 && junk.body.planted === 1, `a junk \`n\` clamps DOWN to one, never up (got ${junk.body && junk.body.n})`);
   const zero = await plant({ n: 0, expired: true });

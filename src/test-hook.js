@@ -587,7 +587,16 @@ export async function testStateTrigger(req) {
      *
      * F-697 — the TTL is `max(60 s, expected plant time + 60 s)` and each batch is dated when
      * it is WRITTEN, so the head of a large `expired: false` population is still live when the
-     * sweep the tester is about to run walks over it. */
+     * sweep the tester is about to run walks over it.
+     *
+     * F-708 — `startIndex` IS JUDGED AGAINST `n`, in the lever, and past it is a REFUSAL that
+     * comes back through this door's existing `ok === false` → 400 path. It used to be a 200
+     * whose `nextIndex` pointed behind its own `startIndex` and whose `complete: true` told a
+     * drain loop that a keyspace it never looked at was planted. Exactly AT `n` is the loop's
+     * own last POST and answers `noop: true, planted: 0, complete: true`. A FRESH plant also
+     * removes any older population past `n` first and reports it as `cleared`, because the
+     * keys are `i`-derived: a smaller re-plant would otherwise leave the previous tail alive
+     * under an answer that names a population the store does not hold. */
     if (body.action === "plantHarnessFaults") {
       const { plantHarnessFaults, plantMaxForCall, HARNESS_FAULT_PLANT_PREFIX } = await import("./harness-fault.js");
       const r = await plantHarnessFaults({

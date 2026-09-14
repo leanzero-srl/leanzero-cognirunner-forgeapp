@@ -319,6 +319,7 @@ export const HARNESS_UNGATED_EXPORTS = Object.freeze([
   "HARNESS_FAULT_PLANT_TTL_SECONDS",
   "HARNESS_FAULT_PLANT_BACKDATE_SECONDS",
   "plantCountClamped",
+  "plantPopulationClamped",
   "plantStartIndexClamped",
   "plantMaxForCall",
   "plantTtlSeconds",
@@ -1263,15 +1264,29 @@ export const HARNESS_FAULT_PLANT_TTL_SECONDS = 60;
 export const HARNESS_FAULT_PLANT_BACKDATE_SECONDS = 3_600;
 
 /**
+ * THE POPULATION the keyspace may hold, clamped to `HARNESS_FAULT_PLANT_MAX` and to nothing
+ * else. F-708 — this is the number `startIndex` is judged against and the number the answer
+ * echoes; what ONE CALL may attempt is `plantCountClamped`, and conflating the two is how a
+ * `startIndex` past the end of the population became a green `complete: true` over an empty
+ * keyspace. Anything that is not a finite number is ONE, never the largest.
+ */
+export const plantPopulationClamped = (n) => {
+  const parsed = Math.floor(Number(n));
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.min(HARNESS_FAULT_PLANT_MAX, parsed));
+};
+
+/**
  * THE clamp on `n`, here with the constant it bounds and never at the web trigger. Anything
  * that is not a finite number is ONE — a body with a missing or junk `n` plants the smallest
  * possible population rather than the largest.
+ *
+ * This is the END INDEX THIS CALL MAY REACH, which is the POPULATION bounded by what one
+ * call may attempt. The two are different numbers (F-696) and they are derived here, once,
+ * so nothing downstream recomputes either of them.
  */
-export const plantCountClamped = (n, startIndex = 0) => {
-  const parsed = Math.floor(Number(n));
-  if (!Number.isFinite(parsed)) return 1;
-  return Math.max(1, Math.min(plantMaxForCall(startIndex), parsed));
-};
+export const plantCountClamped = (n, startIndex = 0) =>
+  Math.min(plantMaxForCall(startIndex), plantPopulationClamped(n));
 
 /**
  * WHERE THIS CALL STARTS WRITING (F-696). Anything that is not a finite number is ZERO — a
@@ -1316,11 +1331,75 @@ export const plantTtlSeconds = (rows) => {
 export const plantedFaultKey = (i) =>
   harnessFaultKey(HARNESS_FAULT_PLANT, String(i).padStart(3, "0"));
 
+/** The index a planted key names, or null if the key is not one of ours. */
+const plantedRowIndex = (key) => {
+  const text = String(key || "");
+  if (!text.startsWith(HARNESS_FAULT_PLANT_PREFIX)) return null;
+  const parsed = Number.parseInt(text.slice(HARNESS_FAULT_PLANT_PREFIX.length), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+/*
+ * F-708 — A SMALLER RE-PLANT MUST TAKE THE OLD TAIL WITH IT.
+ *
+ * The keys are `i`-derived, so a fresh plant of 5 rows over a keyspace that still holds a
+ * previous 250-row population overwrites `plant:000..004` and LEAVES `plant:005..249` alive
+ * for the rest of their window. The answer's `n` and `keys` then describe a population the
+ * store does not have, and the sweep test that follows counts rows nobody planted.
+ *
+ * So a FRESH call (and only a fresh one — a resumed call is mid-population and must not pay
+ * for this) removes everything at or past the population it is about to write. The scan is
+ * READ-ONLY and completes before any delete, because deleting under a live cursor is how a
+ * page gets skipped; the deletes then go through the ONE delete batch at the app's published
+ * rate, under the call's own budget. An unfinished clear is reported, never assumed away:
+ * the call plants nothing and asks to be re-POSTed, and the rows it did remove are gone for
+ * good, so an identical retry strictly converges.
+ */
+const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
+  const doomed = [];
+  let cursor = null;
+  for (let page = 0; page < HARNESS_FAULT_SWEEP_MAX_PAGES; page++) {
+    let query = storage.query()
+      .where("key", { condition: "BEGINS_WITH", values: [HARNESS_FAULT_PLANT_PREFIX] })
+      .limit(HARNESS_FAULT_SWEEP_PAGE_SIZE);
+    if (cursor) query = query.cursor(cursor);
+    const result = await query.getMany();
+    for (const entry of (result && result.results) || []) {
+      const index = plantedRowIndex(entry && entry.key);
+      if (index !== null && index >= firstStaleIndex) doomed.push(String(entry.key));
+    }
+    cursor = (result && result.nextCursor) || null;
+    if (!cursor) break;
+  }
+  if (doomed.length === 0) return { cleared: 0, failed: 0, done: true };
+  const deleteFault = await loadDeleteFault();
+  let cleared = 0, failed = 0;
+  for (let i = 0; i < doomed.length; i += KVS_DELETE_BATCH) {
+    if (i > 0) {
+      if (overBudget()) return { cleared, failed, done: false };
+      await sweepPause(KVS_DELETE_PAUSE_MS);
+    }
+    const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
+    const settled = await settleDeletes(batch, deleteFault);
+    let landed = 0;
+    for (const outcome of settled) { if (outcome.status === "fulfilled") { cleared++; landed++; } else failed++; }
+    // A batch in which nothing landed shrinks nothing (F-682's rule, same words): stop, say so.
+    if (landed === 0 && settled.length > 0) return { cleared, failed, done: false };
+  }
+  return { cleared, failed, done: true };
+};
+
 /**
  * Plant INERT rows under `harness_fault:plant:`, so the sweep's multi-page path can be
  * exercised on a real tenant. Returns
  * `{ ok, planted, failed, n, startIndex, nextIndex, expired, ttlSeconds, budgetMs, keys,
- *    truncated, reason, complete }`.
+ *    cleared, truncated, reason, complete }`, or `{ ok: false, reason: "bad-start" }`.
+ *
+ * F-708 — `startIndex` IS JUDGED AGAINST THE POPULATION. Past it is a REFUSAL (`bad-start`),
+ * not a no-op that answers `complete: true` over a keyspace it never looked at; exactly AT it
+ * is the loop's own last answer and is stated as a no-op. A FRESH call also removes any older
+ * population past `n` first (`cleared`), because the keys are `i`-derived and a smaller
+ * re-plant would otherwise leave the previous tail alive under a different `n`.
  *
  * `n` IS THE POPULATION, NOT THE BATCH: this call writes rows `startIndex .. n-1`, whose keys
  * are `i`-derived (`plantedFaultKey`), so resuming is idempotent and two calls over the same
@@ -1353,16 +1432,54 @@ export const plantedFaultKey = (i) =>
 export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
   const from = plantStartIndexClamped(startIndex);
+  /* F-708 — THE POPULATION AND THE CALL'S END INDEX ARE DIFFERENT NUMBERS, and `startIndex`
+   * is judged against the POPULATION. Clamped independently, a `startIndex` past the end of
+   * `n` simply skipped the loop and answered `ok:true, planted:0, complete:true` with a
+   * `nextIndex` BELOW the `startIndex` it was handed — an answer that contradicts itself and
+   * that every documented drain loop reads as "the population is planted". */
+  const population = plantPopulationClamped(n);
   const count = plantCountClamped(n, from);
   const past = expired === true;
   const budgetMs = sweepBudgetMs(maxMs);
   const t0 = Date.now();
   const overBudget = () => Date.now() - t0 >= budgetMs;
+  if (from > population) {
+    return { ok: false, reason: "bad-start", startIndex: from, n: population, maxStart: population };
+  }
   /* F-697: the window covers the whole POPULATION's planting plus a full minute after it —
    * `count`, not `count - from`. A resumed call must not hand its rows a SHORTER life than
    * the head already got: the drain that is coming walks the whole keyspace, so every row
    * has to outlive the whole plant, not just the part of it that wrote that row. */
   const ttlSeconds = plantTtlSeconds(count);
+  /* F-708 — `startIndex === n` IS A NO-OP AND SAYS SO. It is the one start past the last row
+   * that is not a mistake (the loop's final answer echoes it), so it is answered explicitly
+   * rather than falling out of a loop that never ran: nothing planted, nothing left to do. */
+  if (from === population) {
+    // F-691: `complete` is COMPUTED in exactly one place, including here. A branch that
+    // hand-writes `complete: true` is a second definition of finishedness.
+    const tail = sweepAnswerTail({ truncated: false, reason: null, cursor: null, unresolved: false, failedResume: null });
+    return {
+      ok: true, planted: 0, failed: 0, n: population, startIndex: from, nextIndex: population,
+      expired: past, ttlSeconds, budgetMs, keys: [], cleared: 0, noop: true,
+      truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
+    };
+  }
+  /* F-708 — a FRESH call owns the whole keyspace, so it removes any older, LARGER population
+   * before it writes: the keys are `i`-derived, so a small re-plant would otherwise leave the
+   * previous tail alive and the answer would describe a population the store does not hold. */
+  let cleared = 0;
+  if (from === 0) {
+    const stale = await clearStalePlantedRows(population, overBudget);
+    cleared = stale.cleared;
+    if (!stale.done) {
+      const tail = sweepAnswerTail({ truncated: true, reason: "clearing", cursor: null, unresolved: stale.failed > 0, failedResume: null });
+      return {
+        ok: true, planted: 0, failed: stale.failed, n: population, startIndex: from, nextIndex: from,
+        expired: past, ttlSeconds, budgetMs, keys: [], cleared,
+        truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
+      };
+    }
+  }
   const keys = [];
   let planted = 0, failed = 0, truncated = false, reason = null, progressed = false;
   /* F-707 — THE RESUME HANDLE BELONGS TO THE FAILURE, NOT TO THE BUDGET. `nextIndex` was
@@ -1420,7 +1537,7 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
   return {
     ok: true, planted, failed, n: count, startIndex: from,
     nextIndex: failureFirst ? firstFailedIndex : (truncated ? i : count),
-    expired: past, ttlSeconds, budgetMs, keys,
+    expired: past, ttlSeconds, budgetMs, keys, cleared,
     truncated: tail.truncated,
     reason: failureFirst ? "writes-failed" : tail.reason,
     complete: tail.complete,

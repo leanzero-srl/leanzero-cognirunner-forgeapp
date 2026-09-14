@@ -39,6 +39,9 @@ import { requireEnv } from "../lib/env.mjs";
 // AND drives the real admin page, so it is the last one that should have been without it.
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { providerKeySlot } from "../../src/shared/provider-slots.js";
+// F-769 — the ONE home of "reduce a credential slot to a witness, through the read
+// ceiling"; shared with key-status-fault-live.mjs, which carried the identical copy.
+import { readKeySlotWitness, describeKeySlot, sameKeySlot } from "../lib/key-slot-witness.mjs";
 
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const PROVIDER = arg("provider", "openai");
@@ -85,11 +88,14 @@ async function hook(body, method = "POST", qs = "") {
     body: method === "POST" ? JSON.stringify(body) : undefined,
   }));
 }
-const keySlotFingerprint = async () => {
-  const r = await hook(null, "GET", `?what=kvs&key=${encodeURIComponent(providerKeySlot(PROVIDER))}`);
-  const v = r.json ? r.json.value : undefined;
-  return v === null || v === undefined ? "EMPTY" : "PRESENT";
-};
+/**
+ * The KEY SLOT, reduced to a WITNESS: PRESENT/EMPTY from `present`, plus the row's
+ * sha256-16 identity from `fingerprint`. Never the value, never its length. (F-769 — the
+ * old copy here read `.value`, which the read ceiling no longer answers for a credential
+ * key, so it would have called every slot EMPTY and compared EMPTY to EMPTY.)
+ */
+const keySlotWitness = () =>
+  readKeySlotWitness((qs) => hook(null, "GET", qs), providerKeySlot(PROVIDER));
 const arm = (mode, ttlSeconds = ARM_TTL_SECONDS) => hook({ action: "armKeyReadFault", provider: PROVIDER, mode, ttlSeconds });
 const disarm = () => hook({ action: "disarmKeyReadFault", provider: PROVIDER });
 const readLever = () => hook({ action: "readKeyReadFault", provider: PROVIDER });
@@ -164,8 +170,9 @@ async function main() {
   const ping = await hook(null, "GET");
   if (ping.status !== 200) throw new Error(`the hook is not reachable on ${ENV_NAME} (GET -> ${ping.status})`);
   PASS(`hook reachable on ${ENV_NAME}, secret accepted`);
-  const slotBefore = await keySlotFingerprint();
-  info(`the ${PROVIDER} key slot is ${slotBefore} before anything (fingerprint only)`);
+  const slotBefore = await keySlotWitness();
+  info(`the ${PROVIDER} key slot is ${describeKeySlot(slotBefore)} before anything (present + fingerprint only)`);
+  if (slotBefore.state === "UNREADABLE") info(`…and it is UNREADABLE, so the restore check below will FAIL rather than pass on nothing: ${slotBefore.why}`);
 
   try {
     /* ── STEP 0 — the CONTROL: no lever, the same journey, a healthy card ──── */
@@ -214,9 +221,16 @@ async function main() {
     else if (!/Couldn.t read key status|STATUS UNREAD/i.test(after.status)) {
       PASS("…and the card is healthy again in the browser - the same read that showed the failure now does not", { status: after.status.slice(0, 120) });
     } else FAIL("the card is still failing after the disarm", { status: after.status.slice(0, 200) });
-    const slotAfter = await keySlotFingerprint();
-    if (slotAfter === slotBefore) PASS(`the ${PROVIDER} key slot is unchanged (${slotBefore} -> ${slotAfter}) - the lever never went near a credential`);
-    else FAIL("the key slot changed across this run", { before: slotBefore, after: slotAfter });
+    const slotAfter = await keySlotWitness();
+    const verdict = sameKeySlot(slotBefore, slotAfter);
+    ev.keySlot = { before: describeKeySlot(slotBefore), after: describeKeySlot(slotAfter), same: verdict.same, why: verdict.why };
+    // The IDENTITY half: a slot still holding A key but not THE key must not read as
+    // untouched, which is all a bare PRESENT === PRESENT could ever have said.
+    if (verdict.same) {
+      PASS(`the ${PROVIDER} key slot is unchanged (${describeKeySlot(slotBefore)} -> ${describeKeySlot(slotAfter)}) - the lever never went near a credential`);
+    } else {
+      FAIL("the key slot is not the one this run found", { before: describeKeySlot(slotBefore), after: describeKeySlot(slotAfter), why: verdict.why });
+    }
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
   }

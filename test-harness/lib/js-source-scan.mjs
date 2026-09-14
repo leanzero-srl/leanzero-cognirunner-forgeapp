@@ -34,11 +34,27 @@
  * and therefore line numbers, preserved; `${…}` substitution holes KEPT AS CODE, recursively.
  *
  * @param {string} src
+ * @param {{keepLiterals?: boolean}} [opts] — see `maskComments` below.
  * @returns {string} a string of exactly `src.length` characters.
  */
-export function maskNonCode(src) {
+export function maskNonCode(src, opts) {
+  /* F-769 — THE ONE PLACE THAT KNOWS WHERE A COMMENT ENDS, ASKED A SECOND WAY.
+   *
+   * Every caller so far wanted "a name in a string is not a use", so masking literals was
+   * the whole point. The credential rule (section 4i of evidence-redaction.test.mjs) wants
+   * the OPPOSITE half: `COGNIRUNNER_KEY_` inside `` `COGNIRUNNER_KEY_${provider}` `` IS the
+   * thing it is looking for, while the same words in a docblock explaining the read ceiling
+   * are prose — and several drivers in this directory carry exactly that prose.
+   *
+   * That is one question ("which bytes are a comment?") with two consumers, which is the
+   * defect this module was cut for. So it is an OPTION on the same walk rather than a
+   * second scanner: the mode machinery, the regex heuristic and the F-754 unterminated-quote
+   * behaviour are shared byte for byte, and only the blanking is conditional. */
+  const keepLiterals = !!(opts && opts.keepLiterals);
   const out = src.split("");
   const blank = (a, b) => { for (let k = a; k < b && k < out.length; k++) if (out[k] !== "\n") out[k] = " "; };
+  /** Blank a LITERAL span — a no-op when the caller asked to keep literals. */
+  const blankLit = (a, b) => { if (!keepLiterals) blank(a, b); };
 
   /* The last character already emitted that is not whitespace. Masked bytes are spaces, so a
      string or a comment is correctly invisible to the question below. */
@@ -88,10 +104,10 @@ export function maskNonCode(src) {
     const two = src.slice(i, i + 2);
 
     if (mode === "tmpl") {
-      if (c === "\\") { blank(i, i + 2); i += 2; continue; }
-      if (two === "${") { blank(i, i + 2); i += 2; mode = "code"; holes.push(0); continue; }
-      if (c === "`") { blank(i, i + 1); i += 1; mode = resume.pop() || "code"; continue; }
-      blank(i, i + 1); i += 1; continue;
+      if (c === "\\") { blankLit(i, i + 2); i += 2; continue; }
+      if (two === "${") { blankLit(i, i + 2); i += 2; mode = "code"; holes.push(0); continue; }
+      if (c === "`") { blankLit(i, i + 1); i += 1; mode = resume.pop() || "code"; continue; }
+      blankLit(i, i + 1); i += 1; continue;
     }
 
     if (two === "//") {
@@ -104,7 +120,13 @@ export function maskNonCode(src) {
       const stop = end === -1 ? src.length : end + 2;
       blank(i, stop); i = stop; continue;
     }
-    if (c === "/" && regexCanStart()) {
+    /* A REGEX IS NOT SCANNED FOR WHEN LITERALS ARE KEPT. `regexCanStart` reads the bytes
+       already emitted, and in this mode string bodies are still there — so it would be
+       answering a different question from the one it was tuned on, and a wrong YES SKIPS
+       `i` forward, which could step over the very text the caller is searching for. Not
+       opening a regex can only leave MORE visible, which for this mode's one consumer is
+       the direction that refuses rather than the one that passes. */
+    if (!keepLiterals && c === "/" && regexCanStart()) {
       let j = i + 1, cls = false, closed = false;
       while (j < src.length) {
         const d = src[j];
@@ -140,15 +162,15 @@ export function maskNonCode(src) {
          FAIL-OPEN direction F-730 was cut to close. Masking nothing can only ADD visible
          code, which for every caller here is the direction that refuses rather than passes.
          `i` still advances past the quote, so the walk always terminates. */
-      if (closed) { blank(i, j); i = j; continue; }
+      if (closed) { blankLit(i, j); i = j; continue; }
       i += 1; continue;
     }
-    if (c === "`") { blank(i, i + 1); i += 1; resume.push("code"); mode = "tmpl"; continue; }
+    if (c === "`") { blankLit(i, i + 1); i += 1; resume.push("code"); mode = "tmpl"; continue; }
 
     if (holes.length) {
       if (c === "{") holes[holes.length - 1] += 1;
       else if (c === "}") {
-        if (holes[holes.length - 1] === 0) { holes.pop(); blank(i, i + 1); i += 1; mode = "tmpl"; continue; }
+        if (holes[holes.length - 1] === 0) { holes.pop(); blankLit(i, i + 1); i += 1; mode = "tmpl"; continue; }
         holes[holes.length - 1] -= 1;
       }
     }
@@ -156,6 +178,23 @@ export function maskNonCode(src) {
   }
   return out.join("");
 }
+
+/**
+ * COMMENTS ONLY, replaced by spaces. Strings, template TEXT and regex bodies are KEPT.
+ *
+ * The other half of the same question, for the caller that needs a KEY LITERAL to survive:
+ * `COGNIRUNNER_KEY_` lives inside `` `COGNIRUNNER_KEY_${provider}` ``, which `maskNonCode`
+ * masks away by design, while the identical words in a docblock ABOUT the read ceiling are
+ * prose that must not count as a use — and this directory is full of that prose.
+ *
+ * It cannot tell a `//` inside a string from a comment by looking at two characters, which
+ * is exactly why it is this walk with an option and not a regex: the quote and template
+ * tracking is what makes `"http://x"` not a comment.
+ *
+ * @param {string} src
+ * @returns {string} a string of exactly `src.length` characters.
+ */
+export const maskComments = (src) => maskNonCode(src, { keepLiterals: true });
 
 /**
  * THE ARGUMENT TEXT OF EVERY CALL TO `name`, PAREN-BALANCED OVER CODE ONLY (F-716, F-730).

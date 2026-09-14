@@ -259,6 +259,35 @@ is deliberately two-environment and its override is now `--staging-envid`.
 because they `process.exit(2)` — and asserts each arrives **without** an env file, which is
 what keeps the "refuse before `loadEnv`" ordering honest.
 
+### The read ceiling on `?what=kvs`, and the stash door (F-769)
+
+The dev hook's `?what=kvs` read stays **unrestricted in which rows it may reach** — that is a
+read, and a harness that can only look where it already expected to look finds nothing. What
+it may **say** about a credential row is what changed: a credential-family key
+(`COGNIRUNNER_KEY_*`, the legacy OpenAI slot, the Forge identity, the doc-processor and
+web-search remotes, `git_conn_secret:*`, `git_hook_secret:*`, `webtrigger_url:*`,
+`att_token:*`, `upload_token:*`, `probe:webhook:secret`, `harness_stash:*`, plus a name
+catch-all) now answers `{key, present, fingerprint, masked: true}` and **never `value`** —
+it used to hand back the tenant's BYOK key in plain text, and `lib/redact.mjs` masks nothing
+there because a bare provider key has no `sk-`/`ghp_` prefix and the field is called `value`,
+so it landed in a committed evidence file verbatim. Every other key is untouched and still
+returns its value. A driver therefore asks `present` for PRESENT/EMPTY and compares
+`fingerprint` (a sha256 truncated to 16 hex) for identity, through the one home,
+`lib/key-slot-witness.mjs` — never `.value`, which after the ceiling is `undefined` and turns
+a before/after check into `EMPTY === EMPTY`, a green assertion that can no longer fail. A
+driver that must **replace** a credential and put the tenant's own back uses the **`kvStash`
+/ `kvRestore`** pair instead of snapshot-and-replay: `kvStash` copies the row to
+`harness_stash:{id}` server-side and answers `{stashed, stashId, present, fingerprint}`,
+`kvRestore` writes it back by that opaque id and answers `{restored, key, present,
+fingerprint}`, the value never crosses the wire in either direction, the stash is TTL-bound
+and single-use, it is bound by the same write allow-list as `kvSet` (so `git_conn_secret:*`
+and `git_hook_secret:*` stay unstashable, exactly as they are unplantable), and a stash taken
+of an absent row **deletes** the key on restore rather than writing `null`. Restoring through
+`kvSet` instead would write `undefined` over a working credential — strictly worse than the
+leak the ceiling closed, which is why §4i of `evidence-redaction.test.mjs` refuses a driver
+that plants a credential without the stash, and refuses one that reads `.value` off a
+credential answer.
+
 ### Git drivers: the webtrigger URL, and the state file (F-764)
 
 Two things make the git drivers look broken on a machine that is otherwise configured, and

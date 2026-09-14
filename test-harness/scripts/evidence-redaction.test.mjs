@@ -27,7 +27,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { maskNonCode, callArgs, objectValue } from "../lib/js-source-scan.mjs";
+import { maskNonCode, maskComments, callArgs, objectValue } from "../lib/js-source-scan.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const libDir = path.resolve(here, "../lib");
@@ -2173,6 +2173,285 @@ ok(/\.\.\.ev\./.test("const calls = [{ call: 1, ...ev.firstReal }];"),
   "POSITIVE CONTROL: the [CIRCULAR] ban SEES the exact seeding line that erased call 1's cursor");
 ok(!/\.\.\.ev\./.test("const calls = [{ call: 1, ...shape(first.json) }];"),
   "POSITIVE CONTROL: …and does not fire on a freshly built shape, which shares nothing");
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * ── 4i. F-769 — A DRIVER MAY NOT READ A CREDENTIAL'S `value`, NOR PLANT ONE WITHOUT
+ *               THE STASH ──────────────────────────────────────────────────────────
+ *
+ * THE RECURRENCE THIS CLOSES. F-769 put a READ CEILING on the dev hook's `?what=kvs`: a
+ * credential-family key answers `{key, present, fingerprint, masked:true}` and never
+ * `value`. It was cut in `src/`, and it silently broke three live drivers in TWO different
+ * directions at once, neither of which any gate could see:
+ *
+ *   THE VACUOUS PASS. `key-status-fault-live.mjs` and `key-status-fault-ui-live.mjs` each
+ *   reduced the slot with `r.json.value` and compared before to after. With `value` gone
+ *   every read reduces to "EMPTY", the comparison becomes `EMPTY === EMPTY`, and the run
+ *   prints PASS under the words "the lever never went near a credential" — a guarantee it
+ *   is no longer making.
+ *
+ *   THE DESTROYED KEY. `va-compaction-live.mjs` snapshotted `COGNIRUNNER_KEY_openai`,
+ *   planted a dead key, and replayed the snapshot in its `finally`. With `value` gone the
+ *   snapshot is `null`, `null` is `kvSet`'s spelling of DELETE, and the restore deletes the
+ *   tenant's live BYOK key while printing "RESTORED" beside it. Strictly worse than the
+ *   leak the ceiling closed.
+ *
+ * Fixing those three leaves the MECHANISM open: the next driver that reads or plants a
+ * credential slot will be written the same way, because the old shape is what every
+ * neighbouring driver looks like. So this is the rule, and it has two halves:
+ *
+ *   HALF A — a driver that reads a CREDENTIAL-FAMILY key through `?what=kvs` may not read
+ *   `.value` off that answer. There is no `value` there; reading one is either a vacuous
+ *   check or a `null` about to be written back.
+ *
+ *   HALF B — a driver that WRITES a credential-family key with `kvSet` must also call
+ *   `kvStash` and `kvRestore`. A plant with no stash is a key the driver cannot put back,
+ *   because it can no longer read the one it replaced.
+ *
+ * THE FAMILIES ARE PARSED FROM `src/test-hook.js`, never retyped here — that file's own
+ * docblock calls `CREDENTIAL_KEY_FAMILIES` the ONE home of "is the value behind this key a
+ * credential?", and a rule about second homes is the last rule that should have one. A
+ * family added there is policed here the day it is added.
+ *
+ * AND THE MINTERS ARE DERIVED TOO. Drivers rarely type `"COGNIRUNNER_KEY_openai"`; they
+ * call `providerKeySlot(provider)`. Which `src/shared/provider-slots.js` helpers mint a
+ * CREDENTIAL key is not a judgement either — each is `(provider) => \`PREFIX${provider}\``,
+ * so the prefix is read out of the library and tested against the families above.
+ * `providerKeySlot` qualifies; `providerModelSlot` does not; `providerSlotsFor` qualifies
+ * because its body returns one that does.
+ *
+ * WHAT IT READS. Comments are masked and STRING AND TEMPLATE BODIES ARE KEPT
+ * (`maskComments`, F-769's half of lib/js-source-scan.mjs) — the exact opposite of every
+ * other scan in this file, and necessarily so: the key lives inside
+ * `` `COGNIRUNNER_KEY_${p}` ``, while the same words in a docblock explaining the ceiling
+ * are prose. Several drivers carry that prose, and documenting a defect must never fail
+ * the rule that documents it.
+ *
+ * WHAT IT DOES NOT DO, stated rather than hidden. It is a FILE-LEVEL rule: it cannot prove
+ * that the `.value` read and the credential key are the same expression, only that a file
+ * doing both is not allowed. That is deliberately coarse in the refusing direction, and it
+ * is the same direction `isCredentialKey` itself chose. A driver that legitimately reads an
+ * ordinary row's `value` AND a credential slot must route the credential read through
+ * `lib/key-slot-witness.mjs` — which is the point, because that library is where the
+ * `present`/`fingerprint`/UNREADABLE reasoning lives and is not worth re-deriving per file.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+const CREDENTIAL_FAMILIES = (() => {
+  const m = HOOK_SRC.match(/export const CREDENTIAL_KEY_FAMILIES\s*=\s*\[([\s\S]*?)\]/);
+  return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [];
+})();
+ok(CREDENTIAL_FAMILIES.length >= 10 && CREDENTIAL_FAMILIES.includes("COGNIRUNNER_KEY_")
+  && CREDENTIAL_FAMILIES.includes("git_conn_secret:") && CREDENTIAL_FAMILIES.includes("harness_stash:"),
+  "F-769: the credential families are READ from src/test-hook.js's one home (got " + CREDENTIAL_FAMILIES.length + ": " + CREDENTIAL_FAMILIES.join(", ") + ")");
+
+/* The slot helpers that MINT a credential key, derived from the prefix each one returns. */
+const SLOTS_SRC = readFileSync(path.join(here, "..", "..", "src", "shared", "provider-slots.js"), "utf8");
+const CREDENTIAL_MINTERS = (() => {
+  const direct = new Set();
+  for (const m of SLOTS_SRC.matchAll(/export const ([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*=>\s*`([^`$]*)\$\{/g)) {
+    if (CREDENTIAL_FAMILIES.some((f) => m[2].startsWith(f) || f.startsWith(m[2]))) direct.add(m[1]);
+  }
+  /* …and a helper that RETURNS one of those is one too — `providerSlotsFor` hands back the
+     key slot among four, so a driver reaching for it reaches a credential key. */
+  const all = new Set(direct);
+  for (const m of SLOTS_SRC.matchAll(/export const ([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*=>\s*(\[[\s\S]*?\]);/g)) {
+    if ([...direct].some((d) => new RegExp(`\\b${d}\\b`).test(m[2]))) all.add(m[1]);
+  }
+  return [...all];
+})();
+ok(CREDENTIAL_MINTERS.includes("providerKeySlot") && CREDENTIAL_MINTERS.includes("providerSlotsFor"),
+  "F-769: the credential-key MINTERS are derived from the prefix each provider-slots helper returns (got " + CREDENTIAL_MINTERS.join(", ") + ")");
+ok(!CREDENTIAL_MINTERS.includes("providerModelSlot") && !CREDENTIAL_MINTERS.includes("providerAgentModelSlot"),
+  "F-769: …and the model/agent-model/base-url slots are NOT credentials — the derivation discriminates, it does not sweep the module in");
+
+/* EVERY STRING AND TEMPLATE BODY IN A FILE, derived by asking the one home BOTH ways: a
+ * byte that `maskComments` keeps and `maskNonCode` blanks is a literal byte. No third
+ * scanner, and the two masks are the same length by contract, so the diff is an index walk.
+ *
+ * WHY LITERALS HAVE TO BE SPLIT UP AT ALL. A family prefix inside a SENTENCE is prose, even
+ * when the sentence is a `NV("…the kvSet allow-list is deliberately not widened to
+ * git_conn_secret:*…")` message rather than a comment — `git-rotation-window-live.mjs` says
+ * exactly that, about a key it never touches, and a plain `includes` reads it as a use. A
+ * KEY literal, by contrast, BEGINS with its family: `"COGNIRUNNER_KEY_openai"`,
+ * `` `COGNIRUNNER_KEY_${provider}` ``, `"harness_stash:" + id`. That is the discriminator,
+ * and it is a property of how KVS keys are written rather than a guess about English. */
+function literalRuns(src) {
+  const kept = maskComments(src), code = maskNonCode(src);
+  const runs = [];
+  let cur = null;
+  for (let i = 0; i < kept.length; i++) {
+    /* A LITERAL byte: `maskNonCode` blanked it and `maskComments` did not. A SPACE inside a
+       literal is indistinguishable from code whitespace byte-for-byte, so it CONTINUES an
+       open run and never starts one. Getting that wrong is what made the first draft
+       word-level instead of span-level — and a word-level check reads `git_conn_secret:*`
+       in the middle of an NV message as a key, which is the exact prose
+       `git-rotation-window-live.mjs` carries about a key it never touches. */
+    const isLit = code[i] === " " && kept[i] === src[i] && src[i] !== "\n";
+    const isSpace = src[i] === " " || src[i] === "\t";
+    if (isLit && (!isSpace || cur !== null)) { if (cur === null) cur = i; }
+    else if (cur !== null) { runs.push(kept.slice(cur, i)); cur = null; }
+  }
+  if (cur !== null) runs.push(kept.slice(cur));
+  /* The OPENING DELIMITER is masked by `maskNonCode` too, so it rides at the front of the
+     run — `` `COGNIRUNNER_KEY_ `` rather than `COGNIRUNNER_KEY_`. Drop it, or every key
+     literal fails `startsWith` for the sake of one backtick. */
+  return runs.map((r) => r.replace(/^[`"']+/, ""));
+}
+/** Does this source name a credential-family key — as a KEY literal, or via a minter? */
+export function namesCredentialKey(src) {
+  const code = maskComments(src);
+  const hits = new Set();
+  for (const run of literalRuns(src)) {
+    for (const f of CREDENTIAL_FAMILIES) if (run.startsWith(f)) hits.add(f);
+  }
+  for (const m of CREDENTIAL_MINTERS) if (new RegExp(`\\b${m}\\s*\\(`).test(code)) hits.add(m + "()");
+  return [...hits];
+}
+/** Every `.value` / `{ value }` read this file takes off a hook answer. */
+const valueReads = (code) => {
+  const reads = [];
+  for (const m of code.matchAll(/(?:^|[^\w$])(?:[\w$]+|\))\s*(?:\.json|\.body)?\s*\.value\b/g)) reads.push(m[0].trim());
+  for (const m of code.matchAll(/\{\s*(?:[^{}]*,\s*)?value\s*(?:[,}:])/g)) reads.push(m[0].trim());
+  return reads;
+};
+/**
+ * HALF A, stated as the property that is actually decidable from one file.
+ *
+ * A driver that reaches a credential-family key AND reads `?what=kvs` answers' `.value`
+ * must route its credential reads through `lib/key-slot-witness.mjs`.
+ *
+ * WHY THE ESCAPE HATCH IS THE RULE AND NOT A HOLE. A scanner cannot follow which KEY a
+ * given `.value` came from — `va-compaction-live.mjs` legitimately reads `.value` off
+ * `COGNIRUNNER_AI_PROVIDER` and `va_compact_backoff:*`, ordinary rows, in the same helper,
+ * and the pre-fix defect went through a `for (const k of [PROVIDER_SLOT, BROKEN_KEY_SLOT])`
+ * loop where the argument is a loop variable and no expression names a credential at all.
+ * Demanding the WITNESS IMPORT is the property that is both checkable and the one worth
+ * having: it is where `present`/`fingerprint`/UNREADABLE live, it is the thing that must not
+ * be re-derived per driver (LAW 1), and it is what the two broken drivers were missing.
+ *
+ * THE LIMIT, stated rather than hidden: a driver that imports the witness and ALSO reads
+ * `.value` off a credential key is not caught here. Nothing in one file can catch it; what
+ * makes it unlikely is that the witness is the shorter path once it is imported.
+ */
+export function readsCredentialValue(src) {
+  const code = maskComments(src);
+  if (!/\?what=kvs/.test(code)) return [];
+  if (!namesCredentialKey(src).length) return [];
+  if (/from\s+["'][^"']*key-slot-witness\.mjs["']/.test(code)) return [];
+  return valueReads(code);
+}
+/** Does this file PLANT a credential-family key through `kvSet`? */
+export function plantsCredentialKey(src) {
+  const code = maskComments(src);
+  return /\bkvSet\b/.test(code) && namesCredentialKey(src).length > 0;
+}
+const stashesAndRestores = (src) => {
+  const code = maskComments(src);
+  return /\bkvStash\b/.test(code) && /\bkvRestore\b/.test(code);
+};
+
+/* THE COHORT: every live driver and every `_probe-*`, the same one rule 4g and the scope
+   suite police. A `.test.mjs` is NOT in it — the offline suites exercise the door itself
+   against a mock store, and `rules-runtime-regression.test.mjs` must be free to assert that
+   an ordinary row still returns its value. */
+{
+  const cohort = readdirSync(here).filter((f) => f.endsWith("-live.mjs") || f.startsWith("_probe-")).sort();
+  ok(cohort.length > 30, "F-769: the credential rule runs over the whole live-driver cohort (" + cohort.length + " files)");
+  const touches = [];
+  let planters = 0;
+  for (const f of cohort) {
+    const src = readFileSync(path.join(here, f), "utf8");
+    const bad = readsCredentialValue(src);
+    if (namesCredentialKey(src).length) touches.push(f);
+    ok(bad.length === 0,
+      `HALF A (F-769) ${f}: reaches a credential-family key (${namesCredentialKey(src).join(", ")}) AND takes \`.value\` off a \`?what=kvs\` answer (${[...new Set(bad)].slice(0, 3).join(", ")}). The ceiling does not answer \`value\` for those rows — read \`present\`/\`fingerprint\` through lib/key-slot-witness.mjs`);
+    if (plantsCredentialKey(src)) {
+      planters++;
+      ok(stashesAndRestores(src),
+        `HALF B (F-769) ${f}: writes a credential-family key with kvSet but never calls kvStash/kvRestore — it cannot put back the key it replaced, and a \`null\` replay DELETES it`);
+    }
+  }
+  /* ANTI-BLINDNESS. A directory rule that matches nothing passes forever, which is the same
+     failure mode as the vacuous check this whole section is about. These are the three
+     drivers F-769 really broke, named: if a refactor ever makes `namesCredentialKey` stop
+     seeing one of them, this goes red HERE rather than going quiet everywhere. */
+  for (const f of ["key-status-fault-live.mjs", "key-status-fault-ui-live.mjs", "va-compaction-live.mjs"]) {
+    ok(touches.includes(f),
+      `F-769: the rule SEES ${f} — one of the three drivers the read ceiling really broke (seen: ${touches.join(", ") || "NOTHING"})`);
+  }
+  ok(planters >= 1, "F-769: …and " + planters + " driver(s) plant a credential through kvSet, so HALF B is not an empty arm");
+}
+
+/* ── POSITIVE CONTROLS · both halves, in the shape each really shipped in ────────── */
+{
+  /* HALF A — `key-status-fault-live.mjs`'s reduction, verbatim as it stood before 90a22c5. */
+  const halfA = [
+    'import { providerKeySlot } from "../../src/shared/provider-slots.js";',
+    "const keySlotFingerprint = async (provider) => {",
+    "  const r = await hook(null, \"GET\", `?what=kvs&key=${encodeURIComponent(providerKeySlot(provider))}`);",
+    "  const v = r.json ? r.json.value : undefined;",
+    '  return v === null || v === undefined ? "EMPTY" : "PRESENT";',
+    "};",
+  ].join("\n");
+  ok(namesCredentialKey(halfA).includes("providerKeySlot()"),
+    "POSITIVE CONTROL (F-769 A): `providerKeySlot(provider)` IS a credential key, without a family string appearing anywhere in the file");
+  ok(readsCredentialValue(halfA).length > 0,
+    "POSITIVE CONTROL (F-769 A): the exact pre-fix reduction — `r.json.value` off a `?what=kvs` read of a provider key slot — is CAUGHT");
+
+  const halfAfixed = [
+    'import { providerKeySlot } from "../../src/shared/provider-slots.js";',
+    'import { readKeySlotWitness } from "../lib/key-slot-witness.mjs";',
+    "const keySlotWitness = (provider) =>",
+    '  readKeySlotWitness((qs) => hook(null, "GET", qs), providerKeySlot(provider));',
+  ].join("\n");
+  ok(readsCredentialValue(halfAfixed).length === 0,
+    "NEGATIVE CONTROL (F-769 A): the same driver reading through lib/key-slot-witness.mjs is CLEAN");
+
+  /* The literal form, inside a template hole — the shape `maskNonCode` would have erased. */
+  const literal = 'const BROKEN_KEY_SLOT = `COGNIRUNNER_KEY_${BROKEN_PROVIDER}`;\nconst r = await hook(null, "GET", `?what=kvs&key=${BROKEN_KEY_SLOT}`);\nconst v = r.body.value;';
+  ok(namesCredentialKey(literal).includes("COGNIRUNNER_KEY_"),
+    "POSITIVE CONTROL (F-769 A): a family prefix inside a TEMPLATE LITERAL is a use — `maskNonCode` masks template text away, which is why this rule reads `maskComments`");
+  ok(readsCredentialValue(literal).length > 0,
+    "POSITIVE CONTROL (F-769 A): …and `r.body.value` off it is caught, not just `r.json.value`");
+
+  /* PROSE IS NOT A USE — the discriminator every scan in this file needs. Two real
+     drivers explain the ceiling and the kvSet allow-list in their docblocks. */
+  const prose = [
+    "/* The kvSet allow-list is deliberately NOT widened to git_conn_secret:* — secrets are",
+    "   never plantable, and COGNIRUNNER_KEY_ rows answer present+fingerprint only. */",
+    '// a webtrigger_url:* row is masked too',
+    'const r = await hook(null, "GET", "?what=kvs&key=app_admins");',
+    "const roster = r.json.value || [];",
+  ].join("\n");
+  ok(namesCredentialKey(prose).length === 0,
+    "NEGATIVE CONTROL (F-769): three credential families named in COMMENTS are prose, not uses — documenting the ceiling must not fail the rule that documents it");
+  ok(readsCredentialValue(prose).length === 0,
+    "NEGATIVE CONTROL (F-769): …so an ordinary `app_admins` row still reads its `value` freely, which is most of this directory");
+
+  /* HALF B — `va-compaction-live.mjs`'s plant, verbatim as it stood before bfed3a3. */
+  const halfB = [
+    "const BROKEN_KEY_SLOT = `COGNIRUNNER_KEY_${BROKEN_PROVIDER}`;",
+    "async function kvSet(key, value) { return hook({ action: \"kvSet\", key, value }); }",
+    "for (const k of [PROVIDER_SLOT, BROKEN_KEY_SLOT]) { slotsBefore[k] = (await kvs(k)).value; }",
+    'await kvSet(BROKEN_KEY_SLOT, "sk-harness-deliberately-dead-key-000000000000000000");',
+    "for (const [k, v] of Object.entries(slotsBefore)) { await kvSet(k, v); }",
+  ].join("\n");
+  ok(plantsCredentialKey(halfB),
+    "POSITIVE CONTROL (F-769 B): a `kvSet` onto `COGNIRUNNER_KEY_${…}` is a credential PLANT");
+  ok(!stashesAndRestores(halfB),
+    "POSITIVE CONTROL (F-769 B): …and with no kvStash/kvRestore it is the shape that DELETED the tenant's key on every run");
+
+  const halfBfixed = halfB + '\nconst stash = await hook({ action: "kvStash", key: BROKEN_KEY_SLOT });\nasync function kvRestore(id) { return hook({ action: "kvRestore", stashId: id }); }\nawait kvStash(BROKEN_KEY_SLOT);';
+  ok(stashesAndRestores(halfBfixed),
+    "NEGATIVE CONTROL (F-769 B): the same plant with the stash door either side is CLEAN");
+  ok(!plantsCredentialKey('await kvSet("COGNIRUNNER_AI_PROVIDER", "openai");\nawait kvSet(MEMORIES_KEY, rows);'),
+    "NEGATIVE CONTROL (F-769 B): planting the PROVIDER slot and the memories row is not planting a credential — those are snapshot-and-replay rows and must stay so");
+  ok(!plantsCredentialKey(halfB.replace(/kvSet/g, "kvSetNot")),
+    "NEGATIVE CONTROL (F-769 B): the rule turns on the `kvSet` DOOR, not on the word appearing inside a longer name");
+
+  /* And the rule must not fire on a file that names a credential but never goes near the
+     kvs door — `git-rotation-window-live.mjs` is exactly that, in prose only. */
+  ok(readsCredentialValue('const v = r.json.value;').length === 0,
+    "NEGATIVE CONTROL (F-769 A): a `.value` read with no `?what=kvs` and no credential key anywhere is not this rule's business");
+}
 
 /* ── 5. the hardened drivers redact in the writers themselves ──────────────────── */
 for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "perm-namesake-ui-live.mjs"]) {

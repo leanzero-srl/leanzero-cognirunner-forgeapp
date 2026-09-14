@@ -42,7 +42,14 @@ function serve(root) {
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
-const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
+/* F-914 - settle before the shutter: the panel's entry animations run on mount, so an
+   instant screenshot catches every solid chip at partial opacity and reads as a wash the
+   CSS does not contain. The assertions use getComputedStyle and never saw it. */
+const shot = async (page, name) => {
+  if (!SHOTS) return;
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true });
+};
 
 /* `extra` is a plain bag of window.__FLAG__ values set before mount (the managed-engine
    knobs: __MANAGED_MISSING__, __MANAGED_DISABLED__, __MANAGED_SPEND__). Keeping it a bag
@@ -344,7 +351,19 @@ try {
       ok(await page.locator(".usage-allowance").count() === 0, "E2 still no allowance row on Standard with Forge LLM selected");
       const body = await page.locator(".container").innerText();
       ok(body.includes("Claude Sonnet 5 and Opus 5 are part of CogniRunner Coder"), "E2 upgrade notice on Standard");
-      ok(body.includes("upgrade in Jira"), "E2 notice points at Manage apps");
+      /* F-914 - the notice used to POINT at Manage apps in primary-blue bold text that
+         was not a link. It now carries a real href, and it names the frontier requirement
+         so a tenant that upgrades is not refused a second time by the model gate. */
+      const upgradeLinks = page.locator(".openai-status .agent-off a.agent-off-link");
+      ok(await upgradeLinks.count() === 1, "E2 the notice carries exactly one real upgrade link");
+      ok(await upgradeLinks.first().getAttribute("href") === "https://your-site.atlassian.net/jira/settings/apps/manage",
+        "E2 and its href is this site's Manage apps page");
+      ok(body.includes("Coder edition AND Claude Sonnet 5 or Opus 5"), "E2 the frontier requirement is named before the upgrade");
+      ok(await page.locator(".openai-status .agent-off .agent-off-btn").count() === 0,
+        "E2 no Open the Settings tab button on the Settings tab itself");
+      const offLinkBg = await upgradeLinks.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(offLinkBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"),
+        `E2 the upgrade link is the solid Coder orange per theme (got ${offLinkBg})`);
       ok(body.includes("is not available on this edition, using Claude Haiku"), "E2 clamped-model line");
 
       // open the model picker: Sonnet/Opus render as LOCKED rows with a Coder badge
@@ -376,7 +395,14 @@ try {
       await page.keyboard.press("Escape");
 
       // agent model: locked on Forge LLM + Standard, Save disabled
-      ok(body.includes("On Forge LLM the agent model is part of CogniRunner Coder"), "E2 agent-model upgrade line");
+      ok(body.includes("On Atlassian Forge LLM the agent model needs the Coder edition AND Claude Sonnet 5 or Opus 5"), "E2 agent-model upgrade line names BOTH requirements");
+      // ...and it says it ONCE. The same fact repeated three times on one screen is what
+      // the walk called noise; the status card carries the long form, this slot the short.
+      ok((body.match(/needs the Coder edition AND Claude Sonnet 5 or Opus 5/g) || []).length === 2,
+        "E2 the frontier requirement is stated once per off state, not three times");
+      // Two off states on this screen (key status + agent model), each with its own link.
+      ok(await page.locator(".agent-off a.agent-off-link").count() === 2, "E2 the agent-model note has a real link too");
+      ok(!/[\u2013\u2014]/.test(body), "E2 no em dash or en dash anywhere on the Standard settings screen");
       await shot(page, `E2-standard-settings-${theme}`);
       ok(env.errors.length === 0, "E2 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ E2 threw: " + e.message.split("\n")[0]); }

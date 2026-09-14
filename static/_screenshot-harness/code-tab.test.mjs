@@ -54,7 +54,16 @@ function serve(root) {
 }
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
-const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
+/* F-914 - SETTLE BEFORE THE SHUTTER. The panel's entry animations (sectionFadeIn,
+   anim-fade, .stagger) run on mount, so a screenshot taken the instant the assertions
+   finish catches every chip at partial opacity and every muted line at nearly zero - and
+   a human reading that PNG reports a "faded wash" the CSS does not contain. The
+   assertions read getComputedStyle and were never affected; only the eye was. */
+const shot = async (page, name) => {
+  if (!SHOTS) return;
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true });
+};
 
 async function openAdmin(browser, theme = "light", extraInit = null) {
   const root = ensureFreshBuildShot("admin-panel");
@@ -1094,6 +1103,105 @@ try {
       ok(/Trigger deploy/.test(await row.locator(".code-pipe-deploy").first().innerText()), "C16b and the button still reads Trigger deploy");
       ok(env.errors.length === 0, "C16b no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C16b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  /* ---------------- C17 — F-914: the OFF state has something to press ------------------
+     The walk's finding was a DEAD END, not a wording problem: the remedy ended in bold
+     text that looked like a link. So the assertions are about DESTINATIONS - an href that
+     really points at Jira's Manage apps page on THIS site, a Settings button that really
+     moves the app to the Settings tab - and about the second requirement being named
+     before the upgrade, so an admin who buys Coder on Forge LLM is not refused twice. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C17 off state actions (${theme})`);
+    const env = await openAdmin(browser, theme, { __CODE_CAP__: "needs-coder-edition" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-tab").waitFor({ timeout: 10000 });
+      const off = page.locator(".code-status .agent-off").first();
+      await off.waitFor({ timeout: 8000 });
+      // 1. No bold pretend-link left anywhere in the status card.
+      ok(await page.locator(".code-status-link > strong").count() === 0, `C17 ${theme} the bold pretend-link is gone`);
+      // 2. The Manage apps link is REAL and site-absolute.
+      const href = await off.locator("a.agent-off-link").first().getAttribute("href");
+      ok(href === "https://your-site.atlassian.net/jira/settings/apps/manage", `C17 ${theme} the Manage apps href is the site's own page, got ${href}`);
+      ok(await off.locator("a.agent-off-link").first().getAttribute("target") === "_blank", `C17 ${theme} it opens away from the panel`);
+      // 3. The frontier requirement is named BEFORE the upgrade (this arm is Forge LLM).
+      ok((await off.innerText()).includes("Claude Sonnet 5 or Opus 5"), `C17 ${theme} the frontier requirement is named before the upgrade`);
+      ok((await off.innerText()).includes("Coder edition AND"), `C17 ${theme} and it is stated as BOTH requirements, not one`);
+      // 4. Solid saturated chips, white text, and a DIFFERENT fill in dark (the override).
+      const linkBg = await off.locator("a.agent-off-link").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      const linkFg = await off.locator("a.agent-off-link").first().evaluate((el) => getComputedStyle(el).color);
+      ok(linkBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `C17 ${theme} the upgrade link is the solid Coder orange, got ${linkBg}`);
+      ok(!/rgba\(.*0(\.\d+)?\)/.test(linkBg), `C17 ${theme} it is not a faded tint`);
+      ok(linkFg === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"), `C17 ${theme} its text is the readable pair for this theme, got ${linkFg}`);
+      // 5. No em dash in the copy this component renders.
+      ok(!/[\u2013\u2014]/.test(await off.innerText()), `C17 ${theme} no em dash or en dash in the off state copy`);
+      // 6. The setup below is DISABLED, not merely unhelpful (plan 2.2).
+      ok(await page.locator("fieldset.code-locked[disabled]").count() === 1, `C17 ${theme} the two setup cards are inside a disabled fieldset`);
+      ok(await page.locator(".code-off-note").count() === 2, `C17 ${theme} both setup cards say why they are read only`);
+      const addBtn = page.locator("button", { hasText: "+ Add connection" }).first();
+      ok(await addBtn.isDisabled(), `C17 ${theme} Add connection is disabled`);
+      ok(await page.locator(".code-conn button", { hasText: "Delete" }).first().isDisabled(), `C17 ${theme} a per-connection Delete is disabled`);
+      ok(await page.locator("button", { hasText: /^Set up$/ }).first().isDisabled(), `C17 ${theme} the deploy-identity Set up is disabled`);
+      await shot(page, `C17-off-actions-${theme}`);
+      ok(env.errors.length === 0, `C17 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C17 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* C17b — the Settings button actually MOVES the app, and it is absent for a reader who
+     has no Settings tab to move to. Both halves, because a button that lands nowhere is
+     the same dead end wearing a fix. */
+  {
+    console.log("C17b the Settings button navigates, and only for an admin");
+    const env = await openAdmin(browser, "light", { __CODE_CAP__: "needs-coder-edition" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-status .agent-off").first().waitFor({ timeout: 8000 });
+      await page.locator(".agent-off-btn").first().click();
+      await page.locator(".openai-status, .section-title", { hasText: /AI Provider Configuration/ }).first().waitFor({ timeout: 10000 });
+      ok(await page.locator(".tab-btn.tab-active", { hasText: /^\s*Settings\s*$/ }).count() === 1, "C17b pressing it lands on the Settings tab");
+      ok(env.errors.length === 0, "C17b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C17b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    console.log("C17c a non-admin is offered no Settings button");
+    const env = await openAdmin(browser, "light", { __NOT_ADMIN__: true, __CODE_CAP__: "needs-coder-edition" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-tab").waitFor({ timeout: 10000 });
+      const offs = page.locator(".code-status .agent-off");
+      if (await offs.count() > 0) {
+        ok(await offs.first().locator(".agent-off-btn").count() === 0, "C17c no Settings button for a reader with no Settings tab");
+        ok(await page.locator(".tab-btn", { hasText: /^\s*Settings\s*$/ }).count() === 0, "C17c and there genuinely is no Settings tab to send them to");
+      } else {
+        // The editor arm renders the access note instead; the absence of a button is still the point.
+        ok(await page.locator(".agent-off-btn").count() === 0, "C17c no Settings button anywhere on a non-admin Code tab");
+      }
+      ok(env.errors.length === 0, "C17c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C17c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* C17d — the NEGATIVE control for the disabling. Coder ON must leave every setup
+     control live; a gate that disabled them always would pass C17 and break the tab. */
+  {
+    console.log("C17d Coder ON leaves the setup editable");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-tab").waitFor({ timeout: 10000 });
+      ok(await page.locator("fieldset.code-locked[disabled]").count() === 0, "C17d the fieldset is not disabled when Coder is on");
+      ok(await page.locator(".code-off-note").count() === 0, "C17d and no card claims to be read only");
+      ok(!(await page.locator("button", { hasText: "+ Add connection" }).first().isDisabled()), "C17d Add connection is live");
+      ok(await page.locator(".code-status .agent-off").count() === 0, "C17d an ON card carries no off state at all");
+      ok(env.errors.length === 0, "C17d no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C17d threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 } finally {

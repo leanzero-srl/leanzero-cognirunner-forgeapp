@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { router } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
+import AgentOffState from "./AgentOffState";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
 import { providerReady } from "./capability";
@@ -1161,7 +1162,7 @@ export default function OpenAIConfig({ invoke }) {
         // upgradeRequired is a refusal, not a crash — its `error` is already a
         // sentence for the admin. Same slot as any other save failure, no alert().
         setError(result.error || (result.upgradeRequired
-          ? "That model is part of CogniRunner Coder, upgrade in Jira's Manage apps."
+          ? "That model is part of CogniRunner Coder. The Coder note on this page carries the upgrade link."
           : "Failed to save model"));
       }
     } catch (e) {
@@ -1186,7 +1187,7 @@ export default function OpenAIConfig({ invoke }) {
         showToast("Agent model saved");
       } else {
         setError((result && result.error) || (result && result.upgradeRequired
-          ? "The agent model is part of CogniRunner Coder, upgrade in Jira's Manage apps."
+          ? "The agent model is part of CogniRunner Coder. The Coder note under the agent model carries the upgrade link."
           : "Failed to save the agent model"));
       }
     } catch (e) {
@@ -1918,22 +1919,25 @@ export default function OpenAIConfig({ invoke }) {
                       STATUS UNREAD
                     </span>
                   )}
-                  {isAtlassian && (
+                  {isAtlassian && isAdvanced && (
                     <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--text-secondary)" }}>
-                      {isAdvanced ? (
-                        <>
-                          <strong style={{ color: "var(--primary-color)" }}>Sonnet 5 and Opus 5 unlocked.</strong>
-                          {allowance
-                            ? ` Monthly allowance: ${allowancePct}% used.`
-                            : " They are covered by this edition's monthly allowance."}
-                        </>
-                      ) : (
-                        <>
-                          <strong style={{ color: "var(--primary-color)" }}>Claude Sonnet 5 and Opus 5 are part of CogniRunner Coder</strong>
-                          , upgrade in Jira&apos;s Manage apps.
-                        </>
-                      )}
+                      <strong style={{ color: "var(--primary-color)" }}>Sonnet 5 and Opus 5 unlocked.</strong>
+                      {allowance
+                        ? ` Monthly allowance: ${allowancePct}% used.`
+                        : " They are covered by this edition's monthly allowance."}
                     </p>
+                  )}
+                  {/* F-914 - this WAS primary-blue bold text that read as a link and did
+                      nothing. The upgrade is a real destination now, and the frontier
+                      requirement is named BEFORE the upgrade rather than after it. It sits
+                      outside the paragraph above because it renders a block, and a block
+                      inside a <p> is closed by the parser before it is drawn. No
+                      onGoToSettings: this IS the Settings tab. */}
+                  {isAtlassian && !isAdvanced && (
+                    <AgentOffState
+                      sentence="Claude Sonnet 5 and Opus 5 are part of CogniRunner Coder."
+                      forgeLlm
+                    />
                   )}
                   {/* F-078: only ever claim a clamp when the backend says clamped AND
                       names a saved model. A tenant that never saved a model has
@@ -2311,9 +2315,12 @@ export default function OpenAIConfig({ invoke }) {
                   </p>
                 )}
                 {isAtlassian && !isAdvanced && (
-                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    On Forge LLM the agent model is part of CogniRunner Coder, upgrade in Jira&apos;s Manage apps, or point CogniRunner at your own provider key.
-                  </p>
+                  /* F-914 - same off state, same two actions, one component. The BYOK
+                     escape hatch stays in the sentence because it is the remedy that
+                     costs nothing and turns the agent on immediately. */
+                  <AgentOffState
+                    sentence="On Atlassian Forge LLM the agent model needs the Coder edition AND Claude Sonnet 5 or Opus 5, so an upgrade on its own still leaves it off. Pointing CogniRunner at your own provider key turns it on with no upgrade at all."
+                  />
                 )}
                 {isAtlassian && isAdvanced && agentFrontierOnly && (
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>

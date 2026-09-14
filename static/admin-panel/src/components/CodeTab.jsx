@@ -47,6 +47,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import CustomSelect from "./CustomSelect";
+import AgentOffState from "./AgentOffState";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
 import {
@@ -62,6 +63,9 @@ import { SCAFFOLDS, scaffoldVarError, SCAFFOLD_VAR_LABELS, scaffoldHasCustomUi }
 /* F-611: the remedy sentence for a stale pipeline, from the same module the backend's
    refusal reads it from. The screen and the API say the one thing. */
 import { PIPELINE_OUTDATED_REMEDY } from "../../../../src/shared/git-pipeline-state.js";
+
+/* The ONE sentence the two setup cards say when Coder is off. One wording, two cards. */
+const CODER_OFF_SETUP = "Coder is off, so this setup is read only. The card at the top of this tab says why and what to do about it.";
 
 const KIND_OPTIONS = GIT_PROVIDER_KINDS.map((k) => ({ value: k, label: gitProviderKindMeta(k).label }));
 
@@ -877,7 +881,13 @@ function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity }) {
   );
 }
 
-export default function CodeTab({ invoke }) {
+/**
+ * `onGoToSettings` - the callback that moves the admin panel to its Settings tab. NULL for
+ * a non-admin, because that tab is adminOnly (TABS in App.js) and a button that lands a
+ * reader nowhere is the dead end F-914 found, not a fix for it. This tab knows nothing
+ * about the tab registry; App.js decides.
+ */
+export default function CodeTab({ invoke, onGoToSettings = null }) {
   const [capability, setCapability] = useState(null);
   const [connections, setConnections] = useState([]);
   const [identity, setIdentity] = useState(null);
@@ -1136,10 +1146,26 @@ export default function CodeTab({ invoke }) {
           </div>
         )}
         {capCopy.link === "settings" && (
-          <p className="code-status-link">Open the <strong>Settings</strong> tab to change the provider, the edition or the agent model.</p>
+          /* F-914 - the remedy is now PRESSABLE. It used to be a bold word that looked
+             like a link and was not. `forgeLlm` names the SECOND requirement before the
+             upgrade, because agentCapability() checks the edition and then the model. */
+          <AgentOffState
+            className="code-status-link"
+            sentence="Change the provider, the edition or the agent model in the Settings tab, or upgrade the app in Jira."
+            forgeLlm={!!(capability && capability.provider === "atlassian")}
+            onGoToSettings={onGoToSettings}
+          />
         )}
       </div>
 
+      {/* ── EVERYTHING BELOW IS SETUP, AND SETUP IS OFF WHEN CODER IS OFF ─────
+          F-914 / plan 2.2: with Coder off there is nothing on this tab to edit, so the
+          two setup cards are rendered DISABLED rather than left live to collect writes
+          for a toolset that will not run. A `fieldset[disabled]` is the whole-subtree
+          form, so it reaches the per-repo webhook, pipeline and deploy controls inside
+          RepoRow without threading a prop through them - and it disables them for the
+          keyboard too, which a pointer-events rule does not. */}
+      <fieldset className="code-locked" disabled={!capOn}>
       {/* ── CONNECTIONS ────────────────────────────────────────────────────── */}
       <div className="card code-card">
         <div className="section-header">
@@ -1150,6 +1176,8 @@ export default function CodeTab({ invoke }) {
             </button>
           </div>
         </div>
+
+        {!capOn && <p className="code-off-note">{CODER_OFF_SETUP}</p>}
 
         {showAdd && (
           <div className="code-form">
@@ -1320,6 +1348,7 @@ export default function CodeTab({ invoke }) {
               : <button className="btn-secondary btn-small" onClick={() => setShowIdentity((v) => !v)}>{showIdentity ? "Cancel" : "Set up"}</button>}
           </div>
         </div>
+        {!capOn && <p className="code-off-note">{CODER_OFF_SETUP}</p>}
         <p className="hint" style={{ marginTop: 0 }}>
           A Forge app cannot deploy a Forge app, so the pipeline CogniRunner installs in your repository deploys yours under an Atlassian API token you supply. It is stored write only: there is no reveal path in this app, for anyone, including you.
         </p>
@@ -1369,6 +1398,7 @@ export default function CodeTab({ invoke }) {
           <div className="empty-state">No deploy identity stored. Pipelines that deploy a Forge app need one.</div>
         )}
       </div>
+      </fieldset>
     </div>
   );
 }

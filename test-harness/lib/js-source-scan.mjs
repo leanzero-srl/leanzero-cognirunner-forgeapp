@@ -120,13 +120,17 @@ export function maskNonCode(src, opts) {
       const stop = end === -1 ? src.length : end + 2;
       blank(i, stop); i = stop; continue;
     }
-    /* A REGEX IS NOT SCANNED FOR WHEN LITERALS ARE KEPT. `regexCanStart` reads the bytes
-       already emitted, and in this mode string bodies are still there — so it would be
-       answering a different question from the one it was tuned on, and a wrong YES SKIPS
-       `i` forward, which could step over the very text the caller is searching for. Not
-       opening a regex can only leave MORE visible, which for this mode's one consumer is
-       the direction that refuses rather than the one that passes. */
-    if (!keepLiterals && c === "/" && regexCanStart()) {
+    /* A REGEX IS SCANNED FOR IN BOTH MODES, AND BLANKED IN ONLY ONE (F-805).
+
+       It used to be scanned for only when literals are masked, on the reasoning that
+       `regexCanStart` reads the bytes already emitted and a wrong YES skips `i` forward over
+       text the caller is searching for. That reasoning holds for BLANKING and not for
+       SKIPPING: in keep-literals mode the span is left exactly as it was, so nothing can be
+       hidden — while NOT skipping let the quotes and backticks inside a regex BODY open
+       literals that never close, and one of those (src/virtual-admin.js line 344) stranded
+       the walk in template mode for the rest of the file, leaving every later comment
+       unmasked. See the blanking line below. */
+    if (c === "/" && regexCanStart()) {
       let j = i + 1, cls = false, closed = false;
       while (j < src.length) {
         const d = src[j];
@@ -139,7 +143,17 @@ export function maskNonCode(src, opts) {
       }
       if (closed) {
         while (j < src.length && /[dgimsuvy]/.test(src[j])) j += 1;
-        blank(i, j); i = j; continue;
+        /* F-805: a regex is SKIPPED in both modes and BLANKED in only one. It used not to be
+           scanned at all when literals are kept, and that made the mode machine read the
+           quotes and backticks inside a regex BODY as openers: MEASURED on src/virtual-admin.js,
+           `` runQuery(`comment ~ "${String(a).replace(/["\\]/g, "")}"`) `` at line 344 left the
+           walk stuck in template mode for the remaining 150 KB, so NOT ONE comment after it was
+           blanked and every ban reading maskComments() of that file was still reading prose —
+           the F-805 defect, silently unfixed. Skipping cannot hide text from the caller here,
+           because in this mode the span is left EXACTLY as it was; it only keeps the walk's
+           idea of "am I inside a literal?" honest. */
+        if (!keepLiterals) blank(i, j);
+        i = j; continue;
       }
     }
     if (c === '"' || c === "'") {

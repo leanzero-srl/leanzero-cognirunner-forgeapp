@@ -23,6 +23,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { maskComments } from "../lib/js-source-scan.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sharedDir = path.join(here, "../../src/shared");
 
@@ -65,7 +66,7 @@ for (const f of files) {
   for (const name of ["IDENTIFIER_PATTERNS", "IDENTIFIER_KINDS", "NON_KEY_PREFIXES", "findIdentifierLeak", "matchesTenantIssueKey", "normalizeProjectKeys"]) {
     ok(typeof leak[name] !== "undefined", `identifier-leak.js exports ${name}`);
   }
-  const toolSrc = readFileSync(path.join(sharedDir, "../web-search-tool.js"), "utf8");
+  const toolSrc = maskComments(readFileSync(path.join(sharedDir, "../web-search-tool.js"), "utf8"));
   ok(/from\s+"\.\/shared\/identifier-leak\.js"/.test(toolSrc), "src/web-search-tool.js imports the table from that one home");
   ok(!/IDENTIFIER_PATTERNS = Object\.freeze/.test(toolSrc), "…and does not keep a copy of it");
   const indexSrc = readFileSync(path.join(sharedDir, "../index.js"), "utf8");
@@ -77,8 +78,8 @@ for (const f of files) {
 // number declared there can only reach the screenshot-harness bridge / any UI by being
 // RETYPED. Assert the shared module owns all three numbers and that memories.js declares
 // none of them itself (it re-exports them instead).
-const limitsSrc = readFileSync(path.join(sharedDir, "registry-limits.js"), "utf8");
-const memoriesSrc = readFileSync(path.join(sharedDir, "../memories.js"), "utf8");
+const limitsSrc = maskComments(readFileSync(path.join(sharedDir, "registry-limits.js"), "utf8"));
+const memoriesSrc = maskComments(readFileSync(path.join(sharedDir, "../memories.js"), "utf8"));
 const limits = await import(pathToFileURL(path.join(sharedDir, "registry-limits.js")).href);
 ok(limits.MAX_MEMORIES === 200 && limits.MEMORY_CONTENT_MAX === 400
   && limits.MEMORY_MAX_SERIALIZED_BYTES === 230000,
@@ -105,7 +106,10 @@ ok(/from\s+"\.\/shared\/registry-limits\.js"/.test(memoriesSrc),
 // four-character security rule, is this repo's signature defect. The declaration moved to
 // src/shared/prompt-fencing.js and memories.js RE-EXPORTS it, so every existing importer
 // is unchanged. Assert both halves: one declaration, and the re-export door still open.
-const fencingSrc = readFileSync(path.join(sharedDir, "prompt-fencing.js"), "utf8");
+/* F-805 — every BAN in this suite reads the source with comments blanked and string
+   literals kept: the one-home rules it polices are exactly the ones whose docblock has to
+   name the thing that must not be re-declared. */
+const fencingSrc = maskComments(readFileSync(path.join(sharedDir, "prompt-fencing.js"), "utf8"));
 const fencing = await import(pathToFileURL(path.join(sharedDir, "prompt-fencing.js")).href);
 ok(typeof fencing.defangFence === "function", "src/shared/prompt-fencing.js exports defangFence");
 ok(fencing.defangFence("<<<X and >>> out") === "<<X and >> out", "defangFence collapses 3+ angle brackets");
@@ -123,7 +127,7 @@ ok(memoriesMod.defangFence === fencing.defangFence,
 const select = await import(pathToFileURL(path.join(sharedDir, "knowledge-select.js")).href);
 ok(typeof select.selectKnowledge === "function" && typeof select.buildFieldGuideBlock === "function",
   "knowledge-select.js exports selectKnowledge and buildFieldGuideBlock");
-const selectSrc = readFileSync(path.join(sharedDir, "knowledge-select.js"), "utf8");
+const selectSrc = maskComments(readFileSync(path.join(sharedDir, "knowledge-select.js"), "utf8"));
 ok(!/from\s+["']\.\/knowledge-(index|packs)/.test(selectSrc),
   "knowledge-select.js does NOT static-import the generated index or packs");
 ok(select.buildFieldGuideBlock([]).block === "", "an empty selection builds an empty block, not an empty fence");
@@ -172,7 +176,7 @@ ok(select.buildFieldGuideBlock([]).block === "", "an empty selection builds an e
     ok(idx.KNOWLEDGE_INDEX.every((e) => !("body" in e)),
       "the index carries NO bodies — a UI bundle importing it costs kilobytes, not megabytes");
     ok(idx.KNOWLEDGE_PACKS.length === packFiles.length, "the index lists exactly the packs on disk");
-    const idxSrc = readFileSync(path.join(sharedDir, "knowledge-index.js"), "utf8");
+    const idxSrc = maskComments(readFileSync(path.join(sharedDir, "knowledge-index.js"), "utf8"));
     ok(!/^\s*import\s/m.test(idxSrc), "knowledge-index.js imports nothing — it is pure generated data");
   }
 }
@@ -238,8 +242,15 @@ ok(/export const VA_PERSONA_NAME_MAX/.test(vaConfigSrc) && !/VA_PERSONA_NAME_MAX
 // touching the linter, the post gate or the wizard.
 ok(/from\s+"\.\/voice-rules-data\.js"/.test(voiceLintSrc), "voice-lint.js reads its tables from the data module");
 ok(/tables\s*=\s*VOICE_RULES_TABLES/.test(voiceLintSrc), "…and takes them as an argument, so the home can move");
+/* F-805 — "hardcode" means IN CODE. A banned opener has to be quotable in the docblock that
+   explains why the table moved out; masking comments is what lets it be. The `voice-rules`
+   assertion below deliberately reads the module HEADER, so it keeps the raw source. */
+const voiceLintCode = maskComments(voiceLintSrc);
+ok(!maskComments("// the banned openers are things like \"as an ai\"\nlet x;\n").toLowerCase().includes("as an ai")
+  && maskComments('const BANNED = ["As an AI"];\n').toLowerCase().includes("as an ai"),
+  "F-805 control: a banned phrase in a COMMENT is not a hardcode; in a LITERAL it is");
 for (const phrase of ["great question", "as an ai", "best regards", "i ran a query"]) {
-  ok(!voiceLintSrc.toLowerCase().includes(phrase), `voice-lint.js does not hardcode the phrase "${phrase}"`);
+  ok(!voiceLintCode.toLowerCase().includes(phrase), `voice-lint.js does not hardcode the phrase "${phrase}"`);
 }
 ok(voiceData.BANNED_OPENERS.length > 0 && voiceData.METHOD_LEAKS.length > 0
   && voiceData.SIGN_OFFS.length > 0 && voiceData.AI_DISCLAIMERS.length > 0,
@@ -258,7 +269,7 @@ ok(/voice-rules/.test(voiceLintSrc) && /voice-rules/.test(readFileSync(path.join
 // The wizard resolvers (5b) and the Agents tab (5c) build on this contract from two other
 // worktrees, so a rename here has to fail at MERGE and not in someone's UI.
 const vaWizard = await import(pathToFileURL(path.join(sharedDir, "va-wizard.js")).href);
-const vaWizardSrc = readFileSync(path.join(sharedDir, "va-wizard.js"), "utf8");
+const vaWizardSrc = maskComments(readFileSync(path.join(sharedDir, "va-wizard.js"), "utf8"));
 for (const name of ["createWizard", "stepWizard", "resumeWizard", "serializeWizardState",
   "buildVaRecord", "catalogToCtx", "checkJqlShape", "renderVoiceSamples", "renderReviewSummary",
   "optionsForStep", "clampSay", "writeSiteRefusalReason",

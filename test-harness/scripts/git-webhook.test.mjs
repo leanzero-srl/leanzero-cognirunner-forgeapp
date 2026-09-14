@@ -26,6 +26,7 @@
 import "../lib/register-mocks-index.mjs";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { maskComments } from "../lib/js-source-scan.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import { pushed, Queue } from "../lib/mock-forge-api.mjs";
 
@@ -445,12 +446,28 @@ seed();
   ok(readHeader({ headers: { "X-Thing": [] } }, "x-thing") === null, "an empty array value is null, not undefined");
   ok(readHeader({ headers: { "X-Thing": [7] } }, "x-thing") === null, "a non-string value is null");
 
-  const hookSrc = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+  /* F-805 — THIS GATE READS CODE, NOT PROSE. `headers.Authorization` is the exact
+     spelling a docblock EXPLAINING why the shared reader exists would name, and a
+     correct comment that names the banned shape turned the gate red. `maskComments`
+     (lib/js-source-scan.mjs) blanks comments and KEEPS string literals — literals are
+     kept because the positive half below matches the import specifier, which IS a
+     string. Controls for both directions are at the end of this section. */
+  const hookSrc = maskComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
   ok(/readBearerToken\(req\)/.test(hookSrc) && !/headers\.Authorization/.test(hookSrc),
     "src/test-hook.js reads the Bearer header through the shared module, not its own casing guess");
-  const idxSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  const idxSrc = maskComments(readFileSync(new URL("../../src/index.js", import.meta.url), "utf8"));
   ok(/from\s+"\.\/shared\/http-headers\.js"/.test(idxSrc) && !/h\[String\(name\)\.toUpperCase\(\)\]/.test(idxSrc),
     "src/index.js reads headers through the shared module too");
+
+  /* The comment/code control pair — the masking itself, on both directions. */
+  const inProse = maskComments('// the old guess was headers.Authorization, removed\nconst x = 1;\n');
+  ok(!/headers\.Authorization/.test(inProse) && /const x = 1/.test(inProse),
+    "a banned header shape named only in a COMMENT does not count as a use");
+  const inCode = maskComments('const t = req.headers.Authorization; // read the token\n');
+  ok(/headers\.Authorization/.test(inCode) && !/read the token/.test(inCode),
+    "…and the same shape in CODE still does");
+  ok(/from\s+"\.\/shared\/http-headers\.js"/.test(maskComments('import { readHeader } from "./shared/http-headers.js";')),
+    "…and a string literal survives the mask, so the import half of the gate still matches");
 }
 
 /* ============ 4c. the harness stand-in row (F-339) ============ */
@@ -600,7 +617,10 @@ seed();
 {
   const { readFileSync } = await import("node:fs");
   for (const rel of ["../../src/async-handler.js", "../../src/listeners.js", "../../src/scheduled-jobs.js"]) {
-    const text = readFileSync(new URL(rel, import.meta.url), "utf8");
+    /* F-805 again: `KEY_ALREADY_EXISTS` is the literal a comment explaining isKeyConflict()
+       would have to name. Read the CODE bytes only; literals stay visible because the
+       positive half matches an import specifier. */
+    const text = maskComments(readFileSync(new URL(rel, import.meta.url), "utf8"));
     ok(!/const\s+safeKeyPart\s*=/.test(text),
       `${rel}: safeKeyPart is imported from shared/kvs-keys.js, not redeclared`);
     ok(!/KEY_ALREADY_EXISTS/.test(text),

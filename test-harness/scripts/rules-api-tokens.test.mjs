@@ -12,6 +12,7 @@
 import "../lib/register-mocks-index.mjs";
 import assert from "node:assert/strict";
 import storage from "../lib/mock-kvs.mjs";
+import { maskComments } from "../lib/js-source-scan.mjs";
 const { createApiTokenInternal, revokeApiTokenInternal, listApiTokens, rulesApiHandler, API_TOKENS_KEY, REVOKED_TOKEN_PREFIX } = await import("../../src/rules-api.js");
 
 let passed = 0; let failed = 0;
@@ -154,7 +155,13 @@ await check("a validation refusal forwards reason, needsRole, hint and refused[]
 // F-337 — the listener `test` action was the last catch that answered { error: e.message }
 // raw: a testListener throw can carry Jira body text and had no machine-readable half.
 await check("every refusal on the surface goes through errBody (F-337)", async () => {
-  const src = await import("node:fs").then((fs) => fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8"));
+  /* F-805 — COUNT CODE, NOT PROSE: the shape this counts is exactly what the comment
+     above (and the equivalent one in rules-api.js) has to write down. maskComments blanks
+     comments and keeps literals; it preserves LENGTH, so the indexOf slice below still
+     indexes the same bytes. The errBody check above keeps the RAW source — it evaluates it. */
+  const src = maskComments(await import("node:fs").then((fs) => fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8")));
+  assert.equal((maskComments("// answered { error: e.message } raw\nreturn { error: e.message };\n").match(/\{ error: e\.message \}/g) || []).length, 1,
+    "F-805 control: the count sees the CODE return only, not the shape named in a comment");
   // The only surviving `{ error: e.message }` is parseBody's, whose throws are two
   // fixed literals with no external text in them.
   const raws = src.match(/\{ error: e\.message \}/g) || [];

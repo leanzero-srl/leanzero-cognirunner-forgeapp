@@ -26,6 +26,7 @@
 
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
+import { maskComments } from "../lib/js-source-scan.mjs";
 const { default: forgeApi } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -164,7 +165,12 @@ for (const [label, resource, opts, floor] of ROUTES) {
 // ONE predicate, not a floor per resource.
 {
   const fs = await import("node:fs");
-  const src = fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8");
+  /* F-805 — COUNT CODE, NOT PROSE. A comment saying "ROLE_RANK[...] is read here and
+     nowhere else" would make this count 3 and fail a file that is right. maskComments
+     blanks comments and keeps string literals. */
+  const src = maskComments(fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8"));
+  ok((maskComments("// ROLE_RANK[a] explained\nconst r = ROLE_RANK[b];\n").match(/ROLE_RANK\[/g) || []).length === 1,
+    "F-805: the count sees the CODE read only, not the one named in a comment");
   const ranks = src.match(/ROLE_RANK\[/g) || [];
   ok(ranks.length === 2, `the role comparison lives in ONE predicate (ROLE_RANK read ${ranks.length}× — expected the 2 inside tokenRoleAtLeast)`);
 }
@@ -399,7 +405,7 @@ for (const [label, resource, opts, floor] of ROUTES) {
 // ONE ownership home: the verdict is asked in src/index.js, never re-derived here.
 {
   const fs = await import("node:fs");
-  const src = fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8");
+  const src = maskComments(fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8"));
   ok(/gateExistingRow/.test(src) && !/createdBy === /.test(src),
     "rules-api.js asks gateExistingRow and owns no ownership comparison of its own");
 }

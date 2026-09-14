@@ -26,6 +26,7 @@
 
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
+import { maskComments } from "../lib/js-source-scan.mjs";
 const { default: forgeApi } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -132,7 +133,8 @@ const agentListener = (over = {}) => ({
 /* ===== 4. one memo read, and no fact is invented ===== */
 {
   const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  const raw = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  const src = maskComments(raw);
   ok(/const agentGateFacts = async \(context, \{ fresh = false \} = \{\}\)/.test(src),
     "the facts are read in ONE helper — no resolver assembles its own");
   // F-485 — and the helper is EXPORTED, because three surfaces outside this file need
@@ -140,12 +142,19 @@ const agentListener = (over = {}) => ({
   // runtime gate. A caller that cannot reach it assembles its own, which is the defect.
   ok(/\n  agentGateFacts,/.test(src),
     "agentGateFacts is exported from the internals block (F-485)");
+  /* F-805 — the banned shape is what a comment showing the context literal would write,
+     and the helper-scoped COUNT below is broken by a comment naming the call too. Comments
+     blanked, literals kept; the mask preserves length so the slice still lines up. */
+  ok(!/capability:\s*\{\s*git:/.test(maskComments("// the context looks like { capability: { git: true } }\nlet x;\n"))
+    && /capability:\s*\{\s*git:/.test(maskComments("const ctx = { capability: { git: true } };\n")),
+    "F-805 control: the context shape in a COMMENT is not a hand-build; in CODE it is");
   ok(!/capability:\s*\{\s*git:/.test(src),
     "index.js never hand-builds the gate CONTEXT shape; buildAgentGateContext owns it");
   const helper = src.slice(src.indexOf("const agentGateFacts"), src.indexOf("const savedByRoleFor"));
   ok((helper.match(/getProviderConfig\(\)/g) || []).length === 1,
     "provider AND allowance come from ONE memo read, not two");
-  ok(/catch \(e\) \{ \/\* restrictive/.test(helper),
+  /* This one reads the RAW source on purpose: the thing it asserts IS a comment. */
+  ok(/catch \(e\) \{ \/\* restrictive/.test(raw.slice(raw.indexOf("const agentGateFacts"), raw.indexOf("const savedByRoleFor"))),
     "a fact that cannot be read is OMITTED — the gate then refuses rather than assuming");
 }
 

@@ -29,10 +29,18 @@ import path from "node:path";
 import { errorSignature, normalizeMemoryText } from "../../src/memories.js";
 /* F-704: the gated-export census is a shared rule, asked here and in harness-fault-ttl.test.mjs. */
 import { gatedExportViolations } from "../lib/gated-export-contract.mjs";
+/* F-805: several gates below BAN a spelling ("lst_exec:", claimListenerRun, harness_fault:)
+   that the docblock explaining WHY it is banned has to write down. Those gates read the
+   masked source — comments blanked, string literals KEPT, because a banned key prefix lives
+   inside a literal. The docblock-PARITY gates in this file (checkProviderHealth, the F-114
+   settle block) deliberately read comments and keep reading the RAW source. */
+import { maskComments } from "../lib/js-source-scan.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
 const asyncSrc = readFileSync(path.join(here, "../../src/async-handler.js"), "utf8");
+const indexCode = maskComments(indexSrc);   // comments blanked — for the BANS, not the doc parity
+const asyncCode = maskComments(asyncSrc);
 
 // F-448 — the no-provider guard is asserted PER HANDLER, never by counting occurrences
 // in the file. A count of 5 passes when one body carries the guard twice and another
@@ -321,7 +329,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   }
   ok(/atlassian: FORGE_LLM_DEFAULT/.test(asyncSrc),
     "PROVIDER_DEFAULT_MODELS.atlassian is the IMPORTED default, not a re-typed literal that could drift");
-  ok(!/atlassian: "claude-/.test(asyncSrc), "no hardcoded Forge LLM model literal survives in the consumer");
+  ok(!/atlassian: "claude-/.test(asyncCode), "no hardcoded Forge LLM model literal survives in the consumer");
 
   // The clamp sits inside the Forge LLM branch, before the chat call.
   const i = asyncSrc.indexOf('if (provider === "atlassian") {', asyncSrc.indexOf("callAIChatSimpleRaw"));
@@ -358,7 +366,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // from src/index.js's currentEdition(). Now there is one ladder, called with
   // `{ fresh: true }` so the consumer keeps its deliberate no-cache semantics without
   // a second implementation to keep in step.
-  const asyncCode = asyncSrc.replace(/\/\/[^\n]*/g, "");
+  /* F-805: this ban used a local line-comment strip, which missed BLOCK comments — the one
+     directly above names currentEditionAsync — and would also have cut a double slash inside
+     a URL literal. The file-level masked copy answers both correctly. */
   ok(!/currentEditionAsync/.test(asyncCode), "the consumer's duplicate edition ladder is gone");
   ok(!/EDITION_SNAPSHOT_KEY/.test(asyncCode),
     "…and with it the retyped snapshot key (the ladder that reads it lives in src/index.js)");
@@ -639,7 +649,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "the claim is taken BEFORE the queue push — the cap is checked before the side effect");
   ok(/is already pending or recently failed — not re-queued/.test(indexSrc), "the suppressed case says so in the log");
   // claimRuleExecution is the ONE home for this conditional-write rule (no second copy).
-  ok(!/keyPolicy: "FAIL_IF_EXISTS"[\s\S]{0,80}memdistill/.test(indexSrc), "no second hand-rolled claim for the distill");
+  ok(!/keyPolicy: "FAIL_IF_EXISTS"[\s\S]{0,80}memdistill/.test(indexCode), "no second hand-rolled claim for the distill");
 }
 
 // =====================================================================================
@@ -725,7 +735,11 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "…and the listener half stays the eventType, matching listeners.js");
   // F-139 — the refusal has its OWN dedup key and must NOT touch the run's claim, so the
   // consumer no longer imports (or can take) claimListenerRun / claimJobRun at all.
-  ok(!/claimListenerRun|claimJobRun/.test(asyncSrc),
+  /* F-805 control pair for the mask these bans read through. */
+  ok(!/claimListenerRun/.test(maskComments("// F-139: the consumer must not call claimListenerRun here\nconst x = 1;\n"))
+    && /claimListenerRun/.test(maskComments("await claimListenerRun(params, taskId);\n")),
+    "a banned name in a COMMENT is not a use; the same name in CODE is");
+  ok(!/claimListenerRun|claimJobRun/.test(asyncCode),
     "the consumer never takes the RUN's execution claim on the refusal path (F-139)");
   ok(/import \{ claimRuleExecution \} from "\.\/shared\/execution-claim\.js";/.test(asyncSrc),
     "…it dedups through the ONE conditional-write helper");
@@ -737,7 +751,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     && /const REFUSE_CLAIM_TTL_HOURS = Math\.ceil\(\s*\(BUDGET_WAIT_HORIZON_MS \+ MAX_BUDGET_DEFER_DELAY_S \* 1000\) \/ 3600000,?\s*\);/.test(asyncSrc)
     && /const REFUSE_CLAIM_TTL = \{ ttl: \{ value: REFUSE_CLAIM_TTL_HOURS, unit: "HOURS" \} \};/.test(asyncSrc),
     "…whose TTL is derived from BUDGET_WAIT_HORIZON_MS + MAX_BUDGET_DEFER_DELAY_S (F-147)");
-  ok(!/value: 15, unit: "MINUTES"/.test(asyncSrc),
+  ok(!/value: 15, unit: "MINUTES"/.test(asyncCode),
     "…and the old flat 15-minute refusal TTL is gone");
   {
     const { BUDGET_WAIT_HORIZON_MS: horizon, MAX_BUDGET_DEFER_DELAY_S: maxDelay } =
@@ -748,9 +762,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     ok(hours * 3600000 > 15 * 60000,
       "EXECUTED (F-147): …and is longer than the 15 minutes that let a duplicate refusal double-log");
   }
-  ok(!/["`']lst_exec:|["`']job_exec:/.test(asyncSrc), "…and the consumer never retypes a run claim key prefix");
-  const listenersSrc = readFileSync(path.join(here, "../../src/listeners.js"), "utf8");
-  const jobsSrc = readFileSync(path.join(here, "../../src/scheduled-jobs.js"), "utf8");
+  ok(!/["`']lst_exec:|["`']job_exec:/.test(asyncCode), "…and the consumer never retypes a run claim key prefix");
+  const listenersSrc = maskComments(readFileSync(path.join(here, "../../src/listeners.js"), "utf8"));
+  const jobsSrc = maskComments(readFileSync(path.join(here, "../../src/scheduled-jobs.js"), "utf8"));
   ok((listenersSrc.match(/EXEC_CLAIM_PREFIX \+ safeKeyPart/g) || []).length === 1,
     "listeners.js builds its exec claim key in exactly ONE place");
   ok((jobsSrc.match(/EXEC_CLAIM_PREFIX \+ safeKeyPart/g) || []).length === 1,
@@ -1214,7 +1228,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/params && params\.envelope/.test(g), "the handler reads the 5a envelope from params.envelope");
   ok(/await dispatchGitEvent\(envelope\)/.test(g), "…and delegates to listeners.js — matching, brakes and ignoreSelf have ONE home");
   ok(!/callAIChat|callModel|reviewPullRequest/.test(g), "the dispatch makes NO model call: the AI runs in the task it enqueues");
-  ok(!/AI_TASK_TYPES = new Set\(\[[^\]]*git-event/.test(asyncSrc), "git-event is NOT an AI task — pacing a matcher would delay deliveries, not spend");
+  ok(!/AI_TASK_TYPES = new Set\(\[[^\]]*git-event/.test(asyncCode), "git-event is NOT an AI task — pacing a matcher would delay deliveries, not spend");
   const { TOKEN_SPENDING_TASK_TYPES: spending } = await import("../../src/shared/ai-budget.js");
   const aiTypes = new Set(spending);
   ok(!aiTypes.has("git-event") && aiTypes.has("gitreview"), "EXECUTED: the governor paces the review, never the delivery");
@@ -1366,7 +1380,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "the env gate is the FIRST statement of harnessFaultArmed — before any storage call");
   const hookSrc = readFileSync(path.join(here, "../../src/test-hook.js"), "utf8");
   ok(/armGitDispatchFault/.test(hookSrc) && /disarmGitDispatchFault/.test(hookSrc), "arm/disarm are dev-hook actions (HARNESS_SECRET Bearer gated), not resolvers");
-  ok(!/harness_fault:/.test(hookSrc) && !/harness_fault:/.test(asyncSrc), "neither the hook nor the consumer retypes the key shape — it has ONE home");
+  ok(!/harness_fault:/.test(maskComments(hookSrc)) && !/harness_fault:/.test(asyncCode), "neither the hook nor the consumer retypes the key shape — it has ONE home");
 
   kvs.get = realGet;
   if (savedEnv === undefined) delete process.env.HARNESS_SECRET; else process.env.HARNESS_SECRET = savedEnv;
@@ -1411,8 +1425,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const hookSrc2 = readFileSync(path.join(here, "../../src/test-hook.js"), "utf8");
   ok(/armHookPromoteFault/.test(hookSrc2) && /disarmHookPromoteFault/.test(hookSrc2) && /readHookPromoteFault/.test(hookSrc2),
     "the promote lever is a dev-hook action beside armGitDispatchFault — same Bearer gate, not a resolver");
-  ok(!/harness_fault:/.test(hookSrc2), "…and the hook still never retypes the key shape");
-  const connSrc = readFileSync(path.join(here, "../../src/git-connections.js"), "utf8");
+  ok(!/harness_fault:/.test(maskComments(hookSrc2)), "…and the hook still never retypes the key shape");
+  const connSrc = maskComments(readFileSync(path.join(here, "../../src/git-connections.js"), "utf8"));
   ok(/harnessFaultArmed\(HARNESS_FAULT_HOOK_PROMOTE/.test(connSrc) && (connSrc.match(/harnessFaultArmed\(/g) || []).length === 1,
     "SOURCE: the consumer is ONE seam in git-connections.js — the lever is not sprinkled through the module");
   // Comments may NAME the gate (they must, to explain themselves); what must not exist is
@@ -1720,7 +1734,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "a rotation IS polled — the Code tab waits on the result row, so it must be written");
   const gcSrc = asyncSrc.match(/const executeCredentialRotation = async \(params\) => \{[\s\S]*?\n\};/)[0];
   ok(/\[CREDENTIAL_ROTATION_TASK\]: executeCredentialRotation/.test(asyncSrc), "…under the computed key, never a retyped literal");
-  ok(!/AI_TASK_TYPES = new Set\(\[[^\]]*gitcredrotate/.test(asyncSrc), "a rotation spends no tokens and is never gated");
+  ok(!/AI_TASK_TYPES = new Set\(\[[^\]]*gitcredrotate/.test(asyncCode), "a rotation spends no tokens and is never gated");
 
   // EXECUTED: the real handler source over a stubbed rotation.
   const logs = [];

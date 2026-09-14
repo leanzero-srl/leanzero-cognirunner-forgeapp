@@ -18,6 +18,11 @@
 import { readFileSync } from "node:fs";
 import kvs from "../lib/mock-kvs.mjs";
 
+/* F-805 — the BANS below ("no bare literal for VA_HEALTH_BANNER_AT", "no TTL on the memory
+   row") name the exact spelling their own docblock writes down, so they read the source with
+   comments blanked and string literals kept. Length is preserved, so the purgeAgent ordering
+   slice still indexes the same bytes. */
+import { maskComments } from "../lib/js-source-scan.mjs";
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("  ✗ " + m); } };
 const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`);
@@ -566,9 +571,12 @@ reset();
     "F-439: VA_HEALTH_BANNER_AT IS registry-limits' VA_HEALTH_BANNER_FAILED_TICKS");
   eq(L.VA_HEALTH_BANNER_AT, VA_LIMITS.healthBannerFailedTicks,
     "…reached through VA_LIMITS, like every other number in the ledger (rule 3)");
-  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+  const ledgerSrc = maskComments(readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8"));
   ok(/export const VA_HEALTH_BANNER_AT = VA_LIMITS\.healthBannerFailedTicks;/.test(ledgerSrc),
     "F-439: the ledger IMPORTS the threshold…");
+  ok(!/export const VA_HEALTH_BANNER_AT\s*=\s*\d/.test(maskComments("// was: export const VA_HEALTH_BANNER_AT = 3;\nlet x;\n"))
+    && /export const VA_HEALTH_BANNER_AT\s*=\s*\d/.test(maskComments("export const VA_HEALTH_BANNER_AT = 3;\n")),
+    "F-805 control: the bare literal in a COMMENT is not a declaration; in CODE it is");
   ok(!/export const VA_HEALTH_BANNER_AT\s*=\s*\d/.test(ledgerSrc),
     "…and declares no bare literal for it");
   // The banner really does move with the constant, not with a hard-coded 3.
@@ -877,8 +885,8 @@ reset();
    TTL on purpose (it is written only when the agent learns something), and that is
    asserted too, so switching it on has to be a deliberate edit here. */
 {
-  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
-  const keysSrc = readFileSync(new URL("../../src/shared/va-keys.js", import.meta.url), "utf8");
+  const ledgerSrc = maskComments(readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8"));
+  const keysSrc = maskComments(readFileSync(new URL("../../src/shared/va-keys.js", import.meta.url), "utf8"));
   ok(/export const VA_HEALTH_TTL = days\(VA_LIMITS\.itemTtlDays\)/.test(keysSrc),
     "health: …and the TTL is the item TTL, from the one home for the numbers");
   ok(!/store\.set\(vaMemoryKey\(agent\), memory,/.test(ledgerSrc),
@@ -1275,8 +1283,8 @@ reset();
    less than the claim TTL reopens the race at exactly the horizon the claims were sized
    for, so that has to be a deliberate edit here. And the purge must write it FIRST. */
 {
-  const keysSrc = readFileSync(new URL("../../src/shared/va-keys.js", import.meta.url), "utf8");
-  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+  const keysSrc = maskComments(readFileSync(new URL("../../src/shared/va-keys.js", import.meta.url), "utf8"));
+  const ledgerSrc = maskComments(readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8"));
   ok(/export const VA_PURGED_TTL = days\(3\)/.test(keysSrc),
     "tombstone: the TTL is 3 days — one day beyond VA_CLAIM_TTL (2 days)");
   ok(/export const VA_CLAIM_TTL = days\(2\)/.test(keysSrc),

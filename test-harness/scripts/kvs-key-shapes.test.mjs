@@ -290,9 +290,15 @@ ok(vaKeys.vaItemKey("a", "SUP-1") !== vaKeys.vaItemKey("a", "SUP-2"), "two issue
 // The ledger builds NO key of its own — one home, asserted by grep, not by inference.
 {
   const { readFileSync } = await import("node:fs");
-  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
-  // A TEMPLATE LITERAL that interpolates — the docblocks name the key shapes in prose,
-  // which is documentation, not a second builder. The tell is `${`.
+  /* F-805 — the docblocks in that file NAME the key shapes, interpolation and all, so the
+     "the tell is a substitution" heuristic this gate leaned on is not enough by itself: a
+     comment showing the interpolated shape reads exactly like a builder. Comments are
+     blanked; string and template literals are KEPT, because a real builder IS a literal. */
+  const { maskComments } = await import("../lib/js-source-scan.mjs");
+  const ledgerSrc = maskComments(readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8"));
+  ok(!/`va_item:[^`]*\$\{/.test(maskComments("// keys look like `va_item:${agent}`\nlet x;\n"))
+    && /`va_item:[^`]*\$\{/.test(maskComments("const k = `va_item:${agent}`;\n")),
+    "F-805 control: a key shape shown in a COMMENT is documentation; in a literal it is a builder");
   ok(!/`va_(item|index|memory|tick|effect|caps|health|exec|post):[^`]*\$\{/.test(ledgerSrc),
     "src/va-ledger.js interpolates no VA key of its own — every key comes from va-keys.js (F-346)");
   ok(/from "\.\/shared\/va-keys\.js"/.test(ledgerSrc), "src/va-ledger.js imports the shared builders");

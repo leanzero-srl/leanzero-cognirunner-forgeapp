@@ -45,6 +45,7 @@ import {
 import { executePremadeRule, writeConfluenceIssueProperty, CONFLUENCE_VALIDATOR_BUDGET_MS } from "../../src/premade-rules.js";
 import { ConfluenceError } from "../../src/confluence-client.js";
 
+import { maskComments } from "../lib/js-source-scan.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../..");
 
@@ -716,6 +717,16 @@ ok(/ADVISORY/.test(executorSrc), "…and so does the executor, beside the writer
 /* ── the two post-functions' catalogue rows and their index.js wiring ── */
 {
   const indexSrc = readFileSync(resolve(root, "src", "index.js"), "utf8");
+  /* F-805 — the BANS below (no `.includes("confluence")` in isHeavyPf, no second
+     cognirunner.confluence PUT) name shapes the comment ABOVE THEM writes down verbatim;
+     this very file's comment quotes the banned substring test. They read the masked copy:
+     comments blanked, string literals kept, since the banned substring IS a literal. The
+     "NEVER retried" assertion further down deliberately keeps the raw source — it asserts
+     that a COMMENT states the rule. */
+  const indexCode = maskComments(indexSrc);
+  ok(!/includes\("confluence"\)/.test(maskComments('// a .includes("confluence") here would queue both\nlet x;\n'))
+    && /includes\("confluence"\)/.test(maskComments('if (t.includes("confluence")) queue();\n')),
+    "F-805 control: the banned substring test in a COMMENT is not a route; in CODE it is");
   for (const key of ["postfunction-confluence-page", "postfunction-confluence-comment"]) {
     const row = PREMADE_POSTFUNCTIONS.find((r) => r.key === key);
     ok(!!row, `${key} is in the post-function catalogue`);
@@ -730,10 +741,10 @@ ok(/ADVISORY/.test(executorSrc), "…and so does the executor, beside the writer
   // The substring trap this whole wiring exists to avoid: "postfunction-confluence-page"
   // and "postfunction-confluence-comment" share a prefix, so a `.includes("confluence")`
   // in isHeavyPf would queue the deterministic one too.
-  const heavy = (indexSrc.match(/const isHeavyPf = [\s\S]{0,1600}?;\n/) || [""])[0];
+  const heavy = (indexCode.match(/const isHeavyPf = [\s\S]{0,1600}?;\n/) || [""])[0];
   ok(heavy.includes("isConfluencePagePfType(pfType)"), "isHeavyPf names the PAGE rule explicitly");
   ok(!heavy.includes("isConfluenceCommentPfType(pfType)"), "…and does NOT name the COMMENT rule");
-  ok(!/isHeavyPf[\s\S]{0,1600}includes\("confluence"\)/.test(indexSrc), "…and routes on neither by substring");
+  ok(!/isHeavyPf[\s\S]{0,1600}includes\("confluence"\)/.test(indexCode), "…and routes on neither by substring");
   ok(/PREMADE_PF_TYPES\.has\(config\.ruleType\)/.test(indexSrc),
     "resolvePfType derives its premade arm from the CATALOGUE, so a new premade PF cannot resolve to postfunction-static");
   ok(/isConfluencePagePfType\(type\) \|\| isConfluenceCommentPfType\(type\)/.test(indexSrc),
@@ -743,7 +754,7 @@ ok(/ADVISORY/.test(executorSrc), "…and so does the executor, beside the writer
   ok(/NEVER retried|never retried/.test(indexSrc), "the no-retry-on-conflict rule is stated where the write happens");
   // ONE property writer, shared with the validator rather than copied.
   ok(indexSrc.includes("writeConfluenceIssueProperty"), "the page post-function uses the validator's ONE property writer");
-  ok(!/route`\/rest\/api\/3\/issue\/\$\{issueKey\}\/properties\/\$\{CONFLUENCE_PROPERTY_KEY\}`[\s\S]{0,200}method: "PUT"/.test(indexSrc),
+  ok(!/route`\/rest\/api\/3\/issue\/\$\{issueKey\}\/properties\/\$\{CONFLUENCE_PROPERTY_KEY\}`[\s\S]{0,200}method: "PUT"/.test(indexCode),
     "…and index.js grows no second cognirunner.confluence PUT");
 }
 

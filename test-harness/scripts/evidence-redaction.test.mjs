@@ -384,7 +384,43 @@ for (const f of permDrivers) {
   const src = readFileSync(path.join(here, f), "utf8");
   const raw = scanRawShots(src);
   ok(raw.length === 0, `${f}: every capture goes through the email mask (raw page.screenshot at: ${raw.join(", ")})`);
-  ok(/shotMasked/.test(src), `${f}: …and it imports the mask helper rather than rolling its own`);
+  ok(/shotMasked|makeShot/.test(src), `${f}: …and it imports the mask helper rather than rolling its own`);
+}
+
+/* ── 4c-ii. F-668 — THE REFUSAL IS ARMED, AND THE ANSWER IS READ ────────────────
+   `shotMasked` always had the right behaviour: `strict` defaults to true, a readable
+   address ABORTS the capture, and the non-strict branch returns `{captured:false, reason}`
+   for the caller to record. All nine live call sites disarmed it — `{ strict: false }`
+   plus a `.catch` that discarded the answer — so the refusal branch never ran anywhere
+   and the reason had no reader. The failure mode is a GREEN run with a silently missing
+   PNG; and fixing nine sites by hand schedules the tenth.
+
+   So the rule is on the directory, not the file: a driver does not name `shotMasked` at
+   all. It binds `makeShot(NV)` ONCE and calls that. Two things are forbidden in a
+   `*-live.mjs`: waiving `strict`, and swallowing the capture's answer. */
+const WAIVES_STRICT = /strict\s*:\s*false/;
+const SWALLOWS_SHOT = /(shotMasked|shot_)\s*\([^)]*\)[^;\n]*\.catch\s*\(/;
+const codeLines = (src) => src.split("\n").map((l, i) => ({ l, n: i + 1 }))
+  .filter(({ l }) => !/^\s*\*/.test(l) && !/^\s*\/\//.test(l));
+
+ok(WAIVES_STRICT.test("await shotMasked(page, frame, p, { strict: false });"),
+  "POSITIVE CONTROL: the strict-waiver rule FIRES on the line all nine call sites carried");
+ok(!WAIVES_STRICT.test("await shot_(page, frame, `${OUT}/01.png`);"),
+  "NEGATIVE CONTROL: a makeShot call that takes the default is not flagged");
+ok(SWALLOWS_SHOT.test("await shotMasked(page, frame, p, { strict: false }).catch(() => {});"),
+  "POSITIVE CONTROL: the swallowed-answer rule FIRES on the discarded capture");
+ok(!SWALLOWS_SHOT.test("const shot = await shot_(page, frame, p);"),
+  "NEGATIVE CONTROL: a recorded capture is not flagged");
+
+for (const f of permDrivers) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  const waived = codeLines(src).filter(({ l }) => WAIVES_STRICT.test(l)).map(({ n }) => n);
+  ok(waived.length === 0, `${f}: no capture waives \`strict\` — a readable address aborts the run (at: ${waived.join(", ")})`);
+  const swallowed = codeLines(src).filter(({ l }) => SWALLOWS_SHOT.test(l)).map(({ n }) => n);
+  ok(swallowed.length === 0, `${f}: no capture's answer is discarded with .catch (at: ${swallowed.join(", ")})`);
+  const direct = codeLines(src).filter(({ l }) => /\bshotMasked\s*\(/.test(l)).map(({ n }) => n);
+  ok(direct.length === 0, `${f}: shotMasked is not called directly — makeShot is the one home of the recording (at: ${direct.join(", ")})`);
+  ok(/makeShot\s*\(/.test(src), `${f}: captures are bound to this driver's own N/V writer via makeShot`);
 }
 
 /* ── 4c-iii. F-657 — NO PERMISSION DRIVER PICKS AN ACCOUNT ITS OWN WAY ──────────

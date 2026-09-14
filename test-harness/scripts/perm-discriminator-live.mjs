@@ -32,7 +32,7 @@ import { redactString, redactSecrets } from "../lib/redact.mjs";
    through `shotMasked`, which masks every `.perm-ident-email`, asserts nothing readable is
    left, shoots, and restores. The id chips stay legible: they are the discriminator these
    screenshots exist to prove. */
-import { makeRosterUI, shotMasked } from "../lib/roster-ui.mjs";
+import { makeRosterUI, makeShot } from "../lib/roster-ui.mjs";
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
 } from "../lib/roster-restore.mjs";
@@ -65,6 +65,15 @@ const ev = { at: new Date().toISOString(), env: "dev", target: TARGET, checks: [
 const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  PASS  ${redactString(s)}${d ? " " + J(d) : ""}`); };
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  FAIL  ${redactString(s)}${d ? " " + J(d) : ""}`); };
 const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  N/V   ${redactString(s)}${d ? " " + J(d) : ""}`); };
+
+/* F-668 — THE CAPTURE'S ANSWER IS RECORDED, NEVER DISCARDED. Every call site here used
+ * to waive the strict flag AND swallow the returned promise, so the branch that REFUSES a
+ * leaking capture never ran, and the `{captured:false, reason}` answer had no reader: a
+ * missing PNG was a silent hole in a green run. `makeShot` binds this driver's N/V writer
+ * once. Strict is the default again — a readable address ABORTS rather than reaching disk
+ * — and a capture that did not happen now says so, with its reason, in the evidence.
+ * `scripts/evidence-redaction.test.mjs` keeps both halves true for the whole directory. */
+const shot_ = makeShot(NV);
 const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 const readRes = async (res) => { let t = ""; try { t = await res.text(); } catch { return { status: 0, json: null, text: "" }; } let j = null; try { j = JSON.parse(t); } catch {} return { status: res.status, json: j, text: t }; };
@@ -120,7 +129,7 @@ async function readSearchRows(q, shot) {
     }
     const errBox = frame.locator(".perm-search-error");
     const err = (await errBox.count()) > 0 ? (await errBox.first().innerText()).trim() : null;
-    await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
+    await shot_(page, frame, `${OUT}/${shot}`);
     return { rows: out, err };
   });
 }
@@ -146,7 +155,7 @@ async function readRosterCards(shot) {
         idTitle: (await idEl.count()) > 0 ? await idEl.first().getAttribute("title") : null,
       });
     }
-    await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
+    await shot_(page, frame, `${OUT}/${shot}`);
     return out;
   });
 }
@@ -176,7 +185,7 @@ async function readRosterCards(shot) {
  * stray this run never recorded making is still removed.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 const { grantRole, restoreRosterToSnapshot } =
-  makeRosterUI({ withAdminPanel, rosterRows: rosterRaw, out: OUT });
+  makeRosterUI({ withAdminPanel, rosterRows: rosterRaw, out: OUT, record: NV });
 
 async function main() {
   console.log("\nF-647 / F-648 - the Permissions picker discriminator, live on DEV\n");

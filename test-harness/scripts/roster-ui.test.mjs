@@ -25,7 +25,7 @@
  * Run: node scripts/roster-ui.test.mjs (auto-discovered by run-offline.mjs)
  */
 
-import { MASK_EMAILS_SRC, RESTORE_EMAILS_SRC, shotMasked } from "../lib/roster-ui.mjs";
+import { MASK_EMAILS_SRC, RESTORE_EMAILS_SRC, shotMasked, makeShot } from "../lib/roster-ui.mjs";
 import { maskEmail } from "../lib/redact.mjs";
 
 let pass = 0, fail = 0;
@@ -150,6 +150,44 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
   const blind = await shotMasked(page, { evaluate: async () => { throw new Error("frame detached"); } }, "/tmp/cr-w.png", { strict: false });
   ok(blind.captured === false && shots === 0 && /could not run/.test(blind.reason),
     "a mask that could not RUN is a refusal too — an unknown page is not a safe page");
+}
+
+/* ── 6. F-668 — makeShot RECORDS the answer, and still lets a LEAK abort ────────── */
+{
+  const frameOf = (result) => ({ evaluate: async () => result });
+  let shots = 0;
+  const page = { screenshot: async () => { shots++; } };
+  const okPage = { screenshot: async () => { shots++; throw new Error("ENOSPC"); } };
+
+  /* The happy path is SILENT: a captured shot is not an N/V. */
+  const noted = [];
+  const shot = makeShot((s, d) => noted.push({ s, d }));
+  const good = await shot(page, frameOf({ total: 2, masked: 2, readable: 0 }), "/tmp/cr-a.png");
+  ok(good.captured === true && noted.length === 0, "a captured shot records NOTHING — makeShot is not a narrator");
+
+  /* The failure that is NOT a leak: the mask passed, the shutter failed. Recorded, and
+     the run carries on — this is the case the nine `.catch(() => {})`s were hiding. */
+  shots = 0;
+  const failed = await shot(okPage, frameOf({ total: 1, masked: 1, readable: 0 }), "/tmp/cr-b.png");
+  ok(failed.captured === false, "a shutter failure is reported as captured:false, not as success");
+  ok(noted.length === 1 && /was not captured/.test(noted[0].s) && /cr-b\.png/.test(noted[0].s),
+    "…and it is RECORDED through the driver's own writer, naming the file");
+  ok(noted[0].d && typeof noted[0].d.reason === "string" && noted[0].d.reason.length > 0,
+    "…with a reason, so the missing PNG is never a silent hole");
+
+  /* THE GUARANTEE THAT MUST NOT SOFTEN. makeShot takes the strict default, so a readable
+     address still THROWS out of the caller — it is not downgraded to a recorded note. */
+  shots = 0;
+  let threw = null;
+  try { await shot(page, frameOf({ total: 2, masked: 0, readable: 2 }), "/tmp/cr-c.png"); }
+  catch (e) { threw = String(e.message); }
+  ok(threw !== null && shots === 0, "a LEAK still ABORTS through makeShot — recording did not soften the refusal");
+  ok(/readable address/.test(String(threw)), "…and it aborts for the stated reason");
+
+  /* No writer at all must not crash the driver that forgot to pass one. */
+  const bare = makeShot();
+  const r = await bare(okPage, frameOf({ total: 0, masked: 0, readable: 0 }), "/tmp/cr-d.png");
+  ok(r.captured === false, "makeShot() with no writer still answers; the result rides out on the return value");
 }
 
 console.log(`roster-ui.test.mjs: ${pass} passed, ${fail} failed`);

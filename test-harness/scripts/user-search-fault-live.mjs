@@ -50,7 +50,7 @@
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
-import { shotMasked } from "../lib/roster-ui.mjs";
+import { makeShot } from "../lib/roster-ui.mjs";
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
 
 const env = loadEnv();
@@ -83,6 +83,11 @@ const say = (v, s, d) => { ev.checks.push({ v, s: redactString(String(s)), ...(d
 const PASS = (s, d) => { passes++; say("PASS", s, d); };
 const FAIL = (s, d) => { fails++; say("FAIL", s, d); };
 const NV = (s, d) => { unproven++; say("N/V", s, d); };
+
+/* F-668 — the capture's answer is RECORDED, never discarded, and `strict` is the default:
+   a readable address ABORTS rather than reaching disk. `makeShot` is the one home of that
+   recording, so no call site here carries a `.catch(() => {})` or a `strict` flag. */
+const shot_ = makeShot(NV);
 const info = (s) => console.log(`        ${redactString(String(s))}`);
 const step = (s) => console.log(`\n── ${s}`);
 
@@ -243,10 +248,9 @@ async function main() {
          step's `catch`, which records N/V — a refused capture is reported, never silent.
          (The old mask also targeted `.perm-search-email`, a class the product does not
          render: it was masking nothing on half its selector.) */
-      const shot = await shotMasked(page, frame, `${OUT}/search-error-429.png`, { strict: true });
+      const shot = await shot_(page, frame, `${OUT}/search-error-429.png`);
       shotPath = shot.captured ? shot.path : null;
       if (shot.captured) PASS("the error-state screenshot was captured with every email span masked in the DOM first", { path: shot.path, spans: shot.total, masked: shot.masked, readable: shot.readable });
-      else NV("the error-state screenshot was refused", { reason: shot.reason });
 
       // Replaced, not stacked: three more keystroke-driven searches in a row.
       const seq = [];

@@ -124,10 +124,12 @@ export async function restoreMaskedEmails(frame) {
  * THE ONLY WAY A PERMISSIONS-TAB SCREENSHOT IS TAKEN. Mask, assert nothing readable is
  * left, capture, restore.
  *
- * @param opts.strict  when true (the default) a readable address ABORTS the capture and
- *   throws — a PNG that leaks is worse than a missing one, because the missing one gets
- *   noticed. Pass false where a failed capture must not take the run down with it; the
- *   answer then carries `captured:false` and the reason, which the caller should record.
+ * @param opts.strict  when true (the DEFAULT, and F-668 is why it is no longer waived at
+ *   any call site) a readable address ABORTS the capture and throws — a PNG that leaks is
+ *   worse than a missing one, because the missing one gets noticed. `strict:false` is not
+ *   used by any driver any more: it survives as the unit-testable branch, and a caller
+ *   that passes it must still RECORD the `{captured:false, reason}` answer. Prefer
+ *   `makeShot` below — it is the one home of that recording.
  */
 export async function shotMasked(page, frame, path, opts = {}) {
   const strict = opts.strict !== false;
@@ -148,6 +150,39 @@ export async function shotMasked(page, frame, path, opts = {}) {
   return { path, total: m.total, masked: m.masked, readable: m.readable, captured };
 }
 
+/**
+ * THE ONE HOME OF "A CAPTURE THAT DID NOT HAPPEN IS RECORDED".
+ *
+ * F-668 — THE GUARANTEE WAS ARMED AT ZERO CALL SITES. `strict` defaulted to true, and
+ * every one of the nine live call sites passed `{ strict: false }` and then wrote
+ * `.catch(() => {})` around the call, throwing the answer away. So the branch that
+ * REFUSES a leaking capture never ran anywhere, and the branch that reports WHY a capture
+ * is missing had no reader: the run stayed green, the PNG was silently absent, and
+ * nothing in the evidence said why — while this file's own docblock told a reader the
+ * answer "should be recorded".
+ *
+ * Fixing the nine sites one at a time would schedule the tenth. This wrapper is the fix:
+ * a driver hands it its own N/V writer ONCE, and every capture in that driver is then
+ * recorded on failure, with no `.catch` to remember to omit and no `strict` to remember
+ * to set. A LEAK still throws out — that is the F-660 promise, and softening it is not
+ * this function's job.
+ *
+ * @param record  the driver's N/V writer, `(sentence, detail) => void`.
+ */
+export function makeShot(record) {
+  const note = typeof record === "function" ? record : () => {};
+  return async function shot(page, frame, path, opts = {}) {
+    const r = await shotMasked(page, frame, path, opts);
+    if (!r.captured) {
+      note("a screenshot was not captured: " + path, {
+        reason: r.reason || "page.screenshot() failed (the mask itself passed: nothing readable was left)",
+        readable: r.readable, spans: r.total, masked: r.masked,
+      });
+    }
+    return r;
+  };
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * THE ROSTER, THROUGH THE PERMISSIONS TAB — ONE IMPLEMENTATION.
  *
@@ -157,9 +192,13 @@ export async function shotMasked(page, frame, path, opts = {}) {
  * @param deps.withAdminPanel  (fn(page, frame)) => result — opens the panel, closes it
  * @param deps.rosterRows      () => the raw `app_admins` array, straight from KVS
  * @param deps.out             the results directory screenshots are written to
+ * @param deps.record          (F-668) the driver's N/V writer. Its captures are recorded
+ *   through it exactly as the driver's own are; omitted, the answer still rides out on
+ *   the returned `shot` field, which `restoreRosterToSnapshot` folds into `actions`.
  * ═══════════════════════════════════════════════════════════════════════════════ */
-export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
+export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
   const rosterIds = async () => (await rosterRows()).map(rosterIdOf);
+  const shot = makeShot(record);
 
   /** Every search row / roster card with its discriminator — read in the SAME context. */
   async function readRows(frame, sel) {
@@ -230,8 +269,8 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
         }
         await target.click();
         await sleep(4500);
-        const shot = await shotMasked(page, frame, out + "/02-roster-granted.png", { strict: false });
-        return { clicked: true, rows: rows.length, how: pick.how, index: pick.index, shot };
+        const grantShot = await shot(page, frame, out + "/02-roster-granted.png");
+        return { clicked: true, rows: rows.length, how: pick.how, index: pick.index, shot: grantShot };
       });
       if (r.disabledHit) return { ok: true, alreadyPresent: true, query: q };
       if (r.clicked) {
@@ -266,12 +305,12 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
       await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
       await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
       await sleep(3500);
-      await shotMasked(page, frame, out + "/03-roster-restore-" + idTail(accountId).slice(0, 8) + ".png", { strict: false });
-      return { removed: true, how: pick.how, index: pick.index };
+      const rmShot = await shot(page, frame, out + "/03-roster-restore-" + idTail(accountId).slice(0, 8) + ".png");
+      return { removed: true, how: pick.how, index: pick.index, shot: rmShot };
     });
     if (!r.removed) return r;
     const gone = !(await rosterIds()).includes(accountId);   // SECOND READ
-    return { removed: gone, how: r.how, index: r.index, ...(gone ? {} : { reason: "the card was clicked but the row is still in app_admins" }) };
+    return { removed: gone, how: r.how, index: r.index, shot: r.shot, ...(gone ? {} : { reason: "the card was clicked but the row is still in app_admins" }) };
   }
 
   /**

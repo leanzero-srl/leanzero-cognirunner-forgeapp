@@ -66,7 +66,7 @@ import { selectByDiscriminator } from "../lib/roster-restore.mjs";
  * `--i-know-dev-is-shared`. The longest window this driver arms is step 3's 240s: the UI
  * half is slower than the hook half and holds the 429 across a Permissions-tab keystroke
  * sequence, so that — not the 60s of step 1 — is the number the operator is shown. */
-const { envName: ENV_NAME, hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), {
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), {
   faults: ["jiraUserSearch"],
   maxSeconds: 240,
   script: "user-search-fault-live.mjs",

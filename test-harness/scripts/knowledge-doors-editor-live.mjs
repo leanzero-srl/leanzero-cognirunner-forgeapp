@@ -549,18 +549,33 @@ async function main() {
        and `reason:undefined`, because `leakVerdict()` overwrote `ok` on the clean early
        return. An operator was told the repair broke and sent to inspect a roster that was
        fine. The library now leaves `ok` to the roster diff; the leak is ONE FAIL, which
-       carries the repair-time detail when there is any, and the roster sentence is only
-       reached when the leak did not already explain the run.
+       carries the repair-time detail when there is any.
        (`restore.leaks` is a SUBSET of `uiShots()` — the restore's captures come from the
        same roster-UI recorder — so the first arm cannot miss a leak the second would
-       have caught.) */
+       have caught.)
+
+       F-717 — BUT THE TWO ARMS ARE NOT EXCLUSIVE, AND MAKING THEM SO SWALLOWED THE WORSE
+       HALF. F-700 folded three FAILs into an `if / else if`, so a run that leaked a
+       capture AND exhausted the four repair passes with a stray grant still on the roster
+       reported ONLY the PNG: the leak payload carries `duringRepair`/`repairLeakPaths` and
+       never `verdict`/`failures`/`reason`, so the one case where real state is left behind
+       on a shared tenant read as a screenshot problem. The operator destroys the PNG,
+       closes the run, and leaves an editor role granted.
+
+       The gate that fixes both errors is the VERDICT, not the leak: `ok:false` with
+       `verdict:"byte-identical"` is the leak's own doing (F-700's payload) and must stay
+       silent; any other verdict is a roster that was not restored and must be said out
+       loud, leak or no leak. So this is a second independent `if`. */
     if (shot_.leaked || uiLeaked()) {
       FAIL("a screenshot capture was REFUSED because a readable email address survived the mask — the F-660 guarantee fired and this run FAILS on it regardless of the roster verdict", {
         paths: leaks.map((s) => s.path),
         leaks,
         ...(restore && restore.leaked ? { duringRepair: restore.leakInfo, repairLeakPaths: (restore.leaks || []).map((l) => l.path) } : {}),
       });
-    } else if (restore && restore.ok === false) FAIL("the roster restore reports ok:false — the repair did not complete cleanly", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
+    }
+    if (restore && restore.ok === false && restore.verdict !== "byte-identical") {
+      FAIL("the roster restore reports ok:false — the repair did not complete cleanly and the roster is NOT what the snapshot says", { verdict: restore.verdict, failures: restore.failures, reason: restore.reason });
+    }
     /* F-693 — the mask's run-level control is RECORDED here but is NOT a gate, and the
        distinction is deliberate. This driver's captures are of the roster-card and editor
        views, none of which is guaranteed to render an address, so demanding `spanTotal > 0`

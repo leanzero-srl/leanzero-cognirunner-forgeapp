@@ -17,10 +17,19 @@
 
 import crypto from "node:crypto";
 import { get, post } from "./jira.mjs";
+import { forgeEnvId } from "./shared-env-guard.mjs";
 
 export const APP_ID = "36415848-6868-4697-9554-3c3ad87b8da9";
 // Environment id of the install that exposes all four modules (confirmed live).
-export const ENV_ID = "989ecaa0-261b-406e-b444-78c01c0d7772";
+//
+// F-715 — this used to be a SECOND literal copy of the dev environment id, in a LIBRARY,
+// which is the one place the F-699 rule cannot see: `evidence-redaction.test.mjs` rule 4f
+// polices only `scripts/*-live.mjs`. 58 scripts import this module, and every extension
+// ARI below is built from it, so a redeploy that changed the id would have failed the
+// whole workflow-attach path with an opaque Jira error while the "one home" rule stayed
+// green. It is now a RE-EXPORT of the guard's row — the name and every importer are
+// unchanged, and there is exactly one place to edit.
+export const ENV_ID = forgeEnvId("dev");
 export const WORKFLOW_CONFIG_MAX_BYTES = 32768;
 
 // All post-function flavors share one ruleKey (forge:workflow-post-function)

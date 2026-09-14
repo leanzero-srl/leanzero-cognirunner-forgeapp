@@ -911,6 +911,52 @@ const runCoderTurnClaimed = async ({
   // breaks, storing the knowledge block into the thread as if the model had said it.
   const seededCount = messages.length;
 
+  // ── WHY THIS TURN'S PREFIX MOVES, DECIDED BEFORE THE TURN RUNS (F-617) ────
+  // The pin is WRITTEN far below, after the thread row, because a pin is an optimisation
+  // and the record is the conversation. But it was also DECIDED down there — and two of
+  // its decisions MOVE THE PREFIX ON PURPOSE: a pin that expired under a living thread
+  // (`!already && turns > 1`), and knowledge too large to pin at all. F-550's detector runs
+  // between the loop and that block, so both deliberate moves reached it with no reason and
+  // were logged as the DEFECT WARN — an engine accusing itself of a bug it had chosen.
+  //
+  // F-615 had already given the detector the THIRD cause (`repin`). The missing half was
+  // not the wording, it was the ORDER: the pin READ and the "will this knowledge fit the
+  // pin" decision belong ahead of the loop, so the reason exists before anything judges the
+  // cache. They produce ONE `prefixMoveReason`, and this is its only home — the detector is
+  // handed it, and the pin-write block below re-uses THESE values rather than deciding a
+  // second time and drifting from them.
+  //
+  // Fail-open, twice over: a pin read that throws leaves `prefixMoveReason` EMPTY, so a
+  // faulted read is still the unexplained miss F-550 exists to catch rather than an excuse
+  // the engine wrote for itself, and the turn otherwise behaves exactly as it did before.
+  const hasKnowledge = !!(knowledge && typeof knowledge === "object");
+  const pinnedSkills = hasKnowledge && typeof knowledge.skillsBlock === "string" ? knowledge.skillsBlock : "";
+  const pinnedMemory = hasKnowledge && typeof knowledge.memoryBlock === "string" ? knowledge.memoryBlock : "";
+  const pinnedBytes = Buffer.byteLength(pinnedSkills + pinnedMemory, "utf8");
+  const repin = hasKnowledge && knowledge.repin === true;
+  let pinBefore = null;
+  let pinReadFailed = false;
+  if (hasKnowledge) {
+    // The KEY is derived at each use from `coderPinKey`, which is its one home; deriving it
+    // once far from the write site only moves the name, and a reader (and the src/ secret
+    // census, which reads a write site's key from the lines above it) then cannot see which
+    // row is being written.
+    try { pinBefore = (await store.get(coderPinKey(key, thread))) || null; }
+    catch (e) { pinReadFailed = true; log(`reading this thread's knowledge pin failed, this turn re-pins: ${(e && e.message) || e}`); }
+  }
+  // "This is not the thread's first turn", read from the row BEFORE the write below
+  // increments it — the same question the pin-write block used to ask as `turns > 1` after.
+  const laterTurn = Number(record.turns) > 0;
+  const willWritePin = hasKnowledge && (!pinBefore || repin);
+  const pinOversized = willWritePin && pinnedBytes > CODER_PINNED_KNOWLEDGE_MAX_BYTES;
+  const pinExpired = hasKnowledge && !pinBefore && !pinReadFailed && !repin && laterTurn;
+  // Ordered by which fact EXPLAINS the other: an oversized thread has no pin to expire, so
+  // "too large to pin" is the cause and "no pin found" merely its symptom.
+  const prefixMoveReason = repin ? String(knowledge.pinInvalidated || "epoch moved")
+    : pinOversized ? `knowledge-oversized — this thread's skills and memories are ${pinnedBytes} bytes, over the ${CODER_PINNED_KNOWLEDGE_MAX_BYTES}-byte pin ceiling, so they are rebuilt live every turn`
+    : pinExpired ? "pin-expired — this thread had no pinned knowledge left, so this turn pinned today's skills and memories"
+    : "";
+
   const loop = await runAgentLoop({
     messages, tools, maxRounds: clampRounds(maxRounds), deadlineMs, execute, apiKey, model, provider, log,
     // F-636 — WHERE THIS TURN'S BYTES STOP BEING THE THREAD'S BYTES. `prefix` is the part
@@ -944,12 +990,14 @@ const runCoderTurnClaimed = async ({
   // true cause instead of a WARN accusing the thread of a bug it does not have; a zero with
   // no verdict is untouched and still the defect. The cause travels, never the wording —
   // the sentence lives in `reportCrossTurnCacheDefect` and nowhere else.
+  //
+  // F-617 — AND IT IS HANDED EVERY DELIBERATE CAUSE, not just the re-pin. `prefixMoveReason`
+  // was decided before the loop ran (see above) and covers the expired pin and the knowledge
+  // too large to pin as well, both of which used to arrive here as SILENCE and be called a
+  // defect. Empty still means "nothing this turn decided", which is still the WARN.
   let cacheReset = null;
   try {
-    const prefixReset = knowledge && knowledge.repin === true
-      ? String(knowledge.pinInvalidated || "epoch moved")
-      : "";
-    const verdict = reportCrossTurnCacheDefect({ provider, usage: loop.usage, priorPrefixBytes, prefixReset, log });
+    const verdict = reportCrossTurnCacheDefect({ provider, usage: loop.usage, priorPrefixBytes, prefixReset: prefixMoveReason, log });
     // Recorded on the thread row below so the next reader can tell a deliberate re-pin from
     // an unexplained miss without the logs. A turn that cached normally records nothing.
     if (verdict) cacheReset = { reason: verdict.reason, defect: verdict.defect === true };
@@ -1041,11 +1089,14 @@ const runCoderTurnClaimed = async ({
   // in `repin`), and a pin that is still true has its TTL renewed on every turn beside the
   // thread row's, so it can never expire under a living thread and re-pin today's knowledge
   // as if it had always been there (F-581).
-  if (knowledge && typeof knowledge === "object") {
+  //
+  // F-617 — THE READ AND THE FIT DECISION NOW HAPPEN EARLIER, before the loop, so the cache
+  // detector above can be told WHY the prefix moved on the turn it moved. This block still
+  // does all the WRITING and the SAYING; what it no longer does is decide anything twice.
+  if (hasKnowledge) {
     try {
       const pinKey = coderPinKey(key, thread);
-      const already = await store.get(pinKey);
-      const repin = knowledge.repin === true;
+      const already = pinBefore;
       if (already && !repin) {
         // A LIVING PIN IS REFRESHED, NOT REWRITTEN (F-581): the SAME object back under a
         // fresh TTL, on the same turn and by the same writer as the thread row above. The
@@ -1065,15 +1116,13 @@ const runCoderTurnClaimed = async ({
         // Two ways to reach here that are NOT the ordinary first turn, and neither may be
         // silent — both move the prompt prefix once, and an unexplained prefix move is the
         // thing this pin exists to prevent.
-        if (!already && Number(record.turns) > 1) {
+        // Both flags were decided before the loop (F-617); this only says them out loud.
+        if (pinExpired) {
           log("pin expired — this thread had no pinned knowledge left, so this turn pins today's skills and memories; the prompt prefix moves once");
         } else if (repin) {
           log(`this thread's knowledge changed since it was pinned (${knowledge.pinInvalidated || "epoch moved"}) — re-pinned, the prompt prefix moves once`);
         }
-        const pinnedSkills = typeof knowledge.skillsBlock === "string" ? knowledge.skillsBlock : "";
-        const pinnedMemory = typeof knowledge.memoryBlock === "string" ? knowledge.memoryBlock : "";
-        const pinnedBytes = Buffer.byteLength(pinnedSkills + pinnedMemory, "utf8");
-        if (pinnedBytes <= CODER_PINNED_KNOWLEDGE_MAX_BYTES) {
+        if (!pinOversized) {
           await store.set(pinKey, {
             issueKey: key, threadId: thread,
             skillsBlock: pinnedSkills,

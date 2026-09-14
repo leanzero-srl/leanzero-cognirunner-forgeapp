@@ -1571,5 +1571,114 @@ await check("F-615: the turn records WHY the prefix moved, and a healthy turn re
   assert.equal(row3.cacheReset.reason, "unexplained", "…and it never carries the last turn's reason");
 });
 
+/* ═════════ F-617: the OTHER two deliberate prefix moves ═════════
+ * F-615 taught the cross-turn detector one reason — the F-578 re-pin — because that reason
+ * is known BEFORE the loop runs. The pin block knows two more, and it used to learn them
+ * AFTER the detector had already judged the turn: a pin that EXPIRED under a living thread,
+ * and knowledge TOO LARGE to pin. Both move the prefix on purpose, and both were logged as
+ * the DEFECT WARN. These four cases are the contract: a deliberate move is an INFO with its
+ * reason, an unexplained one is still the WARN, a healthy turn says nothing.
+ */
+const cachedReply = (tool_calls, cachedTokens = 9000) => ({
+  ok: true, status: 200,
+  data: {
+    choices: [{ message: { role: "assistant", content: null, tool_calls } }],
+    usage: { total_tokens: 7, prompt_tokens_details: { cached_tokens: cachedTokens } },
+  },
+});
+/** The previous turn's prefix, made big enough that the detector is willing to speak. */
+const primePriorPrefix = async (bytes = 40000) => {
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  row.promptPrefixBytes = bytes;
+  await store.set(coderThreadKey("LZPT-7", "t1"), row);
+};
+const catchWarn = async (fn) => {
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(" "));
+  try { return { out: await fn(), warned }; } finally { console.warn = warn; }
+};
+
+await check("F-617: an EXPIRED pin is an INFO naming the reason, never the DEFECT WARN", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  // What a 90-day TTL does to the pin under a thread row that is refreshed every turn.
+  await store.delete(coderPinKey("LZPT-7", "t1"));
+  await primePriorPrefix();
+
+  const { out: r, warned } = await catchWarn(() =>
+    startTurn(world, { userMessage: "second", knowledge: stable }));
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset.defect, false,
+    "THE FINDING: this turn re-pinned because the pin had expired — that is a decision, not a defect");
+  assert.match(row.cacheReset.reason, /pin-expired/, "…and the row carries the reason, not 'unexplained'");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 0, "…nothing is written at WARN");
+  assert.ok((r.logs || []).some((l) => /pin-expired/.test(l) && /not a defect/.test(l)),
+    `…and the turn's own log says why at INFO (${JSON.stringify((r.logs || []).filter((l) => /cached tokens/.test(l)))})`);
+  // The pre-existing F-581 line is untouched: the reason moved, the announcement did not.
+  assert.ok((r.logs || []).some((l) => /pin expired/.test(l) && /prefix moves once/.test(l)),
+    "…while the pin block still announces the re-pin in its own words");
+  assert.ok(await store.get(coderPinKey("LZPT-7", "t1")), "…and the thread does get a working pin again");
+});
+
+await check("F-617: knowledge too large to pin is an INFO naming the reason, never the DEFECT WARN", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const huge = { skillsBlock: "x".repeat(33 * 1024) };
+  await startTurn(world, { knowledge: huge });
+  assert.equal(await store.get(coderPinKey("LZPT-7", "t1")), undefined, "turn 1 pinned nothing — it does not fit");
+  await primePriorPrefix();
+
+  const { out: r, warned } = await catchWarn(() =>
+    startTurn(world, { userMessage: "second", knowledge: huge }));
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset.defect, false,
+    "THE FINDING: an unpinnable thread rebuilds its knowledge by design — the engine may not call that a bug");
+  assert.match(row.cacheReset.reason, /knowledge-oversized/, "…the reason names the ceiling it is over");
+  assert.match(row.cacheReset.reason, /33792 bytes/, "…and the size that put it there");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 0, "…nothing is written at WARN");
+  assert.ok((r.logs || []).some((l) => /knowledge-oversized/.test(l) && /not a defect/.test(l)),
+    "…and the INFO line carries the reason");
+  assert.ok((r.logs || []).some((l) => /too large to pin/.test(l)), "…beside the pin block's own line");
+});
+
+await check("F-617: a zero cache read with NO reason is still the WARN, on a live turn", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  // The pin is INTACT and the knowledge unchanged: nothing this turn decided moved anything.
+  await primePriorPrefix();
+
+  const { warned } = await catchWarn(() =>
+    startTurn(world, { userMessage: "second", knowledge: stable }));
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset.defect, true, "a stable pin that read nothing is the miss F-550 exists to catch");
+  assert.equal(row.cacheReset.reason, "unexplained", "…and it borrows no excuse from the pin block");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 1, "…still exactly one WARN");
+});
+
+await check("F-617: a stable turn whose cache HELD logs nothing at all", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), cachedReply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  await primePriorPrefix();
+
+  const { out: r, warned } = await catchWarn(() =>
+    startTurn(world, { userMessage: "second", knowledge: stable }));
+
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset, undefined, "a turn that cached normally records nothing to explain");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 0, "…and warns about nothing");
+  assert.equal((r.logs || []).filter((l) => /cached tokens/.test(l)).length, 0,
+    "…and does not narrate a cache that worked");
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

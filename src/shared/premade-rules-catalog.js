@@ -16,6 +16,10 @@
  * A "premade rule" is a deterministic check the user picks from a catalog and
  * parameterises in a small form — zero AI cost, instant, no prompt-writing.
  *
+ * The ONE import (F-917) is `src/shared/git-ids.js`, itself dependency-free apart from
+ * `shared/kvs-keys.js`: `AGENTLESS_ENGINES` below states the PR-review engine's brakes
+ * to an admin, and a re-typed ceiling is a second home for a number the engine owns.
+ *
  * ⚠️ VALIDATORS and CONDITIONS are executed by two DIFFERENT engines. This caught
  * the project out for a long time (see F3 in test-harness/FINDINGS.md):
  *
@@ -112,6 +116,8 @@
  *                 clamped to CODER_PF_INSTRUCTIONS_MAX CHARACTERS (code points, via
  *                 clampChars — src/shared/text-clamp.js) before it reaches a model
  */
+
+import { MAX_INLINE_COMMENTS, REVIEW_RATE_PER_HOUR } from "./git-ids.js";
 
 /*
  * THE `prMatch` VOCABULARY — ONE HOME (F-379).
@@ -682,6 +688,52 @@ export const PREMADE_LISTENERS = [
     availability: "available",
   },
 ];
+
+/**
+ * F-917 — THE AGENTLESS ENGINES, and the ONE place that says what each one DOES.
+ *
+ * A listener row carries `agentlessTaskType` and the dispatcher (`enqueueForListener`,
+ * src/listeners.js) routes on it: the rule runs a deterministic engine instead of an
+ * agent turn. Until this table existed the editor had no way to SAY that, so the
+ * premade "Review every opened PR" opened as an ordinary AI-agent listener — an
+ * instruction box the engine never reads and an action grid of fourteen unticked boxes
+ * the engine never calls. An admin either ticked git actions (arming writes the engine's
+ * brakes do not cover) or concluded the starter could not read the pull request.
+ *
+ * `summary`      — what the engine does, in ONE sentence, for the editor card.
+ * `connection`   — where the Git connection comes from. "event" means the webhook
+ *                  delivery supplies it (`params.connId = ctx.connectionId` in
+ *                  `enqueueGitReviewRun`; the engine never reads `agent.connectionId`),
+ *                  so the editor must NOT ask for one and must NOT refuse the save for
+ *                  a missing one. Any future engine that needs a named account says
+ *                  "rule" here and gets the connection row back.
+ * `brakes`       — the limits the engine enforces itself, named so an admin can see the
+ *                  blast radius without reading src/git-review.js.
+ *
+ * ONE HOME: the UI reads this and nothing else; a second sentence in a component is how
+ * the editor and the engine drift apart.
+ */
+export const AGENTLESS_ENGINES = {
+  gitreview: {
+    id: "gitreview",
+    label: "Pull request review engine",
+    summary: "Reads the pull request diff and posts one AI review on the pull request itself. It is a built-in engine, not an AI agent: there are no instructions to write and no actions to allow.",
+    connection: "event",
+    // The NUMBERS are imported, never typed: src/shared/git-ids.js is where the engine
+    // reads them from too, so this card cannot claim a ceiling the engine has outgrown.
+    brakes: [
+      "One review per head commit, so a redelivered webhook never doubles a comment.",
+      `At most 1 general comment and ${MAX_INLINE_COMMENTS} inline comments per review.`,
+      `At most ${REVIEW_RATE_PER_HOUR} reviews per repository per hour.`,
+    ],
+  },
+};
+
+/** The engine a listener row runs, or null when the row runs an AI agent. */
+export const getAgentlessEngine = (taskType) =>
+  (taskType && Object.prototype.hasOwnProperty.call(AGENTLESS_ENGINES, taskType))
+    ? AGENTLESS_ENGINES[taskType]
+    : null;
 
 export const getPremadeListener = (key) =>
   PREMADE_LISTENERS.find((r) => r.key === key) || null;

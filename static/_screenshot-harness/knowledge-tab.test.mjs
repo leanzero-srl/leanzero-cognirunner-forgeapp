@@ -41,7 +41,7 @@ import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 /* The packs and the budgets come from THEIR one home, never retyped here. A suite that
    hand-listed nine titles would pass forever against a corpus that had been re-baked. */
-import { KNOWLEDGE_PACKS, KNOWLEDGE_PINS, KNOWLEDGE_CONTENT_VERSION } from "../../src/shared/knowledge-index.js";
+import { KNOWLEDGE_PACKS, KNOWLEDGE_PINS, KNOWLEDGE_CONTENT_VERSION, KNOWLEDGE_INDEX } from "../../src/shared/knowledge-index.js";
 import { KNOWLEDGE_VERSION } from "../../src/shared/knowledge-select.js";
 import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
 
@@ -137,6 +137,40 @@ try {
       /* Provenance: at least one "source, licence" line per card, never an empty block. */
       const provCounts = await page.locator(".kn-pack").evaluateAll((els) => els.map((e) => e.querySelectorAll(".kn-prov-line").length));
       ok(provCounts.every((n) => n > 0), `K1 every card names its source and licence (${provCounts.join(",")})`);
+
+      /* F-917 — THE PROVENANCE SENTENCE. The cold walk read
+         "jira-forge, Apache-2.0 (leanzero-forge-skills, NOTICE retained)" under a row of
+         byte counts and could not tell what question it answered. The lines are unchanged
+         (one author: describeKnowledgePacks); what is asserted is that each block is now
+         HEADED by the question, and that the pack a licensed source feeds still carries
+         the licence in the line — read from the generated index rather than typed here, so
+         a re-bake that changes a licence moves the test with it. */
+      const headCounts = await page.locator(".kn-pack").evaluateAll((els) => els.map((e) => e.querySelectorAll(".kn-prov-head").length));
+      ok(headCounts.every((n) => n === 1), `F-917 every provenance block is headed exactly once (${headCounts.join(",")})`);
+      ok((await page.locator(".kn-prov-head").first().innerText()).toLowerCase() === "source and licence",
+        "F-917 the heading names what the slug answers: source and licence");
+      {
+        /* The pack fed by a LICENSED source, chosen from the index, must show that licence
+           on screen. Nothing here is hand-typed: both the pack and the string are derived. */
+        const licensed = KNOWLEDGE_INDEX.find((sec) => /Apache-2\.0/.test(((sec.provenance || {}).licence) || ""));
+        ok(!!licensed, "F-917 the corpus still carries a licensed source to assert on");
+        if (licensed) {
+          const packTitle = (KNOWLEDGE_PACKS.find((x) => x.id === licensed.pack) || {}).title;
+          const lcard = page.locator(".kn-pack").filter({ hasText: packTitle }).first();
+          const ptxt = (await lcard.locator(".kn-pack-prov").innerText()).replace(/\s+/g, " ");
+          ok(ptxt.includes(licensed.provenance.source), `F-917 ${packTitle} names its source (got "${ptxt.slice(0, 90)}")`);
+          ok(ptxt.includes(licensed.provenance.licence), `F-917 ${packTitle} names its licence verbatim, NOTICE clause and all`);
+        }
+      }
+      /* AND THE ABSENCES, asserted on purpose. The walk asked for a baked DATE and a
+         per-pack PURPOSE; the GENERATED index carries neither (KNOWLEDGE_PACKS has exactly
+         id/title/sections/bytes/pinned), and the fix is in scripts/bake-knowledge.mjs, not
+         here. This holds the line against a future "helpful" date invented from the build
+         clock — a number that looks like provenance and is not. */
+      ok(KNOWLEDGE_PACKS.every((x) => x.purpose === undefined),
+        "F-917 the generated index still carries no pack purpose — if this fails, render it");
+      ok(!/baked/i.test(await page.locator(".kn-tab").innerText()),
+        "F-917 nothing claims a bake DATE while the index has none to give");
 
       /* THE PINNED PACKS, DERIVED, NEVER COUNTED BY HAND (F-564). This read used to take the
          FIRST pack with pins and assert that exactly one chip existed on the page. That is a
@@ -313,6 +347,12 @@ try {
       const version = await page.locator(".kn-version-line").innerText();
       ok(version.includes(KNOWLEDGE_VERSION), `K7 ${theme} the engine version is named, got "${version}"`);
       ok(version.includes(KNOWLEDGE_CONTENT_VERSION), `K7 ${theme} the corpus fingerprint is named, got "${version}"`);
+      /* F-917 — and the fingerprint now SAYS what it identifies. A bare hash beside a bare
+         version number is the honest answer to "which bake is this" only if something on
+         screen says that is the question it answers. */
+      const vnote = (await page.locator(".kn-version-note").innerText()).replace(/\s+/g, " ");
+      ok(/identifies this bake/i.test(vnote), `F-917 ${theme} the fingerprint says what it identifies, got "${vnote.slice(0, 70)}"`);
+      ok(!/baked on|baked <|\d{4}-\d{2}-\d{2}/.test(vnote), `F-917 ${theme} and still claims no date`);
 
       await shot(page, `kn-tab-${theme}`);
       ok(env.errors.length === 0, `K6 ${theme} no page errors (${env.errors[0] || ""})`);

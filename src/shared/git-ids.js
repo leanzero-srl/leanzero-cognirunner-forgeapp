@@ -195,6 +195,18 @@ export const reviewClaimKey = (connectionId, repoId, prNumber, headSha) =>
 export const reviewRateKey = (connectionId, repoId, nowMs = Date.now(), slot = 0) =>
   assertKvsKey(`${REVIEW_RATE_PREFIX}${part(connectionId) || "none"}:${repoKeyPart(repoId)}:${Math.floor(nowMs / 3600000)}:${slot}`);
 
+/* F-917 — THE TWO REVIEW BRAKES, moved here from src/git-review.js so the ADMIN UI can
+   state the blast radius of the PR-review engine without re-typing the numbers. The
+   engine is the enforcer and still owns the loop; git-review.js re-exports both, so the
+   only literal in the app is the one below. A UI that hardcoded "10 inline comments"
+   would keep saying it the day the engine changed. */
+
+/** F-285 — the write brake. At most this many INLINE comments per review, plus ONE general. */
+export const MAX_INLINE_COMMENTS = 10;
+
+/** F-285 — and at most this many REVIEW RUNS per repository per clock hour. */
+export const REVIEW_RATE_PER_HOUR = 6;
+
 /* =========================================================================
  * F-557 — THE TWO FORGE IDS THE PIPELINE COLLECTS, IN ONE HOME.
  *

@@ -27,7 +27,10 @@ import { MEMORY_MAX_SERIALIZED_BYTES, MEMORY_PLATFORM_MAX_SERIALIZED_BYTES, memo
 /* F-486 - the premade listener catalogue and the ONE capability wording, so the journey
    asserts the sentence the app actually renders and counts the rows the catalogue
    actually declares. A hand-typed count here would pass while the tab hid a new row. */
-import { PREMADE_LISTENERS } from "../../src/shared/premade-rules-catalog.js";
+/* F-917 - the ENGINE table and the engine's own brake constants, so the journey asserts
+   the sentence and the ceilings the app actually renders rather than a copy of them. */
+import { PREMADE_LISTENERS, AGENTLESS_ENGINES } from "../../src/shared/premade-rules-catalog.js";
+import { MAX_INLINE_COMMENTS, REVIEW_RATE_PER_HOUR } from "../../src/shared/git-ids.js";
 import { agentCapabilityCopy } from "../../src/shared/edition.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2434,15 +2437,103 @@ try {
       await page.locator(".lst-premade-btn").first().click();
       await page.locator(".lst-editor").waitFor({ timeout: 10000 });
       ok(await page.locator("#lst-name").inputValue() === "Review every opened PR", "F-462 the editor opens pre-filled from the seed");
-      ok(await page.locator(".mode-btn.mode-agent[aria-checked='true']").count() === 1, "F-462 the premade opens in agent mode");
       ok(await page.locator(".evp-selected .evp-chip").count() === 2, "F-462 both git PR events are selected");
-      ok(await page.locator(".evp-repos-input").count() === 1, "F-462 the repositories control is present for a git event");
+
+      /* F-917 — THE ENGINE CARD. The catalogue routes this row to the deterministic
+       * PR-review engine (agentlessTaskType "gitreview"), and until F-917 the editor
+       * said nothing: it opened an AI-AGENT listener with an instruction box the engine
+       * never reads and fourteen unticked action boxes it never calls. An admin either
+       * ticked git actions — arming writes the engine's brakes do not cover — or
+       * concluded the starter could not read the pull request.
+       *
+       * The card is a REPLACEMENT, not an addition: the assertions below are mostly
+       * ABSENCES, because "the instruction box is still there, plus a card" is the same
+       * defect with more words on it. The copy is the CATALOGUE's (AGENTLESS_ENGINES),
+       * asserted against the import so this test cannot pass on a sentence the app has
+       * stopped rendering. */
+      const eng = AGENTLESS_ENGINES.gitreview;
+      const engCard = page.locator(".lst-engine");
+      await engCard.waitFor({ timeout: 10000 });
+      ok(await page.locator(".lst-engine-badge").innerText() === "BUILT-IN ENGINE", "F-917 the engine card says it is a built-in engine");
+      ok((await page.locator(".lst-engine-title").innerText()).includes(eng.label), "F-917 the card names the engine from the catalogue");
+      ok((await page.locator(".lst-engine-summary").innerText()).replace(/\s+/g, " ") === eng.summary, "F-917 the one-sentence summary is the catalogue's, verbatim");
+      ok(await page.locator(".lst-engine-brakes li").count() === eng.brakes.length, "F-917 every brake the engine enforces is listed");
+      ok((await page.locator(".lst-engine-brakes").innerText()).includes(String(MAX_INLINE_COMMENTS)), "F-917 the inline-comment ceiling is the engine's own constant");
+      ok((await page.locator(".lst-engine-brakes").innerText()).includes(String(REVIEW_RATE_PER_HOUR)), "F-917 the per-repo hourly ceiling is the engine's own constant");
+      // THE ABSENCES — this is the whole finding.
+      ok(await page.locator("#agc-instructions").count() === 0, "F-917 an engine row has NO instruction box");
+      ok(await page.locator(".agc-actions").count() === 0, "F-917 an engine row has NO allowed-action grid");
+      ok(await page.locator(".agc").count() === 0, "F-917 the agent editor is replaced, not merely supplemented");
+      ok(await page.locator(".agc-git-conn").count() === 0, "F-917 no Git connection row: the delivery supplies it");
+      ok(await page.locator(".agc-git-refusal").count() === 0, "F-917 and no red connection banner before the admin has touched anything");
+      ok(await page.locator(".mode-btn").count() === 0, "F-917 the agent/code mode switch is not offered for an engine row");
+      ok((await page.locator(".lst-engine-conn").innerText()).includes("no connection to choose here"), "F-917 the card says where the connection comes from");
+      const engStyle = await engCard.evaluate((el) => { const cs = getComputedStyle(el); return { bl: cs.borderLeftWidth, bt: cs.borderTopWidth }; });
+      ok(engStyle.bl === engStyle.bt, "F-917 no left accent rail on the engine card");
+      const badgeStyle = await page.locator(".lst-engine-badge").evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, color: cs.color }; });
+      ok(badgeStyle.bg === (theme === "dark" ? "rgb(192, 38, 211)" : "rgb(162, 28, 175)"), `F-917 ${theme} the badge wears the solid git hue (got ${badgeStyle.bg})`);
+      ok(badgeStyle.color === "rgb(255, 255, 255)", "F-917 white ink on the engine badge");
+
+      /* F-917 — THE REPOSITORY PICKER. Typed free text was the second half of the
+       * finding: `isRepoAllowed` fails CLOSED, so a typo saved a listener that looked
+       * configured and never fired. The instance already knows the answer. */
+      ok(await page.locator(".evp-repos-input").count() === 0, "F-917 the free-text repository field is gone when the instance can offer a list");
+      const repoPick = page.locator(".evp-repopick");
+      await repoPick.waitFor({ timeout: 5000 });
+      ok(await page.locator(".evp-repopick-none").count() === 1, "F-917 an empty repo list says so, and is not mistaken for a choice");
+      ok(await page.locator("select").count() === 0, "F-917 the repository picker is no native <select>");
 
       /* THE REQUIRED DECISION: no repository, no save. Nothing may reach the backend. */
       await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
       await page.locator(".mls-toast", { hasText: "repository" }).waitFor({ timeout: 5000 });
       ok(!(await page.evaluate(() => window.__CALLS__)).some((c) => c.name === "saveListener"), "F-462 a premade with no repositories is never saved");
 
+      /* The picker offers ONLY what a connection allows, grouped by the connection that
+         allows it, and what it saves is the SAME `filters.repos` shape as before. */
+      const offered = await page.evaluate(async () => {
+        document.querySelector(".evp-repopick-add .dropdown-trigger, .evp-repopick-add button").click();
+        await new Promise((r) => setTimeout(r, 120));
+        return [...document.querySelectorAll(".dropdown-panel .dropdown-item")].map((e) => e.innerText.split("\n")[0].trim());
+      });
+      ok(offered.length === 3 && offered.includes("acme/web") && offered.includes("acme/platform"),
+        `F-917 only the connections' allowed repositories are offered (got ${JSON.stringify(offered)})`);
+      ok(await page.locator(".dropdown-panel .dropdown-group-label").count() === 2, "F-917 the repositories are grouped by the connection that allows them");
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+      await page.locator(".evp-repo-chip", { hasText: "acme/web" }).waitFor({ timeout: 5000 });
+      await page.locator(".evp-repopick-add .dropdown-trigger, .evp-repopick-add button").first().click();
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/api" }).first().click();
+      await page.locator(".evp-repo-chip", { hasText: "acme/api" }).waitFor({ timeout: 5000 });
+      ok(await page.locator(".evp-repo-chip").count() === 2, "F-917 two repositories are chosen");
+      const rchip = await page.locator(".evp-repo-chip").first().evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, color: cs.color, bl: cs.borderLeftWidth, bt: cs.borderTopWidth }; });
+      ok(rchip.bg === (theme === "dark" ? "rgb(192, 38, 211)" : "rgb(162, 28, 175)"), `F-917 ${theme} a chosen repository wears the solid git hue (got ${rchip.bg})`);
+      ok(rchip.color === "rgb(255, 255, 255)" && rchip.bl === rchip.bt, "F-917 white ink, no rail on a repository chip");
+      // A repository already chosen is not offered twice.
+      const left = await page.evaluate(async () => {
+        document.querySelector(".evp-repopick-add .dropdown-trigger, .evp-repopick-add button").click();
+        await new Promise((r) => setTimeout(r, 120));
+        const n = document.querySelectorAll(".dropdown-panel .dropdown-item").length;
+        document.body.click();
+        return n;
+      });
+      ok(left === 1, `F-917 a chosen repository leaves the "add" list (got ${left})`);
+
+      await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
+      await page.locator(".mls-toast", { hasText: "Listener saved" }).waitFor({ timeout: 5000 });
+      const savedEng = await page.evaluate(() => window.__CALLS__.filter((c) => c.name === "saveListener").at(-1).payload.listener);
+      ok(Array.isArray(savedEng.filters.repos) && savedEng.filters.repos.join(",") === "acme/web,acme/api",
+        `F-917 the picker saves the SAME filters.repos shape (got ${JSON.stringify(savedEng.filters.repos)})`);
+      ok(savedEng.agentlessTaskType === "gitreview", "F-917 agentlessTaskType survives the engine editor");
+      await shot(page, `F-917-${theme}-engine-card`);
+      ok(env.errors.length === 0, `F-917 ${theme} no page errors: ` + env.errors.join(" | "));
+
+      /* ── the skills picker, on the AGENT listener it belongs to. It moved off the
+         premade in F-917: an engine row binds no skills because the engine reads none. */
+      await page.locator(".section-actions .btn-small", { hasText: "Back to listeners" }).click();
+      await page.locator(".lst-table").waitFor({ timeout: 10000 });
+      await page.locator("tr", { hasText: "Escalate customer complaints" }).locator("button", { hasText: "Edit" }).click();
+      await page.locator(".lst-editor").waitFor({ timeout: 10000 });
+      ok(await page.locator("#agc-instructions").count() === 1, "F-917 an ordinary AGENT listener still gets the instruction box");
+      ok(await page.locator(".agc-actions").count() === 1, "F-917 and still gets its allowed-action grid");
       /* ── the skills picker: four, and the fifth is REFUSED, not swallowed ── */
       await page.locator(".agc-knowledge .va-chips").waitFor({ timeout: 10000 });
       const skillChips = page.locator(".agc-knowledge .va-chip");
@@ -2458,14 +2549,10 @@ try {
       ok(await page.locator(".agc-knowledge .va-chip.on").count() === 4, "F-462 the fifth skill is refused, and no earlier pick is dropped");
       await page.locator(".agc-memories input").check();
 
-      /* ── the saved payload: the premade's shape, plus the binding ── */
-      await page.locator(".evp-repos-input").fill("Acme/Web, acme/api");
-      await page.locator(".evp-repos-input").blur();
+      /* ── the saved payload: the agent listener's shape, plus the binding ── */
       await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
       await page.locator(".mls-toast", { hasText: "Listener saved" }).waitFor({ timeout: 5000 });
       const savedL = await page.evaluate(() => window.__CALLS__.filter((c) => c.name === "saveListener").at(-1).payload.listener);
-      ok(Array.isArray(savedL.filters.repos) && savedL.filters.repos.length === 2, "F-462 the repositories ride the saved payload");
-      ok(savedL.agentlessTaskType === "gitreview", "F-462 agentlessTaskType survives the form");
       ok(savedL.mode === "agent" && Array.isArray(savedL.agent.skillIds) && savedL.agent.skillIds.length === 4, "F-462 four skill ids are saved on the agent");
       ok(savedL.agent.useMemories === true, "F-462 the memories toggle is saved");
       await shot(page, `F-462-${theme}-premade-knowledge`);

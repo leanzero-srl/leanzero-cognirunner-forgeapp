@@ -16,7 +16,7 @@ import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
 import { getEvent, eventLabel, filtersForEvents, EVENT_CATEGORIES, requiresRepoFilter, isGitEvent } from "../../../../src/shared/jira-events.js";
 import { DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS } from "../../../../src/shared/agent-actions.js";
-import { PREMADE_LISTENERS, premadeRequiresCapability } from "../../../../src/shared/premade-rules-catalog.js";
+import { PREMADE_LISTENERS, premadeRequiresCapability, getAgentlessEngine } from "../../../../src/shared/premade-rules-catalog.js";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 import {
   useAgentCapability, CAPABILITY_UNKNOWN_TITLE, CAPABILITY_UNKNOWN_TEXT,
@@ -93,6 +93,27 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   /* F-462 - the backend's `unknown-skill` refusal, handed to AgentConfig so it renders
      beside the picker that produced it. Held by REASON, never by matching the sentence. */
   const [knowledgeRefusal, setKnowledgeRefusal] = useState(null);
+  /* F-917 - THE REPOSITORIES THE INSTANCE ALLOWS, for the EventPicker's repo control.
+     Read from `getRuleLists` (`lists.gitconnections`), NOT `listGitConnections`: the
+     latter is requireAdmin, and a workflow EDITOR may open this editor. The editor-floor
+     projection (`editorConnectionView`, src/git-connections.js) carries exactly
+     {id, kind, label, repos[]} - no credential state, no token - which is all a picker
+     needs. `connsKnown` is kept apart from the list: a read that never answered must not
+     be rendered as "this instance allows no repositories". */
+  const [gitConns, setGitConns] = useState([]);
+  const [gitConnsKnown, setGitConnsKnown] = useState(false);
+  useEffect(() => {
+    let live = true;
+    invoke("getRuleLists")
+      .then((r) => {
+        if (!live) return;
+        const rows = r && r.success && r.lists && Array.isArray(r.lists.gitconnections) ? r.lists.gitconnections : null;
+        if (rows) { setGitConns(rows); setGitConnsKnown(true); }
+        // A refusal or a failure is NOT an answer about the instance: leave it unknown.
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [invoke]);
   const loadToken = useRef(0);
   const editorToken = useRef(0);
   const expandToken = useRef(0);
@@ -184,7 +205,17 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   const buildPayload = () => ({ ...draft, functions: draft.mode === "script" ? functions : [] });
   // F-902 - does the DELIVERY supply the connection? Only a git-sourced event does.
   const gitBound = !!(draft && (draft.events || []).some((id) => isGitEvent(id)));
-  const gitConnOwed = !!(draft && draft.mode === "agent" && agentNeedsGitConnection(draft.agent, gitBound));
+  /* F-917 - THE ENGINE, READ FROM THE ROW. `agentlessTaskType` is what the dispatcher
+     routes on (`enqueueForListener`, src/listeners.js), so it is what the EDITOR must
+     branch on too - not `premadeKey`, which a SAVED rule does not carry. When the row
+     names an engine this listener is not an AI agent at all: there are no instructions to
+     write, no actions to allow and, for an engine whose connection arrives with the
+     delivery, no connection to choose. Rendering AgentConfig here was the F-917 defect -
+     an instruction box the engine never reads over an action grid it never calls, which
+     an admin answered either by ticking git actions (arming writes the engine's brakes do
+     not cover) or by concluding the starter could not read the pull request. */
+  const engine = draft ? getAgentlessEngine(draft.agentlessTaskType) : null;
+  const gitConnOwed = !!(draft && draft.mode === "agent" && !engine && agentNeedsGitConnection(draft.agent, gitBound));
   const validateDraft = () => {
     if (!draft.name.trim()) return "Give the listener a name.";
     if (!draft.events.length) return "Pick at least one event.";
@@ -194,11 +225,13 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
       return "Git events run per repository. List at least one repository as owner/name.";
     }
     if (draft.mode === "script" && !functions.some((f) => (f.code || "").trim())) return "Add at least one code step with code (describe it and click Generate).";
-    if (draft.mode === "agent" && !draft.agent.instructions.trim()) return "Write instructions for the AI agent.";
+    // F-917 - an ENGINE row has no instructions to check: they belong to the agent turn it
+    // replaces. Demanding them would refuse a starter that is already complete.
+    if (draft.mode === "agent" && !engine && !draft.agent.instructions.trim()) return "Write instructions for the AI agent.";
     /* F-902 - a listener bound to a GIT event is exempt: the webhook delivery carries the
        connection and it wins over the rule's (src/agent-executors.js). Any other listener
        armed with a git action owes the name of the account it acts as. */
-    if (draft.mode === "agent" && agentNeedsGitConnection(draft.agent, gitBound)) {
+    if (draft.mode === "agent" && !engine && agentNeedsGitConnection(draft.agent, gitBound)) {
       return "Choose the Git connection this listener acts as.";
     }
     return null;
@@ -279,7 +312,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
 
           <div className="form-group">
             <span className="label">When these Jira events fire</span>
-            <EventPicker value={draft.events} onChange={(events) => { patch({ events }); if (!events.includes(testEvent)) setTestEvent(events[0] || ""); }} repos={draft.filters.repos} onReposChange={(repos) => patchFilters({ repos })} />
+            <EventPicker value={draft.events} onChange={(events) => { patch({ events }); if (!events.includes(testEvent)) setTestEvent(events[0] || ""); }} repos={draft.filters.repos} onReposChange={(repos) => patchFilters({ repos })} connections={gitConns} connectionsKnown={gitConnsKnown} />
           </div>
 
           <div className="form-group">
@@ -329,12 +362,50 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
 
           <div className="form-group">
             <span className="label">What happens</span>
-            <p className="hint">Actions run as the CogniRunner app, using its Jira permissions.</p>
-            <ModeSwitch runtime="listener" value={draft.mode} onChange={(mode) => patch({ mode })} />
+            {/* F-917 - the MODE SWITCH is a choice between two things an admin writes. An
+                engine row is neither, and offering "AI agent / Code steps" over a card that
+                says "built-in engine" invites a click that silently discards the engine.
+                The switch is hidden, the field is untouched, and clearing
+                `agentlessTaskType` (the REST API) brings the agent editor back. */}
+            {engine ? (
+              <p className="hint">This starter runs a built-in engine. It costs one AI call per pull request and needs no instructions.</p>
+            ) : (
+              <>
+                <p className="hint">Actions run as the CogniRunner app, using its Jira permissions.</p>
+                <ModeSwitch runtime="listener" value={draft.mode} onChange={(mode) => patch({ mode })} />
+              </>
+            )}
           </div>
           {draft.mode === "script" ? (
             <div className="lst-builder">
               <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} roleUnknown={roleUnknown} />
+            </div>
+          ) : engine ? (
+            /* F-917 - THE ENGINE CARD, INSTEAD OF the agent editor. Not beside it: an
+               instruction box and an action grid the engine never reads are not
+               "extra options", they are two wrong answers to "how do I configure
+               this?". The sentence, the brakes and where the connection comes from
+               are all the catalogue's (AGENTLESS_ENGINES) - nothing is written here. */
+            <div className="lst-engine" role="note">
+              <div className="lst-engine-head">
+                <span className="lst-engine-badge">BUILT-IN ENGINE</span>
+                <span className="lst-engine-title">{engine.label}</span>
+              </div>
+              <p className="lst-engine-summary">{engine.summary}</p>
+              {(engine.brakes || []).length > 0 && (
+                <ul className="lst-engine-brakes">
+                  {engine.brakes.map((b, i) => <li key={i}>{b}</li>)}
+                </ul>
+              )}
+              {/* WHERE THE ACCOUNT COMES FROM, said once. For an engine fed by a git
+                  webhook the delivery carries the connection (`params.connId =
+                  ctx.connectionId`, enqueueGitReviewRun in src/listeners.js), so there
+                  is nothing to choose and nothing to refuse the save over. */}
+              <p className="lst-engine-conn">
+                {engine.connection === "event"
+                  ? "It acts as the Git connection whose webhook delivered the event, so there is no connection to choose here. Add the repositories above and the rule is complete."
+                  : "It acts as the Git connection chosen on this rule."}
+              </p>
             </div>
           ) : (
             <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="listener" invoke={invoke} knowledgeRefusal={knowledgeRefusal} gitEventBound={gitBound} />

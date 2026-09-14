@@ -25,29 +25,14 @@ import { isKvsKey } from "../../src/shared/kvs-keys.js";
 // predicate the read ceiling asks rather than a retyped list of prefixes.
 import { isCredentialKey } from "../../src/test-hook.js";
 
-// F-137 — the two "no retyped slot name" gates below stripped only WHOLE-LINE comments,
-// so a trailing `// COGNIRUNNER_KEY_openai` (a comment is allowed to NAME a slot) read as
-// code and would have failed the gate for a file that is perfectly correct — and the same
-// blind spot hides real code that shares a line with a trailing comment. One scanner, used
-// by both gates: block comments, line comments wherever they start, walking string and
-// template literals so a `//` inside a URL is not a comment. Escapes outside strings are
-// consumed in pairs so a regex literal's `\/` cannot open a phantom comment.
-const stripJsComments = (src) => {
-  let out = "", i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    if (c === "\\") { out += c + (src[i + 1] || ""); i += 2; continue; }
-    if (c === "/" && src[i + 1] === "/") { const nl = src.indexOf("\n", i); i = nl < 0 ? src.length : nl; continue; }
-    if (c === "/" && src[i + 1] === "*") { const e = src.indexOf("*/", i); i = e < 0 ? src.length : e + 2; out += " "; continue; }
-    if (c === '"' || c === "'" || c === "`") {
-      const q = c; out += c; i++;
-      while (i < src.length && src[i] !== q) { if (src[i] === "\\") { out += src[i]; i++; } out += src[i] === undefined ? "" : src[i]; i++; }
-      out += q; i++; continue;
-    }
-    out += c; i++;
-  }
-  return out;
-};
+import { maskComments } from "../lib/js-source-scan.mjs";
+/* F-137 / F-805 — "a comment is allowed to NAME a slot; code is not" is the rule these
+   gates enforce, and this file used to answer "which bytes are code?" with a FOURTH private
+   scanner. It knew nothing of `${…}` holes and it read the quotes inside a regex body as
+   string openers — the same fault that stranded maskComments on src/virtual-admin.js. The
+   shared mask is the one home for the question, and it preserves LENGTH, so every slice and
+   indexOf below still indexes the same bytes. */
+const stripJsComments = maskComments;
 
 // F-137 — the backend modules this gate covers are DERIVED from the tree, not hand-typed.
 // A hand-typed list silently stops covering the next module somebody adds (which is exactly
@@ -399,6 +384,11 @@ try {
     // DERIVED, not retyped: no literal provider slot string anywhere in the hook.
     const hookCode = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8")); // comments may NAME a slot; code may not
     assert.equal(/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL|BASEURL)_[a-z]/.test(hookCode), false);
+    /* F-805 control pair on the mask this gate reads through. */
+    assert.equal(/COGNIRUNNER_KEY_[a-z]/.test(stripJsComments("const s = slot(p); // the slot is COGNIRUNNER_KEY_openai\n")), false,
+      "a slot NAMED in a trailing comment is not a retyped slot");
+    assert.equal(/COGNIRUNNER_KEY_[a-z]/.test(stripJsComments('const s = "COGNIRUNNER_KEY_openai";\n')), true,
+      "…and the same name in a string LITERAL still is");
   });
   await check("PROVIDER_IDS stays in lockstep with index.js's PROVIDERS map", async () => {
     const { PROVIDER_IDS } = await import("../../src/shared/provider-slots.js");

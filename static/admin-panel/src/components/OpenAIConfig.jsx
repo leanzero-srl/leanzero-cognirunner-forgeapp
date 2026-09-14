@@ -1899,7 +1899,7 @@ export default function OpenAIConfig({ invoke }) {
               : isAtlassian
                 ? "Atlassian-hosted, ready, no key needed"
                 : noKeyNeeded
-                  ? "Managed by LeanZero \u2014 ready, no key needed"
+                  ? "Managed by LeanZero, ready, no key needed"
                   : (isByok ? `Using your ${providerLabel} key` : "No key configured");
             return (
               <div className="openai-status" style={{ marginBottom: "16px" }}>

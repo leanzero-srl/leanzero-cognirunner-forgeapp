@@ -1131,7 +1131,14 @@ const CODE_CONNS = () => {
       lastCheckedAt: "2026-09-12T08:00:00.000Z", login: "acme-bot",
       repos: ["acme/web", "acme/api"],
       webhooks: HOOKS(),
-      capabilities: { canCreateRepos: true, canWebhooks: true, canPipelines: null, reason: "Derived from the classic token's reported OAuth scopes." },
+      /* F-914 - THIS FIXTURE MODELLED A STATE capabilityFlags() CANNOT PRODUCE: it paired
+         a null (NOT CHECKED) capability with the sentence that only ever accompanies a
+         classic token whose scopes WERE reported - and when scopes are reported every flag
+         is a boolean (src/git-connections.js capabilityFlags). So the screen the walk read
+         ("pipelines: not known" explained by "Derived from the classic token's reported
+         OAuth scopes") could only ever exist here. The fixture is the fine-grained-PAT arm
+         now, which is the real way all three go null, with the backend's own sentence. */
+      capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "This token does not report its scopes (fine-grained PATs never do). Capability is proven only by the call that needs it." },
     },
     {
       id: "gc_2", kind: "bitbucket", label: "Acme platform", host: null, owner: "acme",
@@ -2352,7 +2359,10 @@ function invoke(name, payload) {
       if (typeof window !== "undefined" && window.__CODE_TEST_FAILS__) {
         return Promise.resolve({ success: false, error: "The provider could not be reached", code: "network", transient: true });
       }
-      return Promise.resolve({ success: true, whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: ["repo", "workflow"] }, capabilities: { canCreateRepos: true, canWebhooks: true, canPipelines: null, reason: "Derived from the classic token's reported OAuth scopes." } });
+      /* F-914 - see CODE_CONNS: a reported-scopes token yields BOOLEANS, never a null, so
+         the tri-state "not checked" arm is modelled by the token type that really produces
+         it. The scope list goes with it: a fine-grained PAT reports none. */
+      return Promise.resolve({ success: true, whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: [] }, capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "This token does not report its scopes (fine-grained PATs never do). Capability is proven only by the call that needs it." } });
     case "setGitRepoAllowlist": return Promise.resolve({ success: true, connection: CODE_CONNS()[0] });
     case "deleteGitConnection": return Promise.resolve({ success: true });
     /* F-460 - the webhook half. The response NEVER carries the secret, and neither does

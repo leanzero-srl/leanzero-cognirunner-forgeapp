@@ -65,6 +65,35 @@ import { SCAFFOLDS, scaffoldVarError, SCAFFOLD_VAR_LABELS, scaffoldHasCustomUi }
    refusal reads it from. The screen and the API say the one thing. */
 import { PIPELINE_OUTDATED_REMEDY } from "../../../../src/shared/git-pipeline-state.js";
 
+/*
+ * F-914 - WHAT THE CREDENTIAL IS CALLED, per provider.
+ *
+ * The Bitbucket field was labelled "App password" while src/git-providers.js has required
+ * an API TOKEN since app passwords were retired ("bitbucket: email + API token required",
+ * bitbucketAdapter). An admin who followed the label went to a page Atlassian no longer
+ * offers, and the only feedback was a connection refused as auth_dead. A form that names
+ * the wrong credential does not merely confuse: it sends the reader to the wrong place.
+ */
+const CREDENTIAL_LABEL = { github: "Access token", bitbucket: "API token" };
+
+/** Where that credential is created. One sentence per provider, no link fabricated. */
+const CREDENTIAL_WHERE = {
+  github: "Create a personal access token in GitHub under Settings, Developer settings, Personal access tokens.",
+  bitbucket: "Create an API token at id.atlassian.com under Security, API tokens, and pair it with the Atlassian account email above. Bitbucket app passwords are retired and will not work.",
+};
+
+/*
+ * F-914 - a provider's refusal is pasted straight into a sentence of ours, and providers
+ * do not agree on whether their message ends in a full stop. Without this the banner read
+ * "Bad credentials Rules using this connection are not running." Returns "" for anything
+ * that is not a usable string, so the caller's own default takes over.
+ */
+const endWithStop = (text) => {
+  const t = String(text == null ? "" : text).trim();
+  if (!t) return "";
+  return /[.!?]$/.test(t) ? t : t + ".";
+};
+
 /* The ONE sentence the two setup cards say when Coder is off. One wording, two cards. */
 const CODER_OFF_SETUP = "Coder is off, so this setup is read only. The card at the top of this tab says why and what to do about it.";
 
@@ -1205,13 +1234,16 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
             )}
             <div className="form-group">
               <label className="label" htmlFor="code-token">
-                {kind === "bitbucket" ? "App password" : "Access token"}
+                {kind === "bitbucket" ? CREDENTIAL_LABEL.bitbucket : CREDENTIAL_LABEL.github}
               </label>
               {/* WRITE ONLY. It starts empty every time and is cleared after the write;
                   nothing in the app reads a stored credential back. */}
               <input id="code-token" className="code-input" type="password" value={token} autoComplete="off"
                 placeholder="Pasted once. It is never shown again." onChange={(e) => setToken(e.target.value)} />
-              <p className="hint">The credential is checked against the provider before it is stored, so a dead token is refused here rather than becoming a connection that was born broken.</p>
+              <p className="hint">
+                {CREDENTIAL_WHERE[kind] ? CREDENTIAL_WHERE[kind] + " " : ""}
+                The credential is checked against the provider before it is stored, so a dead token is refused here rather than becoming a connection that was born broken.
+              </p>
             </div>
             <div className="form-group">
               <label className="label" htmlFor="code-repos">Allowed repositories</label>
@@ -1222,9 +1254,16 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
               <p className="hint">An agent may only ever act on a repository listed here. Nothing listed means nothing allowed, on purpose.</p>
             </div>
             {formError && <div className="code-form-error" role="alert">{formError}</div>}
+            {/* F-914 - the form's own commit button. It used to be a small outline button
+                alone at the bottom left, indistinguishable from the four secondary buttons
+                above it; a reader who had filled the form could not see what finished it.
+                Solid primary, with Cancel beside it as the secondary escape. */}
             <div className="code-form-actions">
-              <button className="btn-primary btn-small" disabled={saving || !label.trim() || !token} onClick={handleSave}>
+              <button className="btn-small btn-solid code-save-conn" disabled={saving || !label.trim() || !token} onClick={handleSave}>
                 {saving ? "Checking the credential…" : "Save connection"}
+              </button>
+              <button className="btn-secondary btn-small" disabled={saving} onClick={() => { setShowAdd(false); resetForm(); }}>
+                Cancel
               </button>
             </div>
           </div>
@@ -1272,7 +1311,7 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
                     <div className="code-dead" role="alert">
                       <span className="code-dead-title">This credential is dead</span>
                       <span className="code-dead-text">
-                        {c.authDeadReason || "The provider rejected it."} Rules using this connection are not running. Replace the credential to restore them.
+                        {endWithStop(c.authDeadReason) || "The provider rejected it."} Rules using this connection are not running. Replace the credential to restore them.
                       </span>
                     </div>
                   )}
@@ -1306,7 +1345,12 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
                                    report its scopes, and reading absence as a refusal would
                                    deny a capability the token actually has. */
                                 const cls = v === true ? "yes" : v === false ? "no" : "unknown";
-                                return <span key={k} className={`code-cap code-cap-${cls}`}>{lbl}: {v === true ? "yes" : v === false ? "no" : "not known"}</span>;
+                                /* F-914 - "not known" read as a fault the app had hit. It is
+                                   a MEASUREMENT THAT WAS NOT TAKEN, and "not checked" is the
+                                   plain way to say that. The WHY stays the backend's
+                                   `capabilities.reason` below: one home for the sentence,
+                                   and it differs per provider and per token type. */
+                                return <span key={k} className={`code-cap code-cap-${cls}`}>{lbl}: {v === true ? "yes" : v === false ? "no" : "not checked"}</span>;
                               })}
                             </span>
                           )}
@@ -1326,7 +1370,7 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
                           onChange={(e) => setRotateEmail(e.target.value)} />
                       )}
                       <input className="code-input" type="password" value={rotateToken} autoComplete="off"
-                        placeholder={c.kind === "bitbucket" ? "New app password" : "New access token"}
+                        placeholder={c.kind === "bitbucket" ? "New API token" : "New access token"}
                         onChange={(e) => setRotateToken(e.target.value)} />
                       <div className="code-form-actions">
                         <button className="btn-primary btn-small" disabled={rotating || !rotateToken} onClick={() => handleRotate(c)}>

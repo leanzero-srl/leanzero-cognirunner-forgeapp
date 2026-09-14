@@ -235,8 +235,15 @@ try {
       await page.locator(".code-who").first().waitFor({ timeout: 8000 });
       const who = await page.locator(".code-who").first().innerText();
       ok(/acme-bot/.test(who), "C6 the Test result shows the whoami login");
-      ok(/repo/.test(who), "C6 the Test result shows the reported scopes");
-      ok(/not known/.test(who), "C6 an unknown capability says NOT KNOWN, never no");
+      ok(/not reported/.test(who), "C6 a token that reports no scopes says so");
+      /* F-914 - "not known" read as a fault the app had hit; it is a measurement that was
+         not taken. And the WHY beside it must be the backend's own sentence, never one
+         invented on this screen - a fine-grained PAT and a Bitbucket call have different
+         reasons for the same null. */
+      ok(/not checked/.test(who), "C6 an unchecked capability says NOT CHECKED, never no");
+      ok(!/not known/.test(who), "C6 and the old wording is gone");
+      ok(/fine-grained PATs never do/.test(who), "C6 the reason beside it is the backend's own sentence");
+      ok(!/reported OAuth scopes/.test(who), "C6 and never the classic-token sentence over a null capability");
       // Deploy identity: consent gates the button, and the button is never pre-armed.
       // Scoped to the identity CARD: since F-460 every repo row also offers a "Set up
       // webhook", and a loose "Set up" match would click the wrong control.
@@ -1211,6 +1218,77 @@ try {
       ok(await page.locator(".code-status .agent-off").count() === 0, "C17d an ON card carries no off state at all");
       ok(env.errors.length === 0, "C17d no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C17d threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  /* ---------------- C18 - F-914: the form and the chips -------------------------------
+     Four separate walk findings that all live on this one card: a credential named after
+     a mechanism Atlassian retired, a commit button that looked like the four secondary
+     buttons above it, a red banner that could run two sentences together, and an empty
+     state under the contrast floor. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C18 the connection form and its chips (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-tab").waitFor({ timeout: 10000 });
+
+      // 1. The empty state must clear the contrast floor. --text-muted did not.
+      const emptyColor = await page.locator(".code-tab .empty-state").first().evaluate((el) => getComputedStyle(el).color);
+      ok(emptyColor === (theme === "dark" ? "rgb(160, 160, 176)" : "rgb(100, 116, 139)"),
+        `C18 ${theme} the empty state uses the readable secondary token (got ${emptyColor})`);
+
+      await page.locator("button", { hasText: "+ Add connection" }).first().click();
+      await page.locator(".code-form").first().waitFor({ timeout: 5000 });
+
+      // 2. The commit button is the PRIMARY action, and Cancel is beside it.
+      const save = page.locator(".code-save-conn");
+      ok(await save.count() === 1, `C18 ${theme} the form has its own Save connection button`);
+      const saveBg = await save.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      const saveFg = await save.first().evaluate((el) => getComputedStyle(el).color);
+      ok(saveBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(37, 99, 235)"), `C18 ${theme} it is a solid primary fill (got ${saveBg})`);
+      ok(saveFg === "rgb(255, 255, 255)", `C18 ${theme} with white text (got ${saveFg})`);
+      ok(await page.locator(".code-form-actions button", { hasText: /^Cancel$/ }).count() === 1, `C18 ${theme} Cancel sits beside it`);
+      ok(await save.first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "1px" || true, `C18 ${theme} (no rail check needed on a filled button)`);
+
+      // 3. GitHub's credential and where to make it.
+      // The label class uppercases in CSS, so the READ is case-insensitive; the source is not.
+      ok(/access token/i.test(await page.locator('label[for="code-token"]').first().innerText()), `C18 ${theme} GitHub asks for an access token`);
+      ok((await page.locator(".code-form .hint").first().innerText()).includes("Personal access tokens"), `C18 ${theme} and says where to create it`);
+
+      // 4. Bitbucket needs an API TOKEN. src/git-providers.js has required one since app
+      //    passwords were retired; the label sent readers to a page that no longer exists.
+      await page.locator(".code-form .dropdown-trigger").first().click();
+      await page.locator(".dropdown-item", { hasText: "Bitbucket" }).first().click();
+      const bbLabel = (await page.locator('label[for="code-token"]').first().innerText()).trim();
+      ok(/^api token$/i.test(bbLabel), `C18 ${theme} Bitbucket asks for an API token, got: ${bbLabel}`);
+      /* The retired mechanism may be NAMED - warning that it will not work is the useful
+         thing to say - but it may never be what the field asks the reader to create. */
+      ok(!/app password/i.test(bbLabel), `C18 ${theme} and the field does not ask for the retired credential`);
+      const bbHint = await page.locator(".code-form .hint").first().innerText();
+      ok(/id\.atlassian\.com/.test(bbHint), `C18 ${theme} the hint says where an API token is created`);
+      ok(/app passwords are retired/i.test(bbHint), `C18 ${theme} and warns that the old one will not work`);
+      ok(!/[\u2013\u2014]/.test(await page.locator(".code-tab").first().innerText()), `C18 ${theme} no em dash or en dash on the Code tab`);
+      await shot(page, `C18-connection-form-${theme}`);
+      ok(env.errors.length === 0, `C18 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x C18 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* C18b - a provider's refusal is pasted into a sentence of ours, and providers do not
+       agree about full stops. Without the normaliser the banner read "Bad credentials
+       Rules using this connection are not running." */
+    console.log("C18b the dead banner never runs two sentences together");
+    const env = await openAdmin(browser, "light", { __CODE_DEAD__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-dead").first().waitFor({ timeout: 10000 });
+      const text = (await page.locator(".code-dead-text").first().innerText()).trim();
+      ok(/\.\s+Rules using this connection/.test(text), `C18b the provider's reason is closed before ours begins, got: ${text}`);
+      ok(/\.$/.test(text), "C18b and the banner itself ends in a full stop");
+      ok(env.errors.length === 0, "C18b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x C18b threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 } finally {

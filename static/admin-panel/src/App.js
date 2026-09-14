@@ -3763,6 +3763,15 @@ const injectStyles = () => {
        one that does not must still get a readable chip, not white on nothing. */
     .dib-neutral { background: #475569; }
     html[data-color-mode="dark"] .dib-neutral { background: #64748b; }
+
+    /* F-914 - THE EMPTY STATE IS A SENTENCE A READER MUST BE ABLE TO READ.
+       The --text-muted token is #94a3b8 on white (about 2.5:1) and #71717a on the dark
+       surface (about 3.6:1); both are under 4.5:1, so "No deploy identity stored"
+       was effectively invisible on the Code tab - the walk reported it as faint
+       and it was. Scoped to this tab rather than retuning the global token, which
+       every surface in the app reads. The --text-secondary token clears 4.5:1 in both
+       themes and is still visibly secondary. */
+    .code-tab .empty-state { color: var(--text-secondary); }
 `;
   document.head.appendChild(style);
 };

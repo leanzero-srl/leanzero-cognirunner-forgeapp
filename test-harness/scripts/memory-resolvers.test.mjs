@@ -240,7 +240,11 @@ ok(!/substring\(0, 350\)/.test(asyncSrc) && /MEMORY_DISTILL_CONTENT_MAX = 350/.t
 {
   const hookSrc = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
   ok(/MEMORY_STORE_FULL_KEY[\s\S]*?from "\.\/memories\.js"/.test(hookSrc), "test-hook imports MEMORY_STORE_FULL_KEY rather than retyping it");
-  ok(/const KEYS = new Set\(\[[\s\S]*?MEMORY_STORE_FULL_KEY[\s\S]*?\]\);/.test(hookSrc), "the kvSet allowlist includes the store-full marker");
+  // F-769 moved the list out of the `kvSet` branch into `kvWriteAllowList()` so the
+  // stash door is bounded by the SAME authorisation. The assertion is about the list
+  // CONTAINING the constant, not about the name of the variable holding it, so it no
+  // longer pins `const KEYS`.
+  ok(/new Set\(\[[\s\S]*?MEMORY_STORE_FULL_KEY[\s\S]*?\]\)/.test(hookSrc), "the kvSet allowlist includes the store-full marker");
   ok(!/"COGNIRUNNER_MEMORY_STORE_FULL"/.test(hookSrc), "…and never as a retyped string literal");
   const idxSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
   ok(!/\(200 max\)/.test(idxSrc) && !/full of your own memories/.test(idxSrc),

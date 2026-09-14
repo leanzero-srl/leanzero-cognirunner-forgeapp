@@ -25,7 +25,7 @@ import { isKvsKey } from "../../src/shared/kvs-keys.js";
 // predicate the read ceiling asks rather than a retyped list of prefixes.
 import { isCredentialKey } from "../../src/test-hook.js";
 
-import { maskComments } from "../lib/js-source-scan.mjs";
+import { maskComments, maskNonCode } from "../lib/js-source-scan.mjs";
 /* F-137 / F-805 — "a comment is allowed to NAME a slot; code is not" is the rule these
    gates enforce, and this file used to answer "which bytes are code?" with a FOURTH private
    scanner. It knew nothing of `${…}` holes and it read the quotes inside a regex body as
@@ -1547,10 +1547,30 @@ try {
     for (const [file, src] of code) {
       const lines = src.split("\n");
       const own = ownConstants.get(file);
+      /* F-834 — "which function is this write site inside?", brace-balanced.
+         Counted on `maskNonCode(src)` — the ONE home for "which bytes of this file are
+         code" — so a `{` inside a string or a template is not a scope and a `}` inside a
+         message does not close one. The mask is the same LENGTH as the source, so the
+         balance is walked on the mask and the text is sliced from the original.
+         Walking BACKWARDS from the site, every unmatched `{` is an enclosing block; the
+         LAST one found is the OUTERMOST, which for a write inside a nested arrow is the
+         top-level function that contains both it and the `const` that names its key. A
+         top-level write has none, and the chain's next scope (the whole file) is then the
+         same text — deliberately, because an empty first scope must cost nothing. */
+      const maskedSrc = maskNonCode(src);
+      const enclosingScope = (at) => {
+        let depth = 0, outermost = -1;
+        for (let i = at - 1; i >= 0; i--) {
+          const c = maskedSrc[i];
+          if (c === "}") depth++;
+          else if (c === "{") { if (depth === 0) outermost = i; else depth--; }
+        }
+        return outermost < 0 ? "" : src.slice(outermost, at);
+      };
       const constOf = (n) => (own.has(n) ? own.get(n) : (constants.has(n) ? constants.get(n) : null));
       /* The key PREFIX a write site lands on: interpolations become the end of the
          prefix, which is what a family is — `git_conn_secret:${id}` -> `git_conn_secret:`. */
-      const resolveKey = (expr, win, depth = 0) => {
+      const resolveKey = (expr, wins, depth = 0) => {
         if (depth > 3) return null;
         let e = expr.trim();
         const tpl = e.match(/^`([\s\S]*)`$/);
@@ -1569,11 +1589,20 @@ try {
             if (plus && constOf(plus[1]) !== null) return constOf(plus[1]);
             if (/^[A-Za-z_$][\w$]*$/.test(e)) {
               if (constOf(e) !== null) return constOf(e);
-              /* a local `const key = gitHookSecretKey(a, b);` — follow it once */
-              const re = new RegExp("(?:const|let|var)\\s+" + e + "\\s*=\\s*([^;\\n]+);", "g");
-              let mm, last = null;
-              while ((mm = re.exec(win))) last = mm[1];
-              return last ? resolveKey(last, win, depth + 1) : null;
+              /* a local `const key = gitHookSecretKey(a, b);` — follow it once.
+                 F-834: over the ENCLOSING FUNCTION first, then the whole file, then the
+                 81-line window. `wins` is that chain in order; the FIRST scope that
+                 declares the name wins, and within a scope the LAST declaration does. */
+              for (const scope of wins) {
+                const re = new RegExp("(?:const|let|var)\\s+" + e + "\\s*=\\s*([^;\\n]+);", "g");
+                let mm, last = null;
+                while ((mm = re.exec(scope))) last = mm[1];
+                if (last) {
+                  const got = resolveKey(last, wins, depth + 1);
+                  if (got) return got;
+                }
+              }
+              return null;
             }
             return null;
           }
@@ -1598,6 +1627,15 @@ try {
         const line = src.slice(0, wm.index).split("\n").length;
         const keyExpr = parts[0].trim(), valueExpr = parts[1].trim();
         const win = lines.slice(Math.max(0, line - 81), line).join("\n");
+        /* F-834 — THE KEY IS RESOLVED OVER THE SCOPE IT IS DECLARED IN, not over 81 lines.
+           The window is the FIELD scan's unit (the `const row = {...}` a write site hands
+           to `.set` really is a few lines up) and it stayed that. But a KEY is routinely
+           built at the TOP of a long function — or at module scope, hundreds of lines above
+           the write — and 81 lines is an arbitrary number that silently turns such a site
+           into an `unresolved` hole. So the key gets a CHAIN of scopes: the enclosing
+           function (brace-balanced, see `enclosingScope`), then the whole file above the
+           site, and the old window LAST so no site that resolved before stops resolving. */
+        const keyWins = [enclosingScope(wm.index), src.slice(0, wm.index), win];
         const fields = new Set(), spreads = new Set();
         /* F-788 — TWO WAYS A FIELD NAME APPEARS IN AN OBJECT LITERAL, and the scanner only
            read one. `name:` / `name =` was the whole rule, so `{ url, apiKey }` — the most
@@ -1634,7 +1672,7 @@ try {
           }
           for (const m2 of win.matchAll(new RegExp("\\b" + name + "\\.([A-Za-z_$][\\w$]*)\\s*=(?!=)", "g"))) if (isSecretField(m2[1])) fields.add(m2[1]);
         }
-        if (fields.size || spreads.size) sites.push({ file, line, keyExpr, key: resolveKey(keyExpr, win), fields: [...fields].sort(), spreads: [...spreads].sort() });
+        if (fields.size || spreads.size) sites.push({ file, line, keyExpr, key: resolveKey(keyExpr, keyWins), fields: [...fields].sort(), spreads: [...spreads].sort() });
       }
     }
     return sites;
@@ -1683,7 +1721,13 @@ try {
        (`setFaultRow(key, …)` takes its key as a parameter) because the judgement there is
        about the SOURCE of the spread, not about which row it lands on. */
     const unresolved = named.filter((s) => !s.key);
-    assert.deepEqual(unresolved, [], "every secret-carrying write site must resolve to a key prefix");
+    /* F-834 — A NULL RESOLUTION IS A RED THAT NAMES THE SITE. It was already a red, but it
+       printed the whole site OBJECT, so the thing an operator needs first — which file and
+       line stopped resolving — arrived wrapped in the fields and the key expression. Named
+       the way the two rules below name theirs, `file:line keyExpr`, so the three failures
+       of this check read alike and a stale line number is never the only handle. */
+    assert.deepEqual(unresolved.map((s) => `${s.file}:${s.line} ${s.keyExpr}`), [],
+      "a secret-carrying write site's key could not be resolved — the scanner has stopped understanding how this repo builds KVS keys, which is a HOLE in the census, not a pass");
 
     const uncovered = named.filter((s) => !isCredentialKey(s.key) && !NOT_A_CREDENTIAL.has(s.key));
     assert.deepEqual(uncovered.map((s) => `${s.file}:${s.line} ${s.key} {${s.fields.join(",")}}`), [],
@@ -1785,6 +1829,43 @@ try {
     assert.equal(found[0].key, "cognirunner_new_thing");
     assert.equal(isCredentialKey(found[0].key) || NOT_A_CREDENTIAL.has(found[0].key), false,
       "POSITIVE CONTROL: …and it is UNCOVERED, so the rule above would fail on it");
+    /* ═══════════════════════════════════════════════════════════════════════════════
+     * F-834 — THE KEY IS RESOLVED OVER A SCOPE, AND THE 81-LINE WINDOW WAS AN ARBITRARY
+     * NUMBER WEARING THE COSTUME OF A RULE.
+     *
+     * The window exists for the FIELD scan — the `const row = {…}` handed to `.set` really
+     * is a few lines above it — and the KEY was resolved over the same 81 lines only
+     * because it was the text already in hand. But a key is routinely built at the TOP of a
+     * long function, or at module scope hundreds of lines up, and both of those are ORDINARY
+     * in this repo: index.js alone is ~14k lines. Past the window the site resolved to
+     * `null`, and `null` here is not "covered" or "uncovered" — it is a site the census
+     * cannot judge at all, which is the exact hole F-778 built this scanner to close.
+     *
+     * The two controls below are the pair: a declaration 200 lines above the write RESOLVES
+     * now (it could not before), and a key with NO declaration anywhere still goes RED —
+     * which is what stops the widened scope from being a way to make everything resolve.
+     * ═══════════════════════════════════════════════════════════════════════════════ */
+    const farAway = new Map([["far.js",
+      'async function writeIt(id) {\n  const slot = `cognirunner_far_thing:${id}`;\n'
+      + "  // …\n".repeat(200)
+      + '  await storage.set(slot, { url, apiKey });\n}\n']]);
+    const farFound = scanSecretWriteSites(farAway, hints);
+    assert.equal(farFound.length, 1, "F-834 CONTROL: the scanner still sees a write 200 lines below its key declaration");
+    assert.deepEqual(farFound[0].fields, ["apiKey"]);
+    assert.equal(farFound[0].key, "cognirunner_far_thing:",
+      "F-834 CONTROL: …and the key RESOLVES over the enclosing function — 81 lines above the write, it was `null`, an unjudgeable hole");
+    assert.equal(isCredentialKey(farFound[0].key) || NOT_A_CREDENTIAL.has(farFound[0].key), false,
+      "F-834 CONTROL: …and being resolvable is what lets the coverage rule call it UNCOVERED rather than shrug at it");
+    /* …and the negative half: a name that is declared NOWHERE must stay null, so the wider
+       scope cannot quietly manufacture a key out of a same-named variable somewhere else. */
+    const noDecl = new Map([["nodecl.js", 'async function writeIt() {\n  await storage.set(slotFromSomewhereElse, { url, apiKey });\n}\n']]);
+    const noDeclFound = scanSecretWriteSites(noDecl, hints);
+    assert.equal(noDeclFound.length, 1, "F-834 CONTROL: an undeclared key name is still a REPORTED site");
+    assert.equal(noDeclFound[0].key, null,
+      "F-834 CONTROL: …and it resolves to null, which the rule above turns into a red naming `nodecl.js:2 slotFromSomewhereElse`");
+    assert.deepEqual([noDeclFound[0]].filter((x) => !x.key).map((x) => `${x.file}:${x.line} ${x.keyExpr}`),
+      ["nodecl.js:2 slotFromSomewhereElse"],
+      "F-834 CONTROL: …in exactly the shape the assertion prints, so the red NAMES the site");
     /* POSITIVE CONTROL for F-788: the SHORTHAND fixture — the exact shape the scanner was
        blind to, and the shape a new `saveXRemote` would copy from line 561's own style. */
     const shorthand = new Map([["shorthand.js", 'const SLOT = "cognirunner_x_remote";\nawait storage.set(SLOT, { url, apiKey });\n']]);

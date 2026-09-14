@@ -2016,23 +2016,38 @@ ok(guardedDrivers.length === liveFiles.length,
      A quote-aware scanner instead: the opening quote fixes the delimiter, a backslash escapes
      the next character, and only the matching UNESCAPED quote closes the literal. A template
      literal's `${...}` belongs to that one literal, brace-counted, so a quote inside an
-     interpolation cannot end it early. An UNTERMINATED literal is skipped, exactly as the
-     character class did by requiring a closing quote on the same line — the scan is per-line
-     and a multi-line template's tail is not a sentence this rule can read. */
-  function scanLiterals(line) {
+     interpolation cannot end it early. An UNTERMINATED literal is skipped. */
+  /* F-880 — …AND A TEMPLATE LITERAL IS ONE LITERAL EVEN WHEN IT SPANS LINES. F-871 made the
+     scan quote-aware and left it PER-LINE, which is the same defect at a second boundary: a
+     banner opened with a backtick, wrapped, and closed two lines later opens a literal that
+     is UNTERMINATED on its first line — skipped by the line above — while the continuation
+     carrying `on staging` has no opening quote at all, so neither line is ever read. A
+     wrapped banner is the very SHAPE this rule was cut for (F-741's was one long line only
+     by accident), and it walked straight through; unwrap it and the claim reappears, which
+     teaches the next author to keep the wrap.
+
+     So the scan reads the file's code as ONE text — after the same comment stripping and the
+     same per-line `stripLegitimate`, rejoined so line numbers still line up — and reports the
+     line of the literal's OPENING QUOTE, which is where a reader must go to fix it. A `"` or
+     `'` literal still ends at a newline because in JS it must: an unescaped line break is a
+     syntax error there, so letting one through would allow a single stray quote to swallow
+     the rest of the file. Only a backtick may cross a line. */
+  function scanLiterals(code) {
     const out = [];
-    for (let i = 0; i < line.length; i++) {
-      const q = line[i];
+    let cursor = 0, line = 1;                              // i is non-decreasing: count as we go
+    for (let i = 0; i < code.length; i++) {
+      const q = code[i];
       if (q !== '"' && q !== "'" && q !== "`") continue;
       let j = i + 1, closed = false;
-      while (j < line.length) {
-        const c = line[j];
+      while (j < code.length) {
+        const c = code[j];
         if (c === "\\") { j += 2; continue; }             // an escape consumes what follows
-        if (q === "`" && c === "$" && line[j + 1] === "{") {
+        if (c === "\n" && q !== "`") break;               // only a template may cross a line
+        if (q === "`" && c === "$" && code[j + 1] === "{") {
           let depth = 1; j += 2;
-          while (j < line.length && depth > 0) {
-            if (line[j] === "{") depth++;
-            else if (line[j] === "}") depth--;
+          while (j < code.length && depth > 0) {
+            if (code[j] === "{") depth++;
+            else if (code[j] === "}") depth--;
             j++;
           }
           continue;                                        // `${...}` is inside the literal
@@ -2040,8 +2055,9 @@ ok(guardedDrivers.length === liveFiles.length,
         if (c === q) { closed = true; break; }
         j++;
       }
-      if (!closed) continue;              // unterminated on this line: not a sentence to read
-      out.push(line.slice(i + 1, j));
+      if (!closed) continue;              // unterminated: not a sentence this rule can read
+      while (cursor < i) { if (code[cursor] === "\n") line++; cursor++; }
+      out.push({ inner: code.slice(i + 1, j), line });     // the OPENING quote's line
       i = j;                              // resume AFTER the closing quote
     }
     return out;
@@ -2079,10 +2095,15 @@ ok(guardedDrivers.length === liveFiles.length,
        stripped on exactly that reasoning. */
     .replace(/--[a-z-]*\b(?:staging|dev)\b[a-z-]*/g, "");
   function tenantLiterals(code) {
-    return code.split("\n").map((l, i) => ({ l: stripLegitimate(l), n: i + 1 }))
-      .filter(({ l }) => TENANT_WORD.test(l))               // cheap prefilter: the word is here at all
-      .filter(({ l }) => scanLiterals(l).some((inner) => tenantSense(inner)))
-      .map(({ n }) => n);
+    /* `stripLegitimate` is line-oriented (its patterns are written against one statement),
+       so it still runs per line — and the lines are rejoined, because the LITERALS are
+       read from the whole text (F-880). Neither step adds or drops a newline, so the line
+       a literal is reported at is its line in the file. */
+    const scrubbed = code.split("\n").map(stripLegitimate).join("\n");
+    if (!TENANT_WORD.test(scrubbed)) return [];            // cheap prefilter: the word is here at all
+    return scanLiterals(scrubbed)
+      .filter(({ inner }) => tenantSense(inner))
+      .map(({ line }) => line);
   }
   /* POSITIVE CONTROLS — verbatim from the five files, before they were fixed. */
   ok(tenantLiterals('  console.log(`\\nF-577 — THE RECEIPT COPY, on STAGING, agent ${NAME}\\n`);').length === 1,
@@ -2142,6 +2163,18 @@ ok(guardedDrivers.length === liveFiles.length,
     "POSITIVE CONTROL (F-871): …and a template literal is ONE literal — the apostrophe and the `${}` interpolation both stay inside it");
   ok(tenantLiterals(`  PASS("the draft's staging left the item untouched");`).length === 0,
     "NEGATIVE CONTROL (F-871): joining the fragments does not invent a tenant — the domain sense with an apostrophe is still allowed");
+  /* F-880 — A WRAPPED BANNER. The claim sits on a CONTINUATION line: per-line, the opening
+     line is unterminated (skipped) and the continuation has no opening quote, so the whole
+     thing was invisible. The offender is reported at the OPENING quote's line, 1. */
+  {
+    const wrappedClaim = ["  console.log(`", "    the receipt copy ran on staging", "  `);"].join("\n");
+    const found = tenantLiterals(wrappedClaim);
+    ok(found.length === 1 && found[0] === 1,
+      `POSITIVE CONTROL (F-880): a two-line template whose tenant claim is on the CONTINUATION line is ONE literal, reported at its opening quote (got: ${JSON.stringify(found)})`);
+    const wrappedDomain = ["  PASS(`", "    the draft was staged and its staging changed nothing", "  `);"].join("\n");
+    ok(tenantLiterals(wrappedDomain).length === 0,
+      "NEGATIVE CONTROL (F-880): …and reading the whole template did not turn the VA domain sense into a tenant claim just because it wraps");
+  }
 
   const offenders = [];
   let scanned = 0;

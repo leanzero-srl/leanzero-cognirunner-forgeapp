@@ -335,6 +335,7 @@ export const HARNESS_UNGATED_EXPORTS = Object.freeze([
   "plantStartIndexClamped",
   "plantStartRefusal",
   "PLANT_REPOST_REASONS",
+  "PLANT_STOP_REASONS",
   "plantResumeMode",
   "CLEAR_FAILED_KEYS_REPORTED",
   "plantMaxForCall",
@@ -1608,10 +1609,45 @@ const carriedClearedSoFar = (clearToken) => {
   }
 };
 
+/*
+ * F-745 — `"stop"` IS THE THIRD ANSWER, BECAUSE "CARRY ON FROM `nextIndex`" WAS A LIE FOR ONE.
+ *
+ * `writes-failed` was answered `resume: "start-index"` — an instruction to carry on from
+ * `nextIndex` — while `nextIndex` is `firstFailedIndex`, which for a call whose FIRST write
+ * refused IS `startIndex`. A driver obeying the field POSTs the identical body under a name
+ * that promises movement, and the one rule both live drivers implement ("a `nextIndex` that
+ * does not advance is a stuck plant, stop") is the rule the field contradicted. Worse, both
+ * of them already special-case `reason: "writes-failed"` as a FAILURE, never a resume —
+ * a hand-written copy of a judgement that belongs here, in the one mapping.
+ *
+ * So the vocabulary is four words, and `resume` alone is enough to drive the lever:
+ *
+ *   · `null`          — nothing to resume (finished, or a no-op).
+ *   · `"start-index"` — carry on from `nextIndex`; it HAS moved and the next call progresses.
+ *   · `"repost"`      — send the SAME body again; `nextIndex` has not moved and is not meant
+ *                       to, and `remainingStale` / `clearedSoFar` are the progress instead.
+ *   · `"stop"`        — do NOT loop. The store refused WRITES, so the population is short
+ *                       and nothing downstream may be asserted over it; `nextIndex` still
+ *                       names the earliest hole for a caller that chooses to retry by hand,
+ *                       but this lever will not call that progress.
+ *
+ * `"stop"` is ALSO the honest answer for any other non-complete, non-`repost` answer whose
+ * index did not advance: an instruction to resume at the place you already are is a spin,
+ * whatever reason produced it. That clause is a guard against a future stop reason arriving
+ * with the same shape — today nothing but `writes-failed` reaches it.
+ *
+ * The advance is a PARAMETER and not re-derived: this is pure, and only the caller knows
+ * where its own call started. Omitted, it means "advanced" — the shape of every truncation
+ * that resumes by index.
+ */
+export const PLANT_STOP_REASONS = Object.freeze(["writes-failed"]);
+
 /** The ONE mapping from a plant's stop `reason` to how the caller resumes it. Pure. */
-export const plantResumeMode = (reason, complete) => {
+export const plantResumeMode = (reason, complete, advanced = true) => {
   if (complete === true || !reason) return null;
-  return PLANT_REPOST_REASONS.includes(reason) ? "repost" : "start-index";
+  if (PLANT_REPOST_REASONS.includes(reason)) return "repost";
+  if (PLANT_STOP_REASONS.includes(reason)) return "stop";
+  return advanced === false ? "stop" : "start-index";
 };
 
 /**
@@ -1622,9 +1658,10 @@ export const plantResumeMode = (reason, complete) => {
  * `{ ok: false, reason: "bad-start" }`. A `repost` answer additionally carries
  * `remainingStale` and `clearToken` (F-744: POST it back with the identical body).
  *
- * F-724 — `resume` IS THE ANSWER'S OWN INSTRUCTION, from `plantResumeMode` and nowhere else:
- * `"start-index"` = carry on from `nextIndex`, `"repost"` = send the SAME body again, `null`
- * = nothing to resume. Only `reason: "clearing"` is a `"repost"`, it is the one answer whose
+ * F-724/F-745 — `resume` IS THE ANSWER'S OWN INSTRUCTION, from `plantResumeMode` and nowhere
+ * else: `"start-index"` = carry on from `nextIndex`, `"repost"` = send the SAME body again,
+ * `"stop"` = do not loop (refused WRITES — the population is short and `nextIndex` may not
+ * have moved at all), `null` = nothing to resume. Only `reason: "clearing"` is a `"repost"`, it is the one answer whose
  * `nextIndex` deliberately does NOT advance, and it carries `clearedSoFar` / `remainingStale`
  * so a caller can tell converging progress from a spin without an advancing index.
  *
@@ -1896,7 +1933,10 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
     reason: failureFirst ? "writes-failed" : tail.reason,
     complete: tail.complete,
     // F-724: every plant answer says HOW it is resumed, from the one mapping.
-    resume: plantResumeMode(failureFirst ? "writes-failed" : tail.reason, tail.complete),
+    /* F-745: the advance is handed in, never guessed. `writes-failed` stops on its own name;
+     * the clause is here so any future stop reason that fails to move cannot claim progress. */
+    resume: plantResumeMode(failureFirst ? "writes-failed" : tail.reason, tail.complete,
+      (failureFirst ? firstFailedIndex : nextIndexReached) > from),
   };
 };
 

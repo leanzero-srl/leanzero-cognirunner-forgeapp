@@ -1536,6 +1536,19 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     ok((await countPrefix(PLANT707)) === 7,
       "F-707: …and the keyspace never pretends to hold nine rows while two of them do not exist");
 
+    /* ── F-745 — A `writes-failed` ANSWER SAID `resume: "start-index"` OVER AN INDEX THAT HAD
+     * NOT MOVED. `resumed` above is the exact shape: `startIndex: 4`, `nextIndex: 4`, and an
+     * instruction to "carry on from `nextIndex`" that is an instruction to POST the identical
+     * body — the spin both live drivers stop on, wearing the name of progress. They each
+     * hand-write `reason === "writes-failed"` → failure to avoid it; that judgement now lives
+     * in the one mapping, as a fourth word. ── */
+    ok(resumed.resume === "stop",
+      `F-745: a \`writes-failed\` answer whose index did not move says STOP, never "carry on from where you already are" (resume ${JSON.stringify(resumed.resume)})`);
+    ok(resumed.nextIndex === resumed.startIndex,
+      "F-745: …and that really is the non-advancing shape, so the old `start-index` was an instruction to spin");
+    ok(call1.resume === "stop" && call1.nextIndex > call1.startIndex,
+      `F-745: …and an ADVANCING \`writes-failed\` stops too — refused writes mean a short population, which is a failure and not a resume, exactly as both live drivers already judge it (resume ${JSON.stringify(call1.resume)})`);
+
     const stuck = await plantAll(9, true);
     ok(stuck.complete === false && stuck.calls <= 3,
       `F-707: the fixture's own drain loop TERMINATES on the stuck plant and reports it unfinished (calls ${stuck.calls}, complete ${stuck.complete})`);
@@ -1829,15 +1842,33 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     ok(fault.plantResumeMode("clearing", false) === "repost"
       && fault.plantResumeMode("budget", false) === "start-index"
       && fault.plantResumeMode("call-max", false) === "start-index"
-      && fault.plantResumeMode("writes-failed", false) === "start-index"
+      && fault.plantResumeMode("writes-failed", false) === "stop"
       && fault.plantResumeMode(null, true) === null,
-      "F-724: `plantResumeMode` is the ONE mapping from a stop reason to how it is resumed");
+      "F-724/F-745: `plantResumeMode` is the ONE mapping from a stop reason to how it is resumed");
     ok(fault.PLANT_REPOST_REASONS.includes("clearing") && !fault.PLANT_REPOST_REASONS.includes("budget")
       && !fault.PLANT_REPOST_REASONS.includes("call-max") && !fault.PLANT_REPOST_REASONS.includes("writes-failed"),
       "F-724: …and the re-POST answers are exactly the clear's, never a resumable truncation");
     ok(fault.HARNESS_UNGATED_EXPORTS.includes("plantResumeMode")
-      && fault.HARNESS_UNGATED_EXPORTS.includes("PLANT_REPOST_REASONS"),
-      "F-724: …both on the UNGATED census, because neither reaches storage");
+      && fault.HARNESS_UNGATED_EXPORTS.includes("PLANT_REPOST_REASONS")
+      && fault.HARNESS_UNGATED_EXPORTS.includes("PLANT_STOP_REASONS"),
+      "F-724/F-745: …all on the UNGATED census, because none of them reaches storage");
+
+    /* F-745: the fourth word, and the two clauses that produce it. The NEGATIVE control is
+     * the whole point — a truncation that really does advance must still say `start-index`,
+     * or `stop` would mean nothing. */
+    ok(fault.PLANT_STOP_REASONS.includes("writes-failed")
+      && !fault.PLANT_STOP_REASONS.includes("budget") && !fault.PLANT_STOP_REASONS.includes("call-max")
+      && !fault.PLANT_STOP_REASONS.includes("clearing"),
+      "F-745: `writes-failed` is the one stop reason, in its one home beside the re-POST vocabulary");
+    ok(fault.plantResumeMode("budget", false, false) === "stop"
+      && fault.plantResumeMode("call-max", false, false) === "stop",
+      "F-745: …and ANY non-complete, non-`repost` answer whose index did not advance is a stop — an instruction to resume where you already are is a spin");
+    ok(fault.plantResumeMode("budget", false, true) === "start-index"
+      && fault.plantResumeMode("budget", false) === "start-index"
+      && fault.plantResumeMode("clearing", false, false) === "repost",
+      "F-745 (negative control): a truncation that DID advance still carries on, the default is `advanced`, and `repost` outranks the clause — `clearing` never advances by design");
+    ok(fault.plantResumeMode("writes-failed", true, false) === null,
+      "F-745 (negative control): …and a COMPLETE answer has nothing to resume, whatever its reason");
     ok((faultCode.match(/resume: plantResumeMode\(/g) || []).length === 4,
       "F-724.SOURCE: every plant answer takes `resume` from the mapping — none of them hand-writes one");
   }

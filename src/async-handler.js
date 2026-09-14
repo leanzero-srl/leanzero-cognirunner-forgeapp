@@ -141,7 +141,7 @@ import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 // 1.5 probe P3 — the ONE Confluence call site rule holds for the probe too: it goes
 // through the client, never straight to `requestConfluence`.
 import { createConfluenceClient } from "./confluence-client.js";
-import { runCoderTurn, isHeadlessTrigger, coderDoneClaimKey, CODER_DONE_TTL, getCoderThread, getCoderPinnedKnowledge } from "./coder-engine.js";
+import { runCoderTurn, isHeadlessTrigger, getCoderThread, getCoderPinnedKnowledge } from "./coder-engine.js";
 // F-829 — the ONE gate predicate and the ONE refusal vocabulary, used here exactly as the
 // producer uses them. Nothing about capability is decided in this file; it only supplies
 // FRESH facts to the same three functions.
@@ -151,7 +151,7 @@ import { DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
 import { knowledgeBudget, fieldGuideAudience, fieldGuideBudget, KNOWLEDGE_BUDGET_BYTES } from "./shared/registry-limits.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
-import { claimRuleExecution } from "./shared/execution-claim.js";
+import { claimRuleExecution, taskDoneClaimKey, TASK_DONE_TTL } from "./shared/execution-claim.js";
 import { isKeyConflict, safeKeyPart, assertKvsKey } from "./shared/kvs-keys.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt } from "./rule-stats.js";
 import { providerKeySlot, providerModelSlot } from "./shared/provider-slots.js";
@@ -2232,7 +2232,7 @@ const resolveFreshCoderGate = async (p) => {
 
 const executeCoderTurn = async (params, taskId) => {
   const p = params || {};
-  // F-393 / F-911 — THE PER-EVENT COMPLETION CLAIM, for EVERY coder turn.
+  // F-393 / F-911 / F-919 — THE PER-EVENT COMPLETION CLAIM, for EVERY coder turn.
   //
   // The per-issue `coder_exec:` claim is a LOCK released in `finally`; it stops two turns
   // overlapping and stops nothing once a turn has ended. A platform redelivery of this
@@ -2244,11 +2244,17 @@ const executeCoderTurn = async (params, taskId) => {
   // be redelivered is the one that hit the 900 s consumer limit, which is exactly the one
   // whose result no human ever saw.
   //
-  // ONE key builder and ONE predicate, therefore: `coder_done:<taskId>`, claimed BEFORE
-  // the engine's per-issue lock and before a single token is spent, and never released on
-  // a run that reached a recorded outcome — it IS the "this event has been executed"
-  // record. FAIL OPEN on a KVS fault (claimRuleExecution without failClosed): an
-  // unreachable store must not stop a rule's first and only delivery.
+  // THE KEY AND THE TTL ARE THE SHARED ONES (F-919): `task_done:<taskId>` from
+  // src/shared/execution-claim.js, the same record `handler` takes for every other polled
+  // task type. A coder turn is not a second kind of "has this event run".
+  //
+  // WHY THE CLAIM IS TAKEN HERE AND NOT IN `handler` (which is why `coder` is listed in
+  // SELF_CLAIMING_TASKS): this body needs it EARLIER than the consumer's own claim point —
+  // before the engine's per-issue lock and before a token is spent — it RELEASES the claim
+  // when the turn threw before recording any outcome (so the platform's retry of a
+  // genuinely failed delivery still works), and it answers a duplicate in its own shape.
+  // FAIL OPEN on a KVS fault (claimRuleExecution without failClosed): an unreachable store
+  // must not stop a rule's first and only delivery.
   //
   // WHAT A DUPLICATE IS ANSWERED WITH is the only thing that differs between the paths,
   // because their readers differ. A post-function has no reader, so it keeps the F-393
@@ -2258,8 +2264,8 @@ const executeCoderTurn = async (params, taskId) => {
   // `duplicate: true` with NO `error` string — the consumer's failure discriminator needs
   // both, so the row stays "done" and CoderPanel treats the flag as "already answered"
   // and re-reads the thread, which is the record of what the first delivery did.
-  const doneKey = coderDoneClaimKey(taskId);
-  const firstDelivery = await claimRuleExecution(storage, doneKey, CODER_DONE_TTL, "coder-done");
+  const doneKey = taskDoneClaimKey(taskId);
+  const firstDelivery = await claimRuleExecution(storage, doneKey, TASK_DONE_TTL, "task-done");
   if (!firstDelivery) {
     console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: redelivery of a completed turn, skipped (${taskId})`);
     return p.pf
@@ -2453,6 +2459,20 @@ const LONG_QUEUE_EVENTS = new WeakSet();
 // which the Agents tab reads directly. An `async_task:*` status row for them would be a
 // row nobody ever deletes, because `getAsyncTaskResult` only cleans up what is polled.
 const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", PIPELINE_TASK, HARNESS_PROBE_TASK, "va-tick", "va-item", "va-post"]);
+
+/**
+ * TASK TYPES THAT TAKE THEIR OWN `task_done:<taskId>` CLAIM, SO `handler` MUST NOT (F-919).
+ *
+ * The claim is the SAME record built by the SAME builder — `taskDoneClaimKey` — so there is
+ * still exactly ONE answer to "has this event already run" and exactly one claim per
+ * delivery. What differs is only WHEN it is taken and what a duplicate is answered with:
+ * `executeCoderTurn` claims before the engine's per-issue lock and before a token is spent,
+ * releases the claim when the turn threw before recording any outcome, and answers the
+ * panel's poll with `duplicate: true` and no `error` (F-911). Claiming here as well would
+ * make the body's own claim fail against `handler`'s and every first delivery would look
+ * like a duplicate — so this set is the exemption, named, not an implicit special case.
+ */
+const SELF_CLAIMING_TASKS = new Set(["coder"]);
 
 // F-119 — which UNPOLLED task types write an execution-log entry when they FAIL, and
 // under WHICH log type. The value must be a type the UI badge maps already know
@@ -2916,6 +2936,43 @@ export async function handler(event) {
   if (!gated.run) return;
   const { budgetRuleId, budgetEstimate, budgetProvider, budgetReserveMs } = gated;
 
+  // Does anything poll this task's `async_task:` row? Decided once, used by the
+  // completion claim below and by every status write after it.
+  const polled = !UNPOLLED_TASKS.has(taskType);
+
+  // ===== THE PER-EVENT COMPLETION CLAIM (F-919) =====
+  //
+  // Forge async events are at-least-once. Everything below this line is written on EVERY
+  // delivery: the `running` job row, the `processing` status row, and then the task body
+  // itself. So a redelivery of a task that already FINISHED used to stamp a completed
+  // `async_task:<taskId>` row back to `{ status: "processing" }` — a row that nothing will
+  // ever move again, so the panel polls until it gives up — and then run the body a second
+  // time. For `review` / `codegen` / `fixcode` / `skilldistill`, which had no claim of any
+  // kind, that is a second frontier call the customer pays for, on work already done.
+  //
+  // ONE claim, for every POLLED task type, taken here — BEFORE the processing stamp and
+  // before the body — under the one shared builder (src/shared/execution-claim.js). On a
+  // duplicate the handler writes NOTHING and returns: the completed row (or its absence,
+  // if `getAsyncTaskResult` already consumed and deleted it) is left exactly as the first
+  // delivery left it. "Answer the duplicate, write nothing" is the whole contract — the
+  // claim outlives the 1 h status row precisely so a late duplicate cannot resurrect one.
+  //
+  // UNPOLLED types are deliberately NOT claimed here: they have no status row to clobber,
+  // several of them (postfunction, git-event, the VA tasks) own execution claims of their
+  // own keyed on the WORK rather than the delivery, and `git-event` relies on the platform
+  // redelivering the same taskId after a `requeue` throw — a completion claim taken here
+  // would refuse that retry. Their duplicate-safety stays where it already lives.
+  //
+  // FAIL OPEN on a KVS fault: an unreachable store must never stop a first delivery.
+  if (polled && !SELF_CLAIMING_TASKS.has(taskType)) {
+    const firstDelivery = await claimRuleExecution(
+      storage, taskDoneClaimKey(taskId), TASK_DONE_TTL, "task-done");
+    if (!firstDelivery) {
+      console.warn(`Async handler: ${taskType} (${taskId}) is a redelivery of a completed task — nothing run, nothing written`);
+      return;
+    }
+  }
+
   resetInvocationTokens();
 
   const startedAt = new Date().toISOString();
@@ -2925,7 +2982,6 @@ export async function handler(event) {
   await updateAsyncJob(taskId, { status: "running", startedAt }, JOB_TTL_ACTIVE,
     { taskId, taskType, status: "running", enqueuedAt: startedAt });
 
-  const polled = !UNPOLLED_TASKS.has(taskType);
   try {
     // Mark as processing (only for tasks something will poll)
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "processing" }, ttl);

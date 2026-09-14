@@ -1078,7 +1078,14 @@ try {
     const constants = new Map(), builders = new Map(), ownConstants = new Map();
     for (const [name, src] of code) {
       const own = new Map();
-      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'`])([^"'`\n]*)\2\s*;/g)) if (!own.has(m[1])) own.set(m[1], m[3]);
+      /* F-788 — A TEMPLATE IS NOT A CONSTANT, and this dictionary is FILE-WIDE. The quote
+         class includes the backtick, so `const key = \`${UI_INTENT_PREFIX}${accountId}\`;`
+         was filed as the file's value for the name `key` and then handed to EVERY
+         `storage.set(key, …)` in index.js — a wrong key, resolved with total confidence,
+         which the coverage rule then asks `isCredentialKey` about. Only plain literals go
+         in the dictionary; a name bound to a template is resolved by the window-local
+         follow below, which reads the declaration that actually precedes the write. */
+      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'`])([^"'`\n]*)\2\s*;/g)) if (!own.has(m[1]) && !m[3].includes("${")) own.set(m[1], m[3]);
       ownConstants.set(name, own);
       for (const [k, v] of own) if (/^[A-Z][A-Z0-9_]*$/.test(k) && !constants.has(k)) constants.set(k, v);
       for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*=>\s*(?:[A-Za-z_$][\w$]*\()?\s*`([^`]*)`/g)) if (!builders.has(m[1])) builders.set(m[1], m[2]);
@@ -1101,6 +1108,11 @@ try {
           const call = e.match(/^([A-Za-z_$][\w$]*)\s*\(/);
           if (call && builders.has(call[1])) e = builders.get(call[1]);
           else {
+            /* F-788 — `"probe:" + name`: a LITERAL prefix concatenated with a runtime part
+               is a family exactly like `PREFIX + id` is, and reading only the identifier
+               form left `executeProbe`'s write site with no key at all. */
+            const litPlus = e.match(/^["']([^"']*)["']\s*\+/);
+            if (litPlus) return litPlus[1];
             const plus = e.match(/^([A-Za-z_$][\w$]*)\s*\+/);
             if (plus && constOf(plus[1]) !== null) return constOf(plus[1]);
             if (/^[A-Za-z_$][\w$]*$/.test(e)) {
@@ -1116,7 +1128,12 @@ try {
         } else e = tpl[1];
         e = e.replace(/\$\{([A-Za-z_$][\w$]*)\}/g, (_s, n) => (constOf(n) !== null ? constOf(n) : " "));
         e = e.replace(/\$\{[\s\S]*?\}/g, " ");
-        return e.split(/\s/)[0] || null;
+        const out = e.split(/\s/)[0] || null;
+        /* F-788 — a key that still carries a `${` is a FAILED resolution wearing the costume
+           of a successful one, and the coverage rule would ask `isCredentialKey` about a
+           string no KVS row is ever named. Unresolved is the honest answer, and the
+           assertion below refuses to let one pass unreviewed. */
+        return out && out.includes("${") ? null : out;
       };
       const WRITE_CALL = /\b(?:storage|kvs|store)\s*\.\s*set\s*\(/g;
       let wm;
@@ -1130,7 +1147,17 @@ try {
         const keyExpr = parts[0].trim(), valueExpr = parts[1].trim();
         const win = lines.slice(Math.max(0, line - 81), line).join("\n");
         const fields = new Set();
-        const scanFields = (txt) => { for (const m of txt.matchAll(/(?:^|[{,\s])["']?([A-Za-z_$][\w$]*)["']?\s*[:=](?!=)/g)) if (isSecretField(m[1])) fields.add(m[1]); };
+        /* F-788 — TWO WAYS A FIELD NAME APPEARS IN AN OBJECT LITERAL, and the scanner only
+           read one. `name:` / `name =` was the whole rule, so `{ url, apiKey }` — the most
+           idiomatic way this repo writes a row, and the exact shape at test-hook.js's
+           `storage.set("probe:webhook:secret", { secret, at })` — yielded `fields.size === 0`
+           and the site was never even reported, so the census of 27 sites simply did not
+           contain it. A SHORTHAND property is an identifier followed by `,` or `}` with no
+           colon, and it names the field just as loudly. */
+        const scanFields = (txt) => {
+          for (const m of txt.matchAll(/(?:^|[{,\s])["']?([A-Za-z_$][\w$]*)["']?\s*[:=](?!=)/g)) if (isSecretField(m[1])) fields.add(m[1]);
+          for (const m of txt.matchAll(/(?:^|[{,])\s*([A-Za-z_$][\w$]*)\s*(?=[,}])/g)) if (isSecretField(m[1])) fields.add(m[1]);
+        };
         if (/^\{[\s\S]*\}$/.test(valueExpr)) scanFields(valueExpr);
         const bare = valueExpr.match(/^([A-Za-z_$][\w$]*)$/);
         if (bare) {
@@ -1160,6 +1187,10 @@ try {
     ["COGNIRUNNER_AI_BUDGET", "`tokensPerMinute` is the TPM pacing number (src/shared/ai-budget.js), not an auth token"],
     ["ai_cost:", "`tokens` is a usage COUNT for the cost meter"],
     ["pf_exec:", "`issueKey` is a Jira issue key (LZPT-1), which is not secret and is in every log line"],
+    // F-788 — the three invocation-claim rows, `{ issueKey, claimedAt }`: SHORTHAND, so the
+    // scanner could not see them at all until now. Same judgement as pf_exec: above.
+    ["pf_inv:", "`issueKey` — a Jira issue key on a once-only invocation claim row"],
+    ["pf_inv:fb:", "`issueKey` — a Jira issue key on the fallback invocation claim row"],
     ["coder_ticket:", "`issueKey` — a Jira issue key"],
     ["coder_pin:", "`issueKey` — a Jira issue key"],
     ["coder_log:", "`issueKey` — a Jira issue key"],
@@ -1193,6 +1224,22 @@ try {
     assert.deepEqual(uncovered.map((s) => `${s.file}:${s.line} ${s.key} {${s.fields.join(",")}}`), [],
       "a KVS row stores a secret-looking field under a key the read ceiling does not mask — declare the family in CREDENTIAL_KEY_FAMILIES, or add it to NOT_A_CREDENTIAL with the reason");
 
+    /* F-788 — THE FINDING, named: the most idiomatic way to store a secret was invisible.
+       `storage.set("probe:webhook:secret", { secret, at })` is a SHORTHAND property, so the
+       old `[:=]`-only scan gave it `fields.size === 0` and never reported the site — it is
+       absent from the 27-site census this check was committed with. It is a real HMAC secret
+       (a tester types it; `gitWebhookProbe` verifies a signature with it), and the answer to
+       "is the read ceiling already over it" is YES twice over: it is a declared family AND
+       its name carries the `secret` catch-all. Asserted, not assumed. */
+    const probeSecret = sites.find((s) => s.key === "probe:webhook:secret");
+    assert.ok(probeSecret && probeSecret.fields.includes("secret"),
+      "the scanner sees the SHORTHAND `{ secret, at }` write at test-hook.js — this is the F-788 site");
+    assert.equal(isCredentialKey("probe:webhook:secret"), true, "…and the read ceiling masks it");
+    assert.equal(isCredentialKey("a:key:named:secret"), true,
+      "…and the name catch-all covers it a second time, because the key says `secret` out loud");
+    assert.equal(isCredentialKey("probe:webhook:signing"), false,
+      "…but ONLY because of that word: rename the key and the DECLARED family is the whole ceiling, which is why the census has to see the site at all");
+
     // THE FINDING ITSELF, named: the third MCP remote is in the census now.
     const context7 = sites.find((s) => s.key === "COGNIRUNNER_CONTEXT7_REMOTE");
     assert.ok(context7 && context7.fields.includes("apiKey"), "the scanner sees saveContext7Remote storing apiKey");
@@ -1205,6 +1252,35 @@ try {
     assert.equal(found[0].key, "cognirunner_new_thing");
     assert.equal(isCredentialKey(found[0].key) || NOT_A_CREDENTIAL.has(found[0].key), false,
       "POSITIVE CONTROL: …and it is UNCOVERED, so the rule above would fail on it");
+    /* POSITIVE CONTROL for F-788: the SHORTHAND fixture — the exact shape the scanner was
+       blind to, and the shape a new `saveXRemote` would copy from line 561's own style. */
+    const shorthand = new Map([["shorthand.js", 'const SLOT = "cognirunner_x_remote";\nawait storage.set(SLOT, { url, apiKey });\n']]);
+    const shortFound = scanSecretWriteSites(shorthand, hints);
+    assert.equal(shortFound.length, 1, "POSITIVE CONTROL: `{ url, apiKey }` IS a secret write site");
+    assert.deepEqual(shortFound[0].fields, ["apiKey"], "…and the shorthand field is named, while `url` is not a secret word");
+    assert.equal(isCredentialKey(shortFound[0].key) || NOT_A_CREDENTIAL.has(shortFound[0].key), false,
+      "…and it is UNCOVERED, so the rule above would fail on it — which it did not before F-788");
+    /* …and the two key-resolution holes this exposed, both of which answered a WRONG key
+       with total confidence rather than answering "unresolved". A template bound to a name
+       is NOT a file-wide constant (`const key = `${UI_INTENT_PREFIX}${accountId}`;` was being
+       handed to every `storage.set(key, …)` in index.js), and a literal prefix concatenated
+       with a runtime part is a family like any other. */
+    const tpl = new Map([["tpl.js", [
+      'const P = "ui_intent:";',
+      "const key = `${P}${accountId}`;",
+      'const other = "probe:" + name;',
+      "await storage.set(other, { apiKey });",
+      "await storage.set(key, { apiKey });",
+    ].join("\n")]]);
+    const tplFound = scanSecretWriteSites(tpl, hints);
+    assert.deepEqual(tplFound.map((s) => s.key), ["probe:", "ui_intent:"],
+      "a literal+identifier key resolves to its prefix, and a template name resolves through the declaration that PRECEDES the write, not through a file-wide dictionary");
+    const wrong = new Map([["wrong.js", [
+      "const key = `${NOPE}/x`;",
+      "await storage.set(key, { apiKey });",
+    ].join("\n")]]);
+    assert.deepEqual(scanSecretWriteSites(wrong, hints).map((s) => s.key), [null],
+      "a key that cannot be resolved answers null — never a string still carrying a ${…}, which the coverage rule would then ask isCredentialKey about");
     // …and a comment that merely NAMES a credential field is prose, not a write site.
     const prose = new Map([["prose.js", '/* the slot stores { apiKey } — see F-778 */\nawait storage.set("plain_row", { count: 1 });\n']]);
     assert.deepEqual(scanSecretWriteSites(prose, hints), [], "POSITIVE CONTROL: a docblock naming apiKey is not a write site");

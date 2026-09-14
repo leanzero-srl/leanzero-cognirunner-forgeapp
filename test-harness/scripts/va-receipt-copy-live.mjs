@@ -32,14 +32,22 @@
  * NOTHING IS POSTED: replyInternal only, shadowUntilTick 500, and the project's comment
  * total is read before and after.
  *
- * Usage (from test-harness/):  node scripts/va-receipt-copy-live.mjs [--keep]
+ * Usage (from test-harness/):  node scripts/va-receipt-copy-live.mjs [--env=dev|staging] [--keep]
+ *   `--env` moves BOTH halves together — the web trigger AND the admin page the browser
+ *   opens. It defaults to staging; it mutates the tenant, so do not point it at dev
+ *   casually (this driver creates a virtual agent and rewrites a model slot).
  * Env: STAGING_TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID + the JIRA_* trio.
  */
-import { requireEnvAck, forgeEnvId } from "../lib/shared-env-guard.mjs";
+import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 
-const { hookUrl: HOOK_URL } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
+/* F-714 — the HOOK half and the BROWSER half must come from ONE guard row. This driver
+   used to take `hookUrl` from `--env` while pinning `ADMIN_PAGE` to `forgeEnvId("staging")`,
+   so `--env=dev` planted the agent and the model slot through the DEV web trigger and then
+   looked for the receipt on the STAGING admin page — a FAIL naming the UI for a fixture
+   that was never there, and a `Copyprobe` agent left on the shared dev tenant. */
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID } = requireEnvAck(process.argv.slice(2), { faults: [], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const flag = (n) => process.argv.slice(2).includes(`--${n}`);
@@ -57,7 +65,7 @@ const KEEP = flag("keep");
    drives the capability row alone, on a fresh agent that was never deleted. */
 const NO_PURGE = flag("no-purge");
 const AGENT_MODEL_SLOT = "COGNIRUNNER_AGENT_MODEL_atlassian";
-const ADMIN_PAGE = `https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/${forgeEnvId("staging")}`;
+const ADMIN_PAGE = `https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/${ENV_ID}`;
 const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const NAME = `Copyprobe${Date.now().toString(36).slice(-4)}`;
 const OUT = new URL("../results/va-receipt-copy", import.meta.url).pathname;
@@ -65,7 +73,9 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
-const ev = { name: NAME, checks: [] };
+/* The VALIDATED environment name, so the evidence records the tenant the run used and
+   not the one the file was written for (F-698's rule, F-714's omission). */
+const ev = { name: NAME, env: ENV_NAME, checks: [] };
 const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(d) : ""}`); };

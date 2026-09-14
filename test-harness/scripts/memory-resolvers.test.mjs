@@ -13,6 +13,7 @@
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import { readFileSync } from "node:fs";
+import { maskComments } from "../lib/js-source-scan.mjs";
 // src/memories.js must be loaded DYNAMICALLY, like `handler` below. A STATIC import
 // is part of this module's graph and is instantiated BEFORE any top-level code runs,
 // so the register-mocks-index hook above has not been installed yet and memories.js
@@ -219,8 +220,12 @@ ok(storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
   ok(load().some((m) => m.id === "b7"), "the archived row survives the delete of a different row");
 }
 
-// === F-168: ONE memory-content clamp, imported — no retyped literal in index.js ===
-const indexSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+/* === F-168: ONE memory-content clamp, imported — no retyped literal in index.js ===
+   F-805 — the four source reads below are MASKED (comments blanked, string literals kept).
+   Every spelling they ban is one a comment has to write down: "(200 max)", the cap sentence,
+   the retyped COGNIRUNNER_MEMORY_STORE_FULL literal, `substring(0, 350)`. Literals stay
+   visible because two of those bans are about PROMPT TEXT, which lives in a literal. */
+const indexSrc = maskComments(readFileSync(new URL("../../src/index.js", import.meta.url), "utf8"));
 const memoryClamps = indexSrc.match(/String\(content \|\| ""\)\.trim\(\)\.substring\(0, ([A-Za-z0-9_]+)\)/g) || [];
 ok(memoryClamps.length === 2 && memoryClamps.every((m) => m.includes("MEMORY_CONTENT_MAX")),
   `both memory-content clamps in index.js use MEMORY_CONTENT_MAX (${JSON.stringify(memoryClamps)})`);
@@ -232,13 +237,16 @@ ok(load().find((m) => m.id === longAdd.id).content.length === MEMORY_CONTENT_MAX
   `addMemory clamps at MEMORY_CONTENT_MAX (${MEMORY_CONTENT_MAX})`);
 await call("updateMemory", { id: longAdd.id, content: "y".repeat(MEMORY_CONTENT_MAX + 50) });
 ok(load().find((m) => m.id === longAdd.id).content.length === MEMORY_CONTENT_MAX, "updateMemory clamps at the same constant");
-const asyncSrc = readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8");
+const asyncSrc = maskComments(readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8"));
+ok(!/\(200 max\)/.test(maskComments("// the prompt used to say (200 max) inline\nlet x;\n"))
+  && /\(200 max\)/.test(maskComments('const s = "you have 100 memories (200 max)";\n')),
+  "F-805 control: the banned sentence in a COMMENT is not a use; in a string LITERAL it is");
 ok(!/substring\(0, 350\)/.test(asyncSrc) && /MEMORY_DISTILL_CONTENT_MAX = 350/.test(asyncSrc),
   "the distill task's deliberately tighter clamp is NAMED, not a bare literal");
 
 // === F-174: the store-full MARKER key is restorable by the harness, by constant ===
 {
-  const hookSrc = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+  const hookSrc = maskComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
   ok(/MEMORY_STORE_FULL_KEY[\s\S]*?from "\.\/memories\.js"/.test(hookSrc), "test-hook imports MEMORY_STORE_FULL_KEY rather than retyping it");
   // F-769 moved the list out of the `kvSet` branch into `kvWriteAllowList()` so the
   // stash door is bounded by the SAME authorisation. The assertion is about the list
@@ -246,7 +254,7 @@ ok(!/substring\(0, 350\)/.test(asyncSrc) && /MEMORY_DISTILL_CONTENT_MAX = 350/.t
   // longer pins `const KEYS`.
   ok(/new Set\(\[[\s\S]*?MEMORY_STORE_FULL_KEY[\s\S]*?\]\)/.test(hookSrc), "the kvSet allowlist includes the store-full marker");
   ok(!/"COGNIRUNNER_MEMORY_STORE_FULL"/.test(hookSrc), "…and never as a retyped string literal");
-  const idxSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  const idxSrc = maskComments(readFileSync(new URL("../../src/index.js", import.meta.url), "utf8"));
   ok(!/\(200 max\)/.test(idxSrc) && !/full of your own memories/.test(idxSrc),
     "index.js no longer carries a copy of the cap sentence or a retyped 200");
 }

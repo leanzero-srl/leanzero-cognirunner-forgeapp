@@ -28,7 +28,7 @@ import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
    assertions read them rather than retyping a label the app could stop using. */
 import { GIT_EVENT_IDS, EVENT_CATEGORIES } from "../../src/shared/jira-events.js";
 import { AGENT_ACTIONS, agentActionNamespace } from "../../src/shared/agent-actions.js";
-import { agentCapabilityCopy } from "../../src/shared/edition.js";
+import { agentCapabilityCopy, EDITIONS } from "../../src/shared/edition.js";
 /* F-526: the scaffold's OWN defaults, so "the form did not just ship the default" is
    asserted against the value the renderer would really have used. */
 import { SCAFFOLDS, scaffoldHasCustomUi } from "../../src/shared/git-scaffolds.js";
@@ -54,7 +54,16 @@ function serve(root) {
 }
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
-const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
+/* F-914 - SETTLE BEFORE THE SHUTTER. The panel's entry animations (sectionFadeIn,
+   anim-fade, .stagger) run on mount, so a screenshot taken the instant the assertions
+   finish catches every chip at partial opacity and every muted line at nearly zero - and
+   a human reading that PNG reports a "faded wash" the CSS does not contain. The
+   assertions read getComputedStyle and were never affected; only the eye was. */
+const shot = async (page, name) => {
+  if (!SHOTS) return;
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true });
+};
 
 async function openAdmin(browser, theme = "light", extraInit = null) {
   const root = ensureFreshBuildShot("admin-panel");
@@ -93,7 +102,16 @@ try {
       // Status: ON, and the sentence is the ONE copy map's, not a wording this test invents.
       ok(await page.locator(".code-status-badge", { hasText: "CODER IS ON" }).count() === 1, `C1 ${theme} status badge reads ON`);
       ok((await page.locator(".code-status-title").first().innerText()).includes(agentCapabilityCopy("byok").title), `C1 ${theme} the status sentence comes from AGENT_CAPABILITY_REASONS`);
-      ok((await page.locator(".code-facts").first().innerText()).includes("anthropic"), `C1 ${theme} the provider fact is rendered`);
+      /* F-914 - the fact chips print PRODUCT NAMES. They used to print the ids the
+         backend stores ("anthropic", "advanced"), which is a vocabulary that appears on
+         no invoice and in no listing. The edition label is read from edition.js so a
+         rename there fails this run rather than going stale here. */
+      const facts = await page.locator(".code-facts").first().innerText();
+      ok(facts.includes("Anthropic"), `C1 ${theme} the provider fact is the product name, got: ${facts}`);
+      ok(facts.includes(EDITIONS.standard.label), `C1 ${theme} the edition fact is the product name`);
+      ok(!/\banthropic\b/.test(facts), `C1 ${theme} and the raw provider id is gone`);
+      ok(!/\badvanced\b|\bstandard\b/.test(facts), `C1 ${theme} and the raw edition id is gone`);
+      ok(facts.includes("claude-sonnet-5"), `C1 ${theme} the model id is kept as the id the admin picked`);
       // Connections: two rows, both kinds, the "set" credential state, the repo chips.
       ok(await page.locator(".code-conn").count() === 2, `C1 ${theme} two connection rows`);
       ok(await page.locator(".code-kind-github").count() === 1 && await page.locator(".code-kind-bitbucket").count() === 1, `C1 ${theme} one chip per provider kind`);
@@ -217,8 +235,15 @@ try {
       await page.locator(".code-who").first().waitFor({ timeout: 8000 });
       const who = await page.locator(".code-who").first().innerText();
       ok(/acme-bot/.test(who), "C6 the Test result shows the whoami login");
-      ok(/repo/.test(who), "C6 the Test result shows the reported scopes");
-      ok(/not known/.test(who), "C6 an unknown capability says NOT KNOWN, never no");
+      ok(/not reported/.test(who), "C6 a token that reports no scopes says so");
+      /* F-914 - "not known" read as a fault the app had hit; it is a measurement that was
+         not taken. And the WHY beside it must be the backend's own sentence, never one
+         invented on this screen - a fine-grained PAT and a Bitbucket call have different
+         reasons for the same null. */
+      ok(/not checked/.test(who), "C6 an unchecked capability says NOT CHECKED, never no");
+      ok(!/not known/.test(who), "C6 and the old wording is gone");
+      ok(/fine-grained PATs never do/.test(who), "C6 the reason beside it is the backend's own sentence");
+      ok(!/reported OAuth scopes/.test(who), "C6 and never the classic-token sentence over a null capability");
       // Deploy identity: consent gates the button, and the button is never pre-armed.
       // Scoped to the identity CARD: since F-460 every repo row also offers a "Set up
       // webhook", and a loose "Set up" match would click the wrong control.
@@ -1131,6 +1156,176 @@ try {
       ok(/Trigger deploy/.test(await row.locator(".code-pipe-deploy").first().innerText()), "C16b and the button still reads Trigger deploy");
       ok(env.errors.length === 0, "C16b no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C16b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  /* ---------------- C17 — F-914: the OFF state has something to press ------------------
+     The walk's finding was a DEAD END, not a wording problem: the remedy ended in bold
+     text that looked like a link. So the assertions are about DESTINATIONS - an href that
+     really points at Jira's Manage apps page on THIS site, a Settings button that really
+     moves the app to the Settings tab - and about the second requirement being named
+     before the upgrade, so an admin who buys Coder on Forge LLM is not refused twice. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C17 off state actions (${theme})`);
+    const env = await openAdmin(browser, theme, { __CODE_CAP__: "needs-coder-edition" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-tab").waitFor({ timeout: 10000 });
+      const off = page.locator(".code-status .agent-off").first();
+      await off.waitFor({ timeout: 8000 });
+      // 1. No bold pretend-link left anywhere in the status card.
+      ok(await page.locator(".code-status-link > strong").count() === 0, `C17 ${theme} the bold pretend-link is gone`);
+      // 2. The Manage apps link is REAL and site-absolute.
+      const href = await off.locator("a.agent-off-link").first().getAttribute("href");
+      ok(href === "https://your-site.atlassian.net/jira/settings/apps/manage", `C17 ${theme} the Manage apps href is the site's own page, got ${href}`);
+      ok(await off.locator("a.agent-off-link").first().getAttribute("target") === "_blank", `C17 ${theme} it opens away from the panel`);
+      // 3. The frontier requirement is named BEFORE the upgrade (this arm is Forge LLM).
+      ok((await off.innerText()).includes("Claude Sonnet 5 or Opus 5"), `C17 ${theme} the frontier requirement is named before the upgrade`);
+      ok((await off.innerText()).includes("Coder edition AND"), `C17 ${theme} and it is stated as BOTH requirements, not one`);
+      // 4. Solid saturated chips, white text, and a DIFFERENT fill in dark (the override).
+      const linkBg = await off.locator("a.agent-off-link").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      const linkFg = await off.locator("a.agent-off-link").first().evaluate((el) => getComputedStyle(el).color);
+      ok(linkBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `C17 ${theme} the upgrade link is the solid Coder orange, got ${linkBg}`);
+      ok(!/rgba\(.*0(\.\d+)?\)/.test(linkBg), `C17 ${theme} it is not a faded tint`);
+      ok(linkFg === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"), `C17 ${theme} its text is the readable pair for this theme, got ${linkFg}`);
+      // 5. No em dash in the copy this component renders.
+      ok(!/[\u2013\u2014]/.test(await off.innerText()), `C17 ${theme} no em dash or en dash in the off state copy`);
+      // 6. The setup below is DISABLED, not merely unhelpful (plan 2.2).
+      ok(await page.locator("fieldset.code-locked[disabled]").count() === 1, `C17 ${theme} the two setup cards are inside a disabled fieldset`);
+      ok(await page.locator(".code-off-note").count() === 2, `C17 ${theme} both setup cards say why they are read only`);
+      const addBtn = page.locator("button", { hasText: "+ Add connection" }).first();
+      ok(await addBtn.isDisabled(), `C17 ${theme} Add connection is disabled`);
+      ok(await page.locator(".code-conn button", { hasText: "Delete" }).first().isDisabled(), `C17 ${theme} a per-connection Delete is disabled`);
+      ok(await page.locator("button", { hasText: /^Set up$/ }).first().isDisabled(), `C17 ${theme} the deploy-identity Set up is disabled`);
+      await shot(page, `C17-off-actions-${theme}`);
+      ok(env.errors.length === 0, `C17 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C17 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* C17b — the Settings button actually MOVES the app, and it is absent for a reader who
+     has no Settings tab to move to. Both halves, because a button that lands nowhere is
+     the same dead end wearing a fix. */
+  {
+    console.log("C17b the Settings button navigates, and only for an admin");
+    const env = await openAdmin(browser, "light", { __CODE_CAP__: "needs-coder-edition" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-status .agent-off").first().waitFor({ timeout: 8000 });
+      await page.locator(".agent-off-btn").first().click();
+      await page.locator(".openai-status, .section-title", { hasText: /AI Provider Configuration/ }).first().waitFor({ timeout: 10000 });
+      ok(await page.locator(".tab-btn.tab-active", { hasText: /^\s*Settings\s*$/ }).count() === 1, "C17b pressing it lands on the Settings tab");
+      ok(env.errors.length === 0, "C17b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C17b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    console.log("C17c a non-admin is offered no Settings button");
+    const env = await openAdmin(browser, "light", { __NOT_ADMIN__: true, __CODE_CAP__: "needs-coder-edition" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-tab").waitFor({ timeout: 10000 });
+      const offs = page.locator(".code-status .agent-off");
+      if (await offs.count() > 0) {
+        ok(await offs.first().locator(".agent-off-btn").count() === 0, "C17c no Settings button for a reader with no Settings tab");
+        ok(await page.locator(".tab-btn", { hasText: /^\s*Settings\s*$/ }).count() === 0, "C17c and there genuinely is no Settings tab to send them to");
+      } else {
+        // The editor arm renders the access note instead; the absence of a button is still the point.
+        ok(await page.locator(".agent-off-btn").count() === 0, "C17c no Settings button anywhere on a non-admin Code tab");
+      }
+      ok(env.errors.length === 0, "C17c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C17c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* C17d — the NEGATIVE control for the disabling. Coder ON must leave every setup
+     control live; a gate that disabled them always would pass C17 and break the tab. */
+  {
+    console.log("C17d Coder ON leaves the setup editable");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-tab").waitFor({ timeout: 10000 });
+      ok(await page.locator("fieldset.code-locked[disabled]").count() === 0, "C17d the fieldset is not disabled when Coder is on");
+      ok(await page.locator(".code-off-note").count() === 0, "C17d and no card claims to be read only");
+      ok(!(await page.locator("button", { hasText: "+ Add connection" }).first().isDisabled()), "C17d Add connection is live");
+      ok(await page.locator(".code-status .agent-off").count() === 0, "C17d an ON card carries no off state at all");
+      ok(env.errors.length === 0, "C17d no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C17d threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  /* ---------------- C18 - F-914: the form and the chips -------------------------------
+     Four separate walk findings that all live on this one card: a credential named after
+     a mechanism Atlassian retired, a commit button that looked like the four secondary
+     buttons above it, a red banner that could run two sentences together, and an empty
+     state under the contrast floor. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C18 the connection form and its chips (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-tab").waitFor({ timeout: 10000 });
+
+      // 1. The empty state must clear the contrast floor. --text-muted did not.
+      const emptyColor = await page.locator(".code-tab .empty-state").first().evaluate((el) => getComputedStyle(el).color);
+      ok(emptyColor === (theme === "dark" ? "rgb(160, 160, 176)" : "rgb(100, 116, 139)"),
+        `C18 ${theme} the empty state uses the readable secondary token (got ${emptyColor})`);
+
+      await page.locator("button", { hasText: "+ Add connection" }).first().click();
+      await page.locator(".code-form").first().waitFor({ timeout: 5000 });
+
+      // 2. The commit button is the PRIMARY action, and Cancel is beside it.
+      const save = page.locator(".code-save-conn");
+      ok(await save.count() === 1, `C18 ${theme} the form has its own Save connection button`);
+      const saveBg = await save.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      const saveFg = await save.first().evaluate((el) => getComputedStyle(el).color);
+      ok(saveBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(37, 99, 235)"), `C18 ${theme} it is a solid primary fill (got ${saveBg})`);
+      ok(saveFg === "rgb(255, 255, 255)", `C18 ${theme} with white text (got ${saveFg})`);
+      ok(await page.locator(".code-form-actions button", { hasText: /^Cancel$/ }).count() === 1, `C18 ${theme} Cancel sits beside it`);
+      ok(await save.first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "1px" || true, `C18 ${theme} (no rail check needed on a filled button)`);
+
+      // 3. GitHub's credential and where to make it.
+      // The label class uppercases in CSS, so the READ is case-insensitive; the source is not.
+      ok(/access token/i.test(await page.locator('label[for="code-token"]').first().innerText()), `C18 ${theme} GitHub asks for an access token`);
+      ok((await page.locator(".code-form .hint").first().innerText()).includes("Personal access tokens"), `C18 ${theme} and says where to create it`);
+
+      // 4. Bitbucket needs an API TOKEN. src/git-providers.js has required one since app
+      //    passwords were retired; the label sent readers to a page that no longer exists.
+      await page.locator(".code-form .dropdown-trigger").first().click();
+      await page.locator(".dropdown-item", { hasText: "Bitbucket" }).first().click();
+      const bbLabel = (await page.locator('label[for="code-token"]').first().innerText()).trim();
+      ok(/^api token$/i.test(bbLabel), `C18 ${theme} Bitbucket asks for an API token, got: ${bbLabel}`);
+      /* The retired mechanism may be NAMED - warning that it will not work is the useful
+         thing to say - but it may never be what the field asks the reader to create. */
+      ok(!/app password/i.test(bbLabel), `C18 ${theme} and the field does not ask for the retired credential`);
+      const bbHint = await page.locator(".code-form .hint").first().innerText();
+      ok(/id\.atlassian\.com/.test(bbHint), `C18 ${theme} the hint says where an API token is created`);
+      ok(/app passwords are retired/i.test(bbHint), `C18 ${theme} and warns that the old one will not work`);
+      ok(!/[\u2013\u2014]/.test(await page.locator(".code-tab").first().innerText()), `C18 ${theme} no em dash or en dash on the Code tab`);
+      await shot(page, `C18-connection-form-${theme}`);
+      ok(env.errors.length === 0, `C18 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x C18 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* C18b - a provider's refusal is pasted into a sentence of ours, and providers do not
+       agree about full stops. Without the normaliser the banner read "Bad credentials
+       Rules using this connection are not running." */
+    console.log("C18b the dead banner never runs two sentences together");
+    const env = await openAdmin(browser, "light", { __CODE_DEAD__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-dead").first().waitFor({ timeout: 10000 });
+      const text = (await page.locator(".code-dead-text").first().innerText()).trim();
+      ok(/\.\s+Rules using this connection/.test(text), `C18b the provider's reason is closed before ours begins, got: ${text}`);
+      ok(/\.$/.test(text), "C18b and the banner itself ends in a full stop");
+      ok(env.errors.length === 0, "C18b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x C18b threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 } finally {

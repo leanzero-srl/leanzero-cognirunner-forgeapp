@@ -42,7 +42,14 @@ function serve(root) {
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
-const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
+/* F-914 - settle before the shutter: the panel's entry animations run on mount, so an
+   instant screenshot catches every solid chip at partial opacity and reads as a wash the
+   CSS does not contain. The assertions use getComputedStyle and never saw it. */
+const shot = async (page, name) => {
+  if (!SHOTS) return;
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true });
+};
 
 /* `extra` is a plain bag of window.__FLAG__ values set before mount (the managed-engine
    knobs: __MANAGED_MISSING__, __MANAGED_DISABLED__, __MANAGED_SPEND__). Keeping it a bag
@@ -344,7 +351,19 @@ try {
       ok(await page.locator(".usage-allowance").count() === 0, "E2 still no allowance row on Standard with Forge LLM selected");
       const body = await page.locator(".container").innerText();
       ok(body.includes("Claude Sonnet 5 and Opus 5 are part of CogniRunner Coder"), "E2 upgrade notice on Standard");
-      ok(body.includes("upgrade in Jira"), "E2 notice points at Manage apps");
+      /* F-914 - the notice used to POINT at Manage apps in primary-blue bold text that
+         was not a link. It now carries a real href, and it names the frontier requirement
+         so a tenant that upgrades is not refused a second time by the model gate. */
+      const upgradeLinks = page.locator(".openai-status .agent-off a.agent-off-link");
+      ok(await upgradeLinks.count() === 1, "E2 the notice carries exactly one real upgrade link");
+      ok(await upgradeLinks.first().getAttribute("href") === "https://your-site.atlassian.net/jira/settings/apps/manage",
+        "E2 and its href is this site's Manage apps page");
+      ok(body.includes("Coder edition AND Claude Sonnet 5 or Opus 5"), "E2 the frontier requirement is named before the upgrade");
+      ok(await page.locator(".openai-status .agent-off .agent-off-btn").count() === 0,
+        "E2 no Open the Settings tab button on the Settings tab itself");
+      const offLinkBg = await upgradeLinks.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(offLinkBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"),
+        `E2 the upgrade link is the solid Coder orange per theme (got ${offLinkBg})`);
       ok(body.includes("is not available on this edition, using Claude Haiku"), "E2 clamped-model line");
 
       // open the model picker: Sonnet/Opus render as LOCKED rows with a Coder badge
@@ -376,7 +395,14 @@ try {
       await page.keyboard.press("Escape");
 
       // agent model: locked on Forge LLM + Standard, Save disabled
-      ok(body.includes("On Forge LLM the agent model is part of CogniRunner Coder"), "E2 agent-model upgrade line");
+      ok(body.includes("On Atlassian Forge LLM the agent model needs the Coder edition AND Claude Sonnet 5 or Opus 5"), "E2 agent-model upgrade line names BOTH requirements");
+      // ...and it says it ONCE. The same fact repeated three times on one screen is what
+      // the walk called noise; the status card carries the long form, this slot the short.
+      ok((body.match(/needs the Coder edition AND Claude Sonnet 5 or Opus 5/g) || []).length === 2,
+        "E2 the frontier requirement is stated once per off state, not three times");
+      // Two off states on this screen (key status + agent model), each with its own link.
+      ok(await page.locator(".agent-off a.agent-off-link").count() === 2, "E2 the agent-model note has a real link too");
+      ok(!/[\u2013\u2014]/.test(body), "E2 no em dash or en dash anywhere on the Standard settings screen");
       await shot(page, `E2-standard-settings-${theme}`);
       ok(env.errors.length === 0, "E2 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ E2 threw: " + e.message.split("\n")[0]); }
@@ -883,6 +909,132 @@ try {
         await close(env);
       }
     }
+  }
+  /* ---------------- E5 - F-914: PRODUCT NAMES, and the Haiku-on-BYOK sentence -----------
+     The usage rows printed the ids the backend stores, and a CSS capitalize turned
+     "openai" into "Openai" - a name that exists nowhere except this screen. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E5 product names on the usage rows (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      const names = (await page.locator(".usage-prov-name").allInnerTexts()).map((t) => t.trim());
+      ok(names.includes("Anthropic") && names.includes("OpenAI") && names.includes("Atlassian (Forge LLM)"),
+        `E5 ${theme} the usage rows name products, got ${JSON.stringify(names)}`);
+      ok(!names.some((n) => /^Openai$|^openai$|^anthropic$|^atlassian$/.test(n)),
+        `E5 ${theme} and no raw provider id survives, got ${JSON.stringify(names)}`);
+      // The capitalize that produced "Openai" must not now mangle "OpenAI".
+      const tt = await page.locator(".usage-prov-name").first().evaluate((el) => getComputedStyle(el).textTransform);
+      ok(tt === "none", `E5 ${theme} the row no longer transforms its own text (got ${tt})`);
+      await shot(page, `E5-product-names-${theme}`);
+      ok(env.errors.length === 0, `E5 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E5 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* E5b - the sentence that stops a pointless model change. Checked against
+       agentCapability() in src/shared/edition.js, which returns `enabled: true` for any
+       provider that is not Forge LLM WITHOUT looking at the model: Haiku really does
+       drive an agent on a customer's own key. The negative control is the same screen
+       with a frontier agent model, where the sentence must not appear. */
+    const { agentCapability } = await import("../../src/shared/edition.js");
+    const byokHaiku = agentCapability({ provider: "anthropic", edition: "standard", agentModel: "claude-haiku-4-5-20251001" });
+    ok(byokHaiku.enabled === true && byokHaiku.reason === "byok",
+      "E5b the CLAIM is true at its source: Haiku on a BYOK provider is enabled");
+
+    console.log("E5b the Haiku-on-BYOK sentence");
+    const env = await openAdmin(browser, "light", false, false, { __AGENT_MODEL__: "claude-haiku-4-5-20251001" });
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      await page.locator(".agent-haiku-note").first().waitFor({ timeout: 8000 });
+      const note = (await page.locator(".agent-haiku-note").first().innerText()).trim();
+      ok(note.includes("Haiku is only refused on Atlassian Forge LLM"), `E5b it names WHERE Haiku is refused, got: ${note}`);
+      ok(!/[\u2013\u2014]/.test(note), "E5b no em dash or en dash in it");
+      await shot(page, "E5b-haiku-byok");
+      ok(env.errors.length === 0, "E5b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E5b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    console.log("E5c negative control: a frontier BYOK agent model gets no Haiku sentence");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      await page.waitForTimeout(600);
+      ok(await page.locator(".agent-haiku-note").count() === 0, "E5c no Haiku sentence when the agent model is not Haiku");
+      ok(env.errors.length === 0, "E5c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E5c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  /* ---------------- E6 - F-914: the model controls on the ACTIVE BYOK provider ----------
+     The walk found a Model picker reading "Select a model..." with Save disabled while
+     every rule on the site ran on a model. That pair is what a dead control looks like:
+     nothing to read, nothing to press. It happens whenever the SAVED id is not in the
+     live list the key returns, which is F-895's finding one picker higher up. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E6 a saved model outside the live list (${theme})`);
+    const env = await openAdmin(browser, theme, false, false, { __SAVED_MODEL__: "claude-sonnet-5-20261101" });
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      const trigger = page.locator(".dropdown-trigger").nth(1);
+      const shown = (await trigger.innerText()).trim();
+      ok(shown.includes("claude-sonnet-5-20261101"), `E6 ${theme} the trigger shows the model in use, got: ${shown}`);
+      ok(!/Select a model/.test(shown), `E6 ${theme} and never the placeholder over a live model`);
+      const note = page.locator(".model-out-of-list-note");
+      ok(await note.count() === 1, `E6 ${theme} the reason is readable without opening the dropdown`);
+      ok((await note.first().innerText()).includes("Anthropic"), `E6 ${theme} and it names the provider by its product name`);
+      ok(!/[\u2013\u2014]/.test(await note.first().innerText()), `E6 ${theme} no em dash or en dash in it`);
+      // The row is LOCKED: it is already saved, so there is nothing to select or re-save.
+      await trigger.click();
+      await page.locator(".dropdown-panel").waitFor({ timeout: 5000 });
+      const first = page.locator(".dropdown-panel .dropdown-item").first();
+      ok((await first.innerText()).includes("claude-sonnet-5-20261101"), `E6 ${theme} the in-use model is the FIRST row`);
+      ok((await first.getAttribute("aria-disabled")) === "true", `E6 ${theme} and it is locked, not offered`);
+      const badgeBg = await page.locator(".dropdown-panel .dib-info").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(badgeBg === (theme === "dark" ? "rgb(20, 184, 166)" : "rgb(13, 148, 136)"), `E6 ${theme} its badge is the solid memories teal per theme (got ${badgeBg})`);
+      await shot(page, `E6-model-out-of-list-${theme}`);
+      await page.keyboard.press("Escape");
+      ok(env.errors.length === 0, `E6 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E6 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    console.log("E6b negative control: a saved model IN the list gets no extra row");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      ok(await page.locator(".model-out-of-list-note").count() === 0, "E6b no out-of-list note when the saved model is listed");
+      const shown = (await page.locator(".dropdown-trigger").nth(1).innerText()).trim();
+      ok(shown.includes("claude-haiku-4-5-20251001"), `E6b the trigger still shows the saved model, got: ${shown}`);
+      ok(env.errors.length === 0, "E6b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E6b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* E6c - the agent-model placeholder is PER PROVIDER. It shipped as an OpenRouter id
+       on every BYOK provider, including Anthropic, whose API rejects that format. */
+    console.log("E6c per-provider agent-model placeholder");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      const ph = await page.locator('input[aria-label="Agent model"]').first().getAttribute("placeholder");
+      ok(ph === "e.g. claude-sonnet-5", `E6c Anthropic gets an Anthropic id, got: ${ph}`);
+      ok(!/anthropic\//.test(String(ph)), "E6c and never the OpenRouter namespaced form");
+      ok(env.errors.length === 0, "E6c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E6c threw: " + e.message.split("\n")[0]); }
+    await close(env);
   }
 } finally {
   await browser.close();

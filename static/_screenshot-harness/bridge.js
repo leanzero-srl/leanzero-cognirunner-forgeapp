@@ -1131,7 +1131,14 @@ const CODE_CONNS = () => {
       lastCheckedAt: "2026-09-12T08:00:00.000Z", login: "acme-bot",
       repos: ["acme/web", "acme/api"],
       webhooks: HOOKS(),
-      capabilities: { canCreateRepos: true, canWebhooks: true, canPipelines: null, reason: "Derived from the classic token's reported OAuth scopes." },
+      /* F-914 - THIS FIXTURE MODELLED A STATE capabilityFlags() CANNOT PRODUCE: it paired
+         a null (NOT CHECKED) capability with the sentence that only ever accompanies a
+         classic token whose scopes WERE reported - and when scopes are reported every flag
+         is a boolean (src/git-connections.js capabilityFlags). So the screen the walk read
+         ("pipelines: not known" explained by "Derived from the classic token's reported
+         OAuth scopes") could only ever exist here. The fixture is the fine-grained-PAT arm
+         now, which is the real way all three go null, with the backend's own sentence. */
+      capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "This token does not report its scopes (fine-grained PATs never do). Capability is proven only by the call that needs it." },
     },
     {
       id: "gc_2", kind: "bitbucket", label: "Acme platform", host: null, owner: "acme",
@@ -2109,8 +2116,17 @@ function invoke(name, payload) {
         models: isStandardEd() ? [FORGE_HAIKU] : [FORGE_HAIKU, ...FORGE_FRONTIER],
         locked: isStandardEd() ? FORGE_FRONTIER : [],
       });
+      /* F-914 - `window.__SAVED_MODEL__` forces the SAVED rule model for a BYOK provider
+         WITHOUT adding it to the list this key returns. That is the real state the walk
+         found: a vendor retires an id, or the key cannot see it, and the live list and
+         the saved value disagree. It is a fixture knob and not a second list on purpose -
+         the models array below stays exactly what it was. */
       return Promise.resolve({ success: true, isByok: true, edition: edName(), locked: [], models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6-20260101", "claude-opus-4-1-20250805", "claude-3-7-sonnet-20250219"] });
     case "getOpenAIModelFromKVS":
+      if (payload && payload.provider !== MANAGED_PROVIDER_ID && payload.provider !== "atlassian"
+          && typeof window !== "undefined" && window.__SAVED_MODEL__) {
+        return Promise.resolve({ success: true, model: String(window.__SAVED_MODEL__), isByok: true, edition: edName(), clamped: false });
+      }
       if (payload && payload.provider === MANAGED_PROVIDER_ID) return Promise.resolve({
         success: true, model: MANAGED_DEFAULT_MODEL, isByok: false, edition: edName(), clamped: false,
         managedAvailable: managedMockAvailable(), managedReason: managedMockReason() || "managed",
@@ -2126,6 +2142,14 @@ function invoke(name, payload) {
       });
       return Promise.resolve({ success: true, model: FORGE_HAIKU, isByok: true, edition: edName(), clamped: false });
     case "getAgentModel":
+      /* F-914 - `window.__AGENT_MODEL__` forces the saved agent model for a BYOK
+         provider, so a journey can model the one state the walk asked about: Haiku on a
+         customer's own key, which agentCapability() ALLOWS (provider !== "atlassian"
+         returns enabled). Vendor-billed engines ignore it - their lists are fixed. */
+      if (payload && payload.provider !== MANAGED_PROVIDER_ID && payload.provider !== "atlassian"
+          && typeof window !== "undefined" && window.__AGENT_MODEL__) {
+        return Promise.resolve({ success: true, model: String(window.__AGENT_MODEL__), edition: edName(), frontierOnly: false });
+      }
       // frontierOnly is true on BOTH vendor-billed engines: every id in MANAGED_MODELS
       // is a frontier model, so the selector offers the same fixed list, not free text.
       if (payload && payload.provider === MANAGED_PROVIDER_ID) {
@@ -2335,7 +2359,10 @@ function invoke(name, payload) {
       if (typeof window !== "undefined" && window.__CODE_TEST_FAILS__) {
         return Promise.resolve({ success: false, error: "The provider could not be reached", code: "network", transient: true });
       }
-      return Promise.resolve({ success: true, whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: ["repo", "workflow"] }, capabilities: { canCreateRepos: true, canWebhooks: true, canPipelines: null, reason: "Derived from the classic token's reported OAuth scopes." } });
+      /* F-914 - see CODE_CONNS: a reported-scopes token yields BOOLEANS, never a null, so
+         the tri-state "not checked" arm is modelled by the token type that really produces
+         it. The scope list goes with it: a fine-grained PAT reports none. */
+      return Promise.resolve({ success: true, whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: [] }, capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "This token does not report its scopes (fine-grained PATs never do). Capability is proven only by the call that needs it." } });
     case "setGitRepoAllowlist": return Promise.resolve({ success: true, connection: CODE_CONNS()[0] });
     case "deleteGitConnection": return Promise.resolve({ success: true });
     /* F-460 - the webhook half. The response NEVER carries the secret, and neither does

@@ -3809,6 +3809,58 @@ const injectStyles = () => {
        --text-secondary / --text-color, which are already defined per theme. */
     .kn-prov-head { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary); }
     .kn-version-note { display: block; margin-top: 4px; max-width: 76ch; font-size: 11px; font-weight: 500; line-height: 1.5; color: var(--text-secondary); }
+
+    /* ======================================================================
+       F-914 - OFF STATES, PRODUCT NAMES, CODE TAB FORM. Appended block.
+       Kept at the FOOT of injectStyles on purpose: three surgeons append to this
+       string at once, and a block that only ever grows at the end cannot collide
+       with theirs. Everything here is a solid saturated fill with white text and
+       a dark override one shade lighter; no rails, no tints.
+       ====================================================================== */
+
+    /* The off state's two REAL actions (components/AgentOffState.jsx). A button and
+       an anchor that must read as ONE pair, so they share every dimension. */
+    .agent-off { margin: 8px 0 0; }
+    .agent-off-text { margin: 0 0 8px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+    .agent-off-text:last-of-type { margin-bottom: 8px; }
+    .agent-off-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .agent-off-btn, .agent-off-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border: none; border-radius: var(--r-md, 8px);
+      background: #2563eb; color: #ffffff;
+      font-size: 12px; font-weight: 700; font-family: inherit;
+      text-decoration: none; cursor: pointer;
+    }
+    .agent-off-btn:hover, .agent-off-link:hover { background: #1d4ed8; color: #ffffff; text-decoration: none; }
+    .agent-off-link { background: #c2410c; }
+    .agent-off-link:hover { background: #9a3412; }
+    html[data-color-mode="dark"] .agent-off-btn { background: #3b82f6; }
+    html[data-color-mode="dark"] .agent-off-btn:hover { background: #60a5fa; }
+    html[data-color-mode="dark"] .agent-off-link { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .agent-off-link:hover { background: #fb923c; color: #2a1602; }
+
+    /* The Code tab's setup cards while Coder is off. A fieldset carries the real
+       disabling; this only strips the element's default chrome. */
+    .code-locked { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+    .code-off-note { margin: 0 0 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+
+    /* Product names, never internal ids: the usage rows print a LABEL now, so the
+       capitalize that turned "openai" into "Openai" must not touch "OpenAI". */
+    .usage-prov-name { text-transform: none; }
+
+    /* Option-row badge fallback tone. Every call site names a tone today; a future
+       one that does not must still get a readable chip, not white on nothing. */
+    .dib-neutral { background: #475569; }
+    html[data-color-mode="dark"] .dib-neutral { background: #64748b; }
+
+    /* F-914 - THE EMPTY STATE IS A SENTENCE A READER MUST BE ABLE TO READ.
+       The --text-muted token is #94a3b8 on white (about 2.5:1) and #71717a on the dark
+       surface (about 3.6:1); both are under 4.5:1, so "No deploy identity stored"
+       was effectively invisible on the Code tab - the walk reported it as faint
+       and it was. Scoped to this tab rather than retuning the global token, which
+       every surface in the app reads. The --text-secondary token clears 4.5:1 in both
+       themes and is still visibly secondary. */
+    .code-tab .empty-state { color: var(--text-secondary); }
 `;
   document.head.appendChild(style);
 };
@@ -8794,7 +8846,10 @@ function App() {
 
       {/* Permissions Tab (admin only) — app admin management */}
       {activeTab === "code" && (
-        <CodeTab invoke={invoke} />
+        /* F-914 - the Code tab's off state offers to MOVE the admin to Settings. The tab
+           registry is App.js's, and the Settings tab is adminOnly, so a non-admin gets
+           null and the off state simply does not paint a button it cannot honour. */
+        <CodeTab invoke={invoke} onGoToSettings={isAdmin ? () => setActiveTab("settings") : null} />
       )}
 
       {activeTab === "permissions" && isAdmin && (

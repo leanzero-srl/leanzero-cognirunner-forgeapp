@@ -2592,7 +2592,15 @@ function invoke(name, payload) {
     }
     case "vaWizardReset": { VA_WIZ.state = null; return Promise.resolve({ success: true }); }
     case "vaCatalog": return Promise.resolve({ success: true, catalog: VA_CATALOG });
-    case "listVaAgents": return Promise.resolve({ success: true, agents: VA_AGENTS.map((a) => ({ ...a, va: { ...a.va, status: { ...a.va.status, paused: VA_PAUSED.has(a.id) } } })) });
+    /* window.__VA_NONE__ = true models a site with no agent at all - the EMPTY TAB, which
+       is the one state the fixture list could never produce and the one F-916 is about
+       (two create call-to-actions on it). */
+    case "listVaAgents": return Promise.resolve({
+      success: true,
+      agents: (typeof window !== "undefined" && window.__VA_NONE__)
+        ? []
+        : VA_AGENTS.map((a) => ({ ...a, va: { ...a.va, status: { ...a.va.status, paused: VA_PAUSED.has(a.id) } } })),
+    });
     case "getVaStatus": {
       const st = VA_STATUS[(payload && payload.jobId) || ""] || null;
       /* F-535 - the health row's reason is whatever the ENGINE wrote, and the tick's two

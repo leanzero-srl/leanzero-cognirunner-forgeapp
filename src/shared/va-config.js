@@ -363,6 +363,153 @@ export const VA_DEFAULTS = Object.freeze({
   status: Object.freeze({ paused: false, shadowUntilTick: VA_SHADOW_TICKS_DEFAULT }),
 });
 
+/* ── WHAT A NEW AGENT IS OFFERED, as opposed to what the RECORD falls back to ─── */
+
+/*
+ * F-916 — TWO DIFFERENT QUESTIONS THAT HAD ONE ANSWER.
+ *
+ * `VA_DEFAULTS.cadence` answers "what does normalizeVa use when a field is absent". Its
+ * post window is Sun-Sat 00:00-23:59 on purpose: an EMPTY day list means NO RESTRICTION
+ * (see the note beside `cadence.postWindow` in normalizeVa), and its zone is UTC because
+ * a save path has no viewer to ask. Neither of those is a sensible thing to OFFER an
+ * admin who is creating an agent: the wizard read the first entry of the site's zone list
+ * ("Africa/Abidjan") and both doors seeded a window that permits posting at 3am on a
+ * Sunday, and then the review card stated both back as if they had been chosen.
+ *
+ * So the STARTING POINT gets its own home, here, and both doors read it. It is a
+ * suggestion the admin can change, never a clamp: nothing below is consulted by
+ * `normalizeVa`, which still falls back to `VA_DEFAULTS` exactly as before.
+ */
+
+/** The posting window a NEW agent starts with: the working week, working hours. */
+export const VA_SUGGESTED_POST_WINDOW = Object.freeze({
+  days: Object.freeze([1, 2, 3, 4, 5]), from: "08:00", to: "18:00",
+});
+
+/** The viewer's own IANA zone, or "" when the runtime cannot say. Safe on Node and in an iframe. */
+export const viewerTimeZone = () => {
+  try {
+    const z = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof z === "string" ? z : "";
+  } catch { return ""; }
+};
+
+/**
+ * The zone a NEW agent starts in: the viewer's, else the site's if a caller can supply
+ * one, else UTC. `allowed` is the site's zone list when there is one - a zone the picker
+ * cannot offer is not a default, it is a value the admin cannot see or change.
+ *
+ * There is no site zone on the wizard catalogue today (the bridge does not expose one),
+ * which is why `site` is a parameter rather than a read: the day it exists, one call
+ * site changes and both doors follow.
+ */
+export const resolveDefaultTimeZone = (viewer, site, allowed) => {
+  const list = Array.isArray(allowed) && allowed.length ? allowed.map(String) : null;
+  for (const candidate of [viewer, site]) {
+    const z = String(candidate == null ? "" : candidate).trim();
+    if (!z) continue;
+    if (list) { if (list.includes(z)) return z; continue; }
+    if (normalizeTimeZone(z) === z) return z;
+  }
+  return list && !list.includes("UTC") ? list[0] : "UTC";
+};
+
+/** The cadence block a NEW agent starts with. The preset and cron stay the record's own. */
+export const vaSuggestedCadence = (opts = {}) => {
+  const o = isObj(opts) ? opts : {};
+  return {
+    preset: VA_DEFAULTS.cadence.preset,
+    cron: VA_DEFAULTS.cadence.cron,
+    timeZone: resolveDefaultTimeZone(o.viewer === undefined ? viewerTimeZone() : o.viewer, o.site, o.allowed),
+    postWindow: { days: [...VA_SUGGESTED_POST_WINDOW.days], from: VA_SUGGESTED_POST_WINDOW.from, to: VA_SUGGESTED_POST_WINDOW.to },
+  };
+};
+
+/* ── COPY: the words an admin reads, in one home ──────────────────────────────── */
+
+/**
+ * Record paths, in the admin's words. The save path refuses by FIELD PATH because that is
+ * what a REST caller needs; a person filling in a form needs the label above the box.
+ * One map, read by both doors.
+ */
+export const VA_FIELD_LABELS = Object.freeze({
+  "persona.name": "Name",
+  "persona.voice": "Voice",
+  "persona.voice.register": "Register",
+  "persona.voice.maxSentences": "Sentences per reply",
+  "persona.voice.language": "Language",
+  intake: "Where it looks for work",
+  "intake.serviceDesks": "Service desk queues",
+  "intake.jql": "JQL filter",
+  "intake.mentionsOf": "Mentions it picks up",
+  "scope.read": "Projects it may read",
+  "scope.read.projects": "Projects it may read",
+  "scope.write": "Projects it may change",
+  "scope.write.projects": "Projects it may change",
+  cadence: "Cadence",
+  "cadence.preset": "Cadence",
+  "cadence.timeZone": "Time zone",
+  "cadence.postWindow": "Posting window",
+  "cadence.postWindow.days": "Posting days",
+  "cadence.postWindow.from": "Posting window start",
+  "cadence.postWindow.to": "Posting window end",
+  powers: "Powers",
+  "powers.skillIds": "Skills",
+  "powers.confluenceSpaces": "Confluence spaces",
+  guardrails: "Brakes",
+  "guardrails.approvalProjectKey": "Approval inbox",
+});
+
+/** A field path rendered for a person. An unmapped path keeps its own name rather than vanishing. */
+export const vaFieldLabel = (path) => VA_FIELD_LABELS[String(path || "")] || String(path || "");
+
+/**
+ * The sentences the ADMIN PANEL says about an agent, in one home, because two homes is how
+ * the tab strip and the Agents tab came to describe the same product with two different
+ * promises ("after eleven checks" in a place where nothing explains what the eleven are).
+ */
+export const VA_COPY = Object.freeze({
+  /** What a virtual administrator IS, for the tab strip and the tab header alike. */
+  whatItIs: "A virtual administrator works a queue on a schedule: it reads, it drafts a reply, and it posts only after re-reading the thread and passing every guardrail you set. It starts in shadow mode, where it drafts and posts nothing.",
+  /** The name refusal, in words rather than in the record's path and charset. */
+  nameRequired: "Give the administrator a name.",
+  /** The charset rule, said once the admin has typed something that cannot be used. */
+  nameCharset: "A name may use letters, digits, spaces, apostrophes, hyphens and dots.",
+  /** The intake step's refusal: it names all three ways to give an agent work. */
+  intakeEmpty: "This agent would have nothing to work on. Give it at least one source: tick a service desk queue, write a JQL filter, or name someone whose mentions it should pick up.",
+  /** Said beside the fast cadences, because the cadence is not the delivery time. */
+  cadenceStagingNote: "How often it looks for work. A reply it drafts goes out on a later run, at the earliest 15 minutes after it was drafted.",
+});
+
+/** The marker the review card puts beside a value the admin did not choose. */
+export const VA_DEFAULT_MARK = " (default)";
+
+/*
+ * ONE LABEL PER POWER, and the review card reads the SAME table the powers step renders.
+ * It used to live in `VaPickers.jsx` alone, so the picker said "Reply internally" and the
+ * review sentence two steps later said "Its powers are replyInternal." - the record's own
+ * spelling, in a sentence written for a person.
+ *
+ * The IDS come from `VA_POWERS`; this table only supplies copy, so a power added there
+ * without a row here still renders (by its id) rather than disappearing.
+ */
+export const VA_POWER_COPY = Object.freeze({
+  replyPublic: Object.freeze({ label: "Reply to the customer", short: "reply to the customer", desc: "Answers in the portal, and only when the person being answered is the request's reporter." }),
+  replyInternal: Object.freeze({ label: "Reply internally", short: "reply internally", desc: "Writes an internal note on the issue. Customers never see it." }),
+  assign: Object.freeze({ label: "Assign", short: "assign issues", desc: "Sets the assignee of an issue inside the write scope." }),
+  transition: Object.freeze({ label: "Transition", short: "move issues through the workflow", desc: "Moves an issue through its workflow inside the write scope." }),
+  editFields: Object.freeze({ label: "Edit fields", short: "edit issue fields", desc: "Changes ordinary issue fields inside the write scope. Never configuration." }),
+  confluenceRead: Object.freeze({ label: "Read Confluence", short: "read Confluence", desc: "Reads pages so an answer can quote your documentation." }),
+  confluenceWrite: Object.freeze({ label: "Write Confluence", short: "write Confluence pages", desc: "Creates or updates a page. Updates are version checked." }),
+  git: Object.freeze({ label: "Git", short: "read repositories and open pull requests", desc: "Reads repositories and opens pull requests through a configured connection." }),
+  webSearch: Object.freeze({ label: "Web search", short: "search the web", desc: "Looks something up on the public web before answering." }),
+});
+
+/** A power in a sentence ("it may reply internally"), or its id when the table has no row. */
+export const vaPowerPhrase = (id) => (VA_POWER_COPY[id] && VA_POWER_COPY[id].short) || String(id || "");
+/** A power as a control's label. */
+export const vaPowerLabel = (id) => (VA_POWER_COPY[id] && VA_POWER_COPY[id].label) || String(id || "");
+
 /* ── Clamp helpers (pure; the restrictive end is always the fallback) ─────────── */
 
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
@@ -427,7 +574,11 @@ export const normalizeVa = (raw, ctx = {}) => {
   const p = isObj(src.persona) ? src.persona : {};
   const rawName = String(p.name == null ? "" : p.name);
   const name = clampPersonaName(rawName);
-  if (!name) throw new Error("va.persona.name is required (letters, digits, spaces, ' - . only)");
+  // F-916 — the message a PERSON reads. It is the first thing the classic form renders
+  // (the preview runs on an empty form), so it must be a sentence rather than a record
+  // path and a charset. The path is still carried by the `refused` row below when a name
+  // was typed and had to be reduced, which is what a REST caller needs.
+  if (!name) throw new Error(rawName.trim() ? `${VA_COPY.nameRequired} ${VA_COPY.nameCharset}` : VA_COPY.nameRequired);
   if (name !== rawName.trim()) report("persona.name", `The persona name was reduced to "${name}", it may only contain letters, digits, spaces, apostrophes, hyphens and dots, up to ${VA_PERSONA_NAME_MAX} characters.`);
   const v = isObj(p.voice) ? p.voice : {};
   const register = VA_REGISTERS.includes(v.register) ? v.register : VA_DEFAULTS.persona.voice.register;

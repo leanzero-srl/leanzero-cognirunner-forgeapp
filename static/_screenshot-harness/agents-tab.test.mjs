@@ -66,7 +66,7 @@ import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 /* The refusal sentence and the banner threshold come from their ONE home, so this suite
    cannot assert words or a number the app does not actually use. */
 import { writeSiteRefusalReason, stepWizard } from "../../src/shared/va-wizard.js";
-import { VA_LIMITS } from "../../src/shared/va-config.js";
+import { VA_LIMITS, VA_COPY, VA_DEFAULT_MARK, VA_SUGGESTED_POST_WINDOW, vaFieldLabel, vaPowerPhrase, resolveDefaultTimeZone } from "../../src/shared/va-config.js";
 /* F-501 - the capability sentence is asserted from its ONE home, so this suite cannot pass
    on words the app does not actually render. */
 import { agentCapabilityCopy } from "../../src/shared/edition.js";
@@ -91,10 +91,15 @@ let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) pass++; else { fail++; console.log("  ✗ " + msg); } };
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
 
-async function openAgents(browser, theme = "light", extraInit = null) {
+async function openAgents(browser, theme = "light", extraInit = null, opts = {}) {
   const root = ensureFreshBuildShot("admin-panel");
   const { s, port } = await serve(root);
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+  /* F-916 - the VIEWER's own zone is now the default a new agent starts in, so it is part
+     of the fixture: pinned here rather than inherited from whatever machine runs the suite. */
+  const ctx = await browser.newContext({
+    viewport: opts.viewport || { width: 1440, height: 1200 },
+    timezoneId: opts.timezoneId || "Europe/Bucharest",
+  });
   await ctx.addInitScript(([th, extra]) => { window.__SHOT__ = "admin"; window.__THEME__ = th; if (extra) for (const k in extra) window[k] = extra[k]; }, [theme, extraInit]);
   const page = await ctx.newPage();
   const errors = [];
@@ -156,11 +161,13 @@ async function runInterview(page, { stopAt = null } = {}) {
   if (stopAt === "guardrails") return;
   await page.locator(".va-actions .btn-solid").click();
 
+  // F-916 - the review card IS the last screen. There is no "Ready to create it?" step
+  // after it, so the interview stops here and the create click is the caller's.
   await stepIs(page, "review");
-  if (stopAt === "review") return;
-  await page.locator(".va-actions .btn-solid").first().click();
-  await stepIs(page, "create");
 }
+
+/** The review card's own create button. */
+const createOnReview = (page) => page.locator('.va-step[data-step="review"] .va-actions .btn-solid').first();
 
 const browser = await chromium.launch();
 try {
@@ -172,7 +179,10 @@ try {
     try {
       await runInterview(page);
       await shot(page, "agents-wizard-create");
-      await page.locator(".va-actions .btn-solid").click();
+      // F-916 - one confirmation, on the card that carries the information.
+      ok(await page.locator('.va-step[data-step="create"]').count() === 0, "A1 no separate create screen");
+      ok(/Create the agent/.test(await createOnReview(page).innerText()), "A1 the review card carries the create button");
+      await createOnReview(page).click();
       await page.waitForFunction(() => !!window.__VA_SAVE__, { timeout: 8000 });
       const saved = await page.evaluate(() => window.__VA_SAVE__);
       ok(saved && saved.mode === "va", "A1 saved with mode va");
@@ -211,8 +221,12 @@ try {
       ok(/SUP/.test(text) && /read scope/i.test(text), "A2 refusal names the project and the reason");
       ok(await page.locator('.va-step[data-step="write_scope"]').count() === 1, "A2 the step did not advance");
       // innerText is what the reader sees, and the label is uppercased by CSS.
+      // F-916 - the field is named by its LABEL, the words on the control above it, not by
+      // the record path. The path is still there for anyone who needs it, on the title.
       const fields = (await page.locator(".va-note-field").allInnerTexts()).map((t) => t.toLowerCase());
-      ok(fields.includes("scope.write.projects"), `A2 refusal names the field (got ${fields.join("|")})`);
+      ok(fields.includes(vaFieldLabel("scope.write.projects").toLowerCase()), `A2 refusal names the field in words (got ${fields.join("|")})`);
+      ok(!fields.some((f) => f.includes("scope.write")), "A2 no record path is rendered as the field name");
+      ok(await page.locator('.va-note-field[title="scope.write.projects"]').count() === 1, "A2 the record path is still carried, for whoever needs it");
       await shot(page, "agents-wizard-refusal");
     } finally { await close(env); }
   }
@@ -1296,6 +1310,191 @@ try {
         "A18 an agent with no tombstone shows NO settle state - the card is unchanged for every agent that was not just re-created");
     } finally { await close(env); }
   }
+  /* ---------- A19 F-916: the cold-walk defects, in both themes ---------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A19 F-916 defaults, refusals and names (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      /* A19a DEFAULTS THAT DO NOT LIE. The zone is the VIEWER's (pinned to
+         Europe/Bucharest above), never the first entry of the site's alphabetical list;
+         the posting window is the working week, not Sun-Sat 00:00-23:59. */
+      await runInterview(page, { stopAt: "cadence" });
+      await stepIs(page, "cadence");
+      const zone = (await page.locator(".va-step .cs-trigger, .va-step .custom-select-trigger, .va-step [class*=trigger]").first().innerText()).trim();
+      ok(/Europe\/Bucharest/.test(zone), `A19 the time zone defaults to the viewer's own (got ${JSON.stringify(zone)})`);
+      ok(!/Abidjan/.test(zone), "A19 it is not the first entry of the site's zone list");
+      const onDays = await page.locator('.va-window .va-chip.on').allInnerTexts();
+      ok(onDays.join(",") === "Mon,Tue,Wed,Thu,Fri", `A19 the posting window defaults to the working week (got ${onDays.join(",")})`);
+      ok(await page.locator('.va-window input[aria-label="Posting window start"]').inputValue() === VA_SUGGESTED_POST_WINDOW.from, "A19 the window starts at the shared default");
+      ok(await page.locator('.va-window input[aria-label="Posting window end"]').inputValue() === VA_SUGGESTED_POST_WINDOW.to, "A19 the window ends at the shared default");
+      ok(resolveDefaultTimeZone("Europe/Bucharest", null, ["UTC", "Europe/Bucharest"]) === "Europe/Bucharest", "A19 the resolver is the one the UI used");
+      const stagingNote = await page.locator(".va-cadence-note").innerText();
+      ok(stagingNote === VA_COPY.cadenceStagingNote && /15 minutes/.test(stagingNote), "A19 the cadence carries the staging note from the copy home");
+      await shot(page, `agents-f916-cadence-${theme}`);
+
+      /* A19b GUARDRAIL LABELS. No control may render a record key as its label, and the
+         derived `shadowUntilTick` has no control at all. */
+      await chip(page, "Every 30 minutes").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "powers");
+      const powerLabels = await page.locator(".va-power-label").allInnerTexts();
+      ok(powerLabels.includes("Reply internally"), `A19 the powers step uses the shared labels (got ${powerLabels.join("|")})`);
+      ok(!powerLabels.some((l) => /^[a-z]+[A-Z]/.test(l.trim())), "A19 no power renders its record id as a label");
+      await page.locator(".va-power", { hasText: "Reply internally" }).locator("input").check();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "guardrails");
+      const guardText = await page.locator(".va-guards").innerText();
+      ok(!/SHADOWUNTILTICK/i.test(guardText), "A19 the derived shadowUntilTick has no spinner");
+      ok(/shadow ticks/i.test(guardText), "A19 the brake the admin actually sets is still there");
+      const guardLabels = await page.locator(".va-guard .label").allInnerTexts();
+      ok(guardLabels.every((l) => l.trim() && !/^[a-z]+[A-Z]/.test(l.trim())), `A19 every brake has a written label (got ${guardLabels.join("|")})`);
+      await shot(page, `agents-f916-guardrails-${theme}`);
+
+      /* A19c THE REVIEW CARD: project NAMES, power WORDS, and the defaults marked. */
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "review");
+      const review = await page.locator(".va-review").innerText();
+      ok(/Payments \(PROJ\)/.test(review) && /IT Operations \(OPS\)/.test(review), `A19 the card names projects (got ${review})`);
+      ok(review.includes(vaPowerPhrase("replyInternal")), "A19 the card names the power in words");
+      ok(!/replyInternal/.test(review), "A19 no power id reaches the card");
+      ok(review.includes(VA_DEFAULT_MARK.trim()), "A19 a value the admin did not choose is marked as a default");
+      ok(/weekdays/.test(review), "A19 the posting days are words");
+      ok(await page.locator('.va-step[data-step="create"]').count() === 0, "A19 the review card is the last screen");
+      await shot(page, `agents-f916-review-${theme}`);
+      ok(env.errors.length === 0, `A19 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  for (const theme of ["light", "dark"]) {
+    console.log(`A19d F-916 the intake refusal (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "intake" });
+      await stepIs(page, "intake");
+      await page.locator(".va-actions .btn-solid").click();
+      await page.locator(".va-notes-refusal").waitFor({ timeout: 8000 });
+      const text = await page.locator(".va-notes-refusal").innerText();
+      ok(text.includes(VA_COPY.intakeEmpty), `A19 the intake refusal is the copy home's sentence (got ${text})`);
+      ok(/queue/i.test(text) && /JQL/i.test(text) && /mention/i.test(text), "A19 it names all three ways to give it work");
+      ok(await page.locator('.va-step[data-step="intake"]').count() === 1, "A19 an empty intake does not advance");
+      // SOLID RED, the app's refusal colour, computed - never a washed-out tint.
+      const bg = await page.locator(".va-notes-refusal .va-note").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      const rgb = bg.match(/\d+/g).map(Number);
+      ok(rgb[0] > 150 && rgb[1] < 110 && rgb[2] < 110, `A19 the refusal is solid red (got ${bg})`);
+      ok(!/rgba\(.*0?\.\d+\)/.test(bg), `A19 the refusal is not an alpha tint (got ${bg})`);
+      const rail = await page.locator(".va-notes-refusal .va-note").first().evaluate((el) => getComputedStyle(el).borderLeftWidth);
+      const allBorders = await page.locator(".va-notes-refusal .va-note").first().evaluate((el) => [getComputedStyle(el).borderTopWidth, getComputedStyle(el).borderRightWidth, getComputedStyle(el).borderBottomWidth].join(","));
+      ok(rail === "0px" || allBorders.split(",").every((w) => w === rail), `A19 no left accent rail (left ${rail}, others ${allBorders})`);
+      await shot(page, `agents-f916-intake-refusal-${theme}`);
+      ok(env.errors.length === 0, `A19 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  for (const theme of ["light", "dark"]) {
+    console.log(`A19e F-916 one create call to action, and the tab bar in one row (${theme})`);
+    /* 1200px is the width the twelve tabs wrapped at. */
+    const env = await openAgents(browser, theme, { __VA_NONE__: true }, { viewport: { width: 1200, height: 900 } });
+    const { page } = env;
+    try {
+      await page.locator(".lst-empty").waitFor({ timeout: 8000 });
+      const creates = await page.locator("button", { hasText: /New virtual administrator|Create your first one/ }).count();
+      ok(creates === 1, `A19 the empty tab carries exactly one create call to action (got ${creates})`);
+      ok(await page.locator(".va-empty-actions button").count() === 2, "A19 the form is still reachable, beside it");
+      /* ONE sentence, in ONE place: the strip. The tab used to repeat it, differently. */
+      const strip = (await page.locator(".tab-intro-what").first().innerText()).trim();
+      ok(strip === VA_COPY.whatItIs, `A19 the strip carries the copy home's sentence (got ${strip})`);
+      ok(!/eleven checks/.test(await page.locator(".container").innerText()), "A19 the counted-out gates are gone from the page");
+      const saidTwice = (await page.locator(".container").innerText()).split(VA_COPY.whatItIs).length - 1;
+      ok(saidTwice === 1, `A19 it is said once on the page, not twice (got ${saidTwice})`);
+      await page.waitForTimeout(700);
+
+      /* THE TAB BAR IS ONE ROW. Measured, not asserted from the CSS: the bar's height must
+         be within one button's height, and every tab must sit on the same top edge. */
+      const bar = page.locator(".tab-bar");
+      const geom = await bar.evaluate((el) => {
+        const btns = [...el.querySelectorAll(".tab-btn")];
+        const tops = btns.map((b) => Math.round(b.getBoundingClientRect().top));
+        return {
+          barH: Math.round(el.getBoundingClientRect().height),
+          btnH: Math.round(btns[0].getBoundingClientRect().height),
+          rows: new Set(tops).size,
+          count: btns.length,
+          scrollable: el.scrollWidth > el.clientWidth + 1,
+          overflowX: getComputedStyle(el).overflowX,
+          wrap: getComputedStyle(el).flexWrap,
+        };
+      });
+      ok(geom.count >= 10, `A19 the bar really has the tabs (got ${geom.count})`);
+      ok(geom.rows === 1, `A19 every tab sits on one row at 1200px (got ${geom.rows} rows)`);
+      ok(geom.barH <= geom.btnH + 12, `A19 the bar is one button high (bar ${geom.barH}, button ${geom.btnH})`);
+      ok(geom.wrap === "nowrap" && geom.overflowX === "auto", `A19 the bar scrolls instead of wrapping (${geom.wrap}/${geom.overflowX})`);
+      ok(geom.scrollable, "A19 at this width the row genuinely overflows, so the scroll affordance is the one that matters");
+
+      /* KEYBOARD FOCUS STAYS VISIBLE inside the clipping scroller. */
+      await page.locator(".tab-btn").first().focus();
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
+      ok(await page.locator(".tab-btn").first().evaluate((el) => el === document.activeElement && el.matches(":focus-visible")),
+        "A19 a tab reached by keyboard is the focus-visible one");
+      const outline = await page.locator(".tab-btn").first().evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { w: cs.outlineWidth, style: cs.outlineStyle, offset: cs.outlineOffset };
+      });
+      ok(parseFloat(outline.w) >= 2 && outline.style !== "none", `A19 a focused tab has a visible outline (got ${JSON.stringify(outline)})`);
+      ok(parseFloat(outline.offset) < 0, `A19 the outline is drawn inside the button, so the scroller cannot clip it (got ${outline.offset})`);
+      await shot(page, `agents-f916-tabbar-empty-${theme}`);
+      ok(env.errors.length === 0, `A19 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  /* ---------- A19f the classic form: no refusal before the admin ---------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A19f F-916 the form opens clean (${theme})`);
+    const env = await openAgents(browser, theme, { __VA_NONE__: true });
+    const { page } = env;
+    try {
+      await page.locator(".lst-empty").waitFor({ timeout: 8000 });
+      await page.locator("button", { hasText: /Use the form instead/ }).click();
+      await page.locator(".va-editor").waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-hardstop").count() === 0, "A19 the form does not refuse a record nobody has typed yet");
+      ok(await page.locator(".va-field-error").count() === 0, "A19 no field is marked wrong before it is touched");
+      const body = await page.locator(".va-editor").innerText();
+      ok(!/va\.persona\.name/.test(body), "A19 no record path is rendered to the admin");
+      await shot(page, `agents-f916-form-clean-${theme}`);
+
+      /* Touch the name and leave it empty: NOW it says what is missing, in words. */
+      await page.locator("#va-name").click();
+      await page.locator("#va-name").blur();
+      await page.locator(".va-field-error").waitFor({ timeout: 5000 });
+      const err = await page.locator(".va-field-error").innerText();
+      ok(err === VA_COPY.nameRequired, `A19 the field error is the copy home's sentence (got ${err})`);
+      const colour = await page.locator(".va-field-error").evaluate((el) => getComputedStyle(el).color);
+      const rgb = colour.match(/\d+/g).map(Number);
+      ok(rgb[0] > 190 && rgb[1] < 90 && rgb[2] < 90, `A19 the field error is solid red (got ${colour})`);
+      const weight = await page.locator(".va-field-error").evaluate((el) => getComputedStyle(el).fontWeight);
+      ok(Number(weight) >= 600, `A19 the field error carries the emphasis weight (got ${weight})`);
+      // ONE message per problem: the banner is the SAVE's answer and waits for a save.
+      ok(await page.locator(".va-hardstop").count() === 0, "A19 a touched field does not also raise the save banner");
+      await page.locator("button", { hasText: /^Save agent$/ }).click();
+      await page.locator(".va-hardstop").waitFor({ timeout: 5000 });
+      ok(await page.locator(".va-hardstop").count() === 1, "A19 attempting the save is what raises the banner");
+      ok(!/va\.persona\.name|\(letters/.test(await page.locator(".va-hardstop").innerText()), "A19 and the banner is a sentence, not a record path");
+      await shot(page, `agents-f916-form-touched-${theme}`);
+
+      /* A name makes it go away, and the save button was never dead in the meantime. */
+      await page.locator("#va-name").fill("Ada");
+      await page.waitForTimeout(150);
+      ok(await page.locator(".va-field-error").count() === 0, "A19 a typed name clears the field error");
+      ok(await page.locator("button", { hasText: /^Save agent$/ }).isEnabled(), "A19 save is reachable");
+      const card = await page.locator(".va-review").innerText();
+      ok(card.includes(VA_DEFAULT_MARK.trim()), "A19 the form's own review card marks its defaults too");
+      ok(!/Abidjan/.test(card) && !/00:00 and 23:59/.test(card), `A19 the form's defaults are the shared ones (got ${card})`);
+      ok(env.errors.length === 0, `A19 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
 } finally {
   await browser.close();
 }

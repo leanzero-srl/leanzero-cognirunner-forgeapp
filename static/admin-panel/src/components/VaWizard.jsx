@@ -36,11 +36,15 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { showToast } from "./toast";
 import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, ZonePicker, NoteList, TextListInput } from "./VaPickers";
 import SaveNotes, { collectSaveNotes } from "./VaSaveNotes";
-import { VA_DEFAULTS } from "../../../../src/shared/va-config.js";
+import {
+  VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_COPY,
+  resolveDefaultTimeZone, viewerTimeZone,
+} from "../../../../src/shared/va-config.js";
+import { renderReviewSummary } from "../../../../src/shared/va-wizard.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 
-export default function VaWizard({ client, onCreated, onFallback, onCancel }) {
+export default function VaWizard({ client, catalog = {}, onCreated, onFallback, onCancel }) {
   const [turn, setTurn] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -143,7 +147,7 @@ export default function VaWizard({ client, onCreated, onFallback, onCancel }) {
         <NoteList items={arr(turn.notes)} kind="note" />
 
         <div className="va-step" data-step={turn.stepId}>
-          {renderStep({ turn, ex, opts, draft, setDraft, answer, busy })}
+          {renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog })}
         </div>
       </div>
     </div>
@@ -153,7 +157,7 @@ export default function VaWizard({ client, onCreated, onFallback, onCancel }) {
 /* One arm per step id. The arms read `turn.options` / `turn.extras` and never build a list
    of their own - that is what makes "an option the catalogue does not carry cannot be
    picked" true on this side of the wire too. */
-function renderStep({ turn, ex, opts, draft, setDraft, answer, busy }) {
+function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog }) {
   /* The answers ALREADY ACCEPTED by the machine, used only to pre-fill the controls of the
      step on screen. They are the machine's own state rather than anything this file
      remembers, which is what lets a step the admin came back to (review → "go back to the
@@ -300,10 +304,17 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy }) {
 
     case "cadence": {
       const preset = d("preset", (ans.cadence && ans.cadence.preset) || "");
-      const timeZone = d("timeZone", (ans.cadence && ans.cadence.timeZone) || arr(ex.timeZones)[0] || "UTC");
+      /*
+       * F-916 - THE DEFAULTS USED TO LIE. The zone was `arr(ex.timeZones)[0]`, which on an
+       * alphabetical IANA list is "Africa/Abidjan"; the posting window was Sun-Sat
+       * 00:00-23:59. Neither was a choice, and the review card stated both as if they were.
+       * Both now come from the ONE home (`va-config.js`), which the classic form reads too:
+       * the viewer's own zone if the site offers it, and the working week.
+       */
+      const timeZone = d("timeZone", (ans.cadence && ans.cadence.timeZone) || defaultZone(ex));
       const hour = d("hour", 9);
       const minute = d("minute", 0);
-      const postWindow = d("postWindow", (ans.cadence && ans.cadence.postWindow) || { days: [0, 1, 2, 3, 4, 5, 6], from: "00:00", to: "23:59" });
+      const postWindow = d("postWindow", (ans.cadence && ans.cadence.postWindow) || suggestedWindow(ex));
       const needsTime = ["daily", "weekdays", "weekly", "monthly"].includes(preset);
       const needsMinute = ["hourly", "every2h", "every4h", "every6h", "every12h"].includes(preset);
       return (
@@ -311,6 +322,11 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy }) {
           <div className="form-group">
             <span className="label">Runs</span>
             <ChipRadio options={opts.filter((o) => o.value !== "custom")} value={preset} onChange={(v) => set("preset", v)} ariaLabel="Cadence" disabled={busy} />
+            {/* F-916 - the cadence is how often it LOOKS, never how fast it answers. The
+                fast chips read as a promise of a reply in five minutes; the two-phase floor
+                means the earliest a draft can go out is the next run after the wall-clock
+                gap. Said here, where the chips are, rather than discovered later. */}
+            <span className="hint va-cadence-note">{ex.stagingNote || VA_COPY.cadenceStagingNote}</span>
           </div>
           {(needsTime || needsMinute) && (
             <div className="form-group va-voice-row">
@@ -360,20 +376,39 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy }) {
     }
 
     case "review": {
+      /*
+       * F-916 - THE SUMMARY IS RENDERED HERE, from the turn's own normalised record, so the
+       * "(default)" markers can be measured against the defaults THIS BROWSER seeded the
+       * controls with. The machine renders the same sentences with the same function; it
+       * simply has no viewer to resolve a zone against, so its markers would call a zone a
+       * default only when it happened to be UTC. `turn.summary` is the fallback for a turn
+       * that carries no preview (a record the save path refused).
+       */
+      const summary = turn.preview
+        ? renderReviewSummary(turn.preview, {
+          projects: arr(catalog && catalog.projects),
+          defaultTimeZone: defaultZone(ex),
+          defaultPostWindow: suggestedWindow(ex),
+        })
+        : arr(turn.summary);
       return (
         <>
           <div className="va-review">
             <div className="va-review-block">
               <span className="label">What this agent is</span>
-              {arr(turn.summary).map((s, i) => <p className="va-sentence" key={i}>{s}</p>)}
+              {summary.map((s, i) => <p className="va-sentence" key={i}>{s}</p>)}
             </div>
             <div className="va-review-block">
               <span className="label">What it is told, word for word</span>
               {arr(turn.guardrailSentences).map((s, i) => <p className="va-sentence" key={i}>{s}</p>)}
             </div>
           </div>
+          {/* THE CREATE BUTTON LIVES HERE (F-916). There used to be one more screen after
+              this one that asked "Ready to create it?" over no new information, so the admin
+              confirmed the same decision twice and only the second click did anything. */}
+          <p className="hint">It starts in shadow mode: it drafts replies for you to read and posts nothing until the shadow ticks are used up.</p>
           <div className="va-actions">
-            <Next value={{ confirm: true }} label="This is right" />
+            <Next value={{ confirm: true }} label="Create the agent" />
             {arr(turn.options).length > 0 && (
               <span className="va-back">
                 <span className="hint">Go back to</span>
@@ -387,6 +422,8 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy }) {
       );
     }
 
+    /* Not reachable from the review card any more (its confirm creates in the same turn),
+       and kept as the arm for a RESUMED interview stored on this step by an older build. */
     case "create":
       return (
         <>
@@ -404,6 +441,16 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy }) {
       );
   }
 }
+
+/* WHAT A NEW AGENT STARTS WITH, resolved once per render from the one home (F-916). The
+   zone needs a VIEWER, which only this side has - the machine runs on a Forge node whose
+   own zone is UTC - so the turn carries the site's zone LIST and the resolution happens
+   here, against it. */
+const defaultZone = (ex) => resolveDefaultTimeZone(viewerTimeZone(), null, arr(ex && ex.timeZones));
+const suggestedWindow = (ex) => {
+  const w = (ex && ex.suggestedPostWindow) || VA_SUGGESTED_POST_WINDOW;
+  return { days: [...arr(w.days)], from: w.from, to: w.to };
+};
 
 const CHIP_LABEL = { keep: "Keep", shorter: "Shorter", warmer: "Warmer", terser: "Terser" };
 const STEP_LABEL = {

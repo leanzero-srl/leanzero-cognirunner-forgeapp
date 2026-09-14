@@ -84,6 +84,7 @@ import {
   VA_MAX_SENTENCES_MIN, VA_MAX_SENTENCES_MAX,
   VA_JQL_MAX, VA_MENTIONS_MAX, VA_PROJECTS_MAX, VA_SERVICE_DESKS_MAX,
   VA_QUEUES_PER_DESK_MAX, VA_PROJECT_KEY_RE, VA_PERSONA_NAME_MAX,
+  VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_COPY, vaPowerPhrase, vaPowerLabel,
 } from "./va-config.js";
 import { lintVoice } from "./voice-lint.js";
 import { SCHEDULE_PRESETS } from "./cron.js";
@@ -124,7 +125,10 @@ export const WIZARD_STEPS = Object.freeze([
   Object.freeze({ id: "cadence", field: "cadence", ask: "How often should it run, in which time zone, and between which hours may it post?" }),
   Object.freeze({ id: "powers", field: "powers", ask: "What is it allowed to do? Everything here is off unless you turn it on, and configuration changes are not on the list at all." }),
   Object.freeze({ id: "guardrails", field: "guardrails", ask: "Now the brakes. These are the numbers the engine enforces, so what you set here is what happens." }),
-  Object.freeze({ id: "review", field: "review", ask: "This is what the agent will be. Read it, then confirm or go back to any step." }),
+  Object.freeze({ id: "review", field: "review", ask: "This is what the agent will be. Read it, then create it, or go back to any step." }),
+  // No turn is ever rendered standing here (F-916): the review's confirm runs this step in
+  // the same turn. It remains a step because it is the only one a model may finish on, and
+  // the one whose refusal becomes `fallbackToForm`.
   Object.freeze({ id: "create", field: "create", ask: "Ready to create it?" }),
 ]);
 
@@ -370,7 +374,9 @@ export const optionsForStep = (stepId, state) => {
     case "cadence":
       return SCHEDULE_PRESETS.map((p) => ({ value: p.id, label: p.label }));
     case "powers":
-      return VA_POWERS.map((p) => ({ value: p, label: p }));
+      // The LABEL comes from the one copy table the review card also reads, so the step
+      // that turned a power on and the sentence that reports it cannot disagree.
+      return VA_POWERS.map((p) => ({ value: p, label: vaPowerLabel(p) }));
     case "review":
       return STEP_IDS.slice(0, stepIndex("review")).map((id) => ({ value: id, label: id }));
     default:
@@ -385,7 +391,16 @@ const extrasForStep = (stepId, state) => {
   if (stepId === "persona_voice") return { languages: [...VA_LANGUAGES], minSentences: VA_MAX_SENTENCES_MIN, maxSentences: VA_MAX_SENTENCES_MAX, chips: [...VOICE_SAMPLE_CHIPS] };
   if (stepId === "intake") return { maxDesks: VA_SERVICE_DESKS_MAX, maxQueuesPerDesk: VA_QUEUES_PER_DESK_MAX, maxMentions: VA_MENTIONS_MAX, maxJqlChars: VA_JQL_MAX };
   if (stepId === "read_scope" || stepId === "write_scope") return { maxProjects: VA_PROJECTS_MAX };
-  if (stepId === "cadence") return { timeZones: asArray(catalog.timeZones).map(String).slice(0, VA_WIZARD_OPTIONS_MAX) };
+  // The STARTING POINT rides the turn (F-916), so the control the admin sees is seeded
+  // from the one home rather than from "whatever came first in the site's zone list".
+  // The zone itself is resolved by the UI, which is the only side that has a viewer.
+  if (stepId === "cadence") {
+    return {
+      timeZones: asArray(catalog.timeZones).map(String).slice(0, VA_WIZARD_OPTIONS_MAX),
+      suggestedPostWindow: VA_SUGGESTED_POST_WINDOW,
+      stagingNote: VA_COPY.cadenceStagingNote,
+    };
+  }
   if (stepId === "powers") return { skills: skillOptions(catalog), maxSkills: VA_LIMITS.skillIds };
   if (stepId === "guardrails") return { ceilings: VA_CEILINGS, defaults: VA_DEFAULTS.guardrails, projects: projectOptions(catalog) };
   return {};
@@ -560,6 +575,20 @@ const validateAnswer = (stepId, value, state) => {
         if (!mentionsOf.includes(id)) mentionsOf.push(id);
       }
       if (value.owedFirst !== undefined && typeof value.owedFirst !== "boolean") refused.push(refusal("intake.owedFirst", "Answering people who are waiting first is on or off."));
+      /*
+       * F-916 — AN AGENT WITH NO INTAKE IS AN AGENT THAT WILL DO NOTHING. The step used to
+       * accept an empty answer and let the review card mention it in passing, six screens
+       * later, in a sentence an admin who is clicking Continue does not read. It is a
+       * REFUSAL here, naming all three ways to give it work.
+       *
+       * The SAVE path still accepts an empty intake on purpose: a stored agent may be
+       * emptied deliberately (its queue was retired) and `normalizeVa` must not refuse a
+       * record it already stored. This is the wizard's own floor on CREATION, not a new
+       * record rule, which is why it lives here and not in `normalizeVa`.
+       */
+      if (!serviceDesks.length && !(typeof value.jql === "string" && value.jql.trim()) && !mentionsOf.length) {
+        refused.push(refusal("intake", VA_COPY.intakeEmpty));
+      }
       if (refused.length) break;
       return {
         patch: {
@@ -804,8 +833,9 @@ export const resumeWizard = (stored, catalog) => {
  * honest. The guardrail half is NOT written here at all, it comes from
  * `renderGuardrailSentences`, which is the same text the item turn's prompt receives.
  */
-export const renderReviewSummary = (va) => {
+export const renderReviewSummary = (va, opts = {}) => {
   const r = isObj(va) ? va : {};
+  const o = isObj(opts) ? opts : {};
   const persona = isObj(r.persona) ? r.persona : VA_DEFAULTS.persona;
   const scope = isObj(r.scope) ? r.scope : VA_DEFAULTS.scope;
   const intake = isObj(r.intake) ? r.intake : VA_DEFAULTS.intake;
@@ -813,7 +843,37 @@ export const renderReviewSummary = (va) => {
   const powers = isObj(r.powers) ? r.powers : VA_DEFAULTS.powers;
   const out = [];
 
-  out.push(`${persona.name} runs on the ${cadence.preset} cadence in ${cadence.timeZone}, and posts between ${cadence.postWindow.from} and ${cadence.postWindow.to}.`);
+  /*
+   * F-916 - A VALUE NOBODY CHOSE WAS SAID TO BE ONE. The card used to state the seeded
+   * zone and the seeded posting window in the same voice as the answers the admin gave,
+   * which is how "Africa/Abidjan, Sun-Sat, 00:00-23:59" read as a decision. `mark` puts
+   * the marker beside a value that is still the one this app offered. It compares the
+   * VALUE, not a touched flag: "this is the default" is the claim, and it is true whether
+   * the admin left it alone or typed it back.
+   */
+  const mark = (value, fallback) => (JSON.stringify(value) === JSON.stringify(fallback) ? VA_DEFAULT_MARK : "");
+  const defaultZone = String(o.defaultTimeZone || VA_DEFAULTS.cadence.timeZone);
+  const window = isObj(cadence.postWindow) ? cadence.postWindow : VA_DEFAULTS.cadence.postWindow;
+  const suggestedWindow = isObj(o.defaultPostWindow) ? o.defaultPostWindow : VA_SUGGESTED_POST_WINDOW;
+  const windowMark = mark(
+    { days: asArray(window.days).join(","), from: window.from, to: window.to },
+    { days: asArray(suggestedWindow.days).join(","), from: suggestedWindow.from, to: suggestedWindow.to },
+  );
+  const presetLabel = (SCHEDULE_PRESETS.find((p) => p.id === cadence.preset) || {}).label || cadence.preset;
+
+  /*
+   * PROJECTS BY NAME. The record carries keys because a key is what Jira is asked about;
+   * an admin reading a summary knows the project by its name. `opts.projects` is the same
+   * catalogue the pickers were built from, so a key with no catalogue row (a stored agent
+   * read back on a site that lost the project) still renders as the key rather than
+   * disappearing.
+   */
+  const nameByKey = new Map(asArray(o.projects).map((p) => [String(isObj(p) ? p.key : p).toUpperCase(), isObj(p) ? String(p.name || p.key) : String(p)]));
+  const projectPhrase = (keys) => asArray(keys)
+    .map((k) => { const key = String(k).toUpperCase(); const name = nameByKey.get(key); return name && name !== key ? `${name} (${key})` : key; })
+    .join(", ");
+
+  out.push(`${persona.name} runs ${String(presetLabel).toLowerCase()}${mark(cadence.preset, VA_DEFAULTS.cadence.preset)} in ${cadence.timeZone}${mark(cadence.timeZone, defaultZone)}, and posts between ${window.from} and ${window.to} on ${daysPhrase(window.days)}${windowMark}.`);
 
   const sources = [];
   const desks = asArray(intake.serviceDesks);
@@ -825,17 +885,31 @@ export const renderReviewSummary = (va) => {
 
   out.push(scope.read.site
     ? "It reads every project this app can see."
-    : `It reads ${asArray(scope.read.projects).join(", ") || "no project"}.`);
+    : `It reads ${projectPhrase(scope.read.projects) || "no project"}.`);
   out.push(asArray(scope.write.projects).length
-    ? `It may change issues in ${scope.write.projects.join(", ")} and nowhere else.`
-    : "It changes nothing. It reads, stages replies and proposes changes.");
+    ? `It may change issues in ${projectPhrase(scope.write.projects)} and nowhere else.`
+    : "It changes nothing. It reads, drafts replies and proposes changes.");
 
+  // The POWERS in the words the powers step used, never the record's own spelling.
   const on = VA_POWERS.filter((k) => powers[k]);
-  out.push(on.length ? `Its powers are ${on.join(", ")}.` : "It has no powers turned on.");
+  const defaultPowers = VA_POWERS.filter((k) => VA_DEFAULTS.powers[k]);
+  out.push(on.length
+    ? `It may ${on.map(vaPowerPhrase).join(", ")}${mark(on.join(","), defaultPowers.join(","))}.`
+    : "It has no powers turned on.");
   const skills = asArray(powers.skillIds);
   if (skills.length) out.push(`It is bound to ${skills.length} skill${skills.length === 1 ? "" : "s"}.`);
   if (intake.jql) out.push("The JQL filter is run against Jira once before the agent is created. If it cannot run, the agent is not created.");
   return out;
+};
+
+/** The posting days as words. An every-day window says so rather than listing seven names. */
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const daysPhrase = (days) => {
+  const d = [...new Set(asArray(days).map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))].sort((a, b) => a - b);
+  if (!d.length || d.length === 7) return "every day";
+  if (d.join(",") === "1,2,3,4,5") return "weekdays";
+  if (d.join(",") === "0,6") return "weekends";
+  return d.map((n) => DAY_NAMES[n]).join(", ");
 };
 
 /** Render the turn for a state. Pure: it reads the state, it never changes it. */
@@ -958,6 +1032,20 @@ export const stepWizard = (state, input) => {
   // A chip that changes the voice re-renders the sample on the SAME step.
   if (result.stay) return renderTurn(next, prompt);
   if (result.goto) { next.stepId = result.goto; return renderTurn(next, prompt); }
+
+  /*
+   * F-916 — THE REVIEW CARD IS THE LAST SCREEN. There used to be one more after it that
+   * asked "Ready to create it?" and carried no information the card had not already given,
+   * so the admin confirmed the same decision twice and the second confirmation was the one
+   * that did something. Confirming the review now creates.
+   *
+   * The `create` STEP still exists and still validates: it is the step a model may finish
+   * on (`done` is refused anywhere else), it is where `fallbackToForm` is raised, and a
+   * caller driving the machine directly may still answer it. What changed is that the
+   * interview no longer STOPS there - the review's confirm advances onto it and runs it in
+   * the same turn, so no turn is ever rendered standing on `create`.
+   */
+  if (next.stepId === "review") next.stepId = "create";
 
   if (next.stepId === "create") {
     const record = buildVaRecord(next);

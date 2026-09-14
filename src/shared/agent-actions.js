@@ -518,6 +518,266 @@ export const DEFAULT_AGENT_ACTIONS = ["get_issue", "search_issues", "add_comment
 export const MAX_AGENT_ROUNDS = 8;
 export const DEFAULT_AGENT_ROUNDS = 5;
 
+/* ═══════════════════════════ F-915 — THE WORDS FOR AN ACTION ═══════════════════════════
+ *
+ * A cold walk of the Coder panel found it speaking the ENGINE'S vocabulary to a developer
+ * who is being asked to authorise a write: a consent chip reading `open_pull_request` over
+ * a grid of `sourceBranch` / `targetBranch` / `draft false`. Every one of those tokens is
+ * an identifier from this file, and the person reading them has never seen this file.
+ *
+ * The labels already existed - every row above carries `label` - and no surface used them,
+ * so the repo was one `.replace(/_/g, " ")` away from growing a second vocabulary in a
+ * frontend. That is LAW 1's signature defect, and it is cheaper to prevent than to find
+ * later: the words live HERE, beside the ids they describe, and the backend and all four
+ * frontends read the same functions.
+ *
+ * THREE LEVELS, because three different sentences are needed:
+ *   agentActionLabel(id)          -> "Open a pull request"          (a heading)
+ *   agentActionPhrase(id)         -> "open a pull request"          (inside a sentence)
+ *   describeAgentAction(id, args) -> "Open a pull request on acme/web from
+ *                                     proj-42-retry-guard into main (draft: no)"
+ *
+ * `describeAgentAction` NEVER invents a fact. It reads only keys the action's own schema
+ * declares, it says nothing about a key that is absent, and an id this file does not know
+ * degrades to the humanised id rather than to a guess. An argument value is UNTRUSTED (the
+ * model wrote it) so every one is clamped here; escaping is the render site's job, and
+ * every render site in this repo is React text, which escapes by construction.
+ */
+
+/** Clamp one untrusted argument value for a sentence. Never HTML, never a fence. */
+const argText = (v, max = 120) => {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "number") return String(v);
+  if (typeof v !== "string") return "";
+  const s = v.replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+};
+
+/** The action's own name, for a heading. Unknown ids humanise rather than print raw. */
+export const agentActionLabel = (id) => {
+  const a = BY_ID.get(String(id || ""));
+  if (a && a.label) return a.label;
+  const raw = String(id || "").trim();
+  if (!raw) return "a step";
+  const words = raw.replace(/[_\-.]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "a step";
+};
+
+/** The same name lowercased for mid-sentence use ("You confirmed: open a pull request"). */
+export const agentActionPhrase = (id) => {
+  const label = agentActionLabel(id);
+  return label.charAt(0).toLowerCase() + label.slice(1);
+};
+
+/* One entry per action whose ARGUMENTS change what it does to somebody's repository or
+   issue. Each builder receives the already-clamped reader `a(key)` and returns the tail of
+   the sentence; returning "" falls through to the generic tail below. Only actions whose
+   arguments are load-bearing are listed - for the rest the label plus the target is the
+   whole truth, and a longer sentence would be padding. */
+const ACTION_TAIL = {
+  create_repo: (a) => {
+    const where = a("org") ? ` in ${a("org")}` : "";
+    const vis = a("private") === "no" ? " (visible to everyone)" : a("private") === "yes" ? " (private)" : "";
+    return a("name") ? ` named ${a("name")}${where}${vis}` : "";
+  },
+  create_branch: (a) => {
+    if (!a("branch")) return "";
+    const from = a("fromBranch") ? ` from ${a("fromBranch")}` : "";
+    return ` ${a("branch")} on ${a("repo") || "the repository"}${from}`;
+  },
+  commit_files: (a, args) => {
+    const n = Array.isArray(args.files) ? args.files.length : 0;
+    const what = n ? ` ${n} file${n === 1 ? "" : "s"}` : "";
+    const where = a("branch") ? ` to ${a("branch")}` : "";
+    const repo = a("repo") ? ` on ${a("repo")}` : "";
+    return `${what}${where}${repo}`;
+  },
+  open_pull_request: (a) => {
+    // "into the default branch" is only worth saying when SOMETHING else is known; on an
+    // empty preview it would be the sentence's only fact and it is the one we did not read.
+    if (!a("repo") && !a("sourceBranch") && !a("targetBranch")) return "";
+    const repo = a("repo") ? ` on ${a("repo")}` : "";
+    const from = a("sourceBranch") ? ` from ${a("sourceBranch")}` : "";
+    const into = ` into ${a("targetBranch") || "the default branch"}`;
+    const draft = a("draft") ? ` (draft: ${a("draft")})` : "";
+    return `${repo}${from}${into}${draft}`;
+  },
+  get_pull_request: (a) => prTail(a),
+  add_pr_comment: (a) => `${prTail(a)}${a("path") ? `, on ${a("path")}${a("line") ? ` line ${a("line")}` : ""}` : ""}`,
+  approve_pull_request: (a) => prTail(a),
+  request_changes: (a) => prTail(a),
+  get_build_state: (a) => `${a("ref") ? ` of ${a("ref")}` : ""}${a("repo") ? ` on ${a("repo")}` : ""}`,
+  trigger_deploy: (a, args) => {
+    const wf = a("workflow") ? ` ${a("workflow")}` : "";
+    const repo = a("repo") ? ` on ${a("repo")}` : "";
+    const ref = a("ref") ? ` for ${a("ref")}` : "";
+    const env = args && args.inputs && typeof args.inputs === "object" && argText(args.inputs.environment)
+      ? ` (environment: ${argText(args.inputs.environment)})` : "";
+    return `${wf}${repo}${ref}${env}`;
+  },
+  get_deploy_status: (a) => (a("repo") ? ` on ${a("repo")}` : ""),
+  add_comment: (a) => `${a("issueKey") ? ` on ${a("issueKey")}` : " on this issue"}${a("internal") === "yes" ? " (internal note)" : ""}`,
+  transition_issue: (a) => {
+    if (!a("transitionName")) return "";
+    return ` ${a("issueKey") || "this issue"} through ${a("transitionName")}`;
+  },
+  create_issue: (a) => {
+    const type = a("issueType") ? ` ${a("issueType")}` : "";
+    const proj = a("projectKey") ? ` in ${a("projectKey")}` : "";
+    const sum = a("summary") ? `: ${a("summary")}` : "";
+    return `${type}${proj}${sum}`;
+  },
+  confluence_create_page: (a) => `${a("title") ? ` titled ${a("title")}` : ""}${a("spaceKey") ? ` in ${a("spaceKey")}` : ""}`,
+  confluence_update_page: (a) => (a("title") ? ` titled ${a("title")}` : ""),
+};
+
+/** "pull request #418 on acme/web", the phrase four git actions share. */
+function prTail(a) {
+  const num = a("number") ? ` #${a("number")}` : "";
+  const repo = a("repo") ? ` on ${a("repo")}` : "";
+  return `${num}${repo}`;
+}
+
+/**
+ * ONE SENTENCE for an action and the arguments it will run with.
+ *
+ * @param {string} id     an action id (or anything; an unknown one humanises)
+ * @param {object} args   the argument preview, exactly as `buildArgsPreview` clamps it
+ * @returns {string} a sentence with no trailing full stop, never an identifier
+ */
+export const describeAgentAction = (id, args) => {
+  const bag = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const a = (key) => argText(bag[key]);
+  const head = agentActionLabel(id);
+  const tail = ACTION_TAIL[String(id || "")];
+  if (tail) {
+    const t = tail(a, bag);
+    if (t) return `${head}${t}`;
+  }
+  // The generic tail: name the TARGET when the arguments carry one, and stop.
+  if (a("issueKey")) return `${head} on ${a("issueKey")}`;
+  if (a("repo")) return `${head} on ${a("repo")}`;
+  if (a("spaceKey")) return `${head} in ${a("spaceKey")}`;
+  return head;
+};
+
+/**
+ * A PREVIEW KEY, in words. `sourceBranch` -> "Source branch"; a nested leaf keeps its
+ * path but reads as one ("inputs.environment" -> "Inputs, environment") and an array index
+ * keeps its position ("files[0].path" -> "Files 1, path"), because dropping either would
+ * make two rows look like the same row.
+ */
+const PREVIEW_KEY_WORD = Object.freeze({
+  repo: "repository", jql: "JQL", cql: "CQL", url: "URL", id: "id", pr: "pull request",
+  accountid: "account", issuekey: "issue", otherissuekey: "other issue", spacekey: "space",
+  projectkey: "project", parentkey: "parent", ref: "branch or tag", sha: "commit",
+});
+export const previewKeyLabel = (key) => {
+  const parts = String(key || "").split(".").filter(Boolean);
+  const words = parts.map((part) => {
+    const m = /^(.*?)\[(\d+)\]$/.exec(part);
+    const bare = (m ? m[1] : part);
+    const name = PREVIEW_KEY_WORD[bare.toLowerCase()]
+      || bare.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase().trim();
+    return m ? `${name} ${Number(m[2]) + 1}` : name;
+  }).filter(Boolean);
+  if (!words.length) return String(key || "");
+  const joined = words.join(", ");
+  return joined.charAt(0).toUpperCase() + joined.slice(1);
+};
+
+/**
+ * HOW A TURN ENDED, in the reader's words rather than the loop's.
+ *
+ * The values are `runAgentLoop`'s `endedBy` (src/agent-runner.js) and nothing else:
+ * finish · prose · halt · rounds · deadline · cancelled · provider-error. A panel used to
+ * print "ended by final", which is not even one of them - the mock bridge had invented
+ * `final` and nothing could tell, because the string was rendered raw either way. An
+ * UNKNOWN value answers "" so the caller prints nothing: an ending nobody has a word for
+ * is better left unsaid than printed as a token.
+ */
+export const AGENT_ENDING_TEXT = Object.freeze({
+  finish: "finished",
+  prose: "finished",
+  halt: "waiting for you",
+  rounds: "stopped at the round limit",
+  deadline: "stopped at the time limit",
+  cancelled: "cancelled",
+  "provider-error": "stopped: the AI provider failed",
+});
+export const agentEndingText = (endedBy) => AGENT_ENDING_TEXT[String(endedBy || "")] || "";
+
+/* ───────────────────────── THE DECISION ROW, IN THE READER'S WORDS ─────────────────────
+ *
+ * `confirmCoderTicket` (src/coder-engine.js) writes ONE row per answered consent ticket
+ * into the thread, and that row is MODEL-FACING text: "DECISION: the user CONFIRMED
+ * open_pull_request and it was performed." It is addressed to the model on the next turn,
+ * it must stay exactly as it is for that purpose, and the panel was rendering it verbatim
+ * to the human who made the decision.
+ *
+ * So the row is PARSED here rather than re-worded there. Parsing prose is normally this
+ * repo's refusal (refusal-contract.test.mjs exists to forbid exactly that shape), and the
+ * distinction that makes it legitimate here is that this sentence has ONE WRITER, in code,
+ * with a fixed grammar - it is never a human's or a model's words. The protection against
+ * a silent reword is a gate, not a hope: refusal-contract.test.mjs reads the four templates
+ * out of src/coder-engine.js and feeds them through this parser, so changing one of them
+ * without changing this file fails the build.
+ *
+ * A row that does not parse is returned as `null`, and the panel then prints the row as it
+ * stands. Degrading to the engine's sentence is honest; inventing one is not.
+ */
+const DECISION_RE = /^DECISION:\s*(?:the user\s+)?(CONFIRMED|SKIPPED|asked to CHANGE)\s+([a-z0-9_]+)([\s\S]*)$/;
+const DECISION_REFUSED_RE = /^DECISION:\s*([a-z0-9_]+)\s+was REFUSED at confirmation time and NOT performed([\s\S]*)$/;
+/* The refusal template joins its reason with an em dash. The character is BUILT rather
+   than written, because src/shared is inside the no-dash gate (ui-copy-dashes.test.mjs,
+   which now reads the escape as well as the glyph) and a parser that has to recognise the
+   character is not copy. `separator` strips whatever punctuation joins the two clauses, so
+   rewriting the engine's joiner to a colon needs no change here. */
+const LEAD_PUNCT_RE = new RegExp(`^[\\s${String.fromCharCode(0x2014)}${String.fromCharCode(0x2013)}:,-]+`);
+
+export const parseDecisionRow = (text) => {
+  const raw = String(text || "").trim();
+  const refused = DECISION_REFUSED_RE.exec(raw);
+  if (refused) return { verdict: "refused", action: refused[1], performed: false, detail: refused[2].replace(LEAD_PUNCT_RE, "").replace(/\.$/, "").trim() };
+  const m = DECISION_RE.exec(raw);
+  if (!m) return null;
+  const rest = m[3] || "";
+  if (m[1] === "CONFIRMED") {
+    const performed = /and it was performed/.test(rest);
+    const reason = /Reason:\s*([\s\S]*)$/.exec(rest);
+    return { verdict: "confirm", action: m[2], performed, detail: reason ? reason[1].trim() : "" };
+  }
+  if (m[1] === "SKIPPED") return { verdict: "skip", action: m[2], performed: false, detail: "" };
+  const words = /Their words:\s*([\s\S]*)$/.exec(rest);
+  return { verdict: "change", action: m[2], performed: false, detail: words ? words[1].trim() : "" };
+};
+
+/**
+ * The decision row as the person who made it would say it.
+ *
+ *   "You confirmed: open a pull request. Done."
+ *   "You confirmed: open a pull request. It failed: <reason>"
+ *   "You skipped: open a pull request. Nothing ran."
+ *   "You asked for a change to: open a pull request. Your words: <…>"
+ *   "Open a pull request could no longer be confirmed: <reason> Nothing ran."
+ *
+ * Returns "" for a row this file cannot parse, which the caller reads as "print the row".
+ */
+export const decisionRowSentence = (text) => {
+  const d = parseDecisionRow(text);
+  if (!d) return "";
+  const what = agentActionPhrase(d.action);
+  if (d.verdict === "confirm") {
+    return d.performed
+      ? `You confirmed: ${what}. Done.`
+      : `You confirmed: ${what}. It failed${d.detail ? `: ${d.detail}` : "."}`;
+  }
+  if (d.verdict === "skip") return `You skipped: ${what}. Nothing ran.`;
+  if (d.verdict === "change") return `You asked for a change to: ${what}.${d.detail ? ` Your words: ${d.detail}` : ""}`;
+  return `${agentActionLabel(d.action)} could no longer be confirmed${d.detail ? `: ${d.detail}` : ""}. Nothing ran.`;
+};
+
 /**
  * THE ONE GATE over allowed action ids. Keeps only known, non-control ids
  * (`finish` is implicit) and then applies the capability / product / confirm /

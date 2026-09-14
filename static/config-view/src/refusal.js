@@ -103,7 +103,7 @@ export function upgradeRequiredText(result) {
   const id = result && result.featureId;
   const feature = ADVANCED_FEATURES.find((f) => f.id === id);
   const label = feature ? feature.label : "this feature";
-  return `Upgrade in Settings to unlock ${label}.`;
+  return `Upgrade CogniRunner under Apps, Manage apps to unlock ${label}. CogniRunner Settings changes the AI provider, not the edition.`;
 }
 
 export const UPGRADE_REQUIRED_HEADLINE = `This needs CogniRunner ${EDITIONS.advanced.label}.`;

@@ -872,12 +872,18 @@ try {
       const txt = (await note.innerText()).replace(/\s+/g, " ").trim();
       ok(/This needs CogniRunner Coder\./.test(txt),
         `F-273 ${theme} the note names the edition — got: ${JSON.stringify(txt)}`);
-      ok(/Upgrade in Settings to unlock /.test(txt),
+      ok(/Upgrade CogniRunner under Apps, Manage apps to unlock /.test(txt),
         `F-273 ${theme} and names the remedy and where to do it — got: ${JSON.stringify(txt)}`);
+      /* F-915 — Settings is where the PROVIDER is chosen; the EDITION is a Marketplace
+         subscription changed under Apps, Manage apps. Sending a paying admin to Settings
+         over a billing question is F-255's defect in the other direction, so the sentence
+         names both places and gives each one its subject. */
+      ok(/CogniRunner Settings changes the AI provider, not the edition/.test(txt),
+        `F-915 ${theme} Settings is named for what it DOES change — got: ${JSON.stringify(txt)}`);
       /* F-330 — the body under that headline is a sentence: it opens with a capital and does
          not say "Coder" a second and third time. Asserted on the LIVE render, not the pure
          function, because the defect was only ever visible as two stacked lines. */
-      ok(/This needs CogniRunner Coder\. Upgrade in Settings to unlock /.test(txt),
+      ok(/This needs CogniRunner Coder\. Upgrade CogniRunner under Apps, Manage apps to unlock /.test(txt),
         `F-330 ${theme} headline then a capitalised one-clause body — got: ${JSON.stringify(txt)}`);
       ok(!/Coder edition/.test(txt),
         `F-330 ${theme} the body does not re-announce the edition the headline just named — got: ${JSON.stringify(txt)}`);
@@ -3366,7 +3372,45 @@ try {
       await page.getByText(/No CogniRunner activity recorded/i).waitFor({ timeout: 8000 });
       ok(await page.getByText(/No CogniRunner activity recorded/i).count() > 0, "E14 empty issue → honest empty state");
       ok(await page.locator(".glance-item").count() === 0, "E14 no activity items rendered");
+      /* F-915 - AN HONEST EMPTY STATE IS NOT ENOUGH IF IT IS ALSO A DEAD END. A cold walk
+         of a real issue found this panel to be the developer's first contact with the app,
+         saying nothing had happened and offering no way to make anything happen. The Coder
+         lives in a SEPARATE issue panel that Jira does not show until the reader adds it
+         from the issue's Apps control, so the sentence has to name both the control and the
+         panel's title. Asserted on the words a reader would look for, not on a class. */
+      const empty = await page.locator(".glance-empty").innerText();
+      ok(/Apps/.test(empty) && /CogniRunner Coder/.test(empty),
+        `E14 the empty state names the Apps button and the Coder panel (got "${empty}")`);
+      ok(/describe what you want done/i.test(empty), "E14 ...and says what to do once it is open");
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, "glance-empty-pointer-light.png") });
     } catch (e) { fail++; console.log("  ✗ E14 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+
+    // The same state in DARK. The sentence carries two <strong> runs, and emphasis is the
+    // one device in this app that has to be legible on both backgrounds.
+    const envDark = await openEditor(browser, "issue-glance", "issue-glance-empty", "dark");
+    try {
+      await envDark.page.locator(".glance-empty").waitFor({ timeout: 8000 });
+      ok(/CogniRunner Coder/.test(await envDark.page.locator(".glance-empty").innerText()), "E14 dark carries the same pointer");
+      if (SHOTS) await envDark.page.locator(".glance").screenshot({ path: path.join(OUT, "glance-empty-pointer-dark.png") });
+    } catch (e) { fail++; console.log("  ✗ E14 dark threw: " + e.message.split("\n")[0]); }
+    await closeEditor(envDark);
+  }
+
+  /* --------- E14b — F-915: the pointer is EDITION-GATED, on the restrictive side --------
+     The Coder panel refuses a Standard install (`coderGate`), so a Standard reader sent to
+     it would arrive at a card that tells them no. The empty state still says what it
+     always said; it just stops offering a door that is locked. */
+  {
+    console.log("E14b issue-glance empty state, Standard edition (F-915)");
+    const env = await openEditor(browser, "issue-glance", "issue-glance-empty", "light", { __STANDARD__: true });
+    const { page } = env;
+    try {
+      await page.locator(".glance-empty").waitFor({ timeout: 8000 });
+      const empty = await page.locator(".glance-empty").innerText();
+      ok(/No CogniRunner activity recorded/i.test(empty), "E14b the empty state itself is unchanged on Standard");
+      ok(!/CogniRunner Coder/.test(empty), `E14b a Standard install is NOT pointed at the Coder panel (got "${empty}")`);
+    } catch (e) { fail++; console.log("  ✗ E14b threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 

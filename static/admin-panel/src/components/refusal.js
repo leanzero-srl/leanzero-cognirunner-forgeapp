@@ -139,12 +139,21 @@ export function permissionRefusalText(result, what = "this") {
  * with the remedy fixes both at the render site: the sentence starts with a capital, the
  * label is still used VERBATIM as a noun phrase, and the edition is named once — by the
  * headline. Do not re-add the edition name here.
+ *
+ * F-915 — WHERE THE UPGRADE ACTUALLY IS. The sentence said "Upgrade in Settings", and the
+ * edition cannot be changed in Settings at all: it is the app's Marketplace subscription,
+ * changed by a Jira admin under Apps, Manage apps. Settings is where the AI PROVIDER is
+ * chosen, which is a different question with a different answer, and sending a paying
+ * admin to the wrong page over a billing question is the same class of defect as F-255
+ * sending them to the Permissions tab. So both places are named and each is given its
+ * subject, in one two-clause sentence: the remedy still leads, the label is still the
+ * noun phrase it always was, and the edition name is still only in the headline.
  */
 export function upgradeRequiredText(result) {
   const id = result && result.featureId;
   const feature = ADVANCED_FEATURES.find((f) => f.id === id);
   const label = feature ? feature.label : "this feature";
-  return `Upgrade in Settings to unlock ${label}.`;
+  return `Upgrade CogniRunner under Apps, Manage apps to unlock ${label}. CogniRunner Settings changes the AI provider, not the edition.`;
 }
 
 /**

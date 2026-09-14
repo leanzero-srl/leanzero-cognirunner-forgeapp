@@ -1608,13 +1608,23 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
   // Coder log), never as a "step completed" comment on the issue. It goes through the ONE
   // writer, which answers {ok:false,...} rather than throwing: the repository write has
   // already landed and nothing here may undo or repeat it.
+  /* F-915 - THE LINKS LEAVE THE BACKEND NOW.
+     `stepLinksFromResult` turns the provider's own `url` (and `number`) into the remote
+     issue links and the step comment below, and that was the ONLY place they went: the
+     issue panel's single word for a finished pull request was whatever sentence the model
+     chose to type, with no way to open it. They are built ONCE here and ride the answer,
+     so the panel renders the same link the issue does rather than a second derivation of
+     it. Computed for a CONFIRMED, EXECUTED step only: a skipped or failed action has no
+     artifact, and a link under one would be a claim that something happened. */
+  const stepLinks = verdict === "confirm" && executedOk ? stepLinksFromResult(ticket.action, result) : [];
+
   let stepComment = null;
   if (verdict === "confirm" && executedOk) {
     const workspace = deps.workspace || createCoderWorkspace({ simulation: ticket.simulation === true });
     stepComment = await workspace.appendStepComment({
       issueKey: ticket.issueKey,
       step: { title: `${ticket.action} confirmed`, detail: clampChars(JSON.stringify(ticket.argsPreview || {}), 600) },
-      links: stepLinksFromResult(ticket.action, result),
+      links: stepLinks,
     });
     if (stepComment && stepComment.ok === false) console.warn(`[coder] step comment for ticket ${id}: ${stepComment.error}`);
   }
@@ -1636,6 +1646,9 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
     ...(verdict === "confirm" && !executedOk ? { error: String((result && result.error) || "The confirmed step failed.").slice(0, 300) } : {}),
     resume: true,
     resumeMessage: decisionText,
+    // F-915 - the same links the step comment carries, so the panel can offer the pull
+    // request it just opened instead of leaving the reader to find it.
+    ...(stepLinks.length ? { links: stepLinks } : {}),
     // The same one shape a turn reports (F-841), so a caller reads `workspace`,
     // `workspaceFailures` and `workspaceSummary` (F-857) the same way whichever entry
     // point produced them. The sentence comes from the same renderer as the turn's, so

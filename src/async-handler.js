@@ -1957,7 +1957,45 @@ const coderIssueSummary = async (issueKey) => {
  */
 export const HARNESS_PROBE_TASK = "probe-confluence";
 export const HARNESS_PROBE_KINDS = Object.freeze(["confluence", "servicedesk"]);
-export const HARNESS_PROBE_TTL = { ttl: { value: 10, unit: "MINUTES" } };
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-824 — THE ROW CARRIES ITS OWN DEADLINE; THE KVS TTL IS BELT AND BRACES.
+ *
+ * A probe row written with this TTL was still readable 12.4 minutes later. KVS expiry is
+ * LAZY — the platform is entitled to keep answering an expired row until it gets round to
+ * reaping it — so a lever whose whole job is "read the newest measurement" could read a
+ * stale one and report it as fresh. This is the F-664/F-667 fault-row lesson arriving at
+ * the probe keyspace: the ROW stamps `until`, and the READER (`readHarnessProbe` in
+ * test-hook.js) treats a past `until` as ABSENT and says `expired:true` rather than
+ * swallowing it, because a driver that planted a probe is entitled to know its row ended
+ * on its own window rather than never having existed.
+ *
+ * The TTL option STAYS: it is what eventually reclaims the bytes, and two bounds that
+ * agree are cheaper than one bound that has to be right. They agree because there is ONE
+ * number — `HARNESS_PROBE_TTL_SECONDS` — and the TTL option is derived from it, never a
+ * second literal that could drift under the deadline the reader enforces.
+ *
+ * A row written BEFORE this cut carries no `until`; it is bounded by its own `at` plus the
+ * same window (never by NOW, which would stamp a fresh deadline on an ancient row — the
+ * exact F-667 mistake), and a row with neither timestamp reads present, because "I cannot
+ * date this" is not "this expired".
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+export const HARNESS_PROBE_TTL_SECONDS = 600;
+export const HARNESS_PROBE_TTL = { ttl: { value: HARNESS_PROBE_TTL_SECONDS / 60, unit: "MINUTES" } };
+
+/** The deadline this row is judged against: its stamped `until`, else `at` + the window. */
+export const harnessProbeDeadline = (row) => {
+  if (!row || typeof row !== "object") return null;
+  const until = typeof row.until === "string" ? Date.parse(row.until) : NaN;
+  if (Number.isFinite(until)) return until;
+  const at = typeof row.at === "string" ? Date.parse(row.at) : NaN;
+  return Number.isFinite(at) ? at + HARNESS_PROBE_TTL_SECONDS * 1000 : null;
+};
+
+/** TRUE when the row's own window has closed. An undatable row is never expired. */
+export const harnessProbeExpired = (row, now = Date.now()) => {
+  const deadline = harnessProbeDeadline(row);
+  return deadline !== null && deadline <= now;
+};
 
 /** THE key shape. Both parts are sanitised HERE, never at a call site. */
 export const harnessProbeKey = (kind, id) =>
@@ -2031,7 +2069,8 @@ export const executeHarnessProbe = async (params, taskId) => {
   const row = await runHarnessProbe({ kind, queue: p.queue });
   const key = harnessProbeKey(kind, id);
   try {
-    await storage.set(key, row, HARNESS_PROBE_TTL);
+    // F-824 — the row's OWN deadline goes in with it, because the TTL alone is lazy.
+    await storage.set(key, { ...row, until: new Date(Date.now() + HARNESS_PROBE_TTL_SECONDS * 1000).toISOString() }, HARNESS_PROBE_TTL);
   } catch (e) {
     console.warn(`[${HARNESS_PROBE_TASK}] could not record ${key}: ${(e && e.message) || e}`);
     return { success: false, key, error: "probe row not recorded" };

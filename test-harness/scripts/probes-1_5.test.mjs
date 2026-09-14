@@ -153,8 +153,9 @@ const deletes = (calls) => calls.seen.filter((c) => c.op === "delete");
   ok(out.success === true && out.key === "harness_probe:confluence:abc", "with the secret present the probe records its row");
   const row = await storage.get("harness_probe:confluence:abc");
   ok(row && row.kind === "confluence" && typeof row.at === "string" && row.queue === "standard", "the row names the kind, the time and the queue");
-  ok(Object.keys(row).every((k) => ["kind", "at", "queue", "status", "code", "installed", "errorClass"].includes(k)),
-    "the recorded row carries only status/code/install-state — no body");
+  ok(Object.keys(row).every((k) => ["kind", "at", "queue", "status", "code", "installed", "errorClass", "until"].includes(k)),
+    "the recorded row carries only status/code/install-state and its own `until` (F-824) — no body");
+  ok(typeof row.until === "string" && Date.parse(row.until) > Date.now(), "F-824: the row stamps its OWN deadline, because the KVS TTL is lazy and a stale probe read as live");
   delete process.env.HARNESS_SECRET;
 }
 ok(harnessProbeKey("servicedesk", "p1x") === "harness_probe:servicedesk:p1x", "the servicedesk key shape");

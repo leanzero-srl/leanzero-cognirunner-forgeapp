@@ -755,10 +755,12 @@ try {
   await check("POSITIVE CONTROL: the field walker still SEES, and fails CLOSED on what it cannot read (F-794)", async () => {
     const { findSecretFields, findPlantedSecret, maskSecretFields } = await import("../../src/test-hook.js");
     // It sees both kinds of hit, at depth, and reports ALL of them rather than the first.
-    const hits = findSecretFields({ a: { password: 1 }, b: ["ghp_abcdefgh"], c: "fine" }, { maxDepth: 12 });
+    // F-825 — the name hit is asserted on a STRING value, because a number under a
+    // credential name is not a credential and no longer hits (its own checks are below).
+    const hits = findSecretFields({ a: { password: "hunter2" }, b: ["ghp_abcdefgh"], c: "fine" }, { maxDepth: 12 });
     assert.deepEqual(hits.map((h) => h.field), ["a.password", "b[0]"], "every path, not just the first");
     // The WRITE refusal is unchanged: the same first hit, the same shape, the same depth 6.
-    assert.deepEqual(findPlantedSecret({ a: { password: 1 }, b: ["ghp_abcdefgh"] }),
+    assert.deepEqual(findPlantedSecret({ a: { password: "hunter2" }, b: ["ghp_abcdefgh"] }),
       { field: "a.password", why: "field-name-reads-like-a-credential" });
     assert.equal(findPlantedSecret({ nothing: "here" }), null, "a clean body is still null, never an empty array");
     // FAIL CLOSED: a subtree the read walker cannot reach is fingerprinted, not answered.
@@ -859,6 +861,54 @@ try {
     const cleanAnswer = await readCeiling("log_entry:", [{ ruleId: "r1", outcome: "pass" }]);
     assert.deepEqual(cleanAnswer, { value: [{ ruleId: "r1", outcome: "pass" }] });
   });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-825 — A NUMBER UNDER A CREDENTIAL-LOOKING NAME IS NOT A CREDENTIAL.
+   *
+   * `SECRET_KEY_HINTS` holds `token` and the name test is a SUBSTRING match, so `tokens`
+   * — the NUMERIC AI usage counter on every `log_entry:*` row — matched, and once F-802
+   * put the execlog arm behind the ceiling, 12 of 47 entries on dev answered
+   * `{masked:true}` where a driver reads a number. The four controls the live report
+   * named are pinned here: the plural counter plain, the singular string masked, an
+   * all-numeric usage OBJECT plain, a string-bearing one masked.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("BLOCK: the numeric `tokens` counter answers PLAIN; a string under `token` is still masked (F-825)", async () => {
+    const { LOG_ENTRY_PREFIX } = await import("../../src/rule-stats.js");
+    const { readCeiling, findSecretFields, findPlantedSecret } = await import("../../src/test-hook.js");
+    const GHP = "ghp_abcdefghijklmnopqrst";
+    // 1) the counter, exactly as a log entry carries it
+    const counted = await readCeiling("log_entry:", [{ ruleId: "r1", outcome: "pass", tokens: 1234 }]);
+    assert.deepEqual(counted, { value: [{ ruleId: "r1", outcome: "pass", tokens: 1234 }] },
+      "a NUMBER under `tokens` reads plain and the entry says nothing about masking — this is F-825");
+    // 2) the singular, holding a real credential string — unchanged
+    const secret = await readCeiling("log_entry:", [{ token: GHP }]);
+    assert.deepEqual(secret.maskedFields, ["[0].token"], "a STRING under a credential name is still masked whole");
+    assert.equal(secret.value[0].token.masked, true);
+    assert.equal(secret.value[0].token.why, "field-name-reads-like-a-credential");
+    assert.equal(JSON.stringify(secret).includes(GHP), false, "…and never reaches the wire");
+    // 3) an all-numeric usage OBJECT is plain, and the walk still descends into it
+    const usage = { tokens: { prompt: 12, completion: 3 } };
+    assert.deepEqual(findSecretFields(usage, { maxDepth: 12 }), [], "no string beneath it, so nothing a credential could hide in");
+    assert.deepEqual(await readCeiling("log_entry:", [usage]), { value: [usage] });
+    // 4) …but an object that CONTAINS a string under that name is masked WHOLE, subtree and all
+    const bearing = await readCeiling("log_entry:", [{ token: { value: "abcdefghijklmnop" } }]);
+    assert.deepEqual(bearing.maskedFields, ["[0].token"], "the field-name hit still claims the whole subtree");
+    assert.equal(bearing.value[0].token.masked, true);
+    assert.equal(JSON.stringify(bearing).includes("abcdefghijklmnop"), false);
+    // booleans and null are values a credential cannot be, so they answer plain too
+    assert.deepEqual(findSecretFields({ apiKey: true, secret: null, password: 0 }, { maxDepth: 12 }), [],
+      "boolean/null/zero under credential names: masking them disclosed nothing and blinded the reader");
+    // THE WRITE REFUSAL SHARES THE TRAVERSAL and therefore the rule.
+    assert.deepEqual(findPlantedSecret({ token: GHP }), { field: "token", why: "field-name-reads-like-a-credential" },
+      "a plant body carrying a credential STRING is still refused");
+    assert.equal(findPlantedSecret({ tokens: 1234 }), null, "…and a usage counter is not a reason to refuse a body");
+    // A CREDENTIAL DEEPER DOWN IS STILL FOUND: the name hit no longer fires, so the walk continues.
+    const deeper = findSecretFields({ tokens: { count: 3, apiKey: GHP } }, { maxDepth: 12 });
+    assert.deepEqual(deeper, [{ field: "tokens", why: "field-name-reads-like-a-credential" }],
+      "a string-bearing subtree is claimed whole by the name — the plural is NOT exempted by name, only by type");
+    assert.deepEqual(findSecretFields({ usage: { tokens: { count: 3 }, note: GHP } }, { maxDepth: 12 }),
+      [{ field: "usage.note", why: "value-looks-like-a-credential" }],
+      "…and past a numeric `tokens` the walker keeps going and still catches a credential by SHAPE");
+  });
   await check("BLOCK: `?what=provider` is a stored row too, and answers through the same ceiling (F-802)", async () => {
     storage.__seed("COGNIRUNNER_AI_PROVIDER", "openai");
     const plain = JSON.parse((await hookGet({ what: ["provider"] })).body);
@@ -944,11 +994,15 @@ try {
       // ask BOOLEANS of them (`ticket.simulation === true`, `pipelineOutdated(row)`); the
       // rows themselves are never answered, so there is nothing to project.
       "invokeResolver",
+      // F-824 - `clearHarnessProbe` reads the row only to say whether there WAS one
+      // (`present`, a boolean the driver asserts a clear against); the row itself is
+      // deleted, never answered, so there is nothing to project.
+      "clearHarnessProbe",
     ];
     // ("kvStash" is the chunk that carries the kvRestore tail too — the split lands on the
     //  NESTED `if (body.action === "kvStash")`, and both reads live below it.)
     assert.deepEqual(reading.map((r) => r.name).sort(),
-      ["invokeResolver", "kvSet", "kvStash", "pipelineRow", "readHarnessProbe", "readProbe", "vaTombstone"].sort(),
+      ["clearHarnessProbe", "invokeResolver", "kvSet", "kvStash", "pipelineRow", "readHarnessProbe", "readProbe", "vaTombstone"].sort(),
       "the set of POST actions that read storage changed — each one needs a judgement, not a silent pass");
     const bypassing = reading.filter((r) => !r.projects && !ANSWERS_NO_STORED_CONTENT.includes(r.name));
     assert.deepEqual(bypassing.map((r) => r.name), [],
@@ -968,6 +1022,45 @@ try {
     const post = blocks.filter((b) => namesOf(b) === "readHarnessProbe");
     assert.equal(post.length, 1);
     assert.equal(projects(post[0]), true, "…while the shipped readHarnessProbe projects its answer");
+  });
+  /* F-824 - A PROBE ROW OUTLIVED ITS TTL, AND NOTHING COULD CLEAR IT.
+   *
+   * The consumer wrote `harness_probe:<kind>:<id>` with a 10-minute KVS TTL and the door
+   * answered whatever KVS still held - a row was read back 12.4 minutes after it was
+   * written, because platform expiry is LAZY. `harness_probe:` is not on the `kvSet` write
+   * allow-list either, so a stale plant could only be waited out. The row now stamps its
+   * own `until` (F-664's fault-row shape), the read door treats a past `until` as ABSENT
+   * and says `expired:true`, and `clearHarnessProbe` removes one. */
+  await check("BLOCK: the probe doors honour the row's OWN window, and one of them clears it (F-824)", async () => {
+    /* THE DOORS ARE NOT DRIVABLE HERE, AND THAT IS STATED RATHER THAN PAPERED OVER.
+     * Both `readHarnessProbe` and `clearHarnessProbe` do `await import("./async-handler.js")`
+     * for the key builder, and that module statically imports the EXTENSIONLESS specifier
+     * `"./index"`, which Node's ESM resolver refuses under this suite's loader (the same
+     * reason the `?what=execlogs` check above states; src/index.js belongs to another cut).
+     * So what is asserted is the SHAPE of the two doors, and the expiry rule itself is
+     * driven by its own unit checks in async-handler-helpers.test.mjs. */
+    const src = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+    const arm = (name) => {
+      const at = src.indexOf(`body.action === "${name}"`);
+      assert.ok(at > 0, `${name} must exist`);
+      return src.slice(at, at + 1200);
+    };
+    const read = arm("readHarnessProbe");
+    assert.match(read, /harnessProbeExpired/, "the read door asks the ONE expiry predicate rather than keeping a copy of the window");
+    assert.match(read, /expired \? null : stored/, "…and an expired row is answered ABSENT, not as a live measurement");
+    assert.match(read, /expired,/, "…with `expired` REPORTED, exactly as readHarnessFault does — a driver is entitled to know its row ended on its own window");
+    assert.match(read, /storedFields\(/, "…still through the ONE read ceiling (F-806)");
+    const clear = arm("clearHarnessProbe");
+    assert.match(clear, /harnessProbeKey\(kind, id\)/, "the clear door builds its key with the ONE builder — no caller ever names the keyspace");
+    assert.match(clear, /storage\.delete\(key\)/, "…and deletes exactly that row");
+    assert.match(clear, /id required/, "…refusing a malformed id rather than deleting some other key");
+    // Both doors are behind the HARNESS_SECRET gate, like every other action.
+    const gate = src.indexOf("if (!secret) return notFound();");
+    assert.ok(gate > 0 && src.indexOf('body.action === "clearHarnessProbe"') > gate,
+      "the clear door is inside the gated POST block");
+    // …and the keyspace is still NOT writable through kvSet: a driver may clear a probe, never forge one.
+    const setRes = await POST({ action: "kvSet", key: "harness_probe:confluence:forged", value: { status: 200 } });
+    assert.notEqual(setRes.statusCode, 200, "a probe row must not be writable through the allow-listed write door");
   });
   await check("kvStash/kvRestore move a credential by NAME, never by value (F-769)", async () => {
     // THE DRIVER THIS DOOR EXISTS FOR: va-compaction-live.mjs replaces the BYOK key with a
@@ -1625,6 +1718,7 @@ try {
       // BOUNDED — a normaliser builds the stored object field by field.
       ["job:", "`normalizeJob` (src/scheduled-jobs.js) builds the record field by field and every step through `normalizeStep`, where `endpoint` is a clamped URL STRING with no header map at all; the residual inside that bound is `generationMeta`, which is passed through as the caller sent it"],
       ["git_conn:", "the connection row is built field by field at creation (`hasToken` is a boolean and `tokenSlot` is the NAME of the git_conn_secret:* row — the same judgement already recorded in NOT_A_CREDENTIAL), and the identity spread is `identityFields` (src/git-connections.js), a three-field builder of public account ids"],
+      ["harness_probe:", "`runHarnessProbe` (src/async-handler.js) builds the probe row field by field - status codes, an error CLASS, response KEY NAMES and two booleans, never a body - and the spread adds only `until` (F-824); the write itself refuses unless HARNESS_SECRET is set, so production never reaches it"],
       ["harness-fault.js:key", "`setFaultRow` is NOT exported and is reachable only through the six gated levers in src/harness-fault.js, each of which builds its row field by field; the spread adds `until`"],
       // UNBOUNDED — the source is caller JSON or a row not proved field-built. The field
       // ceiling on `?what=kvs` is what stands between it and a committed evidence file.

@@ -20,7 +20,7 @@
 //  - deleteSkillRows (F-590): builtin rows flip enabled:false on BOTH the index row and the
 //    skill_repo:{id} record (never removed); custom rows are hard-deleted from both; an unknown
 //    id is a no-op. Plus the SOURCE ASSERTION that the skill index has exactly ONE writer file.
-//  - fetchSkillsBlock: whole-skill concatenation, the HARD capBytes drop (a skill crossing the cap is
+//  - fetchSkillsBlock: the cap measured in UTF-8 BYTES (F-869, CJK fixture), whole-skill concatenation, the HARD capBytes drop (a skill crossing the cap is
 //    dropped WITH everything after it, order preserved), the === cap boundary, disabled/missing SKIP
 //    (continue, not break), the first-8-ids slice, and defangFence on name/instructions/examples.
 //
@@ -294,6 +294,30 @@ ok((await fetchSkillsBlock(["a"], { capBytes: 62 })).applied.length === 0, "bloc
   const r = await fetchSkillsBlock(["a"], { capBytes: 1000 });
   ok(Array.isArray(r.skipped) && r.skipped.length === 0, "skipped is always an array");
   ok(Array.isArray((await fetchSkillsBlock(null)).skipped), "…even on the empty-ids short circuit");
+}
+// --- F-869: the cap is BYTES, not CHARACTERS. A CJK skill whose CHAR length is inside the
+// cap but whose UTF-8 BYTE length is over it must be SKIPPED, and its ASCII sibling must
+// still apply. Before the fix the CJK block entered the prompt at ~3x its stated budget.
+{
+  storage.__reset();
+  // "国".repeat(60) = 60 chars / 180 bytes. Block = 11 + 3 + 1 + 60 = 75 chars, 195 bytes.
+  seedRec("cjk", "CJK", "\u56fd".repeat(60));
+  seedRec("a", "A", "a".repeat(50));           // 63 chars / 63 bytes
+  const cap = 100;                              // > 75 chars, < 195 bytes
+  const r = await fetchSkillsBlock(["cjk", "a"], { capBytes: cap });
+  ok(r.applied.map((x) => x.id).join(",") === "a", "CJK skill over the BYTE cap (but under it in chars) is skipped");
+  ok(r.skipped.map((x) => x.id).join(",") === "cjk", "…and is reported as skipped");
+  ok(!r.text.includes("\u56fd"), "…none of its content reaches the block");
+  ok(r.text.length === 63, "the ASCII sibling below it still applies in full");
+  const { utf8ByteLength } = await import("../../src/shared/text-clamp.js");
+  ok(utf8ByteLength(r.text) <= cap, "the emitted block is inside the cap measured in BYTES");
+}
+// …and a CJK skill that fits in BYTES is still included (the fix is not a blanket ban).
+{
+  storage.__reset();
+  seedRec("cjk", "C", "\u56fd".repeat(20));    // 11 + 1 + 1 + 20 = 33 chars / 73 bytes
+  const r = await fetchSkillsBlock(["cjk"], { capBytes: 100 });
+  ok(r.applied.length === 1 && r.skipped.length === 0, "a CJK skill inside the byte cap is applied");
 }
 // The DEFAULT cap is still the codegen number, now from its one home.
 {

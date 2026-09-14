@@ -36,6 +36,7 @@ import { SKILL_SEED_VERSION, BUILTIN_SKILLS } from "./shared/builtin-skills.js";
 // Shared fence-defang helper — skill content is interpolated inside <<<SKILLS>>>.
 import { defangFence } from "./memories.js";
 import { KNOWLEDGE_BUDGET_BYTES } from "./shared/registry-limits.js";
+import { utf8ByteLength } from "./shared/text-clamp.js";
 
 export const SKILL_INDEX_KEY = "skill_repo_index";
 export const SKILL_PREFIX = "skill_repo:";
@@ -281,7 +282,7 @@ export const autoMatchSkills = (promptText, operationType, index, { max = 2, exc
  * more of everybody else's work it suppressed, and nothing anywhere said so.
  *
  * `continue` is the correct reading of "whole skills only": the cap is a per-block
- * budget, not a stop signal. Ordering is unchanged for everything that fits, so the
+ * budget, not a stop signal. The budget is measured in UTF-8 BYTES (F-869). Ordering is unchanged for everything that fits, so the
  * common case is byte-identical; only the suppression disappears. `skipped` is returned
  * so a caller can SAY that a skill was too big instead of leaving the author to wonder
  * why their skill never appears.
@@ -305,7 +306,10 @@ export const fetchSkillsBlock = async (ids, { capBytes = KNOWLEDGE_BUDGET_BYTES.
         block += `\n\nExample:\n${defangFence(rec.examples)}`;
       }
       const candidate = text ? `${text}\n\n${block}` : block;
-      if (candidate.length > capBytes) { skipped.push({ id: rec.id, name: rec.name }); continue; }
+      // F-869 — measured in BYTES, because the budget is named and sourced in bytes
+      // (KNOWLEDGE_BUDGET_BYTES). `candidate.length` counts UTF-16 code units, so a CJK
+      // skill entered this prompt at up to ~3x the budget it was checked against.
+      if (utf8ByteLength(candidate) > capBytes) { skipped.push({ id: rec.id, name: rec.name }); continue; }
       text = candidate;
       applied.push({ id: rec.id, name: rec.name });
     }

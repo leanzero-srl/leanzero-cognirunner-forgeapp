@@ -455,6 +455,31 @@ try {
       assert.equal(/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL|BASEURL)_[a-z$]/.test(code), false, `${f} types a provider slot literal — derive it from src/shared/provider-slots.js`);
     }
   });
+  await check("no backend module retypes a knowledge budget at a fetchSkillsBlock call", async () => {
+    // F-868 — src/index.js passed `{ capBytes: 24576 }` to fetchSkillsBlock, which is the
+    // function's OWN default (KNOWLEDGE_BUDGET_BYTES.codegen.skills). A budget with two
+    // homes drifts: change registry-limits.js and this caller silently keeps the old one.
+    // A caller that genuinely needs a different audience passes the NAMED constant.
+    //
+    // Scoped to fetchSkillsBlock + the 24576 literal rather than every `capBytes: <n>` in
+    // src/ because two MEMORY-block callers still type 2048/4096 (reported separately);
+    // widening this assertion is the follow-up to fixing those, not a reason to skip this.
+    const files = backendModules();
+    assert.ok(files.includes("index.js") && files.includes("async-handler.js"),
+      `backend module derivation returned ${files.join(",") || "nothing"}`);
+    for (const f of files) {
+      const code = stripJsComments(readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8"));
+      assert.equal(/fetchSkillsBlock\([^;]*capBytes\s*:\s*\d/.test(code), false,
+        `${f} types a numeric capBytes at a fetchSkillsBlock call — use the default or KNOWLEDGE_BUDGET_BYTES`);
+      if (f !== "index.js") continue;
+      // index.js keeps 24576 for PF_FUNCTIONS_OFFLOAD_BYTES (a different, unrelated budget);
+      // what must not exist is a SECOND copy of the skills budget.
+      const hits = (code.match(/24576/g) || []).length;
+      assert.equal(hits, 1, `src/index.js has ${hits} copies of 24576 — only PF_FUNCTIONS_OFFLOAD_BYTES may be one`);
+    }
+    const { KNOWLEDGE_BUDGET_BYTES } = await import("../../src/shared/registry-limits.js");
+    assert.equal(KNOWLEDGE_BUDGET_BYTES.codegen.skills, 24576, "the skills budget's ONE home still reads 24576");
+  });
   await check("kvSet is still an allowlist, not a KVS write bridge", async () => {
     // F-163 deliberately ADDED pf_memories + COGNIRUNNER_MEMORY_SETTINGS to the allowlist
     // (the harness must be able to seed a 200-row store to prove the F-160/F-161 cap policy

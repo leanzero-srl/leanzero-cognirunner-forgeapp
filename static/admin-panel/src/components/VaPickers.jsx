@@ -28,6 +28,7 @@
 
 import React, { useState } from "react";
 import CustomSelect from "./CustomSelect";
+import { VA_POWER_COPY, VA_SUGGESTED_POST_WINDOW, vaFieldLabel } from "../../../../src/shared/va-config.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 
@@ -138,20 +139,11 @@ export function PowerPicker({ powers = [], value = {}, onChange, disabled = fals
   );
 }
 
-/* One sentence per power, in the words the guardrail block uses. The IDS come from
-   `VA_POWERS` - this table only supplies copy, so a power added there without copy still
-   renders (by its id) rather than disappearing. */
-const POWER_COPY = {
-  replyPublic: { label: "Reply to the customer", desc: "Answers in the portal, and only when the person being answered is the request's reporter." },
-  replyInternal: { label: "Reply internally", desc: "Writes an internal note on the issue. Customers never see it." },
-  assign: { label: "Assign", desc: "Sets the assignee of an issue inside the write scope." },
-  transition: { label: "Transition", desc: "Moves an issue through its workflow inside the write scope." },
-  editFields: { label: "Edit fields", desc: "Changes ordinary issue fields inside the write scope. Never configuration." },
-  confluenceRead: { label: "Read Confluence", desc: "Reads pages so an answer can quote your documentation." },
-  confluenceWrite: { label: "Write Confluence", desc: "Creates or updates a page. Updates are version checked." },
-  git: { label: "Git", desc: "Reads repositories and opens pull requests through a configured connection." },
-  webSearch: { label: "Web search", desc: "Looks something up on the public web before answering." },
-};
+/* One sentence per power, from the SHARED copy home (`VA_POWER_COPY`), because the review
+   card has to name a power in the same words this control did - it used to print the
+   record's own id ("Its powers are replyInternal."). The IDS come from `VA_POWERS`; a
+   power with no row here still renders by its id rather than disappearing. */
+const POWER_COPY = VA_POWER_COPY;
 
 /**
  * The guardrail spinners. Each one publishes its OWN range from `VA_CEILINGS`, so a spinner
@@ -159,7 +151,9 @@ const POWER_COPY = {
  * the box rather than discovered by being refused.
  */
 export function GuardrailPicker({ ceilings = {}, value = {}, defaults = {}, onChange, projects = [], disabled = false }) {
-  const keys = Object.keys(ceilings);
+  // F-916 - a spinner whose value goes NOWHERE is worse than no spinner. See
+  // `DERIVED_GUARDRAILS` below.
+  const keys = Object.keys(ceilings).filter((k) => !DERIVED_GUARDRAILS.includes(k));
   const num = (k, raw) => {
     const t = String(raw).trim();
     // An emptied box is not a value: it keeps the last committed number rather than
@@ -199,6 +193,22 @@ export function GuardrailPicker({ ceilings = {}, value = {}, defaults = {}, onCh
   );
 }
 
+/*
+ * F-916 - THE BRAKE THAT WAS NOT A BRAKE. `VA_CEILINGS` carries `shadowUntilTick`, so this
+ * picker rendered a spinner for it, and with no `GUARD_COPY` row its label came out as the
+ * raw key: "SHADOWUNTILTICK".
+ *
+ * Giving it a label would have been the wrong fix. `shadowUntilTick` is NOT a guardrail: it
+ * lives on `status`, it is DERIVED at creation from the Shadow ticks brake
+ * (`buildVaRecord`, src/shared/va-wizard.js) and re-armed afterwards by the engine, which
+ * is the only thing that knows the current tick index. `normalizeVa` builds `guardrails`
+ * from a fixed key list, so anything this spinner wrote landed on `guardrails.shadowUntilTick`
+ * and was dropped without a word. Its ceiling belongs in `VA_CEILINGS` (the save path reads
+ * it for `status.shadowUntilTick`); its CONTROL does not exist, because the number an admin
+ * sets is "Shadow ticks" and this one follows from it.
+ */
+const DERIVED_GUARDRAILS = ["shadowUntilTick"];
+
 const GUARD_COPY = {
   capsPerHour: { label: "Messages per hour", desc: "How often it may speak at all." },
   capsPerDay: { label: "Messages per day", desc: "The daily ceiling on top of the hourly one." },
@@ -216,6 +226,11 @@ const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** The posting window: which days, and between which hours a staged reply may go out. */
 export function PostWindowPicker({ value = {}, onChange, disabled = false }) {
   const days = arr(value.days);
+  // The blank-value fallback is the SUGGESTION (F-916), so a control handed an empty object
+  // shows the working day rather than "00:00 to 23:59", which reads as a decision to let an
+  // agent post at 3am on a Sunday.
+  const from = value.from || VA_SUGGESTED_POST_WINDOW.from;
+  const to = value.to || VA_SUGGESTED_POST_WINDOW.to;
   const toggle = (d) => {
     const next = days.includes(d) ? days.filter((x) => x !== d) : [...days, d];
     onChange({ ...value, days: next.sort((a, b) => a - b) });
@@ -229,9 +244,9 @@ export function PostWindowPicker({ value = {}, onChange, disabled = false }) {
       </div>
       <div className="va-window-times">
         <span className="label">From</span>
-        <input type="time" className="va-time" value={value.from || "00:00"} disabled={disabled} onChange={(e) => onChange({ ...value, from: e.target.value })} aria-label="Posting window start" />
+        <input type="time" className="va-time" value={from} disabled={disabled} onChange={(e) => onChange({ ...value, from: e.target.value })} aria-label="Posting window start" />
         <span className="label">to</span>
-        <input type="time" className="va-time" value={value.to || "23:59"} disabled={disabled} onChange={(e) => onChange({ ...value, to: e.target.value })} aria-label="Posting window end" />
+        <input type="time" className="va-time" value={to} disabled={disabled} onChange={(e) => onChange({ ...value, to: e.target.value })} aria-label="Posting window end" />
       </div>
     </div>
   );
@@ -255,7 +270,11 @@ export function NoteList({ items = [], kind = "note" }) {
     <div className={`va-notes va-notes-${kind}`} role={kind === "refusal" ? "alert" : "note"}>
       {items.map((n, i) => (
         <div className="va-note" key={`${n.field || "x"}-${i}`}>
-          {n.field && <span className="va-note-field">{n.field}</span>}
+          {/* F-916 - the FIELD, in the words the control above it uses. The save path
+              refuses by record path because that is what a REST caller needs; a person
+              reading a refusal needs the label on the box they filled in. One map
+              (`vaFieldLabel`), and an unmapped path keeps its own name. */}
+          {n.field && <span className="va-note-field" title={n.field}>{vaFieldLabel(n.field)}</span>}
           <span className="va-note-text">{n.reason || String(n)}</span>
         </div>
       ))}

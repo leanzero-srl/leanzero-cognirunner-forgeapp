@@ -35,6 +35,7 @@ import { findRule as findPremadeRule } from "../../../src/shared/premade-rules-c
 import { buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
 import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
+import { VA_COPY } from "../../../src/shared/va-config.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import RulePortabilityDialog from "./components/RulePortabilityDialog";
@@ -3720,6 +3721,47 @@ const injectStyles = () => {
     .va-purge-write { padding: 2px 8px; border-radius: 4px; background: #475569; color: #fff; font-size: 11px; font-weight: 700; }
     html[data-color-mode="dark"] .va-purge-write { background: #64748b; }
     .va-purge-more { margin: 0; }
+
+    /* ─────────────── F-916 BLOCK — appended last, overrides on purpose ───────────────
+       Everything below is a deliberate override of a rule declared earlier in this same
+       sheet, so it MUST stay at the end. Keep it together and keep the delimiters.
+
+       THE TAB BAR SCROLLS, IT DOES NOT WRAP. Twelve tabs at a normal admin width wrapped
+       onto a second row, which moved every tab's position whenever the window changed and
+       pushed the page content down by a row. The two ways out were one scrolling row and a
+       grouped bar with a CustomSelect on narrow widths; this is the scrolling row, because
+       grouping hides tabs behind a menu (the Agents tab an admin has never opened is
+       exactly the one they cannot find) and the labels stay legible in one line. The
+       affordance is a REAL scrollbar, sized and coloured to be seen - not a fade over the
+       right edge, which would be the washed-out tint the design rules forbid. */
+    .tab-bar {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: thin;
+      scrollbar-color: #475569 transparent;
+      /* The row must not collapse its buttons to fit; a clipped label is not a tab. */
+      align-items: stretch;
+    }
+    .tab-bar .tab-btn { flex: 0 0 auto; white-space: nowrap; }
+    .tab-bar::-webkit-scrollbar { height: 6px; }
+    .tab-bar::-webkit-scrollbar-track { background: transparent; }
+    .tab-bar::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    html[data-color-mode="dark"] .tab-bar { scrollbar-color: #64748b transparent; }
+    html[data-color-mode="dark"] .tab-bar::-webkit-scrollbar-thumb { background: #64748b; }
+    /* KEYBOARD FOCUS STAYS VISIBLE inside a clipping scroller: an outline drawn outside
+       the button would be cut off by the hidden overflow, so it is drawn inside it. */
+    .tab-bar .tab-btn:focus-visible { outline: 2px solid #2563eb; outline-offset: -3px; border-radius: 4px; }
+    html[data-color-mode="dark"] .tab-bar .tab-btn:focus-visible { outline-color: #3b82f6; }
+
+    /* The field-level refusal on the classic form: solid red text, 600 weight, no tint
+       block and no rail. It replaces the hint under the box rather than joining it, so the
+       row does not grow when it appears. */
+    .va-field-error { display: block; margin-top: 4px; font-size: 12px; font-weight: 600; color: #dc2626; }
+    html[data-color-mode="dark"] .va-field-error { color: #ef4444; }
+    .va-cadence-note { display: block; margin-top: 6px; }
+    .va-empty-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+    /* ─────────────── end F-916 block ─────────────── */
 `;
   document.head.appendChild(style);
 };
@@ -6623,6 +6665,8 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .recipe-note { background: #f59e0b; color: #2a1602; }
     .gen-meta-chip.gmc-recipe { background: #4f46e5; color: #fff; }
     html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #6366f1; }
+
+
   `;
   document.head.appendChild(style);
 };
@@ -6679,7 +6723,10 @@ const SURFACES = {
     ] },
   jobs: { eyebrow: "SCHEDULED JOBS", what: "Rules that run on a cron schedule (every 5 minutes up to monthly, in any time zone): once, or per issue of a JQL scope (escalation-style). Same code steps or AI agent as listeners.",
     terms: [{ label: "scope", def: "A JQL query the job runs against; each matching issue becomes the current issue for its own run, sharing the ~100 s budget." }] },
-  agents: { eyebrow: "AGENTS", what: "Virtual administrators: agents that work a service desk queue on a schedule, stage a reply, and send it on a later tick only after eleven checks. Every one starts in shadow mode, where it stages and posts nothing.",
+  // F-916 - ONE SENTENCE, from the copy home the Agents tab itself reads. The strip and
+  // the tab used to describe the same product twice, and both counted out "eleven checks":
+  // a number with nothing behind it that an admin can read, verify or act on.
+  agents: { eyebrow: "AGENTS", what: VA_COPY.whatItIs,
     terms: [
       { label: "shadow mode", def: "The first ticks of an agent's life. It sweeps and it stages replies, and it posts none of them, you approve or reject each draft until the shadow ticks are used up." },
       { label: "tick", def: "One scheduled run. A prepare tick finds work and stages replies; a separate post tick sends what is due, so nothing an agent writes can go out in the run that wrote it." },

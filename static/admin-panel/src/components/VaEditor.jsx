@@ -31,10 +31,20 @@ import { showToast } from "./toast";
 import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, NoteList, TextListInput } from "./VaPickers";
 import SaveNotes, { collectSaveNotes } from "./VaSaveNotes";
 import { buildVaRecord, catalogToCtx, optionsForStep, renderVoiceSamples, renderReviewSummary } from "../../../../src/shared/va-wizard.js";
-import { normalizeVa, renderGuardrailSentences, VA_DEFAULTS, VA_CEILINGS, VA_PROJECTS_MAX, VA_MENTIONS_MAX, VA_SERVICE_DESKS_MAX, VA_QUEUES_PER_DESK_MAX, VA_JQL_MAX, VA_PERSONA_NAME_MAX, VA_MAX_SENTENCES_MIN, VA_MAX_SENTENCES_MAX, VA_LIMITS } from "../../../../src/shared/va-config.js";
+import { normalizeVa, renderGuardrailSentences, VA_DEFAULTS, VA_CEILINGS, VA_COPY,
+  vaSuggestedCadence, resolveDefaultTimeZone, viewerTimeZone, VA_PROJECTS_MAX, VA_MENTIONS_MAX, VA_SERVICE_DESKS_MAX, VA_QUEUES_PER_DESK_MAX, VA_JQL_MAX, VA_PERSONA_NAME_MAX, VA_MAX_SENTENCES_MIN, VA_MAX_SENTENCES_MAX, VA_LIMITS } from "../../../../src/shared/va-config.js";
 import { cronToPreset } from "../../../../src/shared/cron.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
+
+/*
+ * F-916 - WHAT A NEW AGENT STARTS WITH, from the SAME home the wizard reads. The form used
+ * to seed `VA_DEFAULTS.cadence` - UTC and a Sun-Sat 00:00-23:59 window - while the wizard
+ * seeded the first entry of the site's zone list, so the two doors onto one record opened
+ * on two different agents. `VA_DEFAULTS` is still the SAVE PATH's fallback and is untouched;
+ * this is the STARTING POINT, and there is one of it.
+ */
+const startingCadence = () => vaSuggestedCadence({ viewer: viewerTimeZone() });
 
 /** A saved record (or a wizard fallback) read back into the answers shape the form edits. */
 const recordToAnswers = (va) => {
@@ -48,7 +58,8 @@ const recordToAnswers = (va) => {
     intake: { ...VA_DEFAULTS.intake, ...(r.intake || {}) },
     readScope: { site: !!(s.read && s.read.site), projects: arr(s.read && s.read.projects) },
     writeScope: { projects: arr(s.write && s.write.projects) },
-    cadence: { ...VA_DEFAULTS.cadence, ...(r.cadence || {}) },
+    // A STORED record keeps every value it was saved with; only a NEW one is seeded.
+    cadence: { ...VA_DEFAULTS.cadence, ...startingCadence(), ...(r.cadence || {}) },
     powers: { ...VA_DEFAULTS.powers, ...(r.powers || {}) },
     guardrails: { ...VA_DEFAULTS.guardrails, ...(r.guardrails || {}) },
   };
@@ -61,6 +72,18 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
   // here is what keeps the form OPEN: `onSaved` navigates away, so it is deferred until
   // the admin dismisses the notes rather than fired next to a toast nobody reads.
   const [saveNotes, setSaveNotes] = useState(null);
+  /*
+   * F-916 - VALIDATION AFTER THE ADMIN, NOT BEFORE. `preview` runs on every keystroke,
+   * including the first render of an empty form, so the very first thing a new agent's form
+   * used to say was the save path's own throw: "va.persona.name is required (letters,
+   * digits, spaces, ' - . only)" - a record path and a charset, over a box nobody had
+   * touched yet. The refusal is still computed on every keystroke (it is what disables
+   * nothing and what the review card is built from); it is SHOWN once the field has been
+   * touched or a save has been attempted.
+   */
+  const [touched, setTouched] = useState({});
+  const [attempted, setAttempted] = useState(false);
+  const touch = (field) => setTouched((t) => (t[field] ? t : { ...t, [field]: true }));
   const set = (patch) => setA((s) => ({ ...s, ...patch }));
 
   const state = useMemo(() => ({ catalog, answers: a }), [catalog, a]);
@@ -88,6 +111,7 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
   }, [a.voice, a.personaName, a.signature]);
 
   const save = async () => {
+    setAttempted(true);
     if (!preview.va) { showToast(preview.error || "This agent cannot be saved yet.", "error"); return; }
     setSaving(true);
     const r = await client.saveAgent(preview.va);
@@ -101,7 +125,9 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
 
   // The cadence rides `SchedulePicker`, which speaks cron, and the record keeps the preset
   // it was built from. `cronToPreset` is the one translator - the form never authors cron.
-  const schedule = { cron: a.cadence.cron || VA_DEFAULTS.cadence.cron, timeZone: a.cadence.timeZone || "UTC" };
+  const schedule = { cron: a.cadence.cron || VA_DEFAULTS.cadence.cron, timeZone: a.cadence.timeZone || resolveDefaultTimeZone(viewerTimeZone(), null, null) };
+  // Shown once the admin has been anywhere near the field, or has tried to save.
+  const nameMissing = !a.personaName.trim() && (attempted || !!touched.personaName);
   const onSchedule = (next) => set({ cadence: { ...a.cadence, cron: next.cron, timeZone: next.timeZone, preset: cronToPreset(next.cron).preset } });
 
   return (
@@ -110,19 +136,30 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
         <span className="section-title">{initial ? "Edit virtual administrator" : "New virtual administrator"}</span>
         <div className="section-actions">
           <button type="button" className="btn-small" onClick={onCancel}>← Back to agents</button>
-          <button type="button" className="btn-small btn-solid" onClick={save} disabled={saving || !preview.va}>{saving ? "Saving…" : "Save agent"}</button>
+          {/* NOT disabled on an incomplete record (F-916): a dead button with no sentence beside
+              it is the same dead end as a refusal nobody asked for. The click says what is
+              missing, in the words above the box that is missing it. */}
+          <button type="button" className="btn-small btn-solid" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save agent"}</button>
         </div>
       </div>
 
       {saveNotes && <SaveNotes notes={saveNotes.notes} onDismiss={() => { const job = saveNotes.job; setSaveNotes(null); onSaved(job); }} dismissLabel="Got it, back to agents" />}
       <NoteList items={arr(initialRefusals)} kind="refusal" />
-      {preview.error && <div className="alert alert-warning va-hardstop">{preview.error}</div>}
+      {/* The banner is the SAVE's answer, the field error is the FIELD's: showing both for one
+          empty name said the same thing twice. The banner waits for a save attempt. */}
+      {preview.error && attempted && <div className="alert alert-warning va-hardstop" role="alert">{preview.error}</div>}
 
       <div className="card va-card">
         <div className="form-group">
           <label className="label" htmlFor="va-name">Name</label>
-          <input id="va-name" type="text" className="lst-input va-name" value={a.personaName} maxLength={VA_PERSONA_NAME_MAX} placeholder="e.g. Nadia" onChange={(e) => set({ personaName: e.target.value })} />
-          <span className="hint">Printed in every message this agent writes. Up to {VA_PERSONA_NAME_MAX} characters.</span>
+          <input
+            id="va-name" type="text" className="lst-input va-name" value={a.personaName} maxLength={VA_PERSONA_NAME_MAX}
+            placeholder="e.g. Nadia" aria-invalid={nameMissing ? "true" : undefined}
+            onChange={(e) => set({ personaName: e.target.value })} onBlur={() => touch("personaName")}
+          />
+          {nameMissing
+            ? <span className="va-field-error" role="alert">{VA_COPY.nameRequired}</span>
+            : <span className="hint">Printed in every message this agent writes. Up to {VA_PERSONA_NAME_MAX} characters.</span>}
         </div>
 
         <div className="form-group">
@@ -179,7 +216,7 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
         </div>
         <div className="form-group">
           <span className="label">It may post</span>
-          <PostWindowPicker value={a.cadence.postWindow || VA_DEFAULTS.cadence.postWindow} onChange={(postWindow) => set({ cadence: { ...a.cadence, postWindow } })} />
+          <PostWindowPicker value={a.cadence.postWindow || startingCadence().postWindow} onChange={(postWindow) => set({ cadence: { ...a.cadence, postWindow } })} />
         </div>
 
         <div className="form-group">
@@ -202,7 +239,11 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
           <div className="va-review">
             <div className="va-review-block">
               <span className="label">What this agent is</span>
-              {renderReviewSummary(preview.va).map((s, i) => <p className="va-sentence" key={i}>{s}</p>)}
+              {renderReviewSummary(preview.va, {
+                projects: arr(catalog.projects),
+                defaultTimeZone: startingCadence().timeZone,
+                defaultPostWindow: startingCadence().postWindow,
+              }).map((s, i) => <p className="va-sentence" key={i}>{s}</p>)}
             </div>
             <div className="va-review-block">
               <span className="label">What it is told, word for word</span>

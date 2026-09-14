@@ -420,11 +420,17 @@ export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = fal
   useEffect(() => { let live = true; client.catalog().then((r) => { if (live && r.success) setCatalog(r.catalog || {}); }); return () => { live = false; }; }, [client]);
 
   const afterSave = (job) => { setView("list"); setOpenId((job && job.id) || null); load(); };
+  const openForm = () => { setFormSeed({ initial: null, refusals: [] }); setView("form"); };
+  // An empty tab carries its create call to action in the empty state and nowhere else.
+  const isEmpty = !loading && agents.length === 0 && !refused;
 
   if (view === "wizard") {
     return (
       <VaWizard
         client={client}
+        /* The catalogue is the wizard's source of project NAMES for the review card
+           (F-916); the turns themselves still carry every option the machine derived. */
+        catalog={catalog}
         onCreated={afterSave}
         onFallback={(record, refusals) => { setFormSeed({ initial: record, refusals: arr(refusals) }); setView("form"); }}
         onCancel={() => setView("list")}
@@ -441,11 +447,19 @@ export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = fal
         <span className="section-title">Agents <span className="lst-count">{agents.length}</span></span>
         <div className="section-actions">
           <button type="button" className="btn-small" onClick={load}>Refresh</button>
-          {canEdit && <button type="button" className="btn-small" onClick={() => { setFormSeed({ initial: null, refusals: [] }); setView("form"); }}>Use the form</button>}
-          {canEdit && <button type="button" className="btn-small btn-solid va-new" onClick={() => setView("wizard")}>+ New virtual administrator</button>}
+          {/* F-916 - ONE CREATE CALL TO ACTION. On an empty tab this header used to carry
+              "+ New virtual administrator" while the empty state carried "+ Create your
+              first one" two inches below it, both opening the same wizard. The empty state
+              is the one that stays, because it is the one with the sentence. */}
+          {canEdit && !isEmpty && <button type="button" className="btn-small" onClick={openForm}>Use the form</button>}
+          {canEdit && !isEmpty && <button type="button" className="btn-small btn-solid va-new" onClick={() => setView("wizard")}>+ New virtual administrator</button>}
         </div>
       </div>
-      <p className="hint">A virtual administrator works a queue on a schedule: it reads, it stages a reply, and a later tick sends it after eleven checks. It starts in shadow mode, where it stages and posts nothing.</p>
+      {/* F-916 - ONE SENTENCE, and it is the STRIP's, rendered directly above this header
+          by App.js for every tab. This tab used to carry its own second copy of it, worded
+          differently, and both counted out "eleven checks" - a number an admin has no way
+          to check and no way to act on. The copy home (`VA_COPY.whatItIs`) is what the strip
+          reads; there is nothing left to say here. */}
 
       {refused && <div className="alert alert-warning va-refused">{refused}</div>}
       {loadError && <div className="alert alert-warning">{loadError} <button type="button" className="btn-small" onClick={load}>Retry</button></div>}
@@ -456,7 +470,12 @@ export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = fal
         <div className="card"><div className="empty-state lst-empty">
           <div className="lst-empty-title">No virtual administrator yet.</div>
           <div>Answer nine questions and it exists: who it is, how it sounds, where it looks for work, what it may read, what it may change, when it runs, what it is allowed to do, and the brakes.</div>
-          {canEdit && <button type="button" className="btn-small btn-solid" style={{ marginTop: 12 }} onClick={() => setView("wizard")}>+ Create your first one</button>}
+          {canEdit && (
+            <div className="va-empty-actions">
+              <button type="button" className="btn-small btn-solid va-new" onClick={() => setView("wizard")}>+ Create your first one</button>
+              <button type="button" className="btn-small" onClick={openForm}>Use the form instead</button>
+            </div>
+          )}
         </div></div>
       ) : (
         <div className="va-list stagger">

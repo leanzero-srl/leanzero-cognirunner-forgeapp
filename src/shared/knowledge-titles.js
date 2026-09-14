@@ -24,7 +24,7 @@
  */
 
 /** Content fingerprint of the baked corpus — the same value src/shared/knowledge-index.js pins. */
-export const KNOWLEDGE_TITLES_VERSION = "4daff10f6d5d5c5b";
+export const KNOWLEDGE_TITLES_VERSION = "2de3826245571ec9";
 
 export const KNOWLEDGE_PACK_TITLES = {
   "administrator-practice": "Administrator practice",

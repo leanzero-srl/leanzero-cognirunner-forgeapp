@@ -717,7 +717,7 @@ export const harnessStashKey = (id) => `${HARNESS_STASH_KEY_PREFIX}${safeKeyPart
  *
  * This block used to say "bounded on purpose: one 25 s resolver budget" while enforcing no
  * time bound at all. What it actually enforced was 1000 ROWS and up to 1000 SEQUENTIAL
- * awaited KVS deletes, inside a web trigger the platform kills at 25 s — and because the
+ * awaited KVS deletes, inside a web trigger the platform kills at 55 s — and because the
  * answer was assembled only after every page, a sweep killed mid-loop reported NOTHING: not
  * the rows it had listed, not the count it had already deleted. The caller could not tell
  * whether the keyspace was clean, half clean or untouched. A cap expressed in PAGES is not a
@@ -725,7 +725,7 @@ export const harnessStashKey = (id) => `${HARNESS_STASH_KEY_PREFIX}${safeKeyPart
  *
  * So there are three bounds now, and all three are CHECKED rather than narrated:
  *  · TIME — `maxMs` (default 15 s, never above 20 s, so the answer still fits inside the
- *    25 s trigger) is checked BEFORE every page and BEFORE every delete batch. On exceeding
+ *    trigger; see `sweepBudgetMs` for the door's real 55 s and why the ceiling stays at 20 s) is checked BEFORE every page and BEFORE every delete batch. On exceeding
  *    it the sweep STOPS and returns the PARTIAL answer it already holds: real `scanned` /
  *    `deleted` / `failed`, `truncated: true`, `reason: "budget"`, and the `cursor` to resume
  *    from (which the call also ACCEPTS, so continuing is the same call again). That cursor is
@@ -778,7 +778,7 @@ export const HARNESS_FAULT_SWEEP_MAX_ROWS = 200;
  *
  * THE PAUSE IS INSIDE THE BUDGET. `overBudget()` is checked immediately before the pause
  * and again immediately after it, exactly as it is before every batch - so pacing makes a
- * sweep do LESS work per call, and never makes it overrun the 25 s trigger. Fewer rows per
+ * sweep do LESS work per call, and never makes it overrun the trigger. Fewer rows per
  * call is what the resume cursor (F-674) is for.
  */
 export const KVS_DELETE_BATCH = 3;
@@ -965,8 +965,19 @@ export const sweepAnswerTail = ({ truncated, reason, cursor, unresolved, failedR
 
 /**
  * THE one place a caller's `maxMs` becomes a budget. Anything that is not a finite number is
- * the default; anything above the ceiling is the ceiling (the trigger's 25 s is the real
- * constraint and no option gets to argue with it); anything below 1 ms is 1 ms, so a caller
+ * the default; anything above the ceiling is the ceiling; anything below 1 ms is 1 ms.
+ *
+ * F-680 — THE DOOR IS 55 s, NOT 25 s, AND THE CEILING STAYS AT 20 s ON PURPOSE. The 20 s
+ * ceiling was calibrated when this file, and the knowledge pack it read, said a web trigger is
+ * killed at 25 s. Re-verified 2026-09-14 against Atlassian's invocation limits page
+ * (developer.atlassian.com/platform/forge/limits-invocation/): "Runtime seconds (web trigger,
+ * action and rovo:agentConnector modules): 55". It is the 25 s figure that is the sync
+ * resolver / product-trigger cap, not the web trigger's. The constant is NOT raised on that
+ * correction: 55 s door − 15 s default sweep − 5 s ceiling headroom leaves ~35 s of drain
+ * headroom for the in-flight delete batch, the answer assembly and the platform's own cold
+ * start, and a bigger ceiling only makes each call do MORE work before it reports, which is
+ * the exact defect F-673 removed. Raising it is a measured decision (time a full page + batch
+ * under load), not a consequence of the door being wider than we thought; anything below 1 ms is 1 ms, so a caller
  * asking for zero gets "check, stop, report" rather than a loop that never checks at all.
  */
 export const sweepBudgetMs = (maxMs) => {
@@ -1334,7 +1345,8 @@ export const HARNESS_FAULT_PLANT_MAX = 500;
  *
  * MEASURED LIVE: 200 rows planted in 17–18 s, i.e. ~90 ms a row — the published pace
  * (`KVS_DELETE_BATCH` per `KVS_DELETE_PAUSE_MS`, 66.7 ms a row) plus real KVS write latency.
- * Five hundred rows is therefore ~45 s of one web trigger that is killed at 25 s, and the old
+ * Five hundred rows is therefore ~45 s of one web trigger that is killed at 55 s (F-680: the
+ * 25 s written here before was the sync-resolver cap, not the trigger's), and the old
  * plant assembled its answer only after the last write, so a plant that timed out reported
  * NOTHING — not `planted`, not `failed`, not `keys` — having already written an unknown
  * number of rows under `i`-derived keys a re-POST silently overwrites.
@@ -1793,7 +1805,7 @@ export const plantResumeMode = (reason, complete, advanced = true) => {
  * idempotent, so coming back to the first hole re-writes it and everything after it.
  *
  * F-696 — THE BUDGET IS THE SWEEP'S, CHECKED BEFORE EVERY BATCH (`sweepBudgetMs`: default
- * 15 s, ceiling 20 s, under the trigger's 25 s) and honoured only once the call has actually
+ * 15 s, ceiling 20 s, under the trigger's 55 s — see `sweepBudgetMs`) and honoured only once the call has actually
  * written something, so a tiny `maxMs` cannot produce a call that places nothing and asks to
  * be resumed at the index it was given.
  *

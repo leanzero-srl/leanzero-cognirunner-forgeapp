@@ -34,9 +34,11 @@
  *
  * Usage (from test-harness/):  node scripts/va-receipt-copy-live.mjs [--env=dev|staging] [--keep]
  *   `--env` moves BOTH halves together — the web trigger AND the admin page the browser
- *   opens. It defaults to staging; it mutates the tenant, so do not point it at dev
- *   casually (this driver creates a virtual agent and rewrites a model slot).
- * Env: STAGING_TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID + the JIRA_* trio.
+ *   opens — AND every tenant name this driver prints (F-741). It defaults to staging; it
+ *   mutates the tenant, so do not point it at dev casually (this driver creates a virtual
+ *   agent and rewrites a model slot), and `--env=dev` asks for `--i-know-dev-is-shared`.
+ * Env: STAGING_TESTSTATE_URL (or TESTSTATE_URL for `--env=dev`) + HARNESS_SECRET
+ *   + HARNESS_ADMIN_ACCOUNT_ID + the JIRA_* trio.
  */
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
@@ -62,7 +64,13 @@ const KEEP = flag("keep");
    BEFORE the capability arm, so a run that has just deleted-and-re-created the agent spends
    its next 5 minutes answering `purge-settling` and the capability arm is never reached. The
    two receipts therefore cannot be driven on one agent inside one settle window. `--no-purge`
-   drives the capability row alone, on a fresh agent that was never deleted. */
+   drives the capability row alone, on a fresh agent that was never deleted.
+
+   F-743 — AND THE TWO ARMS PROVE DIFFERENT THINGS, so both must be able to PASS. The DEFAULT
+   arm deletes the agent, and on this product the re-create under the same id is REFUSED (the
+   tombstone door); what it proves is the tombstone plus the agent's ABSENCE from the Agents
+   tab. The `--no-purge` arm keeps the agent and proves the RECEIPT COPY. The default arm used
+   to throw on a card it had deleted, so for a while only `--no-purge` could pass at all. */
 const NO_PURGE = flag("no-purge");
 const AGENT_MODEL_SLOT = "COGNIRUNNER_AGENT_MODEL_atlassian";
 const ADMIN_PAGE = `https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/${ENV_ID}`;
@@ -146,9 +154,14 @@ async function tick(jobId, label, waitS = 180) {
 }
 
 async function main() {
-  console.log(`\nF-577 — THE RECEIPT COPY AN ADMINISTRATOR READS, on STAGING, agent ${NAME}\n`);
-  if ((await hook(null, "GET")).status !== 200) throw new Error("the staging hook is not reachable");
-  PASS("hook reachable on staging");
+  /* F-741 — THE TENANT NAME HAS ONE HOME AND IT IS `ENV_NAME`. These three lines said
+     STAGING/staging outright, so a `--env=dev` run printed "on STAGING" and "hook reachable
+     on staging" while it talked to dev — and `evidence.json` recorded `env: "dev"` beside
+     them. A reader triaging the FAIL looks at the wrong tenant, which is residue of the very
+     split-brain F-714 fixed one line at a time at :46-49. */
+  console.log(`\nF-577 — THE RECEIPT COPY AN ADMINISTRATOR READS, on ${ENV_NAME.toUpperCase()}, agent ${NAME}\n`);
+  if ((await hook(null, "GET")).status !== 200) throw new Error(`the ${ENV_NAME} hook is not reachable`);
+  PASS(`hook reachable on ${ENV_NAME}`);
 
   const slot0 = await kvs(AGENT_MODEL_SLOT);
   restore.agentModelSlot = slot0;
@@ -217,51 +230,91 @@ async function main() {
     for (let i = 0; i < 90; i++) { f = p.frames().find((x) => x.url().includes("cdn.prod.atlassian-dev.net")); if (f && await f.locator(".tab-btn").count() > 0) break; await sleep(1000); }
     if (!f) throw new Error("the admin panel iframe never rendered");
     await f.locator(".tab-btn", { hasText: /^\s*Agents\s*$/ }).click();
-    const card = f.locator(".va-agent").filter({ has: f.locator(".va-agent-name", { hasText: NAME }) }).first();
-    await card.waitFor({ state: "visible", timeout: 90000 });
-    PASS(`the agent card for ${NAME} is on the Agents tab`);
-    await card.locator(".rule-expand-btn").first().click();
-    await card.locator(".va-pane-btn", { hasText: /^Ticks$/ }).click();
-    let rows = 0;
-    for (let i = 0; i < 40; i++) { rows = await card.locator(".va-receipt").count(); if (rows > 0) break; await sleep(1000); }
-    if (!rows) { NV("the Ticks pane rendered no receipt — nothing to read"); }
-    else {
-      PASS(`the Ticks pane renders ${rows} receipt(s)`);
-      const paneText = await card.locator(".va-receipts").innerText();
-      ev.paneText = paneText;
-      await card.screenshot({ path: OUT + "/agents-tab-receipts.png" });
-      info(`pane text:\n${paneText.split("\n").map((l) => "          " + l).join("\n")}`);
+    /* ── F-743 — THE PURGE ARM'S OWN OUTCOME IS NOT A UI FAILURE ────────────────
+     * The purge arm DELETES the agent and then asks the product to re-create it under the
+     * same id. The product REFUSES ("Scheduled job not found") — that is the tombstone door
+     * working exactly as designed — so `restore.agentId` is null and NO AGENT EXISTS. The
+     * browser half then waited 90 s for that agent's card and THREW, so the run FAILED on a
+     * fixture the driver itself had deleted: 5 pass, then `locator.waitFor: Timeout 90000ms`
+     * on `.va-agent-name`. The DEFAULT arm could therefore never pass on any tenant, and only
+     * `--no-purge` ever reached the capability proof — which is how a driver ends up with a
+     * mode nobody runs.
+     *
+     * Waiting for a thing you deleted is not an assertion, it is a bug. What IS assertable
+     * here, and is the honest proof of the purge, is the agent's ABSENCE: the administrator
+     * opening the Agents tab must NOT see a card for a deleted agent. Everything downstream
+     * reads that card's receipts pane, so it is skipped with a stated reason rather than
+     * failed — there is no pane to read when there is no card, and an N/V that says why is
+     * worth more than a FAIL that names the UI for a cause the run does not contain. */
+    if (!restore.agentId) {
+      /* Let the list settle before COUNTING: an absence proven against a tab that has not
+         rendered yet is the negative that proves nothing (a count of 0 because the query
+         could not see anything). The positive control is that the tab rendered AT ALL —
+         either some other agent's card, or the empty-state — so a 0 here is a real absence
+         and not an unrendered frame. */
+      for (let i = 0; i < 60; i++) {
+        if (await f.locator(".va-agent, .va-empty, .empty-state").count() > 0) break;
+        await sleep(1000);
+      }
+      await sleep(3000);
+      const rendered = await f.locator(".va-agent, .va-empty, .empty-state").count();
+      const mine = await f.locator(".va-agent-name", { hasText: NAME }).count();
+      await f.locator("body").screenshot({ path: OUT + "/agents-tab-purged.png" }).catch(() => {});
+      if (!rendered) {
+        NV("the Agents tab rendered neither a card nor an empty state, so an absence here would prove nothing", { mine });
+      } else if (mine === 0) {
+        PASS(`the deleted agent has NO card on the Agents tab — the purge is what an administrator sees`, { agentsRendered: rendered });
+      } else {
+        FAIL("a deleted agent still has a card on the Agents tab", { name: NAME, matches: mine });
+      }
+      NV("the receipts pane belongs to the agent's card, and the purge arm deleted the agent — the copy rows are judged by the --no-purge arm (F-743)");
+    } else {
+      const card = f.locator(".va-agent").filter({ has: f.locator(".va-agent-name", { hasText: NAME }) }).first();
+      await card.waitFor({ state: "visible", timeout: 90000 });
+      PASS(`the agent card for ${NAME} is on the Agents tab`);
+      await card.locator(".rule-expand-btn").first().click();
+      await card.locator(".va-pane-btn", { hasText: /^Ticks$/ }).click();
+      let rows = 0;
+      for (let i = 0; i < 40; i++) { rows = await card.locator(".va-receipt").count(); if (rows > 0) break; await sleep(1000); }
+      if (!rows) { NV("the Ticks pane rendered no receipt — nothing to read"); }
+      else {
+        PASS(`the Ticks pane renders ${rows} receipt(s)`);
+        const paneText = await card.locator(".va-receipts").innerText();
+        ev.paneText = paneText;
+        await card.screenshot({ path: OUT + "/agents-tab-receipts.png" });
+        info(`pane text:\n${paneText.split("\n").map((l) => "          " + l).join("\n")}`);
 
-      // capability — the F-501 COPY ROW, with the ONE home's words
-      const capTitle = "Coder is off - the agent model is not a frontier model";
-      const capRemedy = "Haiku never drives an agent.";
-      const capRows = await card.locator(".va-receipt-cap").count();
-      if (paneText.includes(capTitle) && paneText.includes(capRemedy)) PASS("the capability skip renders agentCapabilityCopy's own title AND remedy", { capRows });
-      else if (ev.receiptCapability) FAIL("a capability skip exists but its mapped sentence is not on screen", { capRows, want: capTitle });
-      else NV("no capability skip was produced, so its copy row cannot be judged");
+        // capability — the F-501 COPY ROW, with the ONE home's words
+        const capTitle = "Coder is off - the agent model is not a frontier model";
+        const capRemedy = "Haiku never drives an agent.";
+        const capRows = await card.locator(".va-receipt-cap").count();
+        if (paneText.includes(capTitle) && paneText.includes(capRemedy)) PASS("the capability skip renders agentCapabilityCopy's own title AND remedy", { capRows });
+        else if (ev.receiptCapability) FAIL("a capability skip exists but its mapped sentence is not on screen", { capRows, want: capTitle });
+        else NV("no capability skip was produced, so its copy row cannot be judged");
 
-      // purge-settling — the mapped sentence, not a bare id
-      const settleSentence = "It is waiting for the deleted agent's last turns to finish before it starts.";
-      if (ev.receiptSettling && ((ev.receiptSettling.skipped || []).some((s) => s && s.gate === "purge-settling"))) {
-        if (paneText.includes(settleSentence)) PASS("the purge-settling skip renders its mapped sentence");
-        else FAIL("a purge-settling skip exists but its mapped sentence is not on screen", { want: settleSentence });
-      } else NV("no purge-settling skip was produced, so its row cannot be judged");
+        // purge-settling — the mapped sentence, not a bare id
+        const settleSentence = "It is waiting for the deleted agent's last turns to finish before it starts.";
+        if (ev.receiptSettling && ((ev.receiptSettling.skipped || []).some((s) => s && s.gate === "purge-settling"))) {
+          if (paneText.includes(settleSentence)) PASS("the purge-settling skip renders its mapped sentence");
+          else FAIL("a purge-settling skip exists but its mapped sentence is not on screen", { want: settleSentence });
+        } else NV("no purge-settling skip was produced, so its row cannot be judged");
 
-      // agent-purged — only if the engine made one
-      const purgedSentence = "This agent was deleted before the turn started, so nothing was written.";
-      const purgedAfter = "This agent was deleted while a turn was running";
-      const sawPurgedId = /(^|\n)\s*agent-purged\s*$/m.test(paneText);
-      if (paneText.includes(purgedSentence) || paneText.includes(purgedAfter)) PASS("an agent-purged row rendered its mapped sentence");
-      else NV("no agent-purged row appeared on this run, so F-577's own row is not judged here");
+        // agent-purged — only if the engine made one
+        const purgedSentence = "This agent was deleted before the turn started, so nothing was written.";
+        const purgedAfter = "This agent was deleted while a turn was running";
+        const sawPurgedId = /(^|\n)\s*agent-purged\s*$/m.test(paneText);
+        if (paneText.includes(purgedSentence) || paneText.includes(purgedAfter)) PASS("an agent-purged row rendered its mapped sentence");
+        else NV("no agent-purged row appeared on this run, so F-577's own row is not judged here");
 
-      // THE NEGATIVE: no row explains itself with a bare id.
-      const bare = ["purge-settling", "agent-purged", "capability", "agent-purged-after-writes"]
-        .filter((id) => new RegExp(`(^|\\n)\\s*${id}\\s*(\\n|$)`).test(paneText));
-      // A GATE CHIP carries the id beside the sentence by design; a whole LINE that is only
-      // the id is the F-577 defect. The chip and the sentence are siblings in one row, so
-      // innerText puts them on the same line — a line that is nothing but the id is the tell.
-      if (!bare.length) PASS("no receipt row explains itself with a bare id on its own line");
-      else FAIL("a receipt row printed a bare id as its whole explanation", { ids: bare, sawPurgedId });
+        // THE NEGATIVE: no row explains itself with a bare id.
+        const bare = ["purge-settling", "agent-purged", "capability", "agent-purged-after-writes"]
+          .filter((id) => new RegExp(`(^|\\n)\\s*${id}\\s*(\\n|$)`).test(paneText));
+        // A GATE CHIP carries the id beside the sentence by design; a whole LINE that is only
+        // the id is the F-577 defect. The chip and the sentence are siblings in one row, so
+        // innerText puts them on the same line — a line that is nothing but the id is the tell.
+        if (!bare.length) PASS("no receipt row explains itself with a bare id on its own line");
+        else FAIL("a receipt row printed a bare id as its whole explanation", { ids: bare, sawPurgedId });
+      }
     }
   } finally { await ctx.close(); }
 

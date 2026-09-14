@@ -140,7 +140,8 @@ const openPane = async (card, label) => {
 };
 
 async function main() {
-  console.log("\nPINNED CONSTRAINTS vs COMPACTION — live on staging\n");
+  /* F-741 — `ENV_NAME` is bound at the guard call and was simply not used here. */
+  console.log(`\nPINNED CONSTRAINTS vs COMPACTION — live on ${ENV_NAME}\n`);
   const ping = await hook(null, "GET");
   if (ping.status !== 200) throw new Error(`hook unreachable (${ping.status})`);
   PASS("hook reachable, secret accepted");

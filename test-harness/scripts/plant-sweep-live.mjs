@@ -21,7 +21,8 @@
  *   1. PLANT 200 expired rows AS A POPULATION, WALL-CLOCKED — F-696 gave the lever the
  *      sweep's own contract (a budget, a `startIndex`, a `nextIndex`), so this is a LOOP:
  *      POST, then resume on `startIndex: nextIndex` until the rows are actually there. The
- *      total across calls must be 200 and `reason:"writes-failed"` is a FAILURE, never a
+ *      total across calls must be 200, and the answer's own `resume` says how it continues
+ *      — `"stop"`, which is what `writes-failed` now carries, is a FAILURE, never a
  *      resume. A fresh call is capped at `HARNESS_FAULT_PLANT_CALL_MAX` (150) and — F-710 —
  *      is clamped SILENTLY and still answered `complete:true`, so the loop counts ROWS and
  *      does not believe that flag; the clamp is recorded as N/V, not failed. If the plant
@@ -113,7 +114,10 @@ const step = (s) => console.log(`\n── ${s}`);
 const readRes = async (res) => { let t = ""; try { t = await res.text(); } catch { return { status: 0, json: null }; } let j = null; try { j = JSON.parse(t); } catch {} return { status: res.status, json: j, text: t }; };
 const hook = async (body) => readRes(await fetch(HOOK_URL, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + SECRET }, body: JSON.stringify(body) }));
 
-const plant = (n, expired, startIndex) => hook({ action: "plantHarnessFaults", n, expired, ...(startIndex ? { startIndex } : {}) });
+/* F-744/F-748 — `clearToken` rides an identical re-POST so the stale clear's running
+   `clearedSoFar` keeps counting; `lib/sweep-drain.mjs` hands back whatever the last answer
+   carried, and this function's job is only to put it in the body unchanged. */
+const plant = (n, expired, startIndex, clearToken) => hook({ action: "plantHarnessFaults", n, expired, ...(startIndex ? { startIndex } : {}), ...(clearToken ? { clearToken } : {}) });
 const sweep = (body) => hook({ action: "sweepHarnessFaults", ...body });
 const clear = (cursor) => hook({ action: "clearPlantedFaults", ...(cursor ? { cursor } : {}) });
 
@@ -196,7 +200,7 @@ const ok200 = (res) => res.status === 200 && res.json?.ok === true;
  * Only the LEDGER ROW stays local, because this driver records two fields the other does not
  * (`keysReturned`, and `truncated` verbatim beside `complete`).
  */
-const plantTo = (n, expired) => plantPopulation((count, startIndex) => plant(count, expired, startIndex), n, {
+const plantTo = (n, expired) => plantPopulation((count, startIndex, clearToken) => plant(count, expired, startIndex, clearToken), n, {
   maxCalls: MAX_PLANT_CALLS,
   row: (j, nth) => ({
     call: nth, n: j.n ?? null, startIndex: j.startIndex ?? null, planted: j.planted ?? null,

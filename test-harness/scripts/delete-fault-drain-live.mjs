@@ -24,7 +24,8 @@
  *   1. PLANT 60 expired rows as a POPULATION (F-696): POST, resume on `startIndex: nextIndex`
  *      until the rows are actually there. `complete:true` is NOT "the population exists"
  *      (F-710 — a fresh call over 150 is clamped SILENTLY and still answered complete), so the
- *      loop counts ROWS, and `reason:"writes-failed"` is a FAILURE, never a resume.
+ *      loop counts ROWS, and the answer's own `resume` says how it continues — `"stop"`,
+ *      which is what `writes-failed` now carries, is a FAILURE, never a resume.
  *   2. ARM `{mode:"refuse", count: 8, ttlSeconds: 120}` and READ THE LEVER BACK. Eight is not
  *      a taste: it is `IDENTICAL_ANSWER_LIMIT × KVS_DELETE_BATCH − 1`, and F-722 is filed
  *      because those two numbers live in two files that never mention each other.
@@ -439,7 +440,9 @@ async function run(state) {
   const readRes = async (res) => { let t = ""; try { t = await res.text(); } catch { return { status: 0, json: null }; } let j = null; try { j = JSON.parse(t); } catch {} return { status: res.status, json: j }; };
   const hook = async (body) => readRes(await fetch(HOOK_URL, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + SECRET }, body: JSON.stringify(body) }));
 
-  const plant = (n, startIndex) => hook({ action: "plantHarnessFaults", n, expired: true, ...(startIndex ? { startIndex } : {}) });
+  /* F-744/F-748 — `clearToken` rides an identical re-POST, unchanged, so the stale clear's
+     running `clearedSoFar` keeps counting across the loop's re-POSTs. */
+  const plant = (n, startIndex, clearToken) => hook({ action: "plantHarnessFaults", n, expired: true, ...(startIndex ? { startIndex } : {}), ...(clearToken ? { clearToken } : {}) });
   const sweep = (body) => hook({ action: "sweepHarnessFaults", ...body });
   const clear = (cursor) => hook({ action: "clearPlantedFaults", ...(cursor ? { cursor } : {}) });
   /* The door supplies the one legal prefix when the body omits it, so the prefix this lever may
@@ -456,7 +459,7 @@ async function run(state) {
      "re-POST me unchanged" answer — as "the population cannot be reached" and FAIL a run one
      more identical POST would have completed. `lib/sweep-drain.mjs` owns it now, with the
      bounded clearing retry and an offline fixture; only the ledger row stays local. */
-  const plantTo = (n) => plantPopulation((count, startIndex) => plant(count, startIndex), n, {
+  const plantTo = (n) => plantPopulation((count, startIndex, clearToken) => plant(count, startIndex, clearToken), n, {
     maxCalls: MAX_PLANT_CALLS,
     row: (j, nth) => ({
       call: nth, n: j.n ?? null, startIndex: j.startIndex ?? null, planted: j.planted ?? null,

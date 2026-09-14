@@ -37,7 +37,7 @@ import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 
-const { hookUrl: URL_, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "skills", "kvs"], defaultEnv: "staging" });
+const { envName: ENV_NAME, hookUrl: URL_, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "skills", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const SECRET = env.HARNESS_SECRET;
@@ -131,7 +131,10 @@ const runTurn = async (label, message, extra) => {
 const noPickerChangeLine = (t) => !(t.logs || []).some((l) => /skills changed by the turn/i.test(l));
 
 async function main() {
-  console.log(`\nF-631 — a disabled skill in a thread's picker must not re-pin every turn (STAGING, thread ${THREAD})\n`);
+  /* F-741 — the tenant name comes from the guard's settled row. This said STAGING outright
+     while `--env` was free to move the run to dev, so the banner named a tenant the run was
+     not on and a reader triaging the FAIL looked in the wrong place. */
+  console.log(`\nF-631 — a disabled skill in a thread's picker must not re-pin every turn (${ENV_NAME.toUpperCase()}, thread ${THREAD})\n`);
   const providerBefore = await kvGet(SLOT);
   console.log(`recorded ${SLOT} before the flip: ${mask(providerBefore)}`);
   let skillB = null, disabled = false;

@@ -1131,7 +1131,17 @@ ok(emailRuleOffenders.length === 0,
 
    The scan ignores docblock prose, or every file that merely EXPLAINS the lever would be
    dragged in — the discriminator is a call, not a mention. */
-const ARM_CALL = /\barm(?:KeyRead|Jira|Git ?Dispatch|Dispatch|HookPromote)Fault\b/;
+/* F-736 — THE COHORT IS EVERY GATED LEVER, NOT THE FOUR THAT EXISTED WHEN 4e WAS CUT.
+   `armDeleteFault` is the seventh lever and F-721 gave it its `FAULT_HARMS` sentence, but
+   only half of that note shipped: this alternation never learned the name, so a
+   delete-fault driver written next month could carry its own inline refusal (or none) and
+   `scanArmCalls` would return `[]` — the file simply would not be in `armingDrivers`, and
+   the three per-file assertions below would never run against it. 4e's docblock promise
+   ("a fifth fault driver written next month … fails `npm run test:offline`") was false for
+   it. It is green today only because `delete-fault-drain-live.mjs` happens to import the
+   guard for its own reasons, which is luck, not a rule. `\barm` keeps `disarmDeleteFault`
+   out: there is no word boundary between the `s` and the `a`. */
+const ARM_CALL = /\barm(?:KeyRead|Jira|Git ?Dispatch|Dispatch|HookPromote|Delete)Fault\b/;
 function scanArmCalls(src) {
   return src.split("\n")
     .map((l, i) => ({ l, n: i + 1 }))
@@ -1146,11 +1156,17 @@ ok(scanArmCalls('  const t = await hook({ action: "armJiraFault", path: PATH, st
   "POSITIVE CONTROL: …and on the armJiraFault line user-search-fault-live.mjs carried with no --env at all");
 ok(scanArmCalls('        const armed = await hook({ action: "armHookPromoteFault", connectionId: c, repoId: R, count: 1 });').length === 1,
   "POSITIVE CONTROL: …and on armHookPromoteFault, so the rule is not narrowed to the two key/jira levers");
+/* F-736 — verbatim from delete-fault-drain-live.mjs:447, the only caller that exists today.
+   It is the control that would have failed before the `Delete` branch was added. */
+ok(scanArmCalls('  const armLever = (mode, count) => hook({ action: "armDeleteFault", mode, count, ttlSeconds: TTL_SECONDS });').length === 1,
+  "POSITIVE CONTROL: …and on armDeleteFault, the seventh gated lever — F-721 gave it a FAULT_HARMS sentence and 4e never learned its name (F-736)");
 /* NEGATIVE CONTROLS — a file may DISCUSS or DISARM a lever without arming one. */
 ok(scanArmCalls(' * `armKeyReadFault("openai", "refuse")` is the door this driver opens.').length === 0,
   "NEGATIVE CONTROL: a docblock naming the lever is not an arming");
 ok(scanArmCalls('const disarm = () => hook({ action: "disarmKeyReadFault", provider: PROVIDER });').length === 0,
   "NEGATIVE CONTROL: disarming is not arming — cleanup must never trip the rule");
+ok(scanArmCalls('  const disarmLever = () => hook({ action: "disarmDeleteFault" });').length === 0,
+  "NEGATIVE CONTROL: …and the new Delete branch does not swallow its own disarm either (F-736)");
 ok(scanArmCalls('const readLever = () => hook({ action: "readKeyReadFault", provider: PROVIDER });').length === 0,
   "NEGATIVE CONTROL: reading the lever row is not arming");
 
@@ -1320,11 +1336,21 @@ ok(/STAGING_TESTSTATE_URL/.test(guardSrc) && /TESTSTATE_URL/.test(guardSrc),
    judgement the driver's author makes and this file cannot audit. The rule polices the
    EMPTY/NON-EMPTY boundary, which is the one the refusal actually turns on.
 
-   COHORT LIMIT, also stated: only drivers that CALL `requireEnvAck` can declare anything,
-   which is 31 of the 57 `*-live.mjs`. The other 26 are dev-only scripts with no `--env`
-   at all — routing them through the guard would make them demand a `.env` they have no
-   use for (the F-699 reasoning behind `forgeEnvId`), and several of them DO write. That
-   gap is real and is not closed here. */
+   COHORT LIMIT, ONE OF TWO, AND THE OTHER IS THE LIVE ONE. The cohort gap this docblock
+   used to state — "only drivers that CALL `requireEnvAck` can declare anything, which is
+   31 of the 57" — was CLOSED by F-733: the dev-only 26 declare through `declareMutations`,
+   and the union is asserted below to be every `*-live.mjs`. Saying otherwise here was a
+   docblock outliving its defect, which is F-699's own failure mode.
+
+   THE LIMIT THAT REMAINS IS VISIBILITY (F-737). `callsMutator` is a TOKEN SCAN over one
+   file. It cannot see a write made by CLICKING the product, and it cannot see a write a
+   `lib/` helper makes on the driver's behalf unless the helper's name is itself in the
+   list. Both halves are addressed as far as a scanner can: the shared writers are
+   IMPORT-AWARE (lib/jira.mjs, lib/workflow.mjs, lib/rules-api.mjs), and a driver that
+   drives the product UI is marked UNAUDITABLE and excused from the cry-wolf arm only —
+   never from the arm that matters. What is NOT closed, and cannot be by this file: a UI
+   driver that declares `[]` while clicking a write. That is F-734's shape, it is a human
+   judgement, and the honest thing is to say so rather than to imply the scan covers it. */
 const MUTATOR_CALLS = [
   /* test-hook actions that write the tenant directly */
   /\bkvSet\b/, /\bvaTombstone\b/, /\bplantHarnessFaults\b/, /\bclearPlantedFaults\b/,
@@ -1344,7 +1370,10 @@ const MUTATOR_CALLS = [
      watching this rule call a TRUE declaration a cry of wolf. */
   /\bseedSkill\b/,                                   // the hook's skill writer/restorer
   /\bdeleteIssueFixture\b/,                          // lib/fixture-cleanup.mjs — a real DELETE
-  /\brulesApi\.[A-Za-z]+\.(?:create|update|remove|run)\b/,
+  /* F-737 — the verb list is the WRITERS on `rulesApi`, and `enable`/`disable` change
+     whether real Jira events run rules while `test` EXECUTES one. `preview` and the
+     getters stay out: a dry run and a read are not mutations. */
+  /\brulesApi\.[A-Za-z]+\.(?:create|update|remove|run|enable|disable|test)\b/,
   /\bprobeJsmComment\b/,                            // the hook probe that COMMENTS on a real JSM issue
 ];
 
@@ -1362,6 +1391,14 @@ function writesRepo(code) {
  * `post(` a Jira write rather than `testState.post(`, which is a harness hook call. */
 const JIRA_WRITE_HELPERS = ["post", "put", "del", "doTransition"];
 const WORKFLOW_WRITE_HELPERS = ["updateWorkflow", "attachSelfLoopRules"];
+/* F-737 — REACHING THE RULES REST CLIENT AT ALL IS A WRITE, WHATEVER VERB FOLLOWS.
+ * `ensureRulesApi()` MINTS AN API TOKEN on the tenant (`action: "mintApiToken"`), and every
+ * `rulesApi.*` and `api()` call goes through it — so a driver that only LISTS listeners still
+ * creates a token row, against a live cap of 25, and `closeRulesApi` revoking it is a restore
+ * and not an absence of mutation. The token name is typed ONLY inside `lib/rules-api.mjs`, so
+ * `mintApiToken` being in the list above never fired for any driver: the word is in the
+ * library, the call is in the driver. That is the shape of this whole gap. */
+const RULES_API_HELPERS = ["ensureRulesApi", "rulesApi", "api", "closeRulesApi"];
 function importedWriters(code, moduleRe, wanted) {
   const out = new Set();
   for (const m of code.matchAll(new RegExp(`\\bimport\\s*\\{([^}]*)\\}\\s*from\\s*["'][^"']*${moduleRe}["']`, "g"))) {
@@ -1403,7 +1440,33 @@ function callsMutator(code) {
   for (const n of importedWriters(code, "lib/workflow\\.mjs", WORKFLOW_WRITE_HELPERS)) {
     if (new RegExp(`\\b${n}\\s*\\(`).test(code)) hits.push(`workflow:${n}()`);
   }
+  /* `rulesApi` is an OBJECT, not a function, so it is a hit on any member call — the token is
+     already minted by then. The others are called directly. */
+  for (const n of importedWriters(code, "lib/rules-api\\.mjs", RULES_API_HELPERS)) {
+    if (new RegExp(`\\b${n}\\s*[.(]`).test(code)) hits.push(`rulesApi:${n} (mints a token)`);
+  }
   return hits;
+}
+
+/* F-737 — A DRIVER THAT CLICKS THE PRODUCT CANNOT BE AUDITED BY A TOKEN SCAN.
+ * `perm-namesake-ui-live.mjs` GRANTS AN APP-ADMIN ROLE by clicking a row in the Permissions
+ * tab and proves it landed by diffing `app_admins` in KVS. There is no resolver name, no
+ * `method: "POST"` and no helper import anywhere in the file — the write is a mouse event —
+ * so `callsMutator` returns `[]` and the cry-wolf arm below would call its honest
+ * `mutates: ["roster"]` a declaration it never performs (F-734). The scan is not going to
+ * learn to read Playwright. What it CAN do is know that it cannot see, and stop asserting the
+ * one direction it is blind in: a UI driver is excused from "declares but calls no mutator"
+ * and is NOT excused from "calls a mutator so may not declare []", which is the arm the
+ * refusal turns on. The blindness is then stated in the docblock rather than implied by a
+ * green result. */
+function drivesProductUI(code) {
+  /* BOTH IMPORT SHAPES. Half this cohort imports Playwright statically at module top
+     (`import { chromium } from "…/playwright/index.mjs"`), and half — including
+     perm-namesake-ui-live.mjs, the driver this exemption exists for — imports it DYNAMICALLY
+     inside the browser helper (`await import("…/playwright/index.mjs")`) so the file can be
+     read offline without the browser package present. A `from`-only match saw the first half
+     and missed the second, which is the half that matters. */
+  return /(?:\bfrom|\bimport\s*\()\s*["'][^"']*playwright[^"']*["']/.test(code) && /\.click\s*\(/.test(code);
 }
 /** The declared array, read out of the `mutates:` literal OR — for a dev-only driver with no
  *  `--env` to resolve — out of `declareMutations([…])`, which is the same declaration with the
@@ -1449,6 +1512,31 @@ ok(callsMutator('const L = await rulesApi.listeners.create({ name: "x" });').len
   "POSITIVE CONTROL (F-733): the Rules REST client's writers count too");
 ok(callsMutator('const r = await rulesApi.listeners.get(id);').length === 0,
   "NEGATIVE CONTROL: …and its readers do not");
+/* F-737 — the verbs the list did not know, and the helper door that bypasses all of them. */
+ok(callsMutator('await rulesApi.listeners.enable(id);').length === 1,
+  "POSITIVE CONTROL (F-737): `enable` is a write — a listener that starts running real Jira events is a tenant change, and the verb list held only create/update/remove/run");
+ok(callsMutator('await rulesApi.jobs.disable(id);').length === 1,
+  "POSITIVE CONTROL (F-737): …so is `disable`");
+ok(callsMutator('await rulesApi.listeners.test(id, { sample });').length === 1,
+  "POSITIVE CONTROL (F-737): …and `test` EXECUTES the listener, which is why it is not a read");
+ok(callsMutator('await rulesApi.jobs.preview(id, {});').length === 0,
+  "NEGATIVE CONTROL (F-737): `preview` is a dry run and stays out — the boundary is real work, not the shape of the call");
+ok(callsMutator('import { ensureRulesApi } from "../lib/rules-api.mjs";\nconst { url } = await ensureRulesApi();').length === 1,
+  "POSITIVE CONTROL (F-737): `ensureRulesApi()` MINTS AN API TOKEN against a live cap of 25 — `mintApiToken` is in the list above but is typed only inside the library, so the word is in one file and the call is in another");
+ok(callsMutator('import { rulesApi, closeRulesApi } from "../lib/rules-api.mjs";\nconst r = await rulesApi.listeners.list();').length >= 1,
+  "POSITIVE CONTROL (F-737): …and a driver that only LISTS still mints one, so reaching the client at all is the mutation, whatever verb follows");
+ok(callsMutator('import { testState } from "../lib/rules-api.mjs";\nconst r = await testState.get("rulesApiUrl");').length === 0,
+  "NEGATIVE CONTROL (F-737): importing only `testState` from the same module is the raw hook door and mints nothing — the import clause decides, as it does for lib/jira.mjs");
+
+/* F-737 — the UI detector, on the two shapes that exist and the one that must not trip it. */
+ok(drivesProductUI('const { chromium } = await import("../../static/_screenshot-harness/node_modules/playwright/index.mjs");\nawait frame.locator(".perm-search-item").click();'),
+  "POSITIVE CONTROL (F-737): the DYNAMIC import shape counts — perm-namesake-ui-live.mjs imports Playwright inside its browser helper, and a `from`-only match missed exactly the driver the exemption exists for");
+ok(drivesProductUI('import { chromium } from "playwright";\nawait frame.locator(".perm-search-item").click();'),
+  "POSITIVE CONTROL (F-737): a Playwright driver that CLICKS is unauditable — perm-namesake-ui-live.mjs grants an app-admin role with a mouse event and no scannable token (F-734)");
+ok(!drivesProductUI('import { chromium } from "playwright";\nconst n = await frame.locator(".perm-admin-card").count();'),
+  "NEGATIVE CONTROL (F-737): a Playwright driver that only READS the DOM is auditable like any other — opening a browser is not the discriminator, clicking is");
+ok(!drivesProductUI('const r = await hook({ action: "kvSet" });\nbtn.click();'),
+  "NEGATIVE CONTROL (F-737): a `.click(` with no Playwright import is not a product UI driver");
 ok(callsMutator('gh(["api", "-X", "POST", `/repos/${REPO}/git/refs`, "--input", "-"], body);').length === 1,
   "POSITIVE CONTROL (F-733): a `gh api -X POST` writes a real repository — pipeline-scaffold-live.mjs makes several and declared `git` honestly");
 ok(callsMutator('gh(["api", `/repos/${REPO}/actions/variables`]);').length === 0,
@@ -1506,17 +1594,25 @@ ok(guardedDrivers.length === liveFiles.length,
   }
 }
 {
-  let declaredSome = 0, declaredNone = 0;
+  let declaredSome = 0, declaredNone = 0, unauditable = 0;
   for (const f of guardedDrivers) {
     const code = stripComments(readFileSync(path.join(here, f), "utf8"));
     const declared = declaredMutations(code);
     ok(declared !== null, `${f}: declares a \`mutates:\` array — an undeclared blast radius is the F-718 defect`);
     if (declared === null) continue;
     const found = callsMutator(code);
+    const ui = drivesProductUI(code);
     if (declared.length) declaredSome++; else declaredNone++;
     if (found.length) {
+      /* THE ARM THAT MATTERS, AND IT APPLIES TO EVERY FILE. A UI driver gets no excuse
+         here: if the scan CAN see a write, `mutates: []` is a lie whoever made it. */
       ok(declared.length > 0,
         `${f}: calls ${found.length} mutator(s) (${found.slice(0, 4).join(", ")}) so it may NOT declare \`mutates: []\` — it would run on shared dev with no refusal`);
+    } else if (ui) {
+      /* F-737 — UNAUDITABLE, AND SAID SO. The write is a mouse event; the scan is blind to
+         it, and a blind rule must not answer. Counted, so the exemption cannot quietly
+         grow to cover the directory. */
+      unauditable++;
     } else {
       ok(declared.length === 0,
         `${f}: declares ${JSON.stringify(declared)} but this file calls no mutator in the maintained list — a refusal nobody believes is one people learn to flag through`);
@@ -1526,11 +1622,28 @@ ok(guardedDrivers.length === liveFiles.length,
      green for the wrong reason, and the empty-declaration arm is the one that rots first. */
   ok(declaredSome >= 15, `F-718: the mutating arm has real subjects (${declaredSome} drivers declare a non-empty mutates)`);
   ok(declaredNone >= 3, `F-718: …and so does the read-only arm (${declaredNone} drivers declare mutates: [])`);
+  /* F-737 — AND THE EXEMPTION IS BOUNDED. It exists for a handful of Playwright drivers
+     whose writes are clicks; if it ever covered most of the directory the rule would be
+     asserting almost nothing and this number is where that shows up. */
+  /* F-734 supplies this arm's first and (today) only subject: perm-namesake-ui-live.mjs
+     declares `roster` for a grant made by clicking a row. An exemption with no subject is
+     an exemption nobody is testing, so it is asserted from BOTH sides. */
+  ok(unauditable >= 1,
+    `F-737/F-734: the UI exemption has a real subject (${unauditable}) — a rule arm no file takes is green for the wrong reason`);
+  ok(unauditable <= 12,
+    `F-737: the UI exemption stays a handful (${unauditable} unauditable driver(s) declare a mutation the scan cannot confirm) — it excuses the cry-wolf arm only, never the one the refusal turns on`);
 }
 /* The guard really is the home of the vocabulary, so a green rule above is not green
    because the words mean nothing. Every word any driver declares must exist there. */
 {
-  const VOCAB = new Set([...guardSrc.matchAll(/^\s{2}([a-zA-Z]+):\s*"/gm)].map((m) => m[1]));
+  /* The words IN DECLARATION ORDER, parsed out of MUTATION_HARMS — two-space indentation is
+     the discriminator (ENVS' rows sit at four, FAULT_HARMS' values are arrow functions and
+     never `: "`). `VOCAB` is the membership form; `MUTATION_WORDS` keeps the sequence, which
+     F-739's parity check below compares against the README's transcription. */
+  const MUTATION_WORDS = [...guardSrc.matchAll(/^\s{2}([a-zA-Z]+):\s*"/gm)].map((m) => m[1]);
+  const VOCAB = new Set(MUTATION_WORDS);
+  ok(MUTATION_WORDS.length === VOCAB.size && VOCAB.size >= 12,
+    `F-739: the guard's vocabulary parses to ${VOCAB.size} distinct words — a parse that collapsed or duplicated would make the parity below meaningless`);
   ok(VOCAB.has("agents") && VOCAB.has("providerSlot") && VOCAB.has("kvs"),
     "F-718: MUTATION_HARMS in the guard is readable from here and carries the words the drivers use");
   const unknown = [];
@@ -1540,6 +1653,126 @@ ok(guardedDrivers.length === liveFiles.length,
   }
   ok(unknown.length === 0,
     `F-718: every declared word is in the guard's CLOSED vocabulary (unknown: ${unknown.join(", ")})`);
+
+  /* ── F-739 — THE CLOSED VOCABULARY HAS TWO HOMES, AND ONLY ONE WAS CHECKED ──────
+     Everything above reads the words OUT of the guard, so the guard and the drivers cannot
+     drift. `README.md` retypes all twelve by hand in the F-718 paragraph, and nothing
+     asserted that copy — LAW 1's signature defect, sitting inside the very range that
+     folded `live-driver-scope`'s RULE 3 into 4f "because a rule about second homes is the
+     last rule that should have two".
+
+     The drift is not hypothetical in shape: the vocabulary is explicitly designed to GROW
+     ("add a word to MUTATION_HARMS with its sentence"), and the day a thirteenth word is
+     added the suite stays green — 4g parses the guard, so the new word is legal at once —
+     while the README still teaches twelve. The next driver author reads the README as the
+     closed set and either gets a THROW on a word that IS legal, or picks `kvs` as "the
+     honest catch-all" for a mutation that now has its own word, and the refusal then prints
+     a sentence describing the wrong blast radius. `rules` is already a word no driver uses,
+     so the list's accuracy was never self-evident from the drivers either.
+
+     ORDER IS ASSERTED TOO, not just membership. The README reads as a transcription of the
+     table; keeping the sequence identical is free, and it makes "which one is missing"
+     answerable from the diff rather than from a set subtraction. */
+  const README = readFileSync(path.join(here, "../README.md"), "utf8");
+  /** The backticked words inside the `closed vocabulary (…)` parenthesis, which wraps across
+   *  lines in the prose. `null` when the paragraph is gone — which is a failure, not a pass. */
+  function readmeVocabulary(md) {
+    const at = md.indexOf("closed vocabulary (");
+    if (at < 0) return null;
+    const close = md.indexOf(")", at);
+    if (close < 0) return null;
+    return [...md.slice(at, close).matchAll(/`([a-zA-Z]+)`/g)].map((m) => m[1]);
+  }
+  /* CONTROLS — the parser has to be able to FAIL, or the parity below is decorative. */
+  ok((readmeVocabulary("from a closed vocabulary (`roster`, `skills`,\n`kvs`); either array") || []).join(",") === "roster,skills,kvs",
+    "F-739: the README vocabulary parser reads a list that WRAPS across lines, which the real paragraph does");
+  ok(readmeVocabulary("no such paragraph here") === null,
+    "F-739: …and answers null when the paragraph is gone, so deleting the sentence fails the parity rather than satisfying it");
+  ok((readmeVocabulary("closed vocabulary (`roster`, `skills`)") || []).join(",") !== MUTATION_WORDS.join(","),
+    "F-739: …and a SHORT list is not equal to the guard's — the control that proves the comparison below can go red");
+
+  const readmeWords = readmeVocabulary(README);
+  ok(readmeWords !== null, "F-739: README.md still carries the closed-vocabulary paragraph the drivers are taught from");
+  ok(readmeWords !== null && readmeWords.join(", ") === MUTATION_WORDS.join(", "),
+    `F-739: README.md lists EXACTLY the words in MUTATION_HARMS, in order — guard: [${MUTATION_WORDS.join(", ")}] README: [${(readmeWords || []).join(", ")}]`);
+}
+
+/* ── 4h. F-741 — A DRIVER THAT CAN CHOOSE ITS TENANT MAY NOT NAME ONE IN A STRING ──
+   `va-receipt-copy-live.mjs` printed "on STAGING" and "hook reachable on staging" from three
+   hard-coded literals while `--env=dev` moved the run to dev and `evidence.json` recorded
+   `env: "dev"` beside them. A reader triaging that FAIL looks at the wrong tenant — and it
+   was residue of F-714, which fixed the same split ONE LINE AT A TIME in the same file.
+
+   Fixing the three literals would have scheduled the recurrence, so the directory was
+   searched: FOUR MORE drivers had it. `coder-pin-kept-live.mjs` and `coder-skills-live.mjs`
+   take `--env` and DISCARD `envName` entirely, then say STAGING in a banner and in three
+   assertion sentences; `va-pinned-survival-live.mjs` and `va-compaction-live.mjs` BIND
+   `ENV_NAME` at the guard call and then do not use it — the latter in the sentence that tells
+   an operator which `forge logs -e <env>` to read, which sends them to the other tenant's
+   logs. One rule, six homes.
+
+   THE COHORT IS DRIVERS WITH A CHOICE. A driver pinned by `forceEnv` (F-735) or declaring
+   through the dev-only door (F-733) has exactly one tenant, so the literal cannot lie and
+   naming it is just prose. The discriminator is therefore "calls `requireEnvAck` and is not
+   pinned", which is the same condition under which the guard itself resolves a row.
+
+   PROSE IS EXEMPT, as everywhere else here: a docblock explaining that a flow only exists on
+   one environment is documentation, not output. The scan reads code. */
+{
+  const TENANT_IN_STRING = /["'`][^"'`\n]*(?<![A-Za-z_])(STAGING|staging|DEV)(?![A-Za-z_])[^"'`\n]*["'`]/;
+  /** The legitimate homes, removed before the scan: the guard's own options, the one-off
+   *  env-id/url readers that take an environment BY NAME on purpose, the `.env` variable
+   *  name, and `--env=` in a usage line. Each is the mapping being READ, not retyped. */
+  const stripLegitimate = (l) => l
+    .replace(/\b(?:defaultEnv|forceEnv)\s*:\s*"(?:dev|staging)"/g, "")
+    .replace(/\b(?:forgeEnvId|hookUrlFor|hookUrlVar)\(\s*"(?:dev|staging)"\s*\)/g, "")
+    .replace(/\bSTAGING_TESTSTATE_URL\b/g, "")
+    .replace(/--env=(?:dev|staging)/g, "")
+    /* A FLAG NAME IS NOT A CLAIM ABOUT THIS RUN. `va-shadow-door-live.mjs` reads
+       `arg("staging-envid", …)`, an override F-732 deliberately gave its own name so that
+       `--envid` could keep the single meaning "confirm the settled row". The literal names
+       an OPTION, not the tenant the run is on, and no operator reads it as output. */
+    .replace(/\barg\(\s*["'][^"']*["']/g, "arg(");
+  function tenantLiterals(code) {
+    return code.split("\n").map((l, i) => ({ l, n: i + 1 }))
+      .filter(({ l }) => TENANT_IN_STRING.test(stripLegitimate(l)))
+      .map(({ n }) => n);
+  }
+  /* POSITIVE CONTROLS — verbatim from the five files, before they were fixed. */
+  ok(tenantLiterals('  console.log(`\\nF-577 — THE RECEIPT COPY, on STAGING, agent ${NAME}\\n`);').length === 1,
+    "POSITIVE CONTROL (F-741): the banner va-receipt-copy-live.mjs printed on every run, including --env=dev");
+  ok(tenantLiterals('  PASS("hook reachable on staging");').length === 1,
+    "POSITIVE CONTROL (F-741): …and the PASS line beside it");
+  ok(tenantLiterals('  check("staging starts on the Coder edition with a NON-frontier agent model",').length === 1,
+    "POSITIVE CONTROL (F-741): …and an ASSERTION SENTENCE naming the tenant, which coder-skills-live.mjs had three of");
+  ok(tenantLiterals('  info("asserted from `forge logs -e staging` after this run");').length === 1,
+    "POSITIVE CONTROL (F-741): …and the sentence telling an operator WHICH logs to read — the one that sends them to the other tenant");
+  /* NEGATIVE CONTROLS — the mapping being read, and the fixed form. */
+  ok(tenantLiterals('const r = requireEnvAck(argv, { faults: [], mutates: [], defaultEnv: "staging" });').length === 0,
+    "NEGATIVE CONTROL (F-741): `defaultEnv` is the guard's own option — where a free choice LANDS is not a claim about where this run went");
+  ok(tenantLiterals('const ADMIN = forgeEnvId("staging");').length === 0,
+    "NEGATIVE CONTROL (F-741): reading the table BY NAME is the one home being used, not a second one");
+  ok(tenantLiterals('const u = env.STAGING_TESTSTATE_URL;').length === 0,
+    "NEGATIVE CONTROL (F-741): the .env VARIABLE NAME is not a tenant name in a sentence");
+  ok(tenantLiterals('  console.log(`hook reachable on ${ENV_NAME}`);').length === 0,
+    "NEGATIVE CONTROL (F-741): the fixed form — the name comes from the settled row");
+  ok(tenantLiterals('const STAGING_ENV = arg("staging-envid", forgeEnvId("staging"));').length === 0,
+    "NEGATIVE CONTROL (F-741): a FLAG NAME is an option, not a claim about this run — F-732 gave va-shadow-door-live.mjs's two-environment override its own name on purpose");
+  ok(tenantLiterals('const DEVICE = "development";').length === 0,
+    "NEGATIVE CONTROL (F-741): `dev` inside a longer word is not the environment — the boundary is checked on both sides");
+
+  const offenders = [];
+  let scanned = 0;
+  for (const f of liveFiles) {
+    const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+    if (!/requireEnvAck\s*\(/.test(code)) continue;      // dev-only door: one tenant, cannot lie
+    if (/forceEnv\s*:/.test(code)) continue;              // pinned by the library (F-735): likewise
+    scanned++;
+    for (const n of tenantLiterals(code)) offenders.push(`${f}:${n}`);
+  }
+  ok(scanned >= 20, `F-741: the rule has a real cohort — ${scanned} driver(s) can resolve more than one environment`);
+  ok(offenders.length === 0,
+    `F-741: no driver with a CHOICE of tenant names one in a string — the name comes from the guard's settled row (at: ${offenders.join(", ")})`);
 }
 
 /* ── 4f-2. F-713 — THE SCOPE RULE HAS MOVED OUT OF THIS FILE (F-728) ────────────
@@ -1564,10 +1797,49 @@ ok(guardedDrivers.length === liveFiles.length,
    `faults: []` is the legitimate mapping-only form for a driver that arms nothing, and it
    is also the one-token way to silence the shared-dev refusal on a driver that arms
    plenty. 4e proves the guard is CALLED; this proves it was told the truth. */
+/* F-756 — THE EXTRACTOR MAY NOT ASSUME THE CALL SITS AT COLUMN 0. The first shape of this
+   rule ended its match at `\n})`, a closing brace with NO indentation, and `[\s\S]{0,400}?`
+   capped the call at 400 characters. Both are true of a driver that calls the guard at
+   module scope and false of one that calls it inside `async function run()` — which
+   `delete-fault-drain-live.mjs` does, indenting its `});` by two spaces. There the match
+   failed outright, `call` was null, and the assertion FAILED a driver that declares
+   `faults: ["deleteFault"]` perfectly honestly. A rule that cannot read a legal call is not
+   a stricter rule, it is a broken one; the only reason nobody had seen it is that the one
+   indented caller was not in `armingDrivers` until F-736 put it there. Balance the
+   parentheses instead of guessing where the call ends. */
+function guardCallSource(src, fn = "requireEnvAck") {
+  const open = src.search(new RegExp("\\b" + fn + "\\s*\\("));
+  if (open < 0) return null;
+  const from = src.indexOf("(", open);
+  let depth = 0;
+  for (let i = from; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")" && --depth === 0) return src.slice(from, i + 1);
+  }
+  return null;                                          // unbalanced — not a call we can read
+}
+/* POSITIVE CONTROLS — the two shapes that exist in the directory, including the one that broke. */
+ok(/faults: \["deleteFault"\]/.test(guardCallSource('  const r = requireEnvAck(argv, {\n    faults: ["deleteFault"],\n    mutates: ["kvs"],\n  });') || ""),
+  "POSITIVE CONTROL (F-756): the call extractor reads an INDENTED call inside a function — the shape delete-fault-drain-live.mjs has, which the old `\\n})` anchor could not match at all");
+ok(/faults: \[\]/.test(guardCallSource('const { envName } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [] });') || ""),
+  "POSITIVE CONTROL (F-756): …and the one-line module-scope call every other driver uses");
+ok(/faults: \["real"\]/.test(guardCallSource(stripComments('/* the old shape was requireEnvAck([...argv, "--env=dev"], { faults: [] }) */\nrequireEnvAck(argv, { faults: ["real"] });')) || ""),
+  "NEGATIVE CONTROL (F-756/F-735): a docblock QUOTING an old call shape is prose — the extractor reads the real call, or documenting a defect would fail the rule that documents it");
+ok(guardCallSource("const r = await other(1);") === null,
+  "NEGATIVE CONTROL (F-756): a file with no such call yields null rather than a stray slice");
+ok(!/mutates/.test(guardCallSource('requireEnvAck(a, { faults: ["x"] });\nsomethingElse({ mutates: ["roster"] });') || ""),
+  "NEGATIVE CONTROL (F-756): the extractor stops at the call's OWN closing paren and does not swallow the next statement");
+
 for (const f of armingDrivers) {
-  const src = readFileSync(path.join(here, f), "utf8");
-  const call = src.match(/requireEnvAck\s*\([\s\S]{0,400}?\n\}\)/);
-  ok(!!call && /faults\s*:\s*\[\s*[^\]\s]/.test(call[0]),
+  /* PROSE IS NOT A CALL — the discriminator every scan in this file uses, and this one
+     needs it too: `git-dispatch-drop-live.mjs` QUOTES its old `requireEnvAck([...argv,
+     "--env=dev"], …)` shape in the docblock that explains why the pin moved to `forceEnv`
+     (F-735), and an unstripped extractor picks the COMMENT up first and reads its
+     `faults:` — or its absence — instead of the real call's. Documenting a defect must
+     never fail the rule that documents it. */
+  const src = stripComments(readFileSync(path.join(here, f), "utf8"));
+  const call = guardCallSource(src);
+  ok(!!call && /faults\s*:\s*\[\s*[^\]\s]/.test(call),
     `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);
 }
 

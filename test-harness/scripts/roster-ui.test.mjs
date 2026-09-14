@@ -346,7 +346,16 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
      the failures are all computed from the fake's state, not from the passage of time.
      The DEFAULT is proven separately, by the arm just below, which runs a restore with no
      override at all and measures that both real settles were actually paid. */
-  const FAST_SETTLE = { rosterList: 50, removeConfirm: 50 };
+  /* F-740 — AND `grantRole`'s FIVE, which is where the time actually was. Measured on this
+     file: 94.6 s before, and `grantRole`'s settles are ~93 s of it (two 4500s per grant case
+     plus 500+400, and this file runs several). Every one of them is a `setTimeout` against a
+     fake DOM that answers synchronously. Not one assertion below depends on their values —
+     the roster diff, the verdict, `cardHow` and the refusal sentences are all computed from
+     the fake's state. The DEFAULTS are proven by the arm just below, numerically. */
+  const FAST_SETTLE = {
+    rosterList: 50, removeConfirm: 50,
+    roleSelect: 5, scopeSelect: 5, searchResults: 5, grantApply: 5, cardRetry: 5,
+  };
 
   /* THE DEFAULT ARM. It exists because every other restore case here now overrides the
      settle, and an override that nothing checks is how a "5 second wait" silently becomes
@@ -366,6 +375,19 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
 
     ok(SETTLE_MS.rosterList === 1500 && SETTLE_MS.removeConfirm === 3500,
       `F-731: SETTLE_MS still holds the MEASURED live waits (got ${JSON.stringify(SETTLE_MS)})`);
+    /* F-740 — `grantRole`'s five, asserted NUMERICALLY and by NAME. This is the only thing
+       standing between a fixture that wants a faster suite and a live driver that clicks a
+       row 5 ms after typing a query, before the people picker has answered. The keys are
+       listed one by one rather than deep-compared so that ADDING a settle is a deliberate
+       act here too, not something a `JSON.stringify` equality quietly absorbs. */
+    ok(SETTLE_MS.roleSelect === 500 && SETTLE_MS.scopeSelect === 400,
+      `F-740: the two dropdown settles keep their measured live values (got roleSelect=${SETTLE_MS.roleSelect}, scopeSelect=${SETTLE_MS.scopeSelect})`);
+    ok(SETTLE_MS.searchResults === 4500 && SETTLE_MS.grantApply === 4500,
+      `F-740: …and so do the two that dominate — the people-picker round trip and the post-click roster re-render (got searchResults=${SETTLE_MS.searchResults}, grantApply=${SETTLE_MS.grantApply})`);
+    ok(SETTLE_MS.cardRetry === 1200,
+      `F-740: …and F-671's retry settle, whose value is quoted in the \`cardHow\` sentence a driver prints (got ${SETTLE_MS.cardRetry})`);
+    ok(Object.keys(SETTLE_MS).length === 7,
+      `F-740: SETTLE_MS holds exactly the seven named settles — a sixth literal added to the module without a name here is the F-731/F-740 defect returning (got ${Object.keys(SETTLE_MS).join(", ")})`);
     ok(res && res.ok === true && st.roster.length === 1,
       "F-731: the default-settle restore still repairs the roster");
     ok(elapsed >= SETTLE_MS.rosterList + SETTLE_MS.removeConfirm,
@@ -379,6 +401,36 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     ok(fast && fast.ok === true, "F-731 CONTROL: the lowered settle repairs the identical roster identically");
     ok(fastElapsed < SETTLE_MS.rosterList,
       `F-731 CONTROL: …in a fraction of the time, so \`settleMs\` is what the elapsed time above measured (${fastElapsed}ms vs ${elapsed}ms)`);
+  }
+
+  /* F-740 — THE SAME ARM FOR `grantRole`, because the same override now reaches it. Exactly
+     ONE grant in this file runs with no `settleMs` at all, and its elapsed time must account
+     for the four settles a successful grant pays (roleSelect + scopeSelect + searchResults +
+     grantApply = 9.9 s; `cardRetry` is only paid when the first card read fails, so it is not
+     in the floor). Without this, every grant case below could be lowered to 5 ms and nothing
+     would notice that a live driver had been lowered with them — which is precisely how the
+     five literals became invisible in the first place. It costs ten seconds and it is the
+     only evidence the live numbers are real. */
+  {
+    const { st, deps } = makeFakeUI({});
+    const t0 = Date.now();
+    const r = await makeRosterUI(deps).grantRole(DIR[1].accountId, "editor", "own", ["Bob"]);   // NO settleMs
+    const elapsed = Date.now() - t0;
+    const floor = SETTLE_MS.roleSelect + SETTLE_MS.scopeSelect + SETTLE_MS.searchResults + SETTLE_MS.grantApply;
+    ok(r && r.ok === true && st.roster.some((x) => x.accountId === DIR[1].accountId),
+      "F-740: the default-settle grant still grants — lowering the fixtures did not change what grantRole DOES");
+    ok(elapsed >= floor,
+      `F-740: …and it PAID all four live settles, so the defaults are real waits and not names over 5ms (elapsed ${elapsed}ms, floor ${floor}ms)`);
+    /* POSITIVE CONTROL: the identical grant with the override is dramatically faster, so the
+       measurement above is of the SETTLES and not of the fixture's own cost. */
+    const { st: st2, deps: deps2 } = makeFakeUI({});
+    const t1 = Date.now();
+    const fast = await makeRosterUI({ ...deps2, settleMs: FAST_SETTLE }).grantRole(DIR[1].accountId, "editor", "own", ["Bob"]);
+    const fastElapsed = Date.now() - t1;
+    ok(fast && fast.ok === true && st2.roster.some((x) => x.accountId === DIR[1].accountId),
+      "F-740 CONTROL: the lowered settle grants identically");
+    ok(fastElapsed < SETTLE_MS.searchResults,
+      `F-740 CONTROL: …in a fraction of the time, so \`settleMs\` really is what the elapsed time above measured (${fastElapsed}ms vs ${elapsed}ms)`);
   }
 
   function makeFakeUI(opts = {}) {
@@ -483,7 +535,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
   /* 7a. THE HANG ITSELF. An admin grant must not touch the scope dropdown at all. */
   {
     const { st, deps } = makeFakeUI();
-    const ui = makeRosterUI(deps);
+    const ui = makeRosterUI({ ...deps, settleMs: FAST_SETTLE });
     const r = await ui.grantRole(DIR[0].accountId, "admin", "all", ["Ann"]);
     ok(r.ok === true, `an ADMIN grant SUCCEEDS instead of hanging on a control that is not rendered (got ${JSON.stringify(r.reason || r.ok)})`);
     ok(st.scopeDropdownClicks === 0, "…because the scope dropdown is never clicked for Admin — that click is the hang");
@@ -496,7 +548,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
   /* 7b. THE NON-ADMIN PATH IS UNCHANGED — the fix must not become "never set a scope". */
   {
     const { st, deps } = makeFakeUI();
-    const ui = makeRosterUI(deps);
+    const ui = makeRosterUI({ ...deps, settleMs: FAST_SETTLE });
     const r = await ui.grantRole(DIR[1].accountId, "editor", "own", ["Bob"]);
     ok(r.ok === true, "an EDITOR grant still succeeds");
     ok(st.scopeDropdownClicks === 1, "…and it DOES click the scope dropdown, which is rendered for every non-admin role");
@@ -507,7 +559,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
      asking for "own" is a REFUSAL — never a click that quietly stores something else. */
   {
     const { st, deps } = makeFakeUI();
-    const r = await makeRosterUI(deps).grantRole(DIR[0].accountId, "admin", "own", ["Ann"]);
+    const r = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).grantRole(DIR[0].accountId, "admin", "own", ["Ann"]);
     ok(r.ok === false && r.refused === true, "admin + scope 'own' is REFUSED, not rounded to the scope the UI would store");
     ok(st.clicks.length === 0, "…and nothing was clicked, so no wrong grant exists to clean up");
     ok(/no scope control for Admin/.test(String(r.reason)), "…and the refusal says why");
@@ -517,7 +569,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
      skipping it would silently store a default. That must be reported, not assumed away. */
   {
     const { deps } = makeFakeUI({ forceScopeControl: true });
-    const r = await makeRosterUI(deps).grantRole(DIR[0].accountId, "admin", "all", ["Ann"]);
+    const r = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).grantRole(DIR[0].accountId, "admin", "all", ["Ann"]);
     ok(r.ok === false && /guard has changed/.test(String(r.reason)),
       "a scope control that REAPPEARS for Admin is reported as product drift, not skipped in silence");
   }
@@ -530,7 +582,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
      fake DOM here renders the card and withholds only the class. */
   {
     const { st, deps } = makeFakeUI({ noRoleClass: true });
-    const r = await makeRosterUI(deps).grantRole(DIR[0].accountId, "admin", "all", ["Ann"]);
+    const r = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).grantRole(DIR[0].accountId, "admin", "all", ["Ann"]);
     ok(r.ok === true, "the GRANT itself still succeeds — the storage read is the authority and it is unaffected");
     ok(r.card === null, "…the card could not be read");
     ok(r.cardAgrees === false, "…and that is a FAILURE of the read-back, not agreement");
@@ -551,7 +603,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
      answered on the first attempt, so the 1.2s settle is paid only by the failure path. */
   {
     const { st, deps } = makeFakeUI();
-    const r = await makeRosterUI(deps).grantRole(DIR[1].accountId, "editor", "own", ["Bob"]);
+    const r = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).grantRole(DIR[1].accountId, "editor", "own", ["Bob"]);
     ok(r.cardAgrees === true && r.card === "Own rules only", "a card that reads cleanly still agrees");
     ok(st.roleClassReads === 1, `…on ONE read, with no retry (attempts: ${st.roleClassReads})`);
   }

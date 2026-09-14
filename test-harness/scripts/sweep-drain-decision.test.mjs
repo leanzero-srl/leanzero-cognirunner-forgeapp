@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import {
   decideSweepStep, newDrainState, answerSignature, answerComplete, madeProgress, drainSweep,
   DELETES_FAILING_BACKOFF_MS, IDENTICAL_ANSWER_LIMIT,
-  plantPopulation, PLANT_CLEARING_LIMIT, PLANT_CLEARING_PAUSE_MS,
+  plantPopulation, resumeOf, PLANT_CLEARING_LIMIT, PLANT_CLEARING_PAUSE_MS,
 } from "../lib/sweep-drain.mjs";
 
 /** Walk a scripted list of answers through the decision, returning every step taken. */
@@ -318,7 +318,7 @@ const fakeClock = () => { const slept = []; return { slept, sleep: async (ms) =>
       sleep: async () => {}, clearingLimit: 0,
     });
     assert.equal(r.planted, false);
-    assert.match(r.stopReason, /answered reason:"clearing" for the 1th time in a row/);
+    assert.match(r.stopReason, /answered resume:"repost" \(reason:"clearing"\) for the 1th time in a row/);
     assert.equal(r.calls.length, 1, "clearingLimit:0 spends exactly one call — the bound is honoured at zero too");
   }
 
@@ -329,7 +329,7 @@ const fakeClock = () => { const slept = []; return { slept, sleep: async (ms) =>
       sleep: async () => {}, maxCalls: 20,
     });
     assert.equal(r.planted, false);
-    assert.match(r.stopReason, /"clearing" for the 5th time in a row/);
+    assert.match(r.stopReason, /resume:"repost" \(reason:"clearing"\) for the 5th time in a row/);
     assert.doesNotMatch(r.stopReason, /no advancing nextIndex/);
     assert.equal(r.calls.length, PLANT_CLEARING_LIMIT + 1);
   }
@@ -377,6 +377,121 @@ const fakeClock = () => { const slept = []; return { slept, sleep: async (ms) =>
     assert.equal(r.planted, false);
     assert.match(r.stopReason, /did not answer 200\/ok/);
   }
+
+  /* ══ F-748 — THE ANSWER'S OWN `resume` DECIDES, AND THE REASON LIST IS ONLY FOR AGE ══
+     Everything above is a PRE-F-724 answer: none of those fixtures carry `resume`, so they
+     exercise the legacy fallback and prove it still reads them. What follows is the shape
+     `src/harness-fault.js` actually emits today. */
+
+  /* THE FINDING ITSELF. `clear-failed` is in the producer's repost vocabulary and was NOT in
+     this loop's `reason === "clearing"` test, so a stale clear that refused some deletes was
+     read as a non-advancing answer and aborted the plant — the exact abort F-724 was cut to
+     remove, arriving for the second reason. RECORDED ANSWER, from the producer's own shape. */
+  {
+    const clearFailed = (startIndex, cleared, staleFailed, clearToken) => ({
+      ok: true, planted: 0, failed: 0, staleFailed, n: 60, startIndex, nextIndex: startIndex,
+      cleared, remainingStale: 12, clearToken, truncated: false,
+      reason: "clear-failed", complete: false, resume: "repost", budgetMs: 15000,
+    });
+    const seen = [];
+    const answers = [clearFailed(0, 40, 3, "tok-1"), clearFailed(0, 12, 1, "tok-2"), planted(0, 60)];
+    const r = await plantPopulation(async (n, startIndex, clearToken) => {
+      seen.push({ startIndex, clearToken });
+      return { status: 200, json: answers[seen.length - 1] };
+    }, 60, { sleep: async () => {} });
+    assert.equal(r.planted, true, r.stopReason || "");
+    assert.equal(r.stopReason, null, "a `clear-failed, resume:repost` answer is RE-POSTED, not treated as a dead end (F-748)");
+    assert.deepEqual(seen.map((x) => x.startIndex), [0, 0, 0], "…with the SAME startIndex, because a repost must be identical");
+    /* F-744 — and the clearToken is forwarded verbatim, so `clearedSoFar` keeps running. */
+    assert.deepEqual(seen.map((x) => x.clearToken), [null, "tok-1", "tok-2"],
+      "…and each answer's clearToken rides the NEXT identical POST (F-744) — without it the running clearedSoFar restarts");
+    assert.equal(r.clearingCalls, 2);
+    assert.equal(r.totalStaleFailed, 4, "F-747: the CLEAR's refusals are counted under their own name, not folded into `failed`");
+    assert.equal(r.totalFailed, 0, "…and `failed` stays the WRITES count, which a repost answer never has any of");
+  }
+
+  /* `resume:"stop"` IS A STOP WHATEVER THE REASON IS. F-745 gave `writes-failed` this mode
+     precisely because its `nextIndex` does NOT advance, so the old `start-index` reading was
+     an instruction to spin. The loop must not need to know the reason to obey it. */
+  {
+    const r = await plantPopulation(async () => ({
+      status: 200,
+      json: { ok: true, planted: 0, failed: 5, n: 5, startIndex: 0, nextIndex: 0, reason: "writes-failed", complete: false, resume: "stop" },
+    }), 5, { sleep: async () => {} });
+    assert.equal(r.planted, false);
+    assert.match(r.stopReason, /resume:"stop"/);
+    assert.match(r.stopReason, /not resumable/);
+    assert.equal(r.calls.length, 1, "a stop is obeyed on the first answer — it does not spend the call bound discovering it");
+  }
+
+  /* A RESUME MODE THIS LOOP DOES NOT KNOW IS A STOP, NEVER A GUESS. The vocabulary belongs to
+     the producer and is allowed to grow; treating an unrecognised instruction as "carry on"
+     would be inventing a meaning for it, and every way of getting this wrong either spins or
+     asserts over a short population. */
+  {
+    const r = await plantPopulation(async () => ({
+      status: 200,
+      json: { ok: true, planted: 0, failed: 0, n: 60, startIndex: 0, nextIndex: 0, reason: "some-new-thing", complete: false, resume: "reshard" },
+    }), 60, { sleep: async () => {} });
+    assert.equal(r.planted, false);
+    assert.match(r.stopReason, /does not know how to obey/);
+    assert.equal(r.calls.length, 1);
+  }
+
+  /* `resume` WINS OVER THE REASON, which is the whole point of having the field. A `clearing`
+     reason carrying `resume:"stop"` must STOP — if the legacy list could override the field,
+     the contract would still have two homes and this loop would still be guessing. */
+  {
+    const r = await plantPopulation(async () => ({
+      status: 200,
+      json: { ok: true, planted: 0, failed: 0, n: 60, startIndex: 0, nextIndex: 0, reason: "clearing", complete: false, resume: "stop" },
+    }), 60, { sleep: async () => {} });
+    assert.equal(r.planted, false);
+    assert.match(r.stopReason, /resume:"stop"/);
+    assert.equal(r.clearingCalls, 0, "the legacy reason list is NOT a second opinion — when `resume` is present it decides alone");
+  }
+
+  /* `resume: null` IS NOT "THE POPULATION IS DONE". It is the answer for a call that ended
+     cleanly, and the door clamps `n` per call — so a 200-row population arrives as two
+     complete answers and the loop must advance through them. This is the F-710 clamp case
+     again, now with the field present. */
+  {
+    let i = 0;
+    const r = await plantPopulation(async () => ({
+      status: 200,
+      json: i++ === 0
+        ? { ok: true, planted: 150, failed: 0, n: 150, startIndex: 0, nextIndex: 150, reason: null, complete: true, resume: null }
+        : { ok: true, planted: 50, failed: 0, n: 200, startIndex: 150, nextIndex: 200, reason: null, complete: true, resume: null },
+    }), 200, { sleep: async () => {} });
+    assert.equal(r.planted, true, r.stopReason || "");
+    assert.equal(r.totalPlanted, 200, "a COMPLETE call is not a COMPLETE population — the loop counts ROWS, with `resume:null` as with none");
+  }
+
+  /* AND A `start-index` THAT DOES NOT MOVE IS STOPPED HERE TOO. F-745 made the producer refuse
+     to say it; this is the consumer-side assertion that it did not, so a regression on that
+     side becomes a named stop rather than a spin to the call bound. */
+  {
+    const r = await plantPopulation(async () => ({
+      status: 200,
+      json: { ok: true, planted: 0, failed: 0, n: 60, startIndex: 0, nextIndex: 0, reason: "truncated", complete: false, resume: "start-index" },
+    }), 60, { sleep: async () => {} });
+    assert.equal(r.planted, false);
+    assert.match(r.stopReason, /does not advance past 0/);
+    assert.equal(r.calls.length, 1, "it is caught on the first answer, not after ten identical ones");
+  }
+
+  /* THE FALLBACK IS REACHABLE AND CORRECT, asserted directly rather than inferred from the
+     fixtures above — `resumeOf` is the one place the two vocabularies meet. */
+  assert.equal(resumeOf({ reason: "clear-failed", complete: false }), "repost",
+    "F-748: a pre-F-724 `clear-failed` answer reads as a repost — the reason the driver half missed");
+  assert.equal(resumeOf({ reason: "clearing", complete: false }), "repost");
+  assert.equal(resumeOf({ reason: "writes-failed", complete: false }), "stop");
+  assert.equal(resumeOf({ reason: "truncated", complete: false }), "start-index");
+  assert.equal(resumeOf({ reason: null, complete: true }), null);
+  assert.equal(resumeOf({ reason: "clearing", complete: false, resume: "stop" }), "stop",
+    "…and a PRESENT `resume` is never overruled by the legacy list");
+  assert.equal(resumeOf({ reason: "writes-failed", complete: false, resume: null }), null,
+    "…including when it is explicitly null");
 }
 
-console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived, and drainSweep is the one loop both live drivers obey (F-702); plantPopulation re-POSTs a `clearing` answer UNCHANGED and bounded, so a stale-tail clear no longer fails a run the tenant would have completed (F-724)");
+console.log("sweep drain decision: deletes-failing backs off and stops not-converging on CONSECUTIVE non-progress (F-703), a progressing drain continues, deletes-failed resumes once, complete is read not derived, and drainSweep is the one loop both live drivers obey (F-702); plantPopulation re-POSTs a `clearing` answer UNCHANGED and bounded, so a stale-tail clear no longer fails a run the tenant would have completed (F-724); and it now obeys the answer's own `resume` — repost/start-index/stop — forwarding the clearToken, so `clear-failed` is a re-POST and an unknown mode is a stop (F-744/F-745/F-747/F-748)");

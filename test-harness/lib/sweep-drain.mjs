@@ -319,6 +319,41 @@ const defaultPlantRow = (j, nth) => ({
  * @returns {{planted, stopReason, calls, totalPlanted, totalFailed, totalCleared,
  *            clearingCalls, pausedMs, clamped}} — `planted` is the ONLY success.
  */
+/* ── F-748 — THE PLANT'S RESUME CONTRACT HAS ONE AUTHOR, AND IT IS NOT THIS FILE ──────
+ * `plantHarnessFaults` (src/harness-fault.js) now says, on every answer, HOW it is resumed:
+ * `resume` is `"repost"` | `"start-index"` | `"stop"` | `null`, computed there by
+ * `plantResumeMode` from the reason, the complete flag and whether the index actually moved.
+ * This loop OBEYS that field and derives nothing from the reason when it is present.
+ *
+ * It did not used to. The driver half was cut against a base where the repost vocabulary was
+ * `["clearing"]` alone, and the producer's is `["clearing", "clear-failed"]` — so a stale
+ * clear that refused some deletes answered `clear-failed`, this loop did not recognise it,
+ * treated it as a non-advancing answer, and aborted the plant with "the population cannot be
+ * reached". That is exactly the abort F-724 was cut to remove, arriving for the second reason,
+ * because the contract had two homes written against two different bases.
+ *
+ * THE FALLBACK IS FOR AGE, NOT FOR DISAGREEMENT. `resume` is absent only from an answer
+ * produced by a deployment older than F-724, and the two lists below exist solely to read
+ * those. They are NOT a second opinion: when `resume` is present it decides, even if it
+ * contradicts them. And src/harness-fault.js is deliberately NOT imported — it pulls
+ * `@forge/kvs`, which would drag a Forge runtime into every offline consumer of this library.
+ * The price of that is these two constants; the guard on the price is that they are
+ * unreachable whenever the field is there, and that an UNKNOWN mode is a stop rather than a
+ * guess.
+ */
+const LEGACY_PLANT_REPOST_REASONS = Object.freeze(["clearing", "clear-failed"]);
+const LEGACY_PLANT_STOP_REASONS = Object.freeze(["writes-failed"]);
+
+/** The answer's own resume instruction, or — for a pre-F-724 answer that carries none — the
+ *  best reading of its `reason`. Exported for the offline fixtures, which assert both paths. */
+export function resumeOf(j) {
+  if (j && Object.prototype.hasOwnProperty.call(j, "resume")) return j.resume;
+  if (!j || j.complete === true || !j.reason) return null;
+  if (LEGACY_PLANT_REPOST_REASONS.includes(j.reason)) return "repost";
+  if (LEGACY_PLANT_STOP_REASONS.includes(j.reason)) return "stop";
+  return "start-index";
+}
+
 export async function plantPopulation(post, n, opts = {}) {
   const {
     maxCalls = 10,
@@ -329,12 +364,18 @@ export async function plantPopulation(post, n, opts = {}) {
   } = opts;
 
   const calls = [];
-  let startIndex = 0, totalPlanted = 0, totalFailed = 0, totalCleared = 0;
+  let startIndex = 0, totalPlanted = 0, totalFailed = 0, totalCleared = 0, totalStaleFailed = 0;
   let planted = false, stopReason = null, clamped = null;
   let clearingRun = 0, clearingCalls = 0, pausedMs = 0;
+  let clearToken = null;
 
   while (calls.length < maxCalls) {
-    const res = await post(n, startIndex);
+    /* F-744 — `clearToken` IS THE RE-POST'S ONLY CARRIED STATE. The producer hands one back
+       on a repost answer and asks for it verbatim on the next identical POST; without it the
+       running `clearedSoFar` restarts and the answer understates how much of the stale tail
+       has gone. A `post` that ignores the third argument is not broken, only less informed —
+       which is why it is passed positionally and last. */
+    const res = await post(n, startIndex, clearToken);
     const nth = calls.length + 1;
     if (!res || res.status !== 200 || res.json?.ok !== true) {
       stopReason = `plant call ${nth} did not answer 200/ok (HTTP ${res?.status ?? 0})`;
@@ -343,41 +384,75 @@ export async function plantPopulation(post, n, opts = {}) {
     const j = res.json;
     calls.push(row(j, nth));
     totalPlanted += Number(j.planted || 0);
+    /* F-747 — `failed` is WRITES in every branch now, and the clear's refusals have their own
+       name. They used to share one field, so this total meant two things depending on which
+       branch answered. */
     totalFailed += Number(j.failed || 0);
+    totalStaleFailed += Number(j.staleFailed || 0);
     totalCleared += Number(j.cleared || 0);
     /* F-710 — the ONLY way a caller can see the silent clamp is to compare its own request
        against the `n` it was answered back. Neither shipped helper made that comparison. */
     if (nth === 1 && Number.isFinite(Number(j.n)) && Number(j.n) < n) {
       clamped = { requested: n, answered: Number(j.n), nextIndex: j.nextIndex ?? null, complete: j.complete ?? null };
     }
-    if (j.reason === "writes-failed") {
-      stopReason = `plant call ${nth} answered reason:"writes-failed" (planted ${j.planted}, failed ${j.failed}) — the store refused writes, so the population is short and nothing downstream may be asserted over it`;
+
+    const mode = resumeOf(j);
+    if (mode === "stop") {
+      stopReason = `plant call ${nth} answered reason:${JSON.stringify(j.reason ?? null)} resume:"stop" (planted ${j.planted}, failed ${j.failed}) — the producer says this answer is not resumable, so the population is short at ${totalPlanted}/${n} and nothing downstream may be asserted over it`;
+      break;
+    }
+    if (mode !== null && mode !== "repost" && mode !== "start-index") {
+      /* AN UNKNOWN WORD IS A STOP, NEVER A GUESS. The vocabulary is the producer's and it is
+         allowed to grow; a consumer that treated an unrecognised instruction as "carry on"
+         would be inventing a meaning for it, and the one thing every mode so far has in
+         common is that getting it wrong spins or asserts over a short population. */
+      stopReason = `plant call ${nth} answered resume:${JSON.stringify(j.resume)}, which this loop does not know how to obey (reason:${JSON.stringify(j.reason ?? null)}) — src/harness-fault.js has grown a resume mode that lib/sweep-drain.mjs has not learned`;
       break;
     }
     if (totalPlanted >= n) { planted = true; break; }
 
-    /* F-724 — THE STALE-TAIL CLEAR, HONOURED AS THE CONTRACT STATES IT. Checked BEFORE the
-       advancing-`nextIndex` test, because this answer deliberately returns the index it was
-       given: it is the one non-advancing answer that means "ask again", not "give up". */
-    if (j.reason === "clearing") {
+    /* F-724/F-748 — THE RE-POST, HONOURED AS THE PRODUCER STATES IT AND NOT AS A REASON LIST.
+       Checked BEFORE the advancing-`nextIndex` test, because a repost answer deliberately
+       returns the index it was given: it is the non-advancing answer that means "ask again",
+       not "give up". It used to be keyed on `reason === "clearing"` alone, and the producer's
+       repost vocabulary also holds `clear-failed` — so a stale clear that refused some deletes
+       answered `clear-failed`, was read as a non-advancing answer, and aborted the plant with
+       the old sentence: the exact failure F-724 was cut to remove, arriving for the second
+       reason. Switching on `resume` means the next reason added on that side needs no edit
+       here at all. */
+    if (mode === "repost") {
       clearingRun++;
       clearingCalls++;
       if (clearingRun > clearingLimit) {
-        stopReason = `plant call ${nth} answered reason:"clearing" for the ${clearingRun}th time in a row (cleared ${totalCleared} stale row(s) so far, failed ${totalFailed}) — an identical re-POST is the documented way to finish a stale-tail clear, but a clear that has not finished in ${clearingLimit} of them is not converging and the population cannot be reached`;
+        stopReason = `plant call ${nth} answered resume:"repost" (reason:${JSON.stringify(j.reason ?? null)}) for the ${clearingRun}th time in a row (cleared ${totalCleared} stale row(s) so far, ${totalStaleFailed} stale delete(s) refused) — an identical re-POST is the documented way to finish a stale-tail clear, but a clear that has not finished in ${clearingLimit} of them is not converging and the population cannot be reached`;
         break;
       }
+      if (typeof j.clearToken === "string" && j.clearToken) clearToken = j.clearToken;
       if (clearingPauseMs > 0) { pausedMs += clearingPauseMs; await sleep(clearingPauseMs); }
       continue;                       /* startIndex UNCHANGED — the re-POST must be identical */
     }
     clearingRun = 0;
+    clearToken = null;                /* the clear is behind us; a stale token is not carried */
 
+    /* `resume: null` IS NOT "THE POPULATION IS DONE". It is `plantResumeMode`'s answer for a
+       call that ended cleanly (`complete: true`), and a clean call can still be a SHORT
+       population — the door clamps `n` per call, so 200 rows arrive as two complete answers.
+       This loop counts ROWS, never the flag, so a null-resume answer that has not reached `n`
+       advances by `nextIndex` exactly as a truncated one does. Only a non-advancing index
+       ends it. */
     const next = Number(j.nextIndex);
     if (!Number.isFinite(next) || next <= startIndex) {
-      stopReason = `plant call ${nth} answered complete=${j.complete} with only ${totalPlanted}/${n} row(s) planted and no advancing nextIndex (${JSON.stringify(j.nextIndex ?? null)}) — the population cannot be reached`;
+      /* F-745's shape, defended on the CONSUMER side too: an instruction to resume where you
+         already are is a spin, whoever issued it. The producer now refuses to say
+         "start-index" for an answer whose index did not move; this is the assertion that it
+         did not, and it names which of the two cases it is. */
+      stopReason = mode === "start-index"
+        ? `plant call ${nth} answered resume:"start-index" but its nextIndex (${JSON.stringify(j.nextIndex ?? null)}) does not advance past ${startIndex}, with ${totalPlanted}/${n} row(s) planted — resuming there would re-POST the same call forever`
+        : `plant call ${nth} answered complete=${j.complete} with only ${totalPlanted}/${n} row(s) planted and no advancing nextIndex (${JSON.stringify(j.nextIndex ?? null)}) — the population cannot be reached`;
       break;
     }
     startIndex = next;
   }
   if (!planted && !stopReason) stopReason = `the plant was still ${totalPlanted}/${n} after the ${maxCalls}-call bound`;
-  return { planted, stopReason, calls, totalPlanted, totalFailed, totalCleared, clearingCalls, pausedMs, clamped };
+  return { planted, stopReason, calls, totalPlanted, totalFailed, totalCleared, totalStaleFailed, clearingCalls, pausedMs, clamped };
 }

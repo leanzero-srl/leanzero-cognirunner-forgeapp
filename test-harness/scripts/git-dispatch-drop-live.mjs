@@ -52,8 +52,16 @@ import { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS }
  * `TESTSTATE_URL`, the dev trigger, and there is no staging path to offer. So the `--env`
  * choice is made FOR it — `dev`, always — and the acknowledgement is therefore mandatory on
  * every run. `armDispatchFault` drops queued deliveries for the armed connection, which a
- * developer sharing the tenant reads as "my push did nothing". */
-requireEnvAck([...process.argv.slice(2), "--env=dev"], {
+ * developer sharing the tenant reads as "my push did nothing".
+ *
+ * F-735 — THE PIN IS `forceEnv`, NOT AN APPENDED FLAG. This used to be
+ * `requireEnvAck([...process.argv.slice(2), "--env=dev"], …)`, and `arg()` returns the FIRST
+ * match, so an operator's `--env=staging` won the argument and the refusal above was skipped
+ * on the very run it calls mandatory — while the driver still armed the fault on DEV, because
+ * the tenant never came from the flag. `forceEnv` makes the pin the library's decision and
+ * refuses a conflicting `--env` by name. */
+requireEnvAck(process.argv.slice(2), {
+  forceEnv: "dev",
   faults: ["dispatchDrop"],
   mutates: ["git"],   /* plants a hook secret and DELETES the harness connection it made */
   script: "git-dispatch-drop-live.mjs",   // count-bounded: no TTL to quote

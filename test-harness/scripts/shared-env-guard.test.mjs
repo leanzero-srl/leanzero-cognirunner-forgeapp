@@ -22,6 +22,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENVS, ENV_NAMES, MUTATION_NAMES } from "../lib/shared-env-guard.mjs";
@@ -126,6 +127,76 @@ console.log("\n2 · F-732 — `--envid` MAY NOT RE-DECIDE THE ROW");
   ok(!/Missing .env|ENOENT/.test(r.err),
     "the refusal is reached WITHOUT an env file — it is checked before loadEnv, so an unconfigured operator reads the tenant problem and not a file problem");
   ok(ENV_NAMES.length === 2 && DEV !== STAGING, "the two rows this rule compares really are two different environments");
+}
+
+console.log("\n3 · F-735 — A PINNED ENVIRONMENT MAY NOT BE ARGUED WITH IN ITS OWN ARGUMENT LIST");
+{
+  /* THE BYPASS, EXACTLY AS IT SHIPPED. `git-dispatch-drop-live.mjs` and
+     `git-rotation-window-live.mjs` pinned themselves by APPENDING to the operator's argv:
+     `requireEnvAck([...process.argv.slice(2), "--env=dev"], …)`. `arg()` is `argv.find(…)`,
+     so the FIRST `--env` won and the operator's came first. This case is the proof that the
+     old shape really did skip the refusal, so the fix below is measured against a bypass we
+     have reproduced rather than one we assert existed. */
+  /* This machine has no `.env`, so ANY run that gets past the guard dies in `loadEnv`
+     instead of reaching `console.log`. The verdict here is therefore not the exit code but
+     whether the GUARD refused — `passedTheGuard` is "no REFUSING sentence was printed",
+     which is exactly the property the finding is about and the only one an unconfigured
+     machine can observe. */
+  const passedTheGuard = (r) => !/REFUSING to run/.test(r.err);
+
+  const OLD = 'requireEnvAck([...process.argv.slice(2), "--env=dev"], { faults: ["dispatchDrop"], mutates: ["git"] });\nconsole.log("ARMED");';
+  const bypass = run(OLD, ["--env=staging"]);
+  ok(passedTheGuard(bypass),
+    "REPRODUCTION (F-735): the OLD appended-flag shape lets `--env=staging` through with NO refusal at all — `arg()` takes the FIRST match and the operator's argv was spread first, so the driver ran on to arm its fault while the tenant it talks to was dev either way");
+  const typo = run(OLD, ["--env=stagng"]);
+  ok(!passedTheGuard(typo) && typo.code === 2,
+    "…and a TYPO was LOUDER than the real bypass: `--env=stagng` hits the closed-set refusal while `--env=staging` sails through it. That asymmetry is the whole finding");
+
+  /* THE FIX. The pin is the library's decision and a conflicting `--env` is refused BY NAME. */
+  const NEW = 'requireEnvAck(process.argv.slice(2), { forceEnv: "dev", faults: ["dispatchDrop"], mutates: ["git"] });\nconsole.log("ARMED");';
+  const r = run(NEW, ["--env=staging"]);
+  ok(r.code === 2, `--env=staging is REFUSED for a forceEnv:"dev" driver (got ${r.code})`);
+  ok(!/ARMED/.test(r.out), "…and the driver body never runs, so no fault is armed");
+  ok(/can only ever run on dev/.test(r.err),
+    "…with a refusal that names the pin rather than silently overriding the operator — a silent override leaves them believing they ran on staging (F-698)");
+  ok(/it could only have moved the REFUSAL/.test(r.err),
+    "…and explains why the flag was never going to move the target, which is the part that makes the pin believable");
+
+  /* AGREEING IS NOT CONFLICTING, and the ack is still required because dev is shared. */
+  const agree = run(NEW, ["--env=dev"]);
+  ok(agree.code === 2 && /SHARED dev tenant/.test(agree.err),
+    "`--env=dev` AGREES with the pin, so it is not refused as a conflict — it falls through to the shared-dev ack, which is what the old shape was supposed to reach and did not");
+  const acked = run(NEW, ["--env=dev", "--i-know-dev-is-shared"]);
+  ok(passedTheGuard(acked),
+    "…and with the acknowledgement it proceeds past the guard");
+  const bare = run(NEW, []);
+  ok(bare.code === 2 && /SHARED dev tenant/.test(bare.err),
+    "…and NO `--env` at all lands on the pin and asks, which is the mandatory-every-run behaviour both drivers' comments claim");
+  const bareAcked = run(NEW, ["--i-know-dev-is-shared"]);
+  ok(passedTheGuard(bareAcked),
+    "…so the ordinary invocation is `--i-know-dev-is-shared` and nothing else");
+
+  /* THE PIN IS ITSELF VALIDATED, on any machine, at the call and not at the one run that reaches it. */
+  const bad = run('requireEnvAck(process.argv.slice(2), { forceEnv: "prod", faults: [], mutates: [] });');
+  ok(bad.code !== 0 && /forceEnv "prod" is not one of/.test(bad.err),
+    "a forceEnv outside the closed set THROWS — the pin comes out of the same table `--env` is checked against");
+
+  /* AND IT IS REACHED BEFORE loadEnv, like every other refusal here. */
+  ok(!/Missing .env|ENOENT/.test(r.err),
+    "the conflict refusal arrives with NO env file — an operator on an unconfigured machine reads the tenant problem, not a file problem");
+
+  /* THE TWO REAL CALL SITES USE IT. A library option no file takes is a library option that
+     rots; these are the two files the finding is about. */
+  for (const f of ["git-dispatch-drop-live.mjs", "git-rotation-window-live.mjs"]) {
+    /* CODE ONLY. Both files now EXPLAIN the old shape in their docblocks — quoting the
+       defect is how the next author learns why the pin moved — so a scan that read prose
+       would fail them for the comment that documents the fix. */
+    const src = readFileSync(path.join(here, f), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    ok(/forceEnv:\s*"dev"/.test(src), `${f}: pins itself with forceEnv`);
+    ok(!/\[\.\.\.process\.argv\.slice\(2\),\s*"--env=/.test(src),
+      `${f}: …and keeps no appended-flag copy of the pin — the shape that lost to the operator's own --env`);
+  }
 }
 
 console.log("\nshared-env-guard: " + pass + " passed, " + fail + " failed");

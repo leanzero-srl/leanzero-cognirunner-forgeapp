@@ -26,7 +26,7 @@
  * itself). A control turn with NO skillIds must not produce that line; without the
  * control, the line proves nothing.
  *
- * THE AGENT MODEL IS RESTORED. The slot starts ABSENT on staging (Haiku is the default),
+ * THE AGENT MODEL IS RESTORED. The slot starts ABSENT on the default tenant (Haiku is
  * so restoring means DELETING it, and the script re-reads `getAgentCapability` afterwards
  * to show `needs-frontier-model` is back. It restores on every exit path, including a throw.
  *
@@ -40,7 +40,7 @@ import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 
-const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
+const { envName: ENV_NAME, hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
 const SECRET = env.HARNESS_SECRET;
 const ACCT = process.env.HARNESS_ADMIN_ACCOUNT_ID || env.HARNESS_ADMIN_ACCOUNT_ID;
@@ -94,7 +94,8 @@ const kvSet = (key, value) => post({ action: "kvSet", key, value });
 
 const main = async () => {
   const before = await call("getAgentCapability");
-  check("staging starts on the Coder edition with a NON-frontier agent model",
+  /* F-741 — the three sentences below named STAGING while `--env` could move the run. */
+  check(`${ENV_NAME} starts on the Coder edition with a NON-frontier agent model`,
     before.edition === "advanced" && before.enabled === false && before.reason === "needs-frontier-model",
     { edition: before.edition, reason: before.reason, agentModel: before.agentModel });
   const slotBefore = (await (await fetch(`${URL_}?what=kvs&key=${SLOT}`, { headers: { Authorization: `Bearer ${SECRET}` } })).json()).value;
@@ -110,7 +111,7 @@ const main = async () => {
   console.log("waiting 40s for the ~30s provider/model cache…");
   await sleep(40000);
   const cap = await call("getAgentCapability");
-  check("the Coder is now ENABLED on staging", cap.enabled === true, { enabled: cap.enabled, reason: cap.reason, agentModel: cap.agentModel });
+  check(`the Coder is now ENABLED on ${ENV_NAME}`, cap.enabled === true, { enabled: cap.enabled, reason: cap.reason, agentModel: cap.agentModel });
 
   // ── the unknown-skill refusal, asked FIRST so a real turn never hides it ──
   const bogus = await call("startCoderTurn", { issueKey: ISSUE, threadId: `t_bogus_${Date.now().toString(36)}`, message: "Summarise this issue in two sentences.", skillIds: ["skill_definitely_not_here"] });
@@ -233,7 +234,7 @@ finally {
     check("the agent-model slot was deleted (restored)", r.status === 200 && r.body && r.body.now === null, { now: r.body && r.body.now });
     await sleep(35000);
     const after = await call("getAgentCapability");
-    check("staging is back to needs-frontier-model", after.enabled === false && after.reason === "needs-frontier-model",
+    check(`${ENV_NAME} is back to needs-frontier-model`, after.enabled === false && after.reason === "needs-frontier-model",
       { enabled: after.enabled, reason: after.reason, agentModel: after.agentModel });
   } catch (e) { console.error("RESTORE FAILED", e.message); failures += 1; }
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(evidence, null, 2));

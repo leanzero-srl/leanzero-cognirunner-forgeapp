@@ -1442,9 +1442,23 @@ function importedWriters(code, moduleRe, wanted) {
   return out;
 }
 /** A Jira write is a TWO-LINE shape (`jira(\`/rest/api/…\`, {` then `method: "POST",`), so
- *  it is matched on the whole file rather than per line — the only rule here that is. */
+ *  it is matched on the whole file rather than per line — the only rule here that is.
+ *
+ *  F-750 — THE VERB IS THE SIGNAL; THE QUOTE AROUND IT IS NOT. The first draft matched
+ *  DOUBLE quotes only, so the detector was quote-shape dependent: `campaign-sample-live.mjs`
+ *  really POSTs an attachment to `/rest/api/3/issue/${state.A}/attachments` with
+ *  `method: 'POST'`, and MEASURED on that file the path half was TRUE while the verb half
+ *  was FALSE — `writesJira` = false on a file that writes Jira. It passes today only because
+ *  it declares `["listeners","issues"]` for other reasons; a NEW driver whose ONLY mutation
+ *  is that same single-quoted shape declares `[]`, rule 4g stays green, and it writes a real
+ *  project unannounced. Four other scripts here already carry `method: '` at a `/rest/api/`
+ *  path. Both quote styles and a template literal are now accepted, and PATCH joins the verb
+ *  list — which is exactly the set its `gh -X` sibling `writesRepo` already matched, in the
+ *  quote class `["']` it already used. The two halves of one question should not have
+ *  disagreed about what a quote is. */
 function writesJira(code) {
-  return /\/rest\/(api|servicedeskapi)\//.test(code) && /\bmethod:\s*"(POST|PUT|DELETE)"/.test(code);
+  return /\/rest\/(api|servicedeskapi)\//.test(code)
+    && /\bmethod:\s*["'`](POST|PUT|PATCH|DELETE)["'`]/.test(code);
 }
 /* A NAME QUOTED INSIDE ANOTHER STRING IS A SEARCH PATTERN, NOT A CALL (F-733).
  * `campaign-test-run-ui-live.mjs` watches the network for a save it must NEVER see —
@@ -1518,6 +1532,20 @@ ok(callsMutator('const s = await invoke("saveSkill", { skill });').length === 1,
   "POSITIVE CONTROL (F-718): …and on the skill write knowledge-doors-editor-live.mjs makes into the shared store");
 ok(callsMutator('const post = await jira(`/rest/api/3/issue/${k}/comment`, {\n  method: "POST",\n  body,\n});').length === 1,
   "POSITIVE CONTROL (F-718): …and on a REAL Jira write, whose url and method sit on different lines");
+/* F-750 — THE SAME WRITE IN THE OTHER QUOTE. Lifted from `campaign-sample-live.mjs:51`, which
+   really POSTs an attachment to a real issue; the detector read DOUBLE quotes only, so the
+   path half was true, the verb half was false, and a file that writes Jira scanned as
+   read-only. That driver survives on an unrelated declaration; the next one would not. */
+ok(callsMutator("const upload = await fetch(BASE + `/rest/api/3/issue/${state.A}/attachments`, { method: 'POST', headers: h, body: form });").length === 1,
+  "POSITIVE CONTROL (F-750): a SINGLE-QUOTED method beside a REST path is the same Jira write — measured FALSE before the fix on campaign-sample-live.mjs's real attachment POST");
+ok(callsMutator("await jira(`/rest/api/3/issue/${k}`, { method: `PUT`, body });").length === 1,
+  "POSITIVE CONTROL (F-750): …and a TEMPLATE-quoted one, so no third quote shape is left as a hole");
+ok(callsMutator('await jira(`/rest/api/3/field/${id}`, { method: "PATCH", body });').length === 1,
+  "POSITIVE CONTROL (F-750): PATCH is a write too — the verb set now matches its `gh -X` sibling `writesRepo`, which has always accepted it");
+ok(callsMutator("const r = await fetch(BASE + '/rest/api/3/issue/X', { method: 'GET' });").length === 0,
+  "NEGATIVE CONTROL (F-750): widening the QUOTE class did not widen the VERB class — a single-quoted GET at a REST path is still a read");
+ok(callsMutator("const r = await fetch(HOOK, { method: 'POST', body });").length === 0,
+  "NEGATIVE CONTROL (F-750): …and the harness web trigger is still not Jira in the other quote either — both halves of the two-part predicate still have to hold");
 /* NEGATIVE CONTROLS — reads, and the two-part Jira predicate's halves on their own. */
 ok(callsMutator('const r = await invoke("getScheduledJob", { id });').length === 0,
   "NEGATIVE CONTROL: a getter is not a mutator");

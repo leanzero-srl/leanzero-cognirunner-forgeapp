@@ -99,7 +99,8 @@ const SECRET_KEY_HINTS = [
  *   COGNIRUNNER_OPENAI_API_KEY          — the legacy single-provider slot index.js still reads
  *   COGNIRUNNER_FORGE_IDENTITY          — carries the identity's token (src/git-connections.js)
  *   COGNIRUNNER_DOC_PROCESSOR_REMOTE    — `{url, bearer}` (index.js)
- *   COGNIRUNNER_WEB_SEARCH_REMOTE       — `{url, bearer}` (index.js)
+ *   COGNIRUNNER_WEB_SEARCH_REMOTE       — `{url, bearer, serperKey?, githubToken?}` (index.js)
+ *   COGNIRUNNER_CONTEXT7_REMOTE         — `{url, apiKey?}` (index.js) — F-778
  *   git_conn_secret:*                   — the connection token (git-connections.js)
  *   git_hook_secret:*                   — the webhook SIGNING secret (shared/git-ids.js)
  *   webtrigger_url:*                    — a CAPABILITY URL with an unguessable path token
@@ -114,6 +115,24 @@ const SECRET_KEY_HINTS = [
  * direction: a false positive costs a driver a fingerprint instead of a value (and every
  * driver found in the F-769 census only ever wanted PRESENT/ABSENT), while a false
  * negative costs a tenant a live credential in a committed evidence file.
+ *
+ * F-778 — WHY BOTH HALVES ARE NOT ENOUGH, AND WHAT NOW POLICES THE CENSUS. The MCP-remote
+ * triple is three sibling rows written by three sibling resolvers, and only two of them
+ * were ever declared: `saveContext7Remote` stores the admin's context7 API key as
+ * `apiKey` in `COGNIRUNNER_CONTEXT7_REMOTE` (index.js), whose flattened name
+ * (`cognirunnercontext7remote`) contains none of `SECRET_KEY_HINTS` — so the catch-all
+ * that exists for exactly this case could not save it either. The catch-all reads the KEY
+ * NAME; a row is a credential because of what is INSIDE it, and those two only coincide
+ * when whoever named the key happened to say so.
+ *
+ * So adding one name here would have been the fix that schedules its own return. The
+ * MECHANISM is a test that reads `src/` the way the leak does: every KVS write site whose
+ * stored object carries a field named like a secret must land on a key this predicate
+ * already covers, or be named in a reviewed exception with its reason. It lives beside
+ * the other F-769 checks in `test-harness/scripts/rules-runtime-regression.test.mjs`
+ * ("every src write site that stores a secret is covered by the census"), and it carries
+ * a positive control — a synthetic write site with an undeclared key — so a green run
+ * means the scanner still SEES a leak rather than that it stopped looking.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
 export const CREDENTIAL_KEY_FAMILIES = [
   "COGNIRUNNER_KEY_",
@@ -121,6 +140,7 @@ export const CREDENTIAL_KEY_FAMILIES = [
   "COGNIRUNNER_FORGE_IDENTITY",
   "COGNIRUNNER_DOC_PROCESSOR_REMOTE",
   "COGNIRUNNER_WEB_SEARCH_REMOTE",
+  "COGNIRUNNER_CONTEXT7_REMOTE",
   "git_conn_secret:",
   "git_hook_secret:",
   "webtrigger_url:",

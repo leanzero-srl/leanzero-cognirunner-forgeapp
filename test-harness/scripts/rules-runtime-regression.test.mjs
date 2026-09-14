@@ -761,6 +761,205 @@ try {
     const plant = await POST({ action: "pipelineRow", op: "plant", connId: "c1", repoId: "acme/widget", note: "COGNIRUNNER_KEY_openai" });
     assert.equal(plant.statusCode, 400, "the write door still refuses a body that mentions a credential family");
   });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-778 — THE CENSUS ITSELF IS NOW DERIVED FROM `src/`, NOT REMEMBERED.
+   *
+   * `COGNIRUNNER_CONTEXT7_REMOTE` stores the admin's context7 API key as `apiKey`
+   * (index.js `saveContext7Remote`). It is the THIRD member of the MCP-remote triple;
+   * its two siblings are declared families and it was not, and its flattened name carries
+   * none of `SECRET_KEY_HINTS`, so the name catch-all could not save it either — the
+   * read ceiling answered `{key, value:{url, apiKey:"<plaintext>"}}`.
+   *
+   * Declaring one more name would leave the MECHANISM open: a family is remembered by
+   * whoever adds a write site, and the F-769 census was assembled by reading `src/` ONCE.
+   * So this reads `src/` EVERY RUN, the way the leak does — every KVS write call
+   * (`storage|kvs|store .set(key, value)`) whose stored object carries a field named like
+   * a secret must land on a key `isCredentialKey` already covers, or appear in the
+   * reviewed table below with the reason it is not a credential.
+   *
+   * HOW IT READS. Comments are stripped (a docblock naming `apiKey` is prose), key
+   * expressions are resolved through the file's own string constants and through the
+   * key-builder arrows the repo writes everywhere (`(id) => \`git_conn_secret:${id}\``,
+   * `assertKvsKey(\`...\`)`, `PREFIX + id`), and the stored object is read either inline
+   * or from the nearest preceding `const row = { … }` / `row.field =` for the identifier
+   * that is handed to `.set`. A VALUE that is a bare identifier named like a secret
+   * (`storage.set(providerKeySlot(p), key)`) counts too — a credential slot's value is a
+   * naked string with no field to read.
+   *
+   * WHAT IT DOES NOT DO, stated rather than hidden. It is a SOURCE scan, not a type
+   * checker: a secret that reaches storage through a helper two files away, or under a
+   * field whose name says nothing (`serperKey` only qualifies because it ends in `Key`),
+   * is invisible to it. It is a floor under the census, not a proof of its completeness.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  /* Every KVS write site in `src/` whose stored value carries a secret-looking field.
+     `sources` is a Map(name -> source) so the positive control can hand it a fake file. */
+  const scanSecretWriteSites = (sources, hints) => {
+    const flat = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const isSecretField = (n) => hints.some((h) => flat(n).includes(h)) || /key$/i.test(n);
+    /* Balanced argument text for a call whose "(" is at `openIdx`. A regex cannot do this:
+       an object literal argument nests braces, parens and strings. */
+    const argsOf = (src, openIdx) => {
+      let depth = 0, out = "", inS = null, esc = false;
+      for (let i = openIdx; i < src.length; i++) {
+        const c = src[i];
+        if (inS) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === inS) inS = null; out += c; continue; }
+        if (c === '"' || c === "'" || c === "`") { inS = c; out += c; continue; }
+        if (c === "(") { depth++; if (depth === 1) continue; }
+        if (c === ")") { depth--; if (depth === 0) return out; }
+        out += c;
+      }
+      return null;
+    };
+    const splitTop = (s) => {
+      const parts = []; let depth = 0, cur = "", inS = null, esc = false;
+      for (const c of s) {
+        if (inS) { cur += c; if (esc) esc = false; else if (c === "\\") esc = true; else if (c === inS) inS = null; continue; }
+        if (c === '"' || c === "'" || c === "`") { inS = c; cur += c; continue; }
+        if ("([{".includes(c)) depth++;
+        if (")]}".includes(c)) depth--;
+        if (c === "," && depth === 0) { parts.push(cur); cur = ""; continue; }
+        cur += c;
+      }
+      parts.push(cur); return parts;
+    };
+    const code = new Map();
+    for (const [name, raw] of sources) code.set(name, stripJsComments(raw));
+    /* Two cross-file dictionaries, because a key is almost never written at its write
+       site: SCREAMING_CASE string constants, and the key-BUILDER arrows. */
+    const constants = new Map(), builders = new Map(), ownConstants = new Map();
+    for (const [name, src] of code) {
+      const own = new Map();
+      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'`])([^"'`\n]*)\2\s*;/g)) if (!own.has(m[1])) own.set(m[1], m[3]);
+      ownConstants.set(name, own);
+      for (const [k, v] of own) if (/^[A-Z][A-Z0-9_]*$/.test(k) && !constants.has(k)) constants.set(k, v);
+      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*=>\s*(?:[A-Za-z_$][\w$]*\()?\s*`([^`]*)`/g)) if (!builders.has(m[1])) builders.set(m[1], m[2]);
+      for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*=>\s*([A-Z_][\w$]*)\s*\+/g)) if (!builders.has(m[1])) builders.set(m[1], "${" + m[2] + "}");
+    }
+    const sites = [];
+    for (const [file, src] of code) {
+      const lines = src.split("\n");
+      const own = ownConstants.get(file);
+      const constOf = (n) => (own.has(n) ? own.get(n) : (constants.has(n) ? constants.get(n) : null));
+      /* The key PREFIX a write site lands on: interpolations become the end of the
+         prefix, which is what a family is — `git_conn_secret:${id}` -> `git_conn_secret:`. */
+      const resolveKey = (expr, win, depth = 0) => {
+        if (depth > 3) return null;
+        let e = expr.trim();
+        const tpl = e.match(/^`([\s\S]*)`$/);
+        if (!tpl) {
+          const lit = e.match(/^["']([^"']*)["']$/);
+          if (lit) return lit[1];
+          const call = e.match(/^([A-Za-z_$][\w$]*)\s*\(/);
+          if (call && builders.has(call[1])) e = builders.get(call[1]);
+          else {
+            const plus = e.match(/^([A-Za-z_$][\w$]*)\s*\+/);
+            if (plus && constOf(plus[1]) !== null) return constOf(plus[1]);
+            if (/^[A-Za-z_$][\w$]*$/.test(e)) {
+              if (constOf(e) !== null) return constOf(e);
+              /* a local `const key = gitHookSecretKey(a, b);` — follow it once */
+              const re = new RegExp("(?:const|let|var)\\s+" + e + "\\s*=\\s*([^;\\n]+);", "g");
+              let mm, last = null;
+              while ((mm = re.exec(win))) last = mm[1];
+              return last ? resolveKey(last, win, depth + 1) : null;
+            }
+            return null;
+          }
+        } else e = tpl[1];
+        e = e.replace(/\$\{([A-Za-z_$][\w$]*)\}/g, (_s, n) => (constOf(n) !== null ? constOf(n) : " "));
+        e = e.replace(/\$\{[\s\S]*?\}/g, " ");
+        return e.split(/\s/)[0] || null;
+      };
+      const WRITE_CALL = /\b(?:storage|kvs|store)\s*\.\s*set\s*\(/g;
+      let wm;
+      while ((wm = WRITE_CALL.exec(src))) {
+        const open = wm.index + wm[0].length - 1;
+        const argText = argsOf(src, open);
+        if (!argText) continue;
+        const parts = splitTop(argText);
+        if (parts.length < 2) continue;
+        const line = src.slice(0, wm.index).split("\n").length;
+        const keyExpr = parts[0].trim(), valueExpr = parts[1].trim();
+        const win = lines.slice(Math.max(0, line - 81), line).join("\n");
+        const fields = new Set();
+        const scanFields = (txt) => { for (const m of txt.matchAll(/(?:^|[{,\s])["']?([A-Za-z_$][\w$]*)["']?\s*[:=](?!=)/g)) if (isSecretField(m[1])) fields.add(m[1]); };
+        if (/^\{[\s\S]*\}$/.test(valueExpr)) scanFields(valueExpr);
+        const bare = valueExpr.match(/^([A-Za-z_$][\w$]*)$/);
+        if (bare) {
+          const name = bare[1];
+          if (isSecretField(name)) fields.add(name);
+          const re = new RegExp("(?:const|let|var)\\s+" + name + "\\s*=\\s*\\{", "g");
+          let mm, at = null;
+          while ((mm = re.exec(win))) at = mm.index;
+          if (at !== null) {
+            const braceStart = win.indexOf("{", at);
+            let depth = 0, j = braceStart;
+            for (; j < win.length; j++) { if (win[j] === "{") depth++; else if (win[j] === "}") { depth--; if (!depth) break; } }
+            scanFields(win.slice(braceStart, j + 1));
+          }
+          for (const m2 of win.matchAll(new RegExp("\\b" + name + "\\.([A-Za-z_$][\\w$]*)\\s*=(?!=)", "g"))) if (isSecretField(m2[1])) fields.add(m2[1]);
+        }
+        if (fields.size) sites.push({ file, line, keyExpr, key: resolveKey(keyExpr, win), fields: [...fields].sort() });
+      }
+    }
+    return sites;
+  };
+  /* REVIEWED AND NOT A CREDENTIAL — key prefix -> why the secret-looking field is not one.
+     Per KEY, so a NEW key carrying the same field name still fails: the judgement being
+     recorded is "this row is safe", never "this word is safe". */
+  const NOT_A_CREDENTIAL = new Map([
+    ["git_conn:", "the PUBLIC connection row: `hasToken` is a boolean and `tokenSlot` is the NAME of the git_conn_secret:* row, which is itself a declared family"],
+    ["COGNIRUNNER_AI_BUDGET", "`tokensPerMinute` is the TPM pacing number (src/shared/ai-budget.js), not an auth token"],
+    ["ai_cost:", "`tokens` is a usage COUNT for the cost meter"],
+    ["pf_exec:", "`issueKey` is a Jira issue key (LZPT-1), which is not secret and is in every log line"],
+    ["coder_ticket:", "`issueKey` — a Jira issue key"],
+    ["coder_pin:", "`issueKey` — a Jira issue key"],
+    ["coder_log:", "`issueKey` — a Jira issue key"],
+    ["va_item:", "`issueKey` — a Jira issue key"],
+    ["va_tick:", "`key` on a tick receipt is the receipt's own id, not a credential"],
+    ["va_effect:", "`issueKey`/`key` identify the issue the effect landed on"],
+  ]);
+  await check("every src/ write site that stores a secret is covered by the census (F-778)", async () => {
+    const SRC = new URL("../../src/", import.meta.url);
+    const sources = new Map();
+    for (const dir of ["", "shared/"]) {
+      for (const f of readdirSync(new URL(dir, SRC)).filter((n) => n.endsWith(".js")).sort()) {
+        sources.set(dir + f, readFileSync(new URL(dir + f, SRC), "utf8"));
+      }
+    }
+    /* The field words are the hook's OWN list, read from its one home — the same words the
+       write door refuses a FIELD for. Retyping them here would be the second home this
+       whole rule exists to prevent. */
+    const hookSrc = readFileSync(new URL("test-hook.js", SRC), "utf8");
+    const hints = [...(hookSrc.match(/const SECRET_KEY_HINTS\s*=\s*\[([\s\S]*?)\]/)?.[1] || "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(hints.length >= 10, `SECRET_KEY_HINTS must be READ from src/test-hook.js (got ${hints.length})`);
+
+    const sites = scanSecretWriteSites(sources, hints);
+    assert.ok(sites.length >= 20, `the scanner must still SEE the write sites (found ${sites.length})`);
+    /* Every site resolves to a key, or the scanner has stopped understanding how this repo
+       builds KVS keys — an unresolved key is a hole, not a pass. */
+    const unresolved = sites.filter((s) => !s.key);
+    assert.deepEqual(unresolved, [], "every secret-carrying write site must resolve to a key prefix");
+
+    const uncovered = sites.filter((s) => !isCredentialKey(s.key) && !NOT_A_CREDENTIAL.has(s.key));
+    assert.deepEqual(uncovered.map((s) => `${s.file}:${s.line} ${s.key} {${s.fields.join(",")}}`), [],
+      "a KVS row stores a secret-looking field under a key the read ceiling does not mask — declare the family in CREDENTIAL_KEY_FAMILIES, or add it to NOT_A_CREDENTIAL with the reason");
+
+    // THE FINDING ITSELF, named: the third MCP remote is in the census now.
+    const context7 = sites.find((s) => s.key === "COGNIRUNNER_CONTEXT7_REMOTE");
+    assert.ok(context7 && context7.fields.includes("apiKey"), "the scanner sees saveContext7Remote storing apiKey");
+    assert.equal(isCredentialKey("COGNIRUNNER_CONTEXT7_REMOTE"), true, "…and the read ceiling masks it (F-778)");
+
+    // POSITIVE CONTROL: a fake write site with an undeclared key must be REPORTED and UNCOVERED.
+    const fake = new Map([["fake.js", 'const SLOT = "cognirunner_new_thing";\nawait storage.set(SLOT, { url, apiKey: k });\n']]);
+    const found = scanSecretWriteSites(fake, hints);
+    assert.equal(found.length, 1, "POSITIVE CONTROL: the scanner finds a synthetic secret write site");
+    assert.equal(found[0].key, "cognirunner_new_thing");
+    assert.equal(isCredentialKey(found[0].key) || NOT_A_CREDENTIAL.has(found[0].key), false,
+      "POSITIVE CONTROL: …and it is UNCOVERED, so the rule above would fail on it");
+    // …and a comment that merely NAMES a credential field is prose, not a write site.
+    const prose = new Map([["prose.js", '/* the slot stores { apiKey } — see F-778 */\nawait storage.set("plain_row", { count: 1 });\n']]);
+    assert.deepEqual(scanSecretWriteSites(prose, hints), [], "POSITIVE CONTROL: a docblock naming apiKey is not a write site");
+  });
   await check("kvSet stays behind HARNESS_SECRET", async () => {
     const response = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "kvSet", key: "COGNIRUNNER_AI_PROVIDER", value: null }) });
     assert.equal(response.statusCode, 404);

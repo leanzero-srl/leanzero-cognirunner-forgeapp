@@ -234,6 +234,97 @@ export const HARNESS_GATED_EXPORTS = Object.freeze([
 ]);
 
 /*
+ * F-704 — A LIST OF WHO MUST ASK IS ONLY A GATE IF IT IS CHECKED AGAINST WHO IS THERE.
+ *
+ * F-694 moved the gated-export rule out of two test files and into `HARNESS_GATED_EXPORTS`
+ * above — but the only completeness check was `occurrences of "if (!harnessEnabled())" ===
+ * HARNESS_GATED_EXPORTS.length`, and BOTH SIDES OF THAT ARE THE GATED SET. An export added
+ * WITHOUT the gate line AND without joining the list moves neither number: 9 === 9, the
+ * per-name loop iterates the list and so never visits it, and a KVS-touching export ships
+ * reachable with no `HARNESS_SECRET` — the exact production-silence property the gate exists
+ * for. The docblock above claimed that case was covered. It caught only the GATED-but-
+ * unlisted one (count 10 vs length 9).
+ *
+ * The missing half is the COMPLEMENT, so the complement is data too. These three lists
+ * PARTITION `Object.keys(await import("./harness-fault.js"))` — every export is on exactly
+ * one, and nothing is on none — which is what turns "the list is right" from a claim into an
+ * assertion. Adding an export to this module now fails the offline suites until its author
+ * has said, in this file, which of the three it is:
+ *
+ *  · `HARNESS_GATED_EXPORTS`          — touches storage; opens with `if (!harnessEnabled())`.
+ *  · `HARNESS_INHERITED_GATE_EXPORTS` — touches storage ONLY through a gated export, so it
+ *    inherits the gate instead of restating it. This pair used to be a hand-written denylist
+ *    inside `harness-fault-ttl.test.mjs` — a THIRD home of the rule, which is why it is here.
+ *  · `HARNESS_UNGATED_EXPORTS`        — pure: constants, key builders, clamps, predicates,
+ *    encoders and the error class. None of them names `storage.` at all, and the shared
+ *    contract asserts that of every one of them, so "pure" is checked and not asserted.
+ *
+ * The contract itself has ONE home — `test-harness/lib/gated-export-contract.mjs` — asked by
+ * both suites, with a fake extra export as its negative control.
+ */
+export const HARNESS_INHERITED_GATE_EXPORTS = Object.freeze([
+  "keyReadFaultMode",  // reads through readHarnessFault (F-629)
+  "jiraFaultStatus",   // reads through readHarnessFault (F-655)
+]);
+
+export const HARNESS_UNGATED_EXPORTS = Object.freeze([
+  // The lists themselves, and the predicate the gate is made of.
+  "HARNESS_GATED_EXPORTS",
+  "HARNESS_INHERITED_GATE_EXPORTS",
+  "HARNESS_UNGATED_EXPORTS",
+  "harnessEnabled",
+  "HarnessFault",
+  // Kinds, key shapes and the caps every lever is clamped to.
+  "HARNESS_FAULT_MAX_COUNT",
+  "HARNESS_FAULT_TTL_SECONDS",
+  "HARNESS_FAULT_GIT_DISPATCH",
+  "HARNESS_FAULT_HOOK_PROMOTE",
+  "HARNESS_FAULT_KEY_READ",
+  "HARNESS_FAULT_JIRA",
+  "HARNESS_FAULT_KEY_PREFIX",
+  "KEY_READ_FAULT_MODES",
+  "HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS",
+  "JIRA_FAULT_USER_SEARCH_PATH",
+  "JIRA_FAULT_PATHS",
+  "HARNESS_JIRA_FAULT_MAX_TTL_SECONDS",
+  "jiraFaultStatusValid",
+  "harnessFaultKey",
+  "faultTtlOption",
+  "faultRowDeadline",
+  "faultRowExpired",
+  // The sweep's constants, cursor grammar and answer tail — all pure.
+  "HARNESS_FAULT_SWEEP_PAGE_SIZE",
+  "HARNESS_FAULT_SWEEP_MAX_PAGES",
+  "HARNESS_FAULT_SWEEP_DEFAULT_MS",
+  "HARNESS_FAULT_SWEEP_MAX_MS",
+  "HARNESS_FAULT_SWEEP_MAX_ROWS",
+  "KVS_DELETE_BATCH",
+  "KVS_DELETE_PAUSE_MS",
+  "HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY",
+  "encodeSweepCursor",
+  "SWEEP_CURSOR_MAX_BYTES",
+  "sweepCursorWellFormed",
+  "BAD_SWEEP_CURSOR_CODE",
+  "decodeSweepToken",
+  "decodeSweepCursor",
+  "sweepAnswerTail",
+  "sweepBudgetMs",
+  // The plant's constants and clamps.
+  "HARNESS_FAULT_PLANT",
+  "HARNESS_FAULT_PLANT_PREFIX",
+  "HARNESS_FAULT_PLANT_MAX",
+  "HARNESS_FAULT_PLANT_MS_PER_ROW",
+  "HARNESS_FAULT_PLANT_CALL_MAX",
+  "HARNESS_FAULT_PLANT_TTL_SECONDS",
+  "HARNESS_FAULT_PLANT_BACKDATE_SECONDS",
+  "plantCountClamped",
+  "plantStartIndexClamped",
+  "plantMaxForCall",
+  "plantTtlSeconds",
+  "plantedFaultKey",
+]);
+
+/*
  * F-664 — THE ONE WRITE AND THE ONE READ OF A FAULT ROW, AND WHY THE PLATFORM TTL IS NOT
  * ENOUGH ON ITS OWN.
  *

@@ -45,6 +45,8 @@ import storage, { kvs } from "../lib/mock-kvs.mjs";
 /* F-690: the drain loop's decision has ONE home — the pure function the live driver obeys.
  * This suite must not carry a second, hand-written copy of it. */
 import { decideSweepStep, newDrainState, DELETES_FAILING_BACKOFF_MS } from "../lib/sweep-drain.mjs";
+/* F-704: the gated-export contract is a shared rule, not a second hand-written copy. */
+import { gatedExportViolations } from "../lib/gated-export-contract.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -124,10 +126,37 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     ok(/^\s*\([^)]*\)\s*=>\s*\{\s*if \(!harnessEnabled\(\)\)/.test(body),
       `F-694: the gate is the FIRST statement of ${name} — before any storage call`);
   }
-  for (const name of ["keyReadFaultMode", "jiraFaultStatus"]) {
-    ok(!fault.HARNESS_GATED_EXPORTS.includes(name),
-      `F-694: ${name} is NOT on the list — it touches storage only through readHarnessFault and inherits the gate`);
+  /* F-704 — AND THE LIST IS CHECKED AGAINST WHO IS ACTUALLY THERE.
+   * The count above compares the gate-line count to the gated list's length: both sides are
+   * the gated set, so an export added with NEITHER the gate NOR a list entry left 9 === 9 and
+   * the loop above never visited it. The complement is data now too, and the three lists must
+   * PARTITION `Object.keys(module)` exactly. The rule has ONE home — lib/gated-export-contract
+   * .mjs — asked identically by async-handler-helpers.test.mjs. The hand-written
+   * ["keyReadFaultMode","jiraFaultStatus"] denylist that used to live here was a THIRD home of
+   * it; it is now `HARNESS_INHERITED_GATE_EXPORTS`, in the module, beside the gate. */
+  const contractArgs = {
+    names: Object.keys(fault), src: faultSrc,
+    gated: fault.HARNESS_GATED_EXPORTS,
+    inherited: fault.HARNESS_INHERITED_GATE_EXPORTS,
+    ungated: fault.HARNESS_UNGATED_EXPORTS,
+  };
+  const violations = gatedExportViolations(contractArgs);
+  ok(violations.length === 0,
+    `F-704: the three lists partition the module's real exports, every gated one opens with the gate, and no other one names storage. (${violations.join(" | ")})`);
+  for (const name of fault.HARNESS_INHERITED_GATE_EXPORTS) {
+    ok(!fault.HARNESS_GATED_EXPORTS.includes(name) && typeof fault[name] === "function",
+      `F-694: ${name} is NOT on the gated list — it touches storage only through readHarnessFault and inherits the gate`);
   }
+  // NEGATIVE CONTROL: an export that joined no list is the F-704 defect itself. Without this,
+  // a contract that silently returned [] for everything would read exactly like a pass.
+  ok(gatedExportViolations({ ...contractArgs, names: [...Object.keys(fault), "purgeHarnessFaults"] })
+      .some((m) => /purgeHarnessFaults/.test(m) && /NONE of/.test(m)),
+    "F-704 (negative control): an ungated, unlisted export FAILS the contract by name");
+  // …and a gated export that does ANYTHING before asking fails too.
+  ok(gatedExportViolations({ ...contractArgs,
+      src: faultSrc.replace(/(export const disarmHarnessFault = async \(kind, parts\) => \{)/, "$1 const k0 = 1;") })
+      .some((m) => /disarmHarnessFault/.test(m) && /first statement/.test(m)),
+    "F-704 (negative control): a gated export that acts before asking FAILS the contract");
 }
 
 /* ═════ 2. A ROW PAST `until` READS AS ABSENT, AND IS DELETED ═════ */

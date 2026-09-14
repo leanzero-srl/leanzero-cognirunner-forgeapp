@@ -26,6 +26,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { errorSignature, normalizeMemoryText } from "../../src/memories.js";
+/* F-704: the gated-export census is a shared rule, asked here and in harness-fault-ttl.test.mjs. */
+import { gatedExportViolations } from "../lib/gated-export-contract.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
@@ -1576,9 +1578,27 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
    * name list below still ran over seven, so neither new lever's first statement was ever
    * checked here. The count now comes from `HARNESS_GATED_EXPORTS.length` and the names come
    * from the list itself, so adding an export is one edit in one place. */
-  const gated = (await import("../../src/harness-fault.js")).HARNESS_GATED_EXPORTS;
+  const faultMod = await import("../../src/harness-fault.js");
+  const gated = faultMod.HARNESS_GATED_EXPORTS;
   ok(Array.isArray(gated) && gated.length > 0,
     "F-694: the gated-export list is exported by the module that owns the gate");
+  /* F-704 — THE SAME CENSUS THIS SUITE USED TO SKIP, FROM THE SAME SHARED RULE.
+   * The count below is gate-lines vs gated-list-length: both sides are the gated set, so an
+   * export added with neither the gate nor a list entry moved neither and the name loop never
+   * visited it. The three module lists must PARTITION `Object.keys(module)`; the contract
+   * lives in lib/gated-export-contract.mjs and harness-fault-ttl.test.mjs asks it identically,
+   * so this is one rule asked twice, never two copies of it. */
+  const census = gatedExportViolations({
+    names: Object.keys(faultMod), src: faultSrc,
+    gated, inherited: faultMod.HARNESS_INHERITED_GATE_EXPORTS, ungated: faultMod.HARNESS_UNGATED_EXPORTS,
+  });
+  ok(census.length === 0,
+    `F-704: every export of harness-fault.js is classified, and the classification matches its source (${census.join(" | ")})`);
+  ok(gatedExportViolations({
+      names: [...Object.keys(faultMod), "purgeHarnessFaults"], src: faultSrc,
+      gated, inherited: faultMod.HARNESS_INHERITED_GATE_EXPORTS, ungated: faultMod.HARNESS_UNGATED_EXPORTS,
+    }).some((m) => /purgeHarnessFaults/.test(m)),
+    "F-704 (negative control): an unlisted export FAILS the census here too");
   ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === gated.length,
     `F-522.SOURCE: …and asked by every export on HARNESS_GATED_EXPORTS (${gated.length}) and by nothing else (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
   for (const fn of gated) {

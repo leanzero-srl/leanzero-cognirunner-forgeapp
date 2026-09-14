@@ -29,7 +29,7 @@
  * Both are owed to a live run.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
-import { judgeTickReceipt, receiptArm, receiptIdentity, receiptsOf, newestReceipt, receiptsUnavailableOf, PURGE_GATE, TICK_EXPECTATIONS } from "../lib/va-tick-receipt.mjs";
+import { judgeTickReceipt, receiptArm, receiptIdentity, receiptsOf, newestReceipt, receiptsUnavailableOf, receiptAppeared, receiptPoll, receiptPollNew, unavailableNote, PURGE_GATE, TICK_EXPECTATIONS } from "../lib/va-tick-receipt.mjs";
 
 let pass = 0, fail = 0;
 const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok   ${what}`); } else { fail++; console.log(`  FAIL ${what}`); } };
@@ -196,6 +196,76 @@ console.log("\n7 · F-832 — AN UNREADABLE RECEIPT LIST IS N/V, NAMED, ON EITHE
   const explicit = judgeTickReceipt({ before: prep, after: null, afterUnavailable: "scan_failed", taskDone: true, expect: "not-settling" });
   ok(explicit.verdict === "N/V" && /scan_failed/.test(explicit.reason),
     "…and the explicit `afterUnavailable` flag is honoured for a caller that carries the reason separately");
+}
+
+console.log("\n6 · F-839 — receiptAppeared / receiptPoll, THE SIX INLINE DRIVERS' TWO QUESTIONS");
+{
+  const faulted = (reason) => ({ id: "a1", receipts: [], receiptsUnavailable: reason, lastTick: null });
+  const healthy = (rows) => ({ id: "a1", receipts: rows, lastTick: (rows[0] || {}).at || null });
+  const prep = receipt("29528520", "2026-09-14T10:03:44.000Z", [], { swept: 2, worked: 1 });
+  const side = (r) => ({ receipt: r, unavailable: null });
+
+  /* 1 — THE SAME-BUCKET OVERWRITE, which is the whole of the count defect in
+     va-receipt-copy-live's `tick()`. `tickId` is unchanged (one five-minute bucket, one
+     row, `receipts.length` FROZEN) and `at` moved, so a new receipt IS there. */
+  const rewritten = receipt("29528520", "2026-09-14T10:04:51.000Z", [], { swept: 3, worked: 2 });
+  const over = receiptAppeared(side(prep), side(rewritten));
+  ok(over.appeared === true && over.sameBucket === true && /count could not have seen this/.test(over.reason),
+    "a SAME-BUCKET rewrite is a new receipt — identity sees it (`at` moved) and the reason says a count could not");
+  ok(receiptsOf(healthy([rewritten])).receipts.length === receiptsOf(healthy([prep])).receipts.length,
+    "…and the COUNT the old driver waited on is IDENTICAL across that overwrite, which is why its 180 s wait expired on a tick that wrote");
+
+  /* 2 — IDENTICAL IDENTITY. Either a byte-identical rewrite or no write at all; saying
+     which would be a guess, so it is N/V and never a FAIL. */
+  const same = receiptAppeared(side(prep), side(prep));
+  ok(same.appeared === null && /UNCHANGED in identity/.test(same.reason),
+    "an UNCHANGED identity is `appeared: null` — indistinguishable from no write, which is an N/V at the call site");
+
+  /* 3 — THE FAULT, on either side, decided BEFORE identity. */
+  ok(receiptAppeared(side(prep), { receipt: null, unavailable: "scan_failed" }).appeared === null,
+    "a fault on the AFTER read is `appeared: null`, never `false` — `receipts: []` on a faulted scan is not an absence of receipts");
+  const fb = receiptAppeared({ receipt: null, unavailable: "scan_unavailable" }, side(prep));
+  ok(fb.appeared === null && /BEFORE the tick/.test(fb.reason) && fb.unavailable === "scan_unavailable",
+    "…and a fault on the BEFORE read is too: with no baseline there is no identity to compare against");
+
+  /* 4 — THE GENUINE ABSENCE, which is the only thing that may grade as `false`. */
+  const none = receiptAppeared(side(null), side(null));
+  ok(none.appeared === false && /was read and holds no receipt/.test(none.reason),
+    "a list that WAS read and holds nothing is `appeared: false` — the one answer a driver may grade on");
+  const fresh = receiptAppeared(side(null), side(prep));
+  ok(fresh.appeared === true && fresh.sameBucket === false,
+    "…and the first receipt on a fresh agent appears, with sameBucket false");
+
+  /* 5 — THE POLL PREDICATE. The two va-shadow-live waits spun their FULL TICK_WAIT_S /
+     POST_WAIT_S against a door that had already answered, then read the timeout as
+     "no receipt appeared". `stop` means THE ANSWER IS KNOWN. */
+  ok(receiptPoll(healthy([]), "prepare").stop === false,
+    "an EMPTY but readable list does not stop the poll — the tick may still be in flight");
+  ok(receiptPoll(healthy([prep]), "prepare").stop === true,
+    "a receipt of the wanted phase stops it");
+  const p3 = receiptPoll(faulted("scan_unavailable"), "prepare");
+  ok(p3.stop === true && p3.receipt === null && p3.unavailable === "scan_unavailable",
+    "and a FAULT stops it IMMEDIATELY with the reason — re-asking only spends the wait to arrive at the same unreadable list");
+  ok(receiptPoll(healthy([receipt("29528520", "2026-09-14T10:03:44.000Z", [], { phase: "post" })]), "prepare").stop === false,
+    "a receipt of ANOTHER phase does not stop a prepare poll (va-shadow-live waits on prepare, then on post)");
+
+  /* 6 — THE WAITING FORM OF THE IDENTITY QUESTION, which is what va-receipt-copy-live
+     needed and a count could not give it. */
+  const before = newestReceipt(healthy([prep]), null);
+  ok(receiptPollNew(before, healthy([prep]), null).stop === false,
+    "receiptPollNew keeps waiting while the identity is unchanged — `at` may yet move inside the bucket");
+  ok(receiptPollNew(before, healthy([rewritten]), null).stop === true,
+    "…stops the moment `at` moves, even though the row COUNT never did");
+  ok(receiptPollNew(before, faulted("scan_failed"), null).stop === true,
+    "…and stops at once on a fault, so the caller reports the named reason instead of a timeout");
+
+  /* 7 — THE SENTENCE HAS ONE HOME, and it names the reason it was handed. */
+  ok(/scan_failed/.test(unavailableNote("scan_failed", "the backoff row")) && /the backoff row/.test(unavailableNote("scan_failed", "the backoff row")),
+    "unavailableNote names BOTH the door's reason and what would have been graded on it");
+
+  /* 8 — BACK-COMPAT. A bare receipt or null, as the pre-conversion drivers held them. */
+  ok(receiptAppeared(null, rewritten).appeared === true,
+    "bare receipts on both sides still mean what they meant — a half-converted caller is never read as a wrapper object with an undefined tickId");
 }
 
 console.log(`\nva-tick-receipt: ${pass} passed, ${fail} failed`);

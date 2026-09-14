@@ -237,3 +237,103 @@ export const judgeTickReceipt = ({ before = null, after = null, taskDone = false
   if (arm === "settling") return { ...base, verdict: "FAIL", wrote, reason: `the after-window tick is STILL gated on the settle window — ${said}` };
   return { ...base, verdict: "PASS", wrote, reason: `the after-window tick is past the settle gate — ${said}` };
 };
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-839 — THE SAME TWO ANSWERS, FOR THE SIX DRIVERS THAT ASK THEM INLINE.
+ *
+ * F-823 and F-832 were closed in `judgeTickReceipt`, and `va-recreate-settle-live.mjs`
+ * is the only file that calls it. Six other live drivers kept their OWN two-line
+ * `receiptsOf`/`latest` pair, read `.receipts` and nothing else, and therefore carry both
+ * defects verbatim:
+ *
+ *   · on a scan fault (`receiptsUnavailable`) they see "no receipts" and grade it — as a
+ *     FAIL against a product that ticked (`va-compaction-live`'s three `r1/r2/r3` sites,
+ *     `va-shadow-live`'s "no prepare receipt appeared"), or as a vacuous PASS
+ *     (`va-compaction-live`'s "no compacted{} block on the backoff tick" is TRUE of a
+ *     receipt that could not be read);
+ *   · `va-receipt-copy-live`'s `tick()` waited for `receipts.length` to GROW, and
+ *     `recordTick` `store.set`s `va_tick:{agent}:{phase}-{tickId}` — a FIVE-MINUTE bucket —
+ *     so a second tick inside one bucket overwrites in place and the length never moves.
+ *     Its wait then expires and reports "no new receipt" about a tick that wrote one;
+ *   · `va-shadow-live`'s two `pollStatus` predicates spin the FULL wait (TICK_WAIT_S,
+ *     POST_WAIT_S) on a faulted scan, because `!!latest(s, phase)` cannot tell "not yet"
+ *     from "unreadable" — and then the timeout is read as "no receipt".
+ *
+ * So the two readers above get three companions, and the six drivers own no receipt logic:
+ *
+ *   `receiptAppeared(before, after)` — the ONE home for "did a new receipt appear?",
+ *   answered on IDENTITY (`tickId` + `at`) and never on a count. `appeared` is
+ *   `true` | `false` | `null`, and `null` is the honest answer twice: when either read was
+ *   unavailable, and when the identity is UNCHANGED (a same-bucket rewrite is
+ *   indistinguishable from no write). A `null` is an N/V at the call site, never a FAIL.
+ *
+ *   `receiptPoll(body, phase)` / `receiptPollNew(before, body, phase)` — the ONE home for a
+ *   poll predicate. `stop` is true as soon as the answer is KNOWN, which includes "the scan
+ *   faulted": a driver that keeps asking a door that has already said `receiptsUnavailable`
+ *   is burning its wait to arrive at the same unreadable answer, and then mis-reading the
+ *   timeout as an absence.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * `receiptAppeared(before, after)` → `{appeared, unavailable, sameBucket, identity, reason}`.
+ *
+ * Each side is either a bare receipt / `null` or the `{receipt, unavailable}` pair the
+ * readers return — `sideOf` accepts both, so a half-converted caller keeps its meaning.
+ *
+ *  · `appeared === true`  — a receipt is there AND its identity differs from the one read
+ *    before the tick. `sameBucket` says whether `tickId` was reused, i.e. whether a COUNT
+ *    could have seen this at all.
+ *  · `appeared === false` — the list was READ, and there is no receipt at all.
+ *  · `appeared === null`  — not measured: the list could not be read (`unavailable` names
+ *    the reason), or the identity is byte-identical to the before read.
+ */
+export const receiptAppeared = (before, after) => {
+  const sBefore = sideOf(before);
+  const sAfter = sideOf(after);
+  const idBefore = receiptIdentity(sBefore.receipt);
+  const idAfter = receiptIdentity(sAfter.receipt);
+  const unavailable = sAfter.unavailable || sBefore.unavailable || null;
+  const sameBucket = !!(idBefore && idAfter && idBefore.tickId === idAfter.tickId);
+  const base = { identity: { before: idBefore, after: idAfter }, sameBucket, receipt: sAfter.receipt, unavailable };
+
+  if (unavailable) {
+    const which = sBefore.unavailable && sAfter.unavailable
+      ? `on BOTH reads (before=${sBefore.unavailable}, after=${sAfter.unavailable})`
+      : (sAfter.unavailable ? `on the read AFTER the tick (${sAfter.unavailable})` : `on the read BEFORE the tick (${sBefore.unavailable})`);
+    return { ...base, appeared: null, reason: `the receipt list could not be READ ${which} — getVaStatus answered receiptsUnavailable, so its empty receipts[] is a scan fault and not an absence of receipts` };
+  }
+  if (sameIdentity(idBefore, idAfter)) {
+    return { ...base, appeared: null, reason: `the receipt is UNCHANGED in identity (tickId=${idAfter.tickId}, at=${idAfter.at}) — a same-bucket rewrite is indistinguishable from no write here` };
+  }
+  if (!idAfter) return { ...base, appeared: false, reason: "the receipt list was read and holds no receipt of this phase" };
+  return {
+    ...base,
+    appeared: true,
+    reason: `a NEW receipt is present (tickId=${idAfter.tickId}, at=${idAfter.at}, arm=${receiptArm(sAfter.receipt)}${sameBucket ? ", SAME bucket as the previous one — a count could not have seen this" : ""})`,
+  };
+};
+
+/**
+ * `receiptPoll(body, phase)` → `{stop, receipt, unavailable}`. `stop` means THE ANSWER IS
+ * KNOWN — a receipt arrived, or the door said it cannot read the list. Re-asking after
+ * `receiptsUnavailable` only spends the wait; the caller turns that into an N/V at once.
+ */
+export const receiptPoll = (body, phase = "prepare") => {
+  const { receipt, unavailable } = newestReceipt(body, phase);
+  return { stop: !!(receipt || unavailable), receipt, unavailable };
+};
+
+/**
+ * `receiptPollNew(before, body, phase)` → `{stop, ...receiptAppeared()}`. The waiting form
+ * of the identity question: stop as soon as a NEW receipt is there, or the list is
+ * unreadable. `appeared === null` from a same-bucket rewrite does NOT stop — the caller is
+ * still waiting and `at` may yet move; the wait expiring on it is the N/V it deserves.
+ */
+export const receiptPollNew = (before, body, phase = "prepare") => {
+  const a = receiptAppeared(before, newestReceipt(body, phase));
+  return { ...a, stop: a.appeared === true || !!a.unavailable };
+};
+
+/** The one sentence a driver prints when the ledger could not be read. One home. */
+export const unavailableNote = (reason, what = "this grade") =>
+  `the receipt list could not be READ (receiptsUnavailable="${reason}") — getVaStatus answers receipts:[] on a faulted prefix scan, so ${what} would be graded on a scan fault and not on the agent's behaviour`;

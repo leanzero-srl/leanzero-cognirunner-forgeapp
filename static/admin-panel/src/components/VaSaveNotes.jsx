@@ -44,18 +44,28 @@ export const SAVE_NOTE_SENTENCES = {
   invalid: "This part of the configuration was not accepted as written and was narrowed by the save.",
 };
 
-/* House style: no em dashes in anything this app renders. The backend authors prose with
-   them, and normalising HERE is what keeps the rule enforceable at one place rather than
-   depending on every sentence author remembering it. */
-const noDashes = (s) => String(s).replace(/\s*[—–]\s*/g, ", ").replace(/\s+,/g, ",").replace(/,\s*,/g, ",");
+/*
+ * NO COSMETIC DE-DASHING HERE (F-845). This file used to run every sentence through a
+ * `noDashes` rewriter before printing it, so a backend sentence written with an em dash
+ * LOOKED house-style in this one pane and stayed dashed everywhere else the same text
+ * goes: the resolver answer a REST caller reads, the `vaRefused` rows stored on the job
+ * row, the ledger receipt. The owner's rule is about the TEXT, not about one render site,
+ * so the rewriter was the thing HIDING the violation from the gate that exists to catch
+ * it - a new dashed sentence could land in the backend and nothing anywhere would go red.
+ *
+ * The sentences are authored clean at their source instead (`report()` in
+ * src/shared/va-config.js, the stamps and refusals in src/va-admin.js), and
+ * static/_screenshot-harness/ui-copy-dashes.test.mjs scans those backend authors, so a
+ * dashed sentence now fails the build rather than being laundered on the way to a pane.
+ */
 
 /** A row to the sentence to print. Prose wins; an id falls back to the map, then to itself. */
 export const saveNoteSentence = (row) => {
   const r = row && typeof row === "object" ? row : { reason: String(row || "") };
   const raw = String(r.reason || "").trim();
-  if (raw && /\s/.test(raw)) return noDashes(raw);
+  if (raw && /\s/.test(raw)) return raw;
   const id = raw || String(r.note || "").trim();
-  return noDashes(SAVE_NOTE_SENTENCES[id] || id || "This field was narrowed by the save.");
+  return SAVE_NOTE_SENTENCES[id] || id || "This field was narrowed by the save.";
 };
 
 /**

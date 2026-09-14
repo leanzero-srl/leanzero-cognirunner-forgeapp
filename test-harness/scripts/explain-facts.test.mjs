@@ -88,12 +88,12 @@ ok(/Agentic JQL search: disabled/.test(falseTools), "enableTools false → 'disa
   ok(/branch name or the pull request title/.test(rowVal(premadeSummaryRows(noMatch), "Match pull request by:")), "git: an unstored prMatch reads as the 'both' default");
 
   // (d) strict says what src/premade-rules.js' fail-open/fail-closed table says.
-  ok(/^On — /.test(rowVal(bare, "Strict:")) && /BLOCKS the transition/.test(rowVal(bare, "Strict:")), "git: strict on → the outage/dead-token/no-PR cases BLOCK");
+  ok(/^On: /.test(rowVal(bare, "Strict:")) && /BLOCKS the transition/.test(rowVal(bare, "Strict:")), "git: strict on → the outage/dead-token/no-PR cases BLOCK");
   const lax = rowVal(premadeSummaryRows({ ...gitCfg, strict: false }), "Strict:");
-  ok(/^Off — /.test(lax) && /ALLOWS the transition \(fail-open\)/.test(lax), "git: strict off → fail-open, and it says fail-open");
+  ok(/^Off: /.test(lax) && /ALLOWS the transition \(fail-open\)/.test(lax), "git: strict off → fail-open, and it says fail-open");
   ok(/always blocks/.test(lax), "git: …and the two fail-CLOSED cases (dead connection / repo not allowed) are stated even with strict off");
   const unset = { ...gitCfg }; delete unset.strict;
-  ok(/^Off — /.test(rowVal(premadeSummaryRows(unset), "Strict:")), "git: an unstored strict reads as the 'off' default");
+  ok(/^Off: /.test(rowVal(premadeSummaryRows(unset), "Strict:")), "git: an unstored strict reads as the 'off' default");
 
   // (e) a non-git premade rule grows no git rows.
   ok(!premadeSummaryRows(cvPremade).some((r) => /Repository|Strict|Match pull request/.test(r.label)), "a non-git premade rule gets NO git rows");
@@ -103,7 +103,7 @@ ok(/Agentic JQL search: disabled/.test(falseTools), "enableTools false → 'disa
   ok(/Connection: Acme GitHub/.test(facts), "explain facts: the connection name");
   ok(/Repository: acme\/widget/.test(facts), "explain facts: the repository");
   ok(/Match pull request by: /.test(facts), "explain facts: the prMatch sentence");
-  ok(/Strict: On — /.test(facts), "explain facts: the strict sentence");
+  ok(/Strict: On: /.test(facts), "explain facts: the strict sentence");
   const laxFacts = buildFactsText({ ...gitCfg, strict: false }, [], conns);
   // The 220-char per-line clamp must not eat the end of the longest sentence.
   ok(/always blocks\.$/m.test(laxFacts), "explain facts: the strict-off sentence survives the 220-char line clamp whole");
@@ -129,7 +129,7 @@ ok(/Agentic JQL search: disabled/.test(falseTools), "enableTools false → 'disa
   ok(/npm test/.test(val("Extra instructions:") || ""), "coder: the admin's instructions reach the card");
   ok(val("Repository:") === "acme/widget" && /gc_7/.test(val("Connection:") || ""), "coder: the git rows still render");
   ok(!rows.some((r) => r.label === "Match pull request by:"), "coder: NO prMatch row — the rule switches that sub-control off");
-  ok(/^Off — /.test(val("Strict:") || ""), "coder: strict IS one of its sub-controls, so its row stays");
+  ok(/^Off: /.test(val("Strict:") || ""), "coder: strict IS one of its sub-controls, so its row stays");
 
   // An unknown / missing mode says what the executor does with it, and never invents one.
   const noMode = premadeSummaryRows({ ...coderCfg, mode: "" });

@@ -666,7 +666,7 @@ function EffectsPane({ client, agent, tz }) {
               <tr key={`${e.at}-${i}`}>
                 <td>{when(e.at, tz)}</td>
                 <td className="va-td-key">{e.issueKey || "—"}</td>
-                <td>{e.action}{e.detail ? ` — ${e.detail}` : ""}</td>
+                <td>{e.action}{e.detail ? `, ${e.detail}` : ""}</td>
                 <td>{e.verified ? <span className="va-badge va-badge-ok">READ BACK</span> : <span className="va-badge va-badge-bad">NOT VERIFIED</span>}</td>
               </tr>
             ))}

@@ -439,7 +439,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
         const missing = result && Array.isArray(result.notFound) ? result.notFound.length : 0;
         showToast(
           `${removed} ${removed === 1 ? "memory" : "memories"} deleted`
-          + (missing ? ` — ${missing} ${missing === 1 ? "was" : "were"} already gone` : ""),
+          + (missing ? `, ${missing} ${missing === 1 ? "was" : "were"} already gone` : ""),
         );
       }
     } catch (e) {
@@ -588,7 +588,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
                 only way an admin understands why one-at-a-time deleting does nothing. */}
             {overPlat && (
               <span className="memories-admin-stats-note">
-                {" "}— over Jira's storage limit: nothing can be saved until enough memories
+                , over Jira's storage limit: nothing can be saved until enough memories
                 are deleted together.
               </span>
             )}
@@ -664,10 +664,10 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
             const COPY = {
               off: { cls: "mem-gate-off", label: "Memories aren’t being used anywhere",
                 text: rt
-                  ? "“Inject memories into AI prompts” is off, so no memories reach any AI path — runtime injection below has no effect until you turn it on."
-                  : "“Inject memories into AI prompts” is off — turn it on to feed active memories into every AI code generation and fix." },
+                  ? "“Inject memories into AI prompts” is off, so no memories reach any AI path, runtime injection below has no effect until you turn it on."
+                  : "“Inject memories into AI prompts” is off, turn it on to feed active memories into every AI code generation and fix." },
               design: { cls: "mem-gate-design", label: "Memories improve code generation only",
-                text: "They are NOT used at runtime — validators, conditions, and semantic post-functions run without them. Turn on runtime injection below to also use memories on live transitions (adds tokens per run)." },
+                text: "They are NOT used at runtime, validators, conditions, and semantic post-functions run without them. Turn on runtime injection below to also use memories on live transitions (adds tokens per run)." },
               both: { cls: "mem-gate-both", label: "Memories are active everywhere",
                 text: "Included in every AI code generation and fix, AND in validators, conditions, and semantic post-functions on every live transition." },
             }[state];

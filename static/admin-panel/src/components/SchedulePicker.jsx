@@ -130,7 +130,7 @@ export default function SchedulePicker({ value, onChange, disabled = false }) {
       {preset === "custom" && (
         <div className="schp-custom">
           <input
-            type="text" className={`schp-cron ${validity.ok ? "" : "invalid"}`} value={customText} placeholder="minute hour day month weekday — e.g. */10 8-18 * * 1-5"
+            type="text" className={`schp-cron ${validity.ok ? "" : "invalid"}`} value={customText} placeholder="minute hour day month weekday, e.g. */10 8-18 * * 1-5"
             onChange={(e) => { setCustomText(e.target.value); onChange({ cron: e.target.value, timeZone }); }} disabled={disabled} aria-label="Cron expression" spellCheck={false}
           />
           <span className="hint">Standard 5-field cron. Names allowed (MON, JAN). Minimum effective granularity is 5 minutes.</span>

@@ -130,8 +130,9 @@ import {
   slimRegistryRow,
   normalizeFunctionsForStorage,
   brakeRefusalText,
-  DOC_CONTENT_MAX_CHARS,
+  DOC_CONTENT_MAX_BYTES,
   DOC_TOO_LARGE_MESSAGE,
+  utf8Bytes,
 } from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
@@ -194,7 +195,7 @@ import {
 } from "./shared/confluence-rules.js";
 import { describeCron } from "./shared/cron.js";
 // The ONE code-point-safe text clamp (F-381/F-383) — never `.slice()` on a prompt path.
-import { clampChars } from "./shared/text-clamp.js";
+import { clampChars, clampUtf8Bytes } from "./shared/text-clamp.js";
 // The BAKED FIELD GUIDE (1.4 commit 14b) — the third knowledge layer, alongside skills
 // and memories. `resolveFieldGuideBlock` is the ONE call that turns the generated packs
 // into the single fenced <<<FIELD_GUIDE>>> block; no surface in this file builds that
@@ -7998,7 +7999,11 @@ const seedBuiltinDocs = async () => {
         id: builtin.id,
         title: builtin.title,
         category: builtin.category || "General",
-        contentLength: content.length,
+        // BYTES (F-855), the unit `saveContextDoc` and `persistResearchDoc` store and the
+        // unit DOC_CONTENT_MAX_BYTES is expressed in. A char count here made the seeded
+        // rows the odd ones out in a list the UI renders with one formatSize, so a CJK
+        // builtin read as smaller than an ASCII one of the same real weight.
+        contentLength: utf8Bytes(content),
         createdBy: null,
         createdAt: existing?.createdAt || now,
         builtin: true,
@@ -8019,6 +8024,21 @@ const seedBuiltinDocs = async () => {
 };
 
 /**
+ * Is this thrown error the KVS platform refusing a value for being too large?
+ *
+ * Forge does not export a typed error for this, so the detection is on the error's
+ * name/code/message. Deliberately BROAD on the phrasing and NARROW on the meaning: a
+ * false positive only changes the wording of a failure that was already a failure,
+ * while a miss puts the platform's own sentence in front of a user again (F-836).
+ * Anything that does not look like a size refusal keeps the generic error path.
+ */
+function isStorageSizeError(error) {
+  const parts = [error?.name, error?.code, error?.statusCode, error?.message].filter(Boolean).join(" ");
+  if (/413/.test(parts)) return true;
+  return /(payload|value|entity|request)[^.]{0,40}(too large|too big|exceed)|too large|size limit|exceeds the maximum/i.test(parts);
+}
+
+/**
  * Save a reference document to the shared repository.
  */
 resolver.define("saveContextDoc", async ({ payload, context }) => {
@@ -8034,9 +8054,12 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
     if (!title || !content) {
       return { success: false, error: "Title and content are required" };
     }
-    // Cap + wording: src/shared/registry-limits.js (both DocRepository copies gate on the
-    // same export, in the same unit — characters).
-    if (content.length > DOC_CONTENT_MAX_CHARS) {
+    // Cap + wording: src/shared/registry-limits.js. BYTES of UTF-8, measured with the
+    // shared `utf8Bytes` helper that both DocRepository copies also call — F-836: this
+    // gate used to count UTF-16 code units while the ceiling it protects (the ~240KiB
+    // KVS value limit) is bytes, so CJK prose passed at up to 3x the real size.
+    const contentBytes = utf8Bytes(content);
+    if (contentBytes > DOC_CONTENT_MAX_BYTES) {
       return { success: false, error: DOC_TOO_LARGE_MESSAGE };
     }
 
@@ -8045,7 +8068,8 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
       id,
       title: title.substring(0, 100),
       category: category || "General",
-      contentLength: content.length,
+      // Bytes, the same unit as the gate — the UI renders this with formatSize as B/KB.
+      contentLength: contentBytes,
       createdBy: context.accountId || null,
       createdAt: new Date().toISOString(),
     };
@@ -8062,6 +8086,16 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
     return { success: true, id };
   } catch (error) {
     console.error("Failed to save context doc:", error);
+    // F-836: when the PLATFORM is the one refusing on size, answer in our own words and
+    // name the measured size. The byte gate above should make this unreachable for the
+    // content alone; it stays because the stored value is content + metadata, and because
+    // a refusal that quotes the platform's sentence names neither a size nor a remedy.
+    if (isStorageSizeError(error)) {
+      return {
+        success: false,
+        error: `${DOC_TOO_LARGE_MESSAGE}. This document measured ${Math.round(utf8Bytes(payload?.content) / 1000)} KB.`,
+      };
+    }
     return { success: false, error: error.message };
   }
 });
@@ -16977,15 +17011,39 @@ const runWebResearch = async (query, { timeoutMs = 18000 } = {}) => {
 
 // Persist research markdown into the shared DocRepository (dedup-update by title +
 // category so curated docs aren't evicted). Mirrors the saveContextDoc storage shape.
-const persistResearchDoc = async ({ title, markdown, category = "Research", actorAccountId }) => {
-  const content = String(markdown || "").slice(0, 180000);
+// EXPORTED for the offline gate only (F-855): the two callers are post-function
+// executors that need MCP web search and a provider, so the byte-cap property could
+// not otherwise be proven without a live site. Nothing in the app imports it.
+export const persistResearchDoc = async ({ title, markdown, category = "Research", actorAccountId }) => {
+  /*
+   * F-855 - THE SAME UNIT AS THE CEILING, ON THE ONLY PATH THAT WRITES A DOC WITHOUT A
+   * HUMAN IN FRONT OF IT.
+   *
+   * This used to `slice(0, 180000)` CHARACTERS and store `content.length` as
+   * `contentLength`. Both halves were wrong in the same way F-836 was wrong about
+   * `saveContextDoc`: the ceiling underneath is the 240KiB KVS VALUE limit, which is
+   * bytes. Research markdown is model-authored and web-sourced, so it is exactly the
+   * corpus that is not ASCII - 180,000 characters of CJK is roughly 540KB, which sailed
+   * past this "cap" and was refused by the platform at `storage.set`, inside a catch that
+   * hands back the platform's own sentence naming no size and no remedy. And because
+   * nobody types this document, there is no editor hint to catch it first.
+   *
+   * `clampUtf8Bytes` (src/shared/text-clamp.js) is the ONE byte clamp: it walks code
+   * points, so it can never split a surrogate pair, and the marker counts against the
+   * budget, so the result is genuinely within the cap rather than within it plus a
+   * marker. `DOC_CONTENT_MAX_BYTES` is the same constant `saveContextDoc` refuses on;
+   * a research doc is TRUNCATED rather than refused because there is no author to tell.
+   */
+  const clamped = clampUtf8Bytes(markdown, DOC_CONTENT_MAX_BYTES, "\n\n[Truncated: this research exceeded the Documentation Library size limit.]");
+  const content = clamped.text;
   if (!content.trim()) return { ok: false, reason: "no research content to save" };
   const cleanTitle = (String(title || "Research").trim().slice(0, 100)) || "Research";
   try {
     let index = (await storage.get(DOC_REPO_INDEX_KEY)) || [];
     const existing = index.find((d) => d.category === category && (d.title || "").toLowerCase() === cleanTitle.toLowerCase());
     const id = existing ? existing.id : `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    const doc = { id, title: cleanTitle, category, contentLength: content.length, createdBy: actorAccountId || null, createdAt: existing?.createdAt || new Date().toISOString() };
+    // BYTES, the unit `saveContextDoc` stores and the unit the UI's formatSize renders.
+    const doc = { id, title: cleanTitle, category, contentLength: utf8Bytes(content), createdBy: actorAccountId || null, createdAt: existing?.createdAt || new Date().toISOString() };
     await storage.set(`${DOC_REPO_PREFIX}${id}`, { ...doc, content });
     index = index.filter((d) => d.id !== id);
     index.unshift(doc);

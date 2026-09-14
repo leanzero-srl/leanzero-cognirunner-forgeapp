@@ -241,7 +241,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   const testMeta = getEvent(activeTestEvent);
   const testHasIssue = !!(testMeta && (testMeta.issueBound || testMeta.issueIdOnly));
   const testEventOptions = draft ? draft.events.map((id) => ({ value: id, label: eventLabel(id) })) : [];
-  const testContext = draft ? { runtime: "listener", eventType: activeTestEvent, event: activeSample?.payload || { eventType: activeTestEvent, _note: "synthetic — no captured payload yet" } } : null;
+  const testContext = draft ? { runtime: "listener", eventType: activeTestEvent, event: activeSample?.payload || { eventType: activeTestEvent, _note: "synthetic, no captured payload yet" } } : null;
   const codegenContext = draft ? { runtime: "listener", eventTypes: draft.events } : null;
 
   // ─────────────────────────── editor view ───────────────────────────
@@ -283,13 +283,13 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
               {relevantFilters.includes("issueTypes") && (
                 <div className="lst-filter">
                   <span className="lst-filter-label">Issue types</span>
-                  <ChipsInput value={draft.filters.issueTypes} onChange={(issueTypes) => patchFilters({ issueTypes })} placeholder="Any issue type — type a name and press Enter (e.g. Bug)" />
+                  <ChipsInput value={draft.filters.issueTypes} onChange={(issueTypes) => patchFilters({ issueTypes })} placeholder="Any issue type, type a name and press Enter (e.g. Bug)" />
                 </div>
               )}
               {relevantFilters.includes("changedFields") && (
                 <div className="lst-filter">
                   <span className="lst-filter-label">Changed fields</span>
-                  <ChipsInput value={draft.filters.changedFields} onChange={(changedFields) => patchFilters({ changedFields })} placeholder="Any field — e.g. priority, status, customfield_10010" />
+                  <ChipsInput value={draft.filters.changedFields} onChange={(changedFields) => patchFilters({ changedFields })} placeholder="Any field, e.g. priority, status, customfield_10010" />
                   <span className="hint">Applies to "Issue updated" only: fire when at least one of these fields is in the changelog.</span>
                 </div>
               )}
@@ -307,7 +307,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
               )}
               <label className="lst-check">
                 <input type="checkbox" checked={draft.ignoreSelf !== false} onChange={(e) => patch({ ignoreSelf: e.target.checked })} />
-                <span><strong>Ignore events caused by this app</strong> — prevents loops where a listener's own writes re-fire it (recommended).</span>
+                <span><strong>Ignore events caused by this app</strong>: prevents loops where a listener's own writes re-fire it (recommended).</span>
               </label>
             </div>
           </div>
@@ -334,7 +334,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
           <div className="lst-options">
             <label className="lst-check">
               <input type="checkbox" checked={draft.simulationMode} onChange={(e) => patch({ simulationMode: e.target.checked })} />
-              <span><strong>Simulation mode</strong> — reads are live, writes are logged but never executed.</span>
+              <span><strong>Simulation mode</strong>: reads are live, writes are logged but never executed.</span>
             </label>
             <label className="lst-check">
               <input type="checkbox" checked={draft.suppressNotifications} onChange={(e) => patch({ suppressNotifications: e.target.checked })} />
@@ -362,8 +362,8 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
           </div>
           {activeSample && (
             <div className="lst-sample">
-              {activeSample.none ? <span className="hint">No payload captured yet for {eventLabel(activeSample.eventType)} — it appears here after the event fires once on this site (tests without an issue use a synthetic event until then).</span>
-                : <><span className="hint">Captured {new Date(activeSample.capturedAt).toLocaleString()} — redacted sample of <code>api.context.event</code> for {eventLabel(activeSample.eventType)}:</span><pre className="runres-pre">{JSON.stringify(activeSample.payload, null, 2).slice(0, 12000)}</pre></>}
+              {activeSample.none ? <span className="hint">No payload captured yet for {eventLabel(activeSample.eventType)}, it appears here after the event fires once on this site (tests without an issue use a synthetic event until then).</span>
+                : <><span className="hint">Captured {new Date(activeSample.capturedAt).toLocaleString()}, redacted sample of <code>api.context.event</code> for {eventLabel(activeSample.eventType)}:</span><pre className="runres-pre">{JSON.stringify(activeSample.payload, null, 2).slice(0, 12000)}</pre></>}
             </div>
           )}
           <RunResultView result={testResult} title="Test run (simulated)" />
@@ -438,7 +438,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
         ) : filtered.length === 0 ? (
           <div className="empty-state lst-empty">
             <div className="lst-empty-title">{rows.length ? "No listener matches your search." : "No listeners yet."}</div>
-            {!rows.length && <div>A listener reacts to Jira events — issue created, comment added, sprint started, version released, 68 events in all — and runs AI-generated code or an AI agent with the actions you allow.</div>}
+            {!rows.length && <div>A listener reacts to Jira events (issue created, comment added, sprint started, version released, 68 events in all) and runs AI-generated code or an AI agent with the actions you allow.</div>}
             {!rows.length && canEdit && <button type="button" className="btn-small btn-solid" style={{ marginTop: 12 }} onClick={openNew}>+ Add your first listener</button>}
           </div>
         ) : (

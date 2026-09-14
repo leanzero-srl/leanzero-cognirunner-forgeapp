@@ -104,7 +104,7 @@ export const cqlQuote = (value, maxChars = CQL_VALUE_MAX_CHARS) => {
 /** The placeholders a template may use. Anything else is MISCONFIGURATION. */
 export const CQL_PLACEHOLDER_RE = /\{(issueKey|summary|field:[A-Za-z0-9_]+)\}/g;
 export const CQL_PLACEHOLDER_HELP =
-  '{issueKey}, {summary} and {field:<fieldId>} are replaced by the issue’s values, each already quoted — write `title ~ {summary}`, never `title ~ "{summary}"`.';
+  '{issueKey}, {summary} and {field:<fieldId>} are replaced by the issue’s values, each already quoted, write `title ~ {summary}`, never `title ~ "{summary}"`.';
 
 /**
  * Render a CQL template. The TEMPLATE is the administrator's own text and is trusted

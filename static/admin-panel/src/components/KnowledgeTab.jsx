@@ -221,7 +221,7 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
                   type="button"
                   role="switch"
                   aria-checked={pack.enabled ? "true" : "false"}
-                  aria-label={`${pack.title} — ${pack.enabled ? "on" : "off"}`}
+                  aria-label={`${pack.title}, ${pack.enabled ? "on" : "off"}`}
                   className={`kn-switch${pack.enabled ? " is-on" : ""}`}
                   disabled={savingId !== null}
                   onClick={() => togglePack(pack)}

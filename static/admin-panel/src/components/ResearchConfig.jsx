@@ -60,8 +60,8 @@ export default function ResearchConfig({
           <strong>How it works</strong>
         </div>
         <ol className="pf-how-steps">
-          <li><strong>Research</strong> — runs a live web search via the web-search MCP</li>
-          <li><strong>Save</strong> — stores the results as a reusable doc in your Documentation Library</li>
+          <li><strong>Research</strong>: runs a live web search via the web-search MCP</li>
+          <li><strong>Save</strong>: stores the results as a reusable doc in your Documentation Library</li>
           <li>Other rules can then reference that doc as context</li>
         </ol>
         <p className="hint" style={{ margin: "6px 0 0" }}>
@@ -129,13 +129,13 @@ export default function ResearchConfig({
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           <span>{showTest ? "Hide Test" : "Test Run"}</span>
-          <Tooltip text="Runs the live web search and previews the result — it does NOT save anything to the library." />
+          <Tooltip text="Runs the live web search and previews the result, it does NOT save anything to the library." />
         </button>
 
         {showTest && (
           <div className="semantic-test-panel">
             <div className="semantic-test-header">
-              <span className="test-panel-badge">Dry run — nothing is saved to the library</span>
+              <span className="test-panel-badge">Dry run, nothing is saved to the library</span>
             </div>
             <div className="form-group" style={{ margin: "10px 0 8px" }}>
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>

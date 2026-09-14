@@ -3732,7 +3732,7 @@ function App() {
                 setFunctions(codeResult.functions);
                 currentFunctions = codeResult.functions;
               } else {
-                setError("This rule's step code could not be loaded from app storage. Its steps are shown empty — re-add or regenerate the code, then Save to re-publish.");
+                setError("This rule's step code could not be loaded from app storage. Its steps are shown empty, re-add or regenerate the code, then Save to re-publish.");
               }
             }
             // Load saved doc IDs for validators/conditions
@@ -3854,7 +3854,7 @@ function App() {
                 ruleId = `${idTypePrefix}::${ext.entryPoint || ext.key}${instanceSuffix}`;
               } else {
                 ruleId = Date.now().toString();
-                console.warn("[CogniRunner] Falling back to timestamp ruleId — Forge context missing workflow/transition. Edits will create new registry entries.");
+                console.warn("[CogniRunner] Falling back to timestamp ruleId. Forge context missing workflow/transition. Edits will create new registry entries.");
               }
             }
 
@@ -4231,7 +4231,7 @@ function App() {
   // produces no output — so the copy is accurate per surface, not reused verbatim.
   const providerWarningWith = (consequence) => (
     <div className="provider-warning" role="alert">
-      No AI provider key is set up yet. Add one in the CogniRunner admin (Apps → CogniRunner → Settings) — {consequence}
+      No AI provider key is set up yet. Add one in the CogniRunner admin (Apps → CogniRunner → Settings), {consequence}
     </div>
   );
   const providerWarning = providerWarningWith("until then this AI rule can't run: it fails open, allowing the transition without checking.");
@@ -4273,7 +4273,7 @@ function App() {
             {isPostFunction
               ? "The workflow AI agent for Jira - it builds, tests, fixes, and learns."
               : isCondition
-                ? "Hide this transition unless the issue meets your criteria — no AI cost"
+                ? "Hide this transition unless the issue meets your criteria, no AI cost"
                 : "Configure AI-powered field validation for this workflow transition"
             }
           </p>
@@ -4300,7 +4300,7 @@ function App() {
           </div>
           <p className="pf-type-desc" style={{ margin: 0 }}>
             {isCondition
-              ? "Hides the transition unless the issue meets your criteria. Enforced everywhere — the issue view, REST, automation and bulk changes."
+              ? "Hides the transition unless the issue meets your criteria. Enforced everywhere: the issue view, REST, automation and bulk changes."
               : "Blocks the transition if the AI determines the field content does not meet your criteria."
             }
           </p>
@@ -4317,7 +4317,7 @@ function App() {
         <div className="condition-hide-note" role="note">
           <span className="chn-glyph" aria-hidden="true">i</span>
           <div>
-            <strong>Conditions run without AI.</strong> Jira evaluates a condition itself, in a sandbox with no network access, so a condition can't call a model. Pick a check below — it runs instantly, costs nothing per transition, and is enforced on every surface. If you need the AI to judge free text, use a <strong>Validator</strong> instead: it blocks the transition and shows your message.
+            <strong>Conditions run without AI.</strong> Jira evaluates a condition itself, in a sandbox with no network access, so a condition can't call a model. Pick a check below, it runs instantly, costs nothing per transition, and is enforced on every surface. If you need the AI to judge free text, use a <strong>Validator</strong> instead: it blocks the transition and shows your message.
           </div>
         </div>
       )}
@@ -4367,7 +4367,7 @@ function App() {
                 : postFunctionType === "semantic"
                 ? "AI runs on every transition to evaluate a condition and update a target field. Best for decisions requiring judgment."
                 : "AI generates code once during setup. That code runs on every transition with zero AI cost at runtime."}
-              {" "}This rule's type is determined by the workflow slot it's installed in — to switch types, remove this rule and add the other variant from the workflow editor.
+              {" "}This rule's type is determined by the workflow slot it's installed in. To switch types, remove this rule and add the other variant from the workflow editor.
             </p>
             {isByok && pfKind !== "premade" && (
               <span className={`pf-type-tag ${postFunctionType === "semantic" ? "pf-tag-semantic" : "pf-tag-static"}`}>
@@ -4513,11 +4513,11 @@ function App() {
                 checked={simulationMode}
                 onChange={(e) => { setSimulationMode(e.target.checked); currentSimulationMode = e.target.checked; }}
               />
-              Simulation Mode {simulationMode ? "— ON (no writes are made)" : "— will be DISABLED on save"}
+              Simulation Mode {simulationMode ? ": ON (no writes are made)" : ": will be DISABLED on save"}
             </label>
             <p style={{ margin: "4px 0 0 22px", fontSize: "11px", color: "var(--text-secondary, #5e6c84)" }}>
               While ON, this rule runs its full AI evaluation on every transition and logs what it
-              <strong> would</strong> do — without updating fields, posting comments, creating links/sub-tasks,
+              <strong> would</strong> do, without updating fields, posting comments, creating links/sub-tasks,
               or attaching documents. Untick and save to go live.
             </p>
           </div>
@@ -4542,7 +4542,7 @@ function App() {
             </label>
             <p style={{ margin: "4px 0 0 22px", fontSize: "11px", color: "var(--text-secondary, #5e6c84)" }}>
               Field updates made by this rule won&apos;t email watchers (Jira&apos;s notifyUsers=false).
-              Suppression needs the app to have project admin permission — if Jira refuses, the update
+              Suppression needs the app to have project admin permission. If Jira refuses, the update
               is retried with notifications on and the execution log notes it. Applies to field updates
               only: transitions, comments, sub-tasks, and links still notify as normal.
             </p>
@@ -4562,7 +4562,7 @@ function App() {
                 : "Add Comment"} rule
             </h3>
             <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary, #5e6c84)" }}>
-              This action type is configured in the <strong>CogniRunner admin panel</strong> (Apps → CogniRunner). The workflow editor can&apos;t edit it yet — saving here preserves the rule unchanged. Open the admin panel to change its settings.
+              This action type is configured in the <strong>CogniRunner admin panel</strong> (Apps → CogniRunner). The workflow editor can&apos;t edit it yet, saving here preserves the rule unchanged. Open the admin panel to change its settings.
             </p>
           </div>
         </div>
@@ -4639,7 +4639,7 @@ function App() {
               onClick={() => setRuleKind("premade")}
             >
               <span className="rulekind-opt-title">Premade rule</span>
-              <span className="rulekind-opt-sub">Pick a ready-made check — no AI, instant, zero cost</span>
+              <span className="rulekind-opt-sub">Pick a ready-made check, no AI, instant, zero cost</span>
             </button>
           </div>
         </div>
@@ -4852,7 +4852,7 @@ function App() {
           {validatorTestOpen && (
             <div className="semantic-test-panel" style={{ marginTop: "10px" }}>
               <div className="semantic-test-header">
-                <span className="test-panel-badge">Dry run — no transition is blocked</span>
+                <span className="test-panel-badge">Dry run, no transition is blocked</span>
               </div>
 
               <div className="form-group" style={{ margin: "10px 12px 8px" }}>
@@ -4906,7 +4906,7 @@ function App() {
                     <span className="test-result-meta">
                       {validatorTestResult.issueKey}
                       {validatorTestResult.mode === "agentic" ? " (agentic)" : ""}
-                      {validatorTestResult.executionTimeMs ? ` — ${validatorTestResult.executionTimeMs}ms` : ""}
+                      {validatorTestResult.executionTimeMs ? `, ${validatorTestResult.executionTimeMs}ms` : ""}
                     </span>
                     <button className="test-dismiss" onClick={() => setValidatorTestResult(null)}>&times;</button>
                   </div>

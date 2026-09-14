@@ -217,7 +217,7 @@ return { success: true };`)}`;
 // External API: ${endpoint || "https://api.example.com/..."}
 // Note: The domain must be whitelisted in manifest.yml > permissions.external.fetch
 ${wrap(`api.log("External call to: ${(endpoint || "").replace(/"/g, '\\"')}");
-// Use fetch() for external calls — configure in manifest.yml
+// Use fetch() for external calls, configure in manifest.yml
 return null;`)}`;
 
     case "confluence_api":
@@ -785,7 +785,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                 // resolver we do not know WHICH ceiling was hit, and naming the wrong one is
                 // worse than naming none. It is only reachable from a resolver that answered
                 // `stored: false` with no `error` at all.
-                const refusal = memRes.error || "Nothing was kept — the memory store is full.";
+                const refusal = memRes.error || "Nothing was kept, the memory store is full.";
                 setMemoryNotKept(
                   // Joined with a full stop, not a dash: the backend sentence carries its own
                   // em-dashes, and chaining a third made one unreadable run-on. This keeps the
@@ -809,7 +809,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   fixToken: token,
                 });
                 setKnowledgeRefresh((n) => n + 1);
-                showToast("Fix verified — memory saved");
+                showToast("Fix verified, memory saved");
               }
             } catch (e) {
               // On a timeout the memory MAY still land server-side, but we have no id, so
@@ -820,7 +820,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               console.warn("Memory save failed:", e && e.message);
               if (timedOut) {
                 setKnowledgeRefresh((n) => n + 1);
-                showToast("Fix verified. The memory is still saving — check the Memories tab.", "error");
+                showToast("Fix verified. The memory is still saving, check the Memories tab.", "error");
               }
             } finally {
               setMemorySaving(false);
@@ -968,7 +968,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
             title={testState === "pass"
               ? "This step's current code passed a dry-run test"
               : testState === "stale"
-              ? "The code was edited (or a fix undone) after its last passing test — run Test again to verify"
+              ? "The code was edited (or a fix undone) after its last passing test, run Test again to verify"
               : "This step hasn't passed a dry-run test yet"}
           >
             {testState === "pass" ? "Tested ✓" : testState === "stale" ? "Edited since tested" : "Untested"}
@@ -1107,7 +1107,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               <div key={i} className="prior-var-item">
                 <code className="prior-var-tag">{s.variableName}</code>
                 <span className="prior-var-desc">
-                  Step {i + 1}{s.name ? `: ${s.name}` : ""}{s.operationPrompt ? ` — ${s.operationPrompt.substring(0, 60)}` : ""}
+                  Step {i + 1}{s.name ? `: ${s.name}` : ""}{s.operationPrompt ? `, ${s.operationPrompt.substring(0, 60)}` : ""}
                 </span>
               </div>
             ))}
@@ -1186,7 +1186,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                 <p className="endpoint-suggestion-text">{endpointSuggestion.explanation}</p>
                 {endpointSuggestion.unparsed && !endpointSuggestion.path && (
                   <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    The AI's response wasn't structured — copy the path/method manually, or rephrase your description and try again.
+                    The AI's response wasn't structured, copy the path/method manually, or rephrase your description and try again.
                   </p>
                 )}
                 {endpointSuggestion.path && (
@@ -1368,7 +1368,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
             />
             <span>
               Exponential backoff with jitter
-              <Tooltip text="Retries failed API calls up to 3 times with increasing delays (1s, 2s, 4s) plus random jitter. Tradeoff: retries can add up to ~15 seconds of execution time. Forge post-functions have a 30-second hard limit — if you chain multiple steps with backoff enabled, later steps may time out. Best for: single-step functions, external APIs, or steps that must not fail silently. Skip for: multi-step chains where speed matters, or when the API is reliable." />
+              <Tooltip text="Retries failed API calls up to 3 times with increasing delays (1s, 2s, 4s) plus random jitter. Tradeoff: retries can add up to ~15 seconds of execution time. Forge post-functions have a 30-second hard limit, if you chain multiple steps with backoff enabled, later steps may time out. Best for: single-step functions, external APIs, or steps that must not fail silently. Skip for: multi-step chains where speed matters, or when the API is reliable." />
             </span>
           </label>
         </div>
@@ -1417,7 +1417,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         <div className="async-cancelled-note anim-rise">
           <span className="acn-text">
             <strong>{cancelledNote === "fix" ? "Fix cancelled." : "Generation cancelled."}</strong>{" "}
-            Cancelled — nothing was changed. Run it again when the stop is lifted.
+            Cancelled, nothing was changed. Run it again when the stop is lifted.
           </span>
           <button className="acn-dismiss" onClick={() => setCancelledNote(null)} aria-label="Dismiss">&times;</button>
         </div>
@@ -1429,7 +1429,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       {generationKept && !isGenerating && (
         <div className="async-error-note anim-rise">
           <span className="aen-text">
-            <strong>Generation failed — your existing code was kept.</strong> {generationKept}
+            <strong>Generation failed, your existing code was kept.</strong> {generationKept}
           </span>
           {/* F-141 / F-143 — Retry is a generate, so it obeys the ONE RULE (see `stepBusy`):
               offered only when nothing else is writing this step's code. */}
@@ -1458,7 +1458,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           }}
         >
           <span style={{ flex: 1 }}>
-            <strong>AI generation failed.</strong> A generic template was inserted — review and customize it before saving. Reason: {generationFallback}.
+            <strong>AI generation failed.</strong> A generic template was inserted, review and customize it before saving. Reason: {generationFallback}.
           </span>
           <button
             onClick={() => setGenerationFallback(null)}
@@ -1589,7 +1589,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   proves. (Not shown for a merged save — that badge makes no claim about
                   which code version taught the memory.) */}
               {!memorySaved.merged && memorySaved.learnedFrom && memorySaved.learnedFrom !== codeFingerprint(functionData.code || "") && (
-                <p className="fix-explanation">Learned from the version of this code the fix repaired — the code shown is not that version.</p>
+                <p className="fix-explanation">Learned from the version of this code the fix repaired, the code shown is not that version.</p>
               )}
               {renderMemoryBadge()}
             </div>
@@ -1611,13 +1611,13 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   <polygon points="5 3 19 12 5 21 5 3" />
                 </svg>
                 <span className="test-panel-title">Test Run</span>
-                <span className="test-panel-badge">Dry run — writes are logged, not executed</span>
+                <span className="test-panel-badge">Dry run, writes are logged, not executed</span>
               </div>
 
               <div className="test-panel-target">
                 <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>
                   Issue context (optional)
-                  <Tooltip text="Optionally select an issue to set api.context.issueKey. JQL searches always run against real Jira data regardless. Writes (updateIssue, transitionIssue) are always safe — logged but never executed." />
+                  <Tooltip text="Optionally select an issue to set api.context.issueKey. JQL searches always run against real Jira data regardless. Writes (updateIssue, transitionIssue) are always safe, logged but never executed." />
                 </label>
                 <div className="test-target-row">
                   <IssuePicker
@@ -1658,7 +1658,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                     </span>
                     <span className="test-result-meta">
                       {testResult.issueKey ? `Live reads against ${testResult.issueKey} · writes staged` : "Live reads · no current issue · writes staged"}
-                      {testResult.executionTimeMs ? ` — ${testResult.executionTimeMs}ms` : ""}
+                      {testResult.executionTimeMs ? `, ${testResult.executionTimeMs}ms` : ""}
                     </span>
                     {!testResult.success && (
                       <button
@@ -1670,7 +1670,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                         title={stepBusy
                           ? busyTitle
                           : fixAttempts >= 2
-                          ? "Fix attempts exhausted — edit the code manually or regenerate"
+                          ? "Fix attempts exhausted, edit the code manually or regenerate"
                           : "AI repairs the code and re-runs the test automatically"}
                       >
                         Fix with AI
@@ -1723,10 +1723,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                       {narrateState === "degraded" && (
                         <div className="ndr-note">
                           {narrateReason === "lmstudio"
-                            ? "Plain-English summaries aren't available with the self-hosted LM Studio provider — switch to a hosted provider in CogniRunner Settings."
+                            ? "Plain-English summaries aren't available with the self-hosted LM Studio provider, switch to a hosted provider in CogniRunner Settings."
                             : narrateReason === "timeout"
-                            ? "The AI provider didn't respond in time — try again in a moment."
-                            : "Couldn't summarize the changes right now — try again in a moment."}
+                            ? "The AI provider didn't respond in time, try again in a moment."
+                            : "Couldn't summarize the changes right now, try again in a moment."}
                         </div>
                       )}
                       {narrateState === "error" && (

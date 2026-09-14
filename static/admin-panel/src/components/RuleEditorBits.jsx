@@ -72,7 +72,7 @@ export function ProjectPicker({ invoke, value = [], onChange, disabled = false }
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [invoke, attempt]);
-  const options = useMemo(() => projects.filter((p) => !value.includes(p.key)).map((p) => ({ value: p.key, label: `${p.key} — ${p.name}` })), [projects, value]);
+  const options = useMemo(() => projects.filter((p) => !value.includes(p.key)).map((p) => ({ value: p.key, label: `${p.key}, ${p.name}` })), [projects, value]);
   return (
     <div className="projpick">
       <div className="chips">
@@ -136,7 +136,7 @@ export function RunResultView({ result, title = "Result", titleHint = null }) {
       </div>
       {result.reason && <div className="runres-reason">{result.reason}</div>}
       {result.testNote && <details className="runres-details"><summary>Test context</summary><div className="runres-reason">{result.testNote}</div></details>}
-      {result.gate && <div className="runres-gate">AI condition: <strong>{result.gate.match ? "met" : "not met"}</strong> — {result.gate.reason}</div>}
+      {result.gate && <div className="runres-gate">AI condition: <strong>{result.gate.match ? "met" : "not met"}</strong>, {result.gate.reason}</div>}
       {result.recommendation && <div className="runres-rec">{result.recommendation}</div>}
       {Array.isArray(issues) && issues.length > 0 && (
         <div className="runres-issues">{issues.map((i) => <span key={i.key} className={`runres-issue ${i.success ? "ok" : "err"}`} title={i.reason}>{i.key}</span>)}</div>
@@ -146,7 +146,7 @@ export function RunResultView({ result, title = "Result", titleHint = null }) {
       )}
       {Array.isArray(result.changes) && result.changes.length > 0 && (
         <details className="runres-details" open>
-          <summary>{result.changes.length} change{result.changes.length === 1 ? "" : "s"}{result.changes.some((c) => c.simulated) ? " (simulated — nothing written)" : ""}</summary>
+          <summary>{result.changes.length} change{result.changes.length === 1 ? "" : "s"}{result.changes.some((c) => c.simulated) ? " (simulated, nothing written)" : ""}</summary>
           <ul className="runres-changes">{result.changes.map((c, i) => <li key={i}><code>{c.action}</code> {c.key || c.issue || c.from || ""} {c.fields ? JSON.stringify(c.fields).slice(0, 160) : c.name || c.transitionId || c.accountId || ""}</li>)}</ul>
         </details>
       )}

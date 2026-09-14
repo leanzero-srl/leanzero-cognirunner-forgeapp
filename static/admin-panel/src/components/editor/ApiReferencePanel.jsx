@@ -40,7 +40,7 @@ export default function ApiReferencePanel() {
           members.length === 0 ? (
             <div key={name} className="api-ref-item">
               <code>{method.signature}</code>
-              <span>Returns: <code>{method.returns}</code> — {method.summary}</span>
+              <span>Returns: <code>{method.returns}</code>, {method.summary}</span>
             </div>
           ) : (
             <div key={name} className="api-ref-ns">
@@ -52,7 +52,7 @@ export default function ApiReferencePanel() {
                 {members.map((mem) => (
                   <div key={mem.name} className="api-ref-item">
                     <code>{mem.signature}</code>
-                    <span>Returns: <code>{mem.returns}</code> — {mem.summary}</span>
+                    <span>Returns: <code>{mem.returns}</code>, {mem.summary}</span>
                   </div>
                 ))}
               </div>

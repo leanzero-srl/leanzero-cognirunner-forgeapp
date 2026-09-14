@@ -234,9 +234,9 @@ const GIT_AGENT_ACTIONS = [
 const WEB_AGENT_ACTIONS = [
   {
     id: "web_search", namespace: "web", kind: "read", label: "Search the web", requiresMcp: "webSearch",
-    description: "Search the public web and get back the top results (title, link, short snippet). Use it to CHECK a claim about a product, a version, an API or an error message that you cannot read from Jira. Never put an issue key, an account id, a site URL, an e-mail address or any other identifier from this instance into the query — the search is refused if you do. Results are pages, not answers: name the link for anything you take from them.",
+    description: "Search the public web and get back the top results (title, link, short snippet). Use it to CHECK a claim about a product, a version, an API or an error message that you cannot read from Jira. Never put an issue key, an account id, a site URL, an e-mail address or any other identifier from this instance into the query, the search is refused if you do. Results are pages, not answers: name the link for anything you take from them.",
     parameters: P({
-      query: { type: "string", description: "The search query. Public terms only — no identifiers from this Jira instance." },
+      query: { type: "string", description: "The search query. Public terms only, no identifiers from this Jira instance." },
       recency: { type: "string", enum: ["any", "year", "month", "week", "day"], description: "How recent the results must be. Default: any." },
     }, ["query"]),
   },
@@ -597,8 +597,8 @@ export const buildAgentGateContext = ({ edition = null, provider = null, agentMo
 export const agentActionRefusalText = (reason) => {
   const code = String(reason || "");
   if (code === "capability-off:git" || code === "needs-coder-edition") return "git actions need the Coder edition on Forge LLM, or any BYOK provider";
-  if (code === "needs-frontier-model") return "git actions on Forge LLM need a frontier agent model — pick one in Settings, or use a BYOK provider";
-  if (code === "allowance-exhausted") return "the Forge LLM allowance is exhausted, so git actions are paused — switch to a BYOK provider or wait for the allowance to reset";
+  if (code === "needs-frontier-model") return "git actions on Forge LLM need a frontier agent model, pick one in Settings, or use a BYOK provider";
+  if (code === "allowance-exhausted") return "the Forge LLM allowance is exhausted, so git actions are paused, switch to a BYOK provider or wait for the allowance to reset";
   if (code.startsWith("capability-off:")) return `${code.slice("capability-off:".length)} actions are not enabled on this instance`;
   if (code.startsWith("missing-product:")) return `this site does not have ${code.slice("missing-product:".length)}`;
   if (code === "external-trigger") return "an externally triggered rule may not hold an action that approves code, blocks a merge or deploys";
@@ -623,7 +623,7 @@ export const assertAllowedActions = (ids, opts) => {
     // The message names the CAUSE, not the code (F-302): an admin who reads
     // "capability-off:git" cannot act on it, and there is nothing in the UI with that
     // name. The machine-readable codes still ride on `refused[]` for the REST client.
-    const e = new Error(`agent.allowedActions contains actions this rule may not use: ${refused.map((r) => `${r.id} — ${agentActionRefusalText(r.reason)}`).join("; ")}`);
+    const e = new Error(`agent.allowedActions contains actions this rule may not use: ${refused.map((r) => `${r.id}: ${agentActionRefusalText(r.reason)}`).join("; ")}`);
     e.reason = "action-not-allowed";
     e.refused = refused;
     throw e;
@@ -750,7 +750,7 @@ export const writeScopeRefusalText = (reason, { issueKey = null, projects = [] }
   if (reason === "write_scope_absent") return `Refused: this run was started without a write scope, so it may not change any issue. Read, report and finish.`;
   if (reason === "write_scope_empty") return `Refused: this agent has no projects it may write in. You can read, stage a reply and propose a change, but you cannot change${where || " an issue"}. Say so and finish.`;
   if (reason === "site_wide_write_refused") return `Refused: a site-wide write scope is not allowed. Name the projects instead.`;
-  if (reason === "outside_write_scope") return `Refused:${where || " that issue"} is outside this agent's write scope (${list}). Do not try another way to change it — propose the change instead, or finish.`;
+  if (reason === "outside_write_scope") return `Refused:${where || " that issue"} is outside this agent's write scope (${list}). Do not try another way to change it, propose the change instead, or finish.`;
   if (reason === "project_unresolvable") return `Refused: the project of${where || " that issue"} could not be read, so it cannot be checked against the write scope (${list}). Not being able to check is a refusal, not a pass.`;
   return `Refused: the write scope check said "${String(reason || "no")}".`;
 };

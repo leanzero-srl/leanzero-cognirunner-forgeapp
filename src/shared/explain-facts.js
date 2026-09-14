@@ -68,8 +68,8 @@ export const premadeRuleLabel = (config) => {
 // Deliberately spells out BOTH halves: what strict changes, and what it does not.
 // A misconfigured connection or repository fails CLOSED whatever strict says.
 const strictWords = (strict) => (strict === true
-  ? "On — a provider outage, a dead token, an unreadable answer or no pull request found BLOCKS the transition."
-  : "Off — a provider outage, a dead token, an unreadable answer or no pull request found ALLOWS the transition (fail-open). A deleted connection or a repository the connection may not read always blocks.");
+  ? "On: a provider outage, a dead token, an unreadable answer or no pull request found BLOCKS the transition."
+  : "Off: a provider outage, a dead token, an unreadable answer or no pull request found ALLOWS the transition (fail-open). A deleted connection or a repository the connection may not read always blocks.");
 
 /*
  * `connections` is optional: the summary is rendered in places that have the editor's
@@ -174,7 +174,7 @@ export const premadeSummaryRows = (config, connections) => {
     // nothing to a reader. An unknown id is named as unset, because that is what the
     // executor does with it (an ERROR on every transition, in both strict columns).
     const coderRow = getCoderPfMode(config.mode);
-    rows.push({ label: "What the Coder does:", value: coderRow ? coderRow.label : "not set — this rule fails on every transition" });
+    rows.push({ label: "What the Coder does:", value: coderRow ? coderRow.label : "not set, this rule fails on every transition" });
   }
   for (const k of ["issueTypeName", "statusName", "resolutionName", "linkTypeName", "priorityName"]) {
     if (config[k]) rows.push({ label: "Value:", value: config[k] });

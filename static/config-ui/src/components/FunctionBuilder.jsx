@@ -107,10 +107,10 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
         </div>
         <ol className="pf-how-steps">
           <li><strong>Describe</strong> what each step should do in plain language</li>
-          <li><strong>Generate</strong> — AI writes the JavaScript code for you</li>
-          <li><strong>Test</strong> — dry-run safely against real data</li>
-          <li><strong>Fix</strong> — one-click AI repair when a test fails</li>
-          <li><strong>Learns</strong> — every fix becomes a memory that improves future generations</li>
+          <li><strong>Generate</strong>: AI writes the JavaScript code for you</li>
+          <li><strong>Test</strong>: dry-run safely against real data</li>
+          <li><strong>Fix</strong>: one-click AI repair when a test fails</li>
+          <li><strong>Learns</strong>: every fix becomes a memory that improves future generations</li>
         </ol>
       </div>}
 
@@ -162,7 +162,7 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
           <span>
             <span style={{ display: "block", fontSize: "13px", fontWeight: 600 }}>Run in the background (longer budget)</span>
             <span style={{ display: "block", fontSize: "12px", color: "var(--text-muted, #64748b)", marginTop: "3px" }}>
-              <strong>Off</strong> (default): runs inline during the transition, bounded by Jira's hard ~25&nbsp;s post-function limit. <strong>On</strong>: runs on the async queue with up to ~110&nbsp;s — for heavy multi-step or many-call logic. The transition completes immediately and the steps finish a few seconds later (eventually consistent).
+              <strong>Off</strong> (default): runs inline during the transition, bounded by Jira's hard ~25&nbsp;s post-function limit. <strong>On</strong>: runs on the async queue with up to ~110&nbsp;s, for heavy multi-step or many-call logic. The transition completes immediately and the steps finish a few seconds later (eventually consistent).
             </span>
           </span>
         </label>

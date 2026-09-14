@@ -180,7 +180,7 @@ export default function ReviewPanel({ configType, config }) {
             /* F-129 — operator Stop-all, not a review failure. Neutral slate, no ❌. */
             <div className="async-cancelled-note">
               <span className="acn-text">
-                <strong>Review cancelled.</strong> Cancelled — nothing was changed. Run the review again when the stop is lifted.
+                <strong>Review cancelled.</strong> Cancelled, nothing was changed. Run the review again when the stop is lifted.
               </span>
               <button className="acn-dismiss" onClick={() => setResult(null)} aria-label="Dismiss">&times;</button>
             </div>

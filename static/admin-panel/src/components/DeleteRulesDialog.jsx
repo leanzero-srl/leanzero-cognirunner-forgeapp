@@ -227,7 +227,7 @@ export default function DeleteRulesDialog({ invoke, ids, onClose, onDone }) {
               {everythingUnlocatable && (
                 <div className="del-warn">
                   Not available: none of these rules could be located on their workflow
-                  {unlocatable[0]?.reason ? ` — ${NOT_LOCATABLE[unlocatable[0].reason] || unlocatable[0].reason}` : ""}.
+                  {unlocatable[0]?.reason ? `, ${NOT_LOCATABLE[unlocatable[0].reason] || unlocatable[0].reason}` : ""}.
                 </div>
               )}
               {!everythingUnlocatable && unlocatable.length > 0 && (

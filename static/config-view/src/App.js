@@ -1744,7 +1744,7 @@ function App() {
         <line x1="12" y1="8" x2="12" y2="12" />
         <line x1="12" y1="16" x2="12.01" y2="16" />
       </svg>
-      <span>License inactive — AI validation is disabled. Transitions will pass through without checks.</span>
+      <span>License inactive, AI validation is disabled. Transitions will pass through without checks.</span>
       {editionChip}
     </div>
   ) : licenseActive === true ? (
@@ -1887,7 +1887,7 @@ function App() {
                 <button
                   className="btn-small"
                   onClick={() => openAdmin("rules", ruleId)}
-                  title="Open this rule in the CogniRunner admin panel — full execution logs, provenance, and settings."
+                  title="Open this rule in the CogniRunner admin panel, full execution logs, provenance, and settings."
                 >
                   Open in admin →
                 </button>
@@ -2300,10 +2300,10 @@ function App() {
             {explainState === "degraded" && (
               <div className="cv-explain-note">
                 {explainReason === "lmstudio"
-                  ? "Plain-English explanations aren't available with the self-hosted LM Studio provider — switch to a hosted provider in CogniRunner Settings."
+                  ? "Plain-English explanations aren't available with the self-hosted LM Studio provider, switch to a hosted provider in CogniRunner Settings."
                   : explainReason === "timeout"
-                  ? "The AI provider didn't respond in time — try again in a moment."
-                  : "Couldn't generate an explanation right now — try again in a moment."}
+                  ? "The AI provider didn't respond in time, try again in a moment."
+                  : "Couldn't generate an explanation right now, try again in a moment."}
               </div>
             )}
             {explainState === "error" && (
@@ -2324,7 +2324,7 @@ function App() {
               <button
                 className="btn-small"
                 onClick={() => openAdmin("rules", ruleId)}
-                title="Open this rule in the CogniRunner admin panel — full execution logs, provenance, and settings."
+                title="Open this rule in the CogniRunner admin panel, full execution logs, provenance, and settings."
               >
                 Open in admin →
               </button>

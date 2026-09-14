@@ -6654,34 +6654,34 @@ const SURFACES = {
   // callout (App.js ~3617): both say Jira evaluates conditions itself, so they use
   // the non-AI rule types only. The phrasings differ (this is a one-line chip, that
   // is a full callout) — keep the claim aligned, not the words.
-  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, delete, or explain any rule from here.",
+  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows: toggle, edit, delete, or explain any rule from here.",
     terms: [
-      { label: "validator", def: "A rule that runs when someone tries to complete a transition. It can block the transition and show your message. Validators are enforced everywhere — the issue view, REST, automation and bulk changes." },
+      { label: "validator", def: "A rule that runs when someone tries to complete a transition. It can block the transition and show your message. Validators are enforced everywhere: the issue view, REST, automation and bulk changes." },
       { label: "condition", def: "A rule that hides a transition when its criteria aren't met. Forge conditions are evaluated by Jira itself rather than by an AI model, so conditions use the non-AI rule types only." },
-      { label: "post-function", def: "A rule that runs AFTER a transition completes — it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." },
+      { label: "post-function", def: "A rule that runs AFTER a transition completes, it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." },
     ] },
-  listeners: { eyebrow: "LISTENERS", what: "Rules that react to Jira events — issue created, comment added, sprint started, version released, 68 events in all — with AI-generated code or an AI agent. No workflow transition needed.",
+  listeners: { eyebrow: "LISTENERS", what: "Rules that react to Jira events (issue created, comment added, sprint started, version released, 68 events in all), with AI-generated code or an AI agent. No workflow transition needed.",
     terms: [
-      { label: "AI condition", def: "A plain-language gate (\"the comment is a customer complaint\") the AI evaluates before the listener runs — one cheap classification call." },
+      { label: "AI condition", def: "A plain-language gate (\"the comment is a customer complaint\") the AI evaluates before the listener runs, one cheap classification call." },
       { label: "AI agent", def: "The no-code mode: you write instructions, tick the actions the agent may take, and the AI decides and acts through those actions only." },
     ] },
-  jobs: { eyebrow: "SCHEDULED JOBS", what: "Rules that run on a cron schedule — every 5 minutes up to monthly, in any time zone — once, or per issue of a JQL scope (escalation-style). Same code steps or AI agent as listeners.",
+  jobs: { eyebrow: "SCHEDULED JOBS", what: "Rules that run on a cron schedule (every 5 minutes up to monthly, in any time zone): once, or per issue of a JQL scope (escalation-style). Same code steps or AI agent as listeners.",
     terms: [{ label: "scope", def: "A JQL query the job runs against; each matching issue becomes the current issue for its own run, sharing the ~100 s budget." }] },
   agents: { eyebrow: "AGENTS", what: "Virtual administrators: agents that work a service desk queue on a schedule, stage a reply, and send it on a later tick only after eleven checks. Every one starts in shadow mode, where it stages and posts nothing.",
     terms: [
-      { label: "shadow mode", def: "The first ticks of an agent's life. It sweeps and it stages replies, and it posts none of them — you approve or reject each draft until the shadow ticks are used up." },
+      { label: "shadow mode", def: "The first ticks of an agent's life. It sweeps and it stages replies, and it posts none of them, you approve or reject each draft until the shadow ticks are used up." },
       { label: "tick", def: "One scheduled run. A prepare tick finds work and stages replies; a separate post tick sends what is due, so nothing an agent writes can go out in the run that wrote it." },
       { label: "owed", def: "An item where a human is waiting on the agent. Owed replies are worked first and have their own hourly cap." },
     ] },
   logs: { eyebrow: "EXECUTION LOGS", what: "A running history of what your rules did on real transitions: pass or fail, the AI's reasoning, and any changes a post-function made." },
   docs: { eyebrow: "DOCUMENTATION", what: "Reference docs the AI reads when it generates code and validates fields. Add your own API notes or conventions; the built-in guides come seeded.",
-    terms: [{ label: "provenance", def: "The record of exactly which docs, skills, and memories the AI drew on when it generated a step's code — shown as chips on each rule." }] },
-  skills: { eyebrow: "SKILLS", what: "Reusable instruction packs the AI applies when generating post-function code — auto-matched by keyword, or picked per step.",
+    terms: [{ label: "provenance", def: "The record of exactly which docs, skills, and memories the AI drew on when it generated a step's code, shown as chips on each rule." }] },
+  skills: { eyebrow: "SKILLS", what: "Reusable instruction packs the AI applies when generating post-function code: auto-matched by keyword, or picked per step.",
     terms: [{ label: "auto-match", def: "On top of any skills you pick, the AI automatically applies up to 2 whose keywords match your step's description." }] },
   knowledge: { eyebrow: "KNOWLEDGE", what: "Platform knowledge baked into the app - Jira, JSM, Confluence and Forge facts the models read before they write code. Switch a pack off to keep it out of every prompt on this site." },
   memories: { eyebrow: "MEMORIES", what: "Short facts this instance has learned from fixes and your corrections. They sharpen future AI output; runtime use is opt-in (per-transition token cost).",
     terms: [
-      { label: "distill", def: "When a production failure is new, the AI writes a short (≤400-char) lesson from it and saves it as a memory — no repeat AI cost for known errors." },
+      { label: "distill", def: "When a production failure is new, the AI writes a short (≤400-char) lesson from it and saves it as a memory, no repeat AI cost for known errors." },
       { label: "runtime injection", def: "Feeding memories into live validators and post-functions on every transition. Opt-in, because it adds tokens to each run." },
     ] },
   code: { eyebrow: "CODE", what: "Your Git providers: the connections rules use to read and write repositories, and the Atlassian identity the pipeline deploys your Forge app with. Admin only.",
@@ -6692,7 +6692,7 @@ const SURFACES = {
   permissions: { eyebrow: "PERMISSIONS", what: "Who can create and edit CogniRunner rules on this site. App admins manage the roster; editors manage rules." },
   settings: { eyebrow: "SETTINGS", what: "Your AI provider, API key, and model, plus the MCP tools the agent can call. Keys are stored in Forge storage, never in environment variables.",
     terms: [
-      { label: "MCP", def: "Model Context Protocol — external tool servers (web search, library docs, doc-reader) that CogniRunner lets the AI agent call mid-run." },
+      { label: "MCP", def: "Model Context Protocol: external tool servers (web search, library docs, doc-reader) that CogniRunner lets the AI agent call mid-run." },
       { label: "agentic", def: "When a validator lets the AI run tools (JQL search, web search) to gather evidence before it decides pass or fail." },
     ] },
 };
@@ -6898,7 +6898,7 @@ function App() {
         sel.removeAllRanges();
         sel.addRange(range);
       }
-      showToast("Couldn't reach the clipboard — the ARI is selected, press ⌘C / Ctrl+C", "error");
+      showToast("Couldn't reach the clipboard, the ARI is selected, press ⌘C / Ctrl+C", "error");
     }
   };
   // What the last "Register all" actually did, including how many it had to skip.
@@ -7073,7 +7073,7 @@ function App() {
     if (error && removed > 0) {
       showToast(`${removed} of ${total ?? removed} deleted, then: ${error}`, "error");
     } else if (!error && removed > 0) {
-      showToast(`Deleted ${removed} rule${removed > 1 ? "s" : ""}${failed ? ` — ${failed} failed` : ""}`, failed ? "error" : "success");
+      showToast(`Deleted ${removed} rule${removed > 1 ? "s" : ""}${failed ? `, ${failed} failed` : ""}`, failed ? "error" : "success");
     }
     fetchConfigs(true);
     // A list-only delete moves the rule into the "attached but not registered"
@@ -7593,7 +7593,7 @@ function App() {
         <line x1="12" y1="8" x2="12" y2="12" />
         <line x1="12" y1="16" x2="12.01" y2="16" />
       </svg>
-      <span>License inactive — AI validation is disabled. Transitions will pass through without checks.</span>
+      <span>License inactive, AI validation is disabled. Transitions will pass through without checks.</span>
     </div>
   ) : licenseActive === true ? (
     <div className="license-banner license-active">
@@ -7705,7 +7705,7 @@ function App() {
             {providerHealth.reason === "no-provider" ? (
               <>
                 <strong>
-                  No AI provider could be read from settings — AI-guarded transitions are passing without validation.
+                  No AI provider could be read from settings, AI-guarded transitions are passing without validation.
                 </strong>
                 <span>
                   Nothing was sent to any provider. Validators and conditions fail open, so every
@@ -7716,16 +7716,16 @@ function App() {
             ) : (
               <>
                 <strong>
-                  AI provider unreachable — AI-guarded transitions are passing WITHOUT validation.
+                  AI provider unreachable, AI-guarded transitions are passing WITHOUT validation.
                 </strong>
                 <span>
                   {providerHealth.providerLabel}
                   {providerHealth.model ? ` (${providerHealth.model})` : ""} returned{" "}
                   {providerHealth.status ? `HTTP ${providerHealth.status}` : "an error"}.{" "}
                   Validators and conditions fail open on a provider error, so every transition
-                  guarded by an AI rule is currently allowed through without validation — nothing
+                  guarded by an AI rule is currently allowed through without validation, nothing
                   is being checked. Fix the key, base URL, or model in Settings to restore validation.
-                  {providerHealth.message ? ` — ${providerHealth.message}` : ""}
+                  {providerHealth.message ? `, ${providerHealth.message}` : ""}
                 </span>
               </>
             )}
@@ -7820,7 +7820,7 @@ function App() {
           {discovered === null && (
             <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>
               CogniRunner rules can be attached to workflows outside this panel (REST automation, imported or copied workflows, or a rule whose registration didn't complete). They run on transitions but won't show under <strong>Configured Rules</strong> until claimed. Click <strong>Scan workflows</strong> to find them.
-              {" "}Attaching rules yourself over Jira's REST API is supported — see <strong>Automating rule creation</strong> below for this installation's ARIs and the payload shapes.
+              {" "}Attaching rules yourself over Jira's REST API is supported, see <strong>Automating rule creation</strong> below for this installation's ARIs and the payload shapes.
             </p>
           )}
           {discMeta && discMeta.error && (
@@ -7835,18 +7835,18 @@ function App() {
                 {/* The old code discarded this result entirely, so a run that
                     silently skipped hundreds of rules at the cap looked clean. */}
                 {(registerOutcome.skipped > 0 || registerOutcome.skippedSize > 0) && (
-                  <> {registerOutcome.skipped + registerOutcome.skippedSize} skipped — the registry is full. Delete rules you no longer need, then run this again.</>
+                  <> {registerOutcome.skipped + registerOutcome.skippedSize} skipped, the registry is full. Delete rules you no longer need, then run this again.</>
                 )}
               </span>
             </div>
           )}
           {discovered && discMeta && !discMeta.error && (<>
             <p style={{ margin: "0 0 10px 0", fontSize: "13px", color: "var(--text-secondary)" }}>
-              Scanned <strong>{discMeta.scannedWorkflows}</strong> workflow(s): <strong>{discMeta.totalCogniRules}</strong> CogniRunner rule(s) attached, <strong>{discMeta.registeredMatched}</strong> already registered, <strong style={{ color: discovered.length ? "#7c3aed" : "inherit" }}>{discovered.length}</strong> not registered{discMeta.truncated ? <strong style={{ color: "#dc2626" }}> — scan truncated, this instance has more workflows than one scan covers</strong> : ""}.
+              Scanned <strong>{discMeta.scannedWorkflows}</strong> workflow(s): <strong>{discMeta.totalCogniRules}</strong> CogniRunner rule(s) attached, <strong>{discMeta.registeredMatched}</strong> already registered, <strong style={{ color: discovered.length ? "#7c3aed" : "inherit" }}>{discovered.length}</strong> not registered{discMeta.truncated ? <strong style={{ color: "#dc2626" }}>, scan truncated, this instance has more workflows than one scan covers</strong> : ""}.
             </p>
             {discovered.length > 0 && (
               <p style={{ margin: "0 0 10px 0", fontSize: "12.5px", color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                These rules <strong>run on every matching transition</strong> and can't be disabled from this panel until they're registered. A rule whose saved configuration carries no identity can't be disabled even then — the only way to stop it is to remove it from the workflow.
+                These rules <strong>run on every matching transition</strong> and can't be disabled from this panel until they're registered. A rule whose saved configuration carries no identity can't be disabled even then, the only way to stop it is to remove it from the workflow.
               </p>
             )}
             {discovered.length === 0 ? (
@@ -7924,7 +7924,7 @@ function App() {
             <div className="card anim-rise" style={{ padding: "14px 16px" }}>
               <p style={{ margin: "0 0 12px", fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.55 }}>
                 CogniRunner rules are ordinary Jira workflow rules, so you can attach them with Jira's own
-                workflow REST API instead of this panel — for provisioning across many projects, migrating
+                workflow REST API instead of this panel, for provisioning across many projects, migrating
                 between sites, or keeping rules in version control. Read the workflow with{" "}
                 <code className="field-id">GET /rest/api/3/workflows/search</code>, add the rule to the
                 transition, and post it all back with{" "}
@@ -7936,7 +7936,7 @@ function App() {
               {apiInfo && (<>
                 <div className="api-info-lead">
                   Use these values for <strong>this</strong> installation. The environment id inside each ARI
-                  is specific to it — a production and a development install have different ids and separate
+                  is specific to it, a production and a development install have different ids and separate
                   storage, so never copy an ARI out of an example or another site.
                 </div>
                 <table className="table" style={{ marginTop: "10px" }}>
@@ -7965,10 +7965,10 @@ function App() {
                   <ol style={{ margin: "6px 0 0", paddingLeft: "18px", lineHeight: 1.6 }}>
                     <li>
                       A rule attached this way <strong>runs immediately, but is invisible here</strong> until you
-                      claim it — come back and use <strong>Scan workflows → Register all</strong> above, or you
+                      claim it, come back and use <strong>Scan workflows → Register all</strong> above, or you
                       won't be able to disable it. For validators and post-functions, claiming also surfaces their
                       execution history; a condition is evaluated by Jira itself, so it has no execution history to
-                      show — claiming a condition is purely about being able to manage and disable it.
+                      show, claiming a condition is purely about being able to manage and disable it.
                     </li>
                     <li>
                       Put a stable <code className="field-id">id</code> inside the rule's{" "}
@@ -7984,7 +7984,7 @@ function App() {
                 <p style={{ margin: "12px 0 0", fontSize: "12px", color: "var(--text-secondary)", lineHeight: 1.55 }}>
                   Limits: a rule's <code className="field-id">config</code> must stay under{" "}
                   <strong>{Math.round(apiInfo.limits.maxRuleConfigBytes / 1024)} KB</strong> (Jira's cap), and this
-                  panel manages up to <strong>{apiInfo.limits.maxRegistryRows}</strong> rules —
+                  panel manages up to <strong>{apiInfo.limits.maxRegistryRows}</strong> rules,
                   see the meter below. Rules beyond that still run; they just can't be managed here.
                 </p>
                 <p style={{ margin: "8px 0 0", fontSize: "12px" }}>
@@ -8086,7 +8086,7 @@ function App() {
                 {registryMeter.refusing && (
                   <div className="reg-meter-hint">
                     {overBytes
-                      ? <>Delete about <strong>{Math.max(1, toFree)}</strong> more rule{Math.max(1, toFree) === 1 ? "" : "s"} to get back under {kb(registryMeter.refuseAtBytes)} KB — size is what's binding here, so removing a single rule won't be enough.</>
+                      ? <>Delete about <strong>{Math.max(1, toFree)}</strong> more rule{Math.max(1, toFree) === 1 ? "" : "s"} to get back under {kb(registryMeter.refuseAtBytes)} KB, size is what's binding here, so removing a single rule won't be enough.</>
                       : overRows
                         ? <>Delete at least one rule to get back under {registryMeter.max}.</>
                         : null}
@@ -8352,7 +8352,7 @@ function App() {
                                 >
                                   Claimed by {config.claimedBy === accountId ? "you" : (config.claimedByName || config.claimedBy)}
                                 </span>
-                              : <span className="owner-chip" title="Attached outside CogniRunner, or created before rules recorded an author — not attributed to anyone">Unowned</span>}
+                              : <span className="owner-chip" title="Attached outside CogniRunner, or created before rules recorded an author, not attributed to anyone">Unowned</span>}
                         </td>
                       )}
                       <td>
@@ -8410,10 +8410,10 @@ function App() {
                           ) : explain[config.id].status === "degraded" ? (
                             <div className="rule-explain-note">
                               {explain[config.id].reason === "lmstudio"
-                                ? "Plain-English explanations aren't available with the self-hosted LM Studio provider — switch to a hosted provider in Settings."
+                                ? "Plain-English explanations aren't available with the self-hosted LM Studio provider, switch to a hosted provider in Settings."
                                 : explain[config.id].reason === "timeout"
-                                ? "The AI provider didn't respond in time — try again in a moment."
-                                : "Couldn't generate an explanation right now — try again in a moment."}
+                                ? "The AI provider didn't respond in time, try again in a moment."
+                                : "Couldn't generate an explanation right now, try again in a moment."}
                             </div>
                           ) : explain[config.id].status === "error" ? (
                             <div className="rule-explain-note">Couldn't generate an explanation.</div>

@@ -57,24 +57,46 @@ export const REGISTRY_HARD_MAX_BYTES = 240 * 1024;
 export const REGISTRY_CREATE_MAX_BYTES = 200000;
 
 /**
+ * UTF-8 byte length of a string, in BOTH runtimes.
+ *
+ * `TextEncoder` is a global in Node 22 (the Forge runtime) and in every browser
+ * that runs the Custom UI iframes, so backend and frontend measure a document
+ * with the SAME function, not merely with the same intent. This is the whole
+ * point: F-836 was a gate in characters guarding a ceiling in bytes.
+ */
+export function utf8Bytes(s) {
+  return new TextEncoder().encode(String(s ?? "")).length;
+}
+
+/**
  * Content ceiling for ONE Documentation Library document (`saveContextDoc`).
  *
- * CHARACTERS, not bytes, and the name says so: the backend gate is
- * `content.length > DOC_CONTENT_MAX_CHARS` on a JavaScript string, which counts
- * UTF-16 code units. A document of CJK or emoji prose therefore passes here and
- * is larger than this many bytes in KVS — that is fine, the platform value
- * ceiling is 240KiB and this line sits well under it — but a UI that measured
- * `new TextEncoder().encode(s).length` would refuse text the backend accepts.
- * Both DocRepository copies measure `.length`, the same unit as the gate.
+ * BYTES of UTF-8, and the name says so. It used to be CHARACTERS (`.length` on
+ * a JavaScript string, UTF-16 code units) with a docblock claiming that "sits
+ * well under" the platform ceiling. That was false by up to 3x: CJK and emoji
+ * prose costs 3-4 bytes per code unit, so a 150,000-character CJK document
+ * measured 150,000 against this cap, passed every gate, and then arrived at
+ * `storage.set` as roughly 450KB - past the 240KiB KVS value ceiling. The
+ * platform refused, and the catch handed back the platform's own sentence,
+ * which names no size and no remedy.
+ *
+ * Now the relationship to the ceiling is real: 200,000 bytes is 195.3KiB, and
+ * REGISTRY_HARD_MAX_BYTES is 245,760. The ~44KiB of headroom is not decoration
+ * either - the stored value is `{ ...doc, content }` (id, title, category,
+ * contentLength, createdBy, createdAt plus JSON punctuation), and the same
+ * document also adds an index row to `doc_repo_index`.
+ *
+ * Every gate on this cap measures with `utf8Bytes` - the backend in
+ * `saveContextDoc`, and both DocRepository copies. One unit, one function.
  *
  * It coincides with REGISTRY_CREATE_MAX_BYTES and is NOT the same rule: that one
  * bounds the whole shared registry value, this one bounds a single `doc_repo:{id}`
- * entry. Keep them separate — moving one must not move the other.
+ * entry. Keep them separate - moving one must not move the other.
  */
-export const DOC_CONTENT_MAX_CHARS = 200000;
+export const DOC_CONTENT_MAX_BYTES = 200000;
 
 /** How the doc cap is spoken to a user. Derived, never retyped. */
-export const DOC_CONTENT_MAX_LABEL = `${Math.round(DOC_CONTENT_MAX_CHARS / 1000)} KB`;
+export const DOC_CONTENT_MAX_LABEL = `${Math.round(DOC_CONTENT_MAX_BYTES / 1000)} KB`;
 
 /** The refusal `saveContextDoc` returns, and the hint the editor shows. */
 export const DOC_TOO_LARGE_MESSAGE = `Document too large (max ~${DOC_CONTENT_MAX_LABEL})`;
@@ -316,8 +338,8 @@ export const MEMORY_CONTENT_MAX = 400;
  * were filed for. Pure: no storage, no I/O.
  */
 export const memoryCapRefusalMessage = (reason) => (reason === "bytes"
-  ? "Memory store has reached its size limit — delete or shorten some memories in the Memories tab."
-  : `Memory store is full (${MAX_MEMORIES} max) — no memory you wrote is ever evicted automatically, and archived memories still count toward the cap — delete some in the Memories tab to make room.`);
+  ? "Memory store has reached its size limit: delete or shorten some memories in the Memories tab."
+  : `Memory store is full (${MAX_MEMORIES} max). No memory you wrote is ever evicted automatically, and archived memories still count toward the cap, so delete some in the Memories tab to make room.`);
 
 /**
  * The refusal for a store that is already OVER the PLATFORM ceiling (F-189) — a different
@@ -335,11 +357,11 @@ export const memoryCapRefusalMessage = (reason) => (reason === "bytes"
  * admin to bulk-delete memories over a transient KVS fault on a 1.4 KB write. Pure: no
  * storage, no I/O.
  */
-export const memoryWriteFaultMessage = () => "Could not save — Jira storage refused the write; try again.";
+export const memoryWriteFaultMessage = () => "Could not save: Jira storage refused the write; try again.";
 
 export const memoryPlatformCapMessage = (bytesOver) => {
   const over = Math.max(1, Math.round(Number(bytesOver) || 0));
-  return `Memory store is ${over} bytes over Jira's ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}-byte storage limit, so no change to it can be saved — not even deleting one memory. Freeing at least ${over} bytes means selecting several memories in the Memories tab and deleting them together.`;
+  return `Memory store is ${over} bytes over Jira's ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}-byte storage limit, so no change to it can be saved, not even deleting one memory. Freeing at least ${over} bytes means selecting several memories in the Memories tab and deleting them together.`;
 };
 
 /* ------------------------------------------------------------------------
@@ -543,9 +565,9 @@ export const WEB_SEARCH_BRAKE_MAX_PER_BUCKET = 300;
 /** The refusal sentence for each brake. ONE home: the log, the job row and the REST answer share it. */
 export const brakeRefusalText = (kind, max) => {
   if (kind === "job-writes") return `Write brake: this run reached its limit of ${max} change${max === 1 ? "" : "s"}. The remaining work was not done. Raise the job's "maximum writes per run", narrow its scope JQL, or split it into several jobs.`;
-  if (kind === "agent-runs") return `Agent brake: this installation started more than ${max} AI agent runs in 5 minutes, so this run was skipped. Something is firing far more often than intended — check the listeners and jobs that ran in the last few minutes.`;
+  if (kind === "agent-runs") return `Agent brake: this installation started more than ${max} AI agent runs in 5 minutes, so this run was skipped. Something is firing far more often than intended, check the listeners and jobs that ran in the last few minutes.`;
   if (kind === "web-searches-run") return `Search brake: this run has already made ${max} web searches. Work with what those returned, or say plainly that you could not check.`;
-  if (kind === "web-searches") return `Search brake: this installation made more than ${max} web searches in 5 minutes, so this one was refused. Something is searching far more often than intended — check the listeners and jobs that ran in the last few minutes.`;
+  if (kind === "web-searches") return `Search brake: this installation made more than ${max} web searches in 5 minutes, so this one was refused. Something is searching far more often than intended, check the listeners and jobs that ran in the last few minutes.`;
   return "Run brake tripped.";
 };
 

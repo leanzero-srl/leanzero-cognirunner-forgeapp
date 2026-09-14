@@ -41,7 +41,7 @@
 // EXPORTED so the second place that answers "which issue does this act on?" for the codegen
 // prompt (the builtin_doc_sandbox entry in builtin-docs.js) can derive this sentence instead of
 // growing a third, drifting copy of it.
-export const KEY_OPTIONAL_EMPTY_KEY_NOTE = "Passing `undefined` or `null` is the same as omitting it, but a key that IS passed and is an empty or blank string THROWS — never build one with `|| \"\"`; check the key exists first, e.g. `if (issue.fields.parent) await api.updateIssue(issue.fields.parent.key, fields);`.";
+export const KEY_OPTIONAL_EMPTY_KEY_NOTE = "Passing `undefined` or `null` is the same as omitting it, but a key that IS passed and is an empty or blank string THROWS, never build one with `|| \"\"`; check the key exists first, e.g. `if (issue.fields.parent) await api.updateIssue(issue.fields.parent.key, fields);`.";
 
 // The same rule in the ONE place it has to be short: `detail` is rendered ONLY in the
 // CodeMirror completion dropdown's inline slot (sandboxCompletions.js:28 - the hover tooltip
@@ -73,14 +73,14 @@ export const SANDBOX_CONFLUENCE_METHODS = [
     name: "getPage",
     signature: "api.confluence.getPage({ id, bodyFormat? })",
     returns: "{ id, title, spaceId, status, version, url, storage, text, truncated }",
-    summary: "Reads one page by id. `storage` is the raw storage-format body, `text` the plain text — both clamped to 60 KB (`truncated` says when that bit).",
+    summary: "Reads one page by id. `storage` is the raw storage-format body, `text` the plain text, both clamped to 60 KB (`truncated` says when that bit).",
     example: 'const page = await api.confluence.getPage({ id: "123456" });\napi.log(page.text.slice(0, 200));',
   },
   {
     name: "getPageByTitle",
     signature: "api.confluence.getPageByTitle({ spaceKey, title })",
     returns: "page object, or null",
-    summary: "Exact-title lookup inside one space. Returns null when there is no such page — but a space the app cannot see throws `auth`, so null is not proof of absence.",
+    summary: "Exact-title lookup inside one space. Returns null when there is no such page, but a space the app cannot see throws `auth`, so null is not proof of absence.",
     example: 'const existing = await api.confluence.getPageByTitle({ spaceKey: "DOCS", title: "Release notes" });',
   },
   {
@@ -88,7 +88,7 @@ export const SANDBOX_CONFLUENCE_METHODS = [
     signature: "api.confluence.createPage({ spaceKey, title, storage, parentId? })",
     returns: "{ id, title, version, url, truncated }",
     write: true,
-    summary: "WRITE. Creates a page from a storage-format body (clamped to 60 KB). Never retried — a retried create is a duplicate page.",
+    summary: "WRITE. Creates a page from a storage-format body (clamped to 60 KB). Never retried, a retried create is a duplicate page.",
     example: 'const page = await api.confluence.createPage({ spaceKey: "DOCS", title: "Release " + api.context.issueKey, storage: "<p>Created by CogniRunner</p>" });',
   },
   {
@@ -104,7 +104,7 @@ export const SANDBOX_CONFLUENCE_METHODS = [
     signature: "api.confluence.addComment({ pageId, body })",
     returns: "{ id, pageId, version, truncated }",
     write: true,
-    summary: "WRITE. Adds a footer comment (storage format, clamped to 32 KB). Never retried — a retried comment is a duplicate comment.",
+    summary: "WRITE. Adds a footer comment (storage format, clamped to 32 KB). Never retried, a retried comment is a duplicate comment.",
     example: 'await api.confluence.addComment({ pageId: "123456", body: "<p>" + api.context.issueKey + " transitioned</p>" });',
   },
 ];
@@ -121,12 +121,12 @@ export const CONFLUENCE_SIGNATURE_REFERENCE = SANDBOX_CONFLUENCE_METHODS
   .join("\n");
 
 // The failure contract, stated ONCE: it is the same for all six members.
-export const CONFLUENCE_ERROR_NOTE = "Every member THROWS on failure — there is no silent success. The message names a code from the closed set `confluence_unavailable` (the app is not installed on this site's Confluence, or Confluence did not answer in a way the app recognises) | `auth` | `not_found` | `conflict` | `rate_limited` | `network` | `invalid`. Let it throw to fail the step, or catch it and branch on the code in the message — never assume a write landed.";
+export const CONFLUENCE_ERROR_NOTE = "Every member THROWS on failure, there is no silent success. The message names a code from the closed set `confluence_unavailable` (the app is not installed on this site's Confluence, or Confluence did not answer in a way the app recognises) | `auth` | `not_found` | `conflict` | `rate_limited` | `network` | `invalid`. Let it throw to fail the step, or catch it and branch on the code in the message, never assume a write landed.";
 
 const confluenceNamespaceDoc = () => `### api.confluence.* → Confluence (an OPTIONAL product)
-Confluence is not installed on every site. When it is not, every member throws \`confluence_unavailable\` — the step FAILS loudly, it never quietly does nothing.
+Confluence is not installed on every site. When it is not, every member throws \`confluence_unavailable\`, the step FAILS loudly, it never quietly does nothing.
 
-Page bodies are Confluence **storage format** (XHTML-like: \`<p>text</p>\`, \`<h2>Heading</h2>\`, \`<ul><li>item</li></ul>\`), **never ADF** — ADF is Jira-only and Confluence rejects it.
+Page bodies are Confluence **storage format** (XHTML-like: \`<p>text</p>\`, \`<h2>Heading</h2>\`, \`<ul><li>item</li></ul>\`), **never ADF**, ADF is Jira-only and Confluence rejects it.
 
 ${SANDBOX_CONFLUENCE_METHODS.map((m) => `#### ${m.signature} → ${m.returns}
 ${m.summary}
@@ -135,7 +135,7 @@ ${m.example}
 \`\`\``).join("\n\n")}
 
 ${CONFLUENCE_ERROR_NOTE}
-In simulation (Test Run) the writes (${CONFLUENCE_WRITE_MEMBERS.join(", ")}) are recorded on the change ledger and skipped, exactly like the Jira writes; the reads stay live. Each call may take up to 10 seconds of the step's ~22 second budget — do not loop over dozens of pages.`;
+In simulation (Test Run) the writes (${CONFLUENCE_WRITE_MEMBERS.join(", ")}) are recorded on the change ledger and skipped, exactly like the Jira writes; the reads stay live. Each call may take up to 10 seconds of the step's ~22 second budget, do not loop over dozens of pages.`;
 
 export const SANDBOX_API_METHODS = [
   {
@@ -143,7 +143,7 @@ export const SANDBOX_API_METHODS = [
     signature: "api.getIssue(issueKey?)",
     returns: "issue object",
     summary: "Fetches a Jira issue by key (defaults to the current issue). Returns full issue with fields (summary, status, priority, etc.)",
-    detail: "(issueKey?) → issue object — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
+    detail: "(issueKey?) → issue object, " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'const issue = await api.getIssue(api.context.issueKey);',
     promptDoc: `### api.getIssue(issueKey?) → Object
 Fetches a Jira issue via REST API v3. The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`. ${KEY_OPTIONAL_EMPTY_KEY_NOTE}
@@ -177,7 +177,7 @@ const issue = await api.getIssue("PROJ-123");
     signature: "api.updateIssue(issueKey?, fields)",
     returns: "{ success: true }",
     summary: "Updates fields on an issue (defaults to the current issue). Use field IDs as keys. ADF required for description.",
-    detail: "(issueKey?, fields) → { success } — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
+    detail: "(issueKey?, fields) → { success }, " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'await api.updateIssue(api.context.issueKey, { priority: { name: "High" } });',
     promptDoc: `### api.updateIssue(issueKey?, fieldsObject) → { success: true }
 Updates fields via PUT /rest/api/3/issue/{key}. The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`. ${KEY_OPTIONAL_EMPTY_KEY_NOTE}
@@ -186,11 +186,11 @@ Field value formats:
 **Text fields:** \`{ summary: "New title" }\`
 **Date fields:** \`{ duedate: "2025-12-31" }\` (ISO format, date only)
 **Select/Priority:** \`{ priority: { name: "High" } }\` or \`{ priority: { id: "1" } }\`
-**User fields:** \`{ assignee: { accountId: "5f..." } }\` — use accountId, never username
+**User fields:** \`{ assignee: { accountId: "5f..." } }\`, use accountId, never username
 **Labels (overwrite):** \`{ labels: ["bug", "reviewed"] }\`
 **Components:** \`{ components: [{ id: "10001" }] }\`
 **Fix versions:** \`{ fixVersions: [{ id: "10000" }] }\`
-**Custom fields:** \`{ customfield_10050: "value" }\` — format depends on field type
+**Custom fields:** \`{ customfield_10050: "value" }\`, format depends on field type
 
 **ADF fields (description, environment):** Must use Atlassian Document Format:
 \`\`\`javascript
@@ -231,11 +231,11 @@ Field value formats:
     name: "searchJql",
     signature: "api.searchJql(jql)",
     returns: "{ issues: [...], nextPageToken? }",
-    summary: "Searches Jira issues using JQL. Returns up to 20 results. No total count — use issues.length; nextPageToken signals more pages.",
+    summary: "Searches Jira issues using JQL. Returns up to 20 results. No total count, use issues.length; nextPageToken signals more pages.",
     detail: "(jql) → { issues, nextPageToken? }",
     example: "const results = await api.searchJql('project = PROJ AND created >= -7d');",
     promptDoc: `### api.searchJql(jqlQuery) → { issues: [...], nextPageToken?: string }
-Searches via POST /rest/api/3/search/jql (the legacy /rest/api/3/search endpoint was shut down on 2025-10-31). Returns up to 20 results. The response does NOT include a "total" count — use issues.length to know how many came back, and nextPageToken if more pages exist.
+Searches via POST /rest/api/3/search/jql (the legacy /rest/api/3/search endpoint was shut down on 2025-10-31). Returns up to 20 results. The response does NOT include a "total" count, use issues.length to know how many came back, and nextPageToken if more pages exist.
 
 **JQL operators:** \`=\`, \`!=\`, \`~\` (contains), \`!~\`, \`IN\`, \`NOT IN\`, \`>\`, \`<\`, \`>=\`, \`<=\`, \`IS EMPTY\`, \`IS NOT EMPTY\`
 **JQL functions:** \`currentUser()\`, \`startOfDay()\`, \`endOfDay()\`, \`startOfWeek()\`
@@ -264,7 +264,7 @@ const results = await api.searchJql('project = PROJ AND labels = "critical"');
 // results.issues[0].fields.summary = "Issue title"
 // results.issues[0].fields.status.name = "To Do"
 // results.nextPageToken = "..." (present only when more pages exist)
-// NOTE: there is NO results.total — use results.issues.length
+// NOTE: there is NO results.total, use results.issues.length
 \`\`\``,
   },
   {
@@ -272,7 +272,7 @@ const results = await api.searchJql('project = PROJ AND labels = "critical"');
     signature: "api.transitionIssue(issueKey?, transitionId, extra?)",
     returns: "{ success: true }",
     summary: "Executes a transition ID on the issue (defaults to the current issue). extra = { fields, update }. Use transitionByName when you have its name.",
-    detail: "(issueKey?, transitionId, extra?) → { success } — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
+    detail: "(issueKey?, transitionId, extra?) → { success }, " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'await api.transitionIssue(api.context.issueKey, "31", { fields: { resolution: { name: "Done" } } });',
     promptDoc: `### api.transitionIssue(issueKey?, transitionId, extra?) → { success: true }
 Executes a workflow transition. Pass a TRANSITION id, never a status id or status name. The id must be a non-empty string or finite number (e.g. "31" or 31); missing, blank or other types throw before simulation or writing. For a transition name use api.transitionByName instead.
@@ -327,14 +327,14 @@ Creates a copy of the current issue. \`overrides\` is merged over the copied fie
     detail: "(targetStatusName, opts?) → { success, target }",
     example: 'await api.forceStatus("Done");',
     promptDoc: `### api.forceStatus(targetStatusName, opts?) → { success, target }
-Forces the current issue into a status even when no normal transition path exists, by creating a temporary global transition, executing it, then removing it. The target status must already be part of the issue's workflow. \`opts.workflowName\` overrides the workflow (otherwise taken from the rule config). HEAVY: performs two workflow updates — use sparingly.`,
+Forces the current issue into a status even when no normal transition path exists, by creating a temporary global transition, executing it, then removing it. The target status must already be part of the issue's workflow. \`opts.workflowName\` overrides the workflow (otherwise taken from the rule config). HEAVY: performs two workflow updates, use sparingly.`,
   },
   {
     name: "transitionByName",
     signature: "api.transitionByName(issueKey?, name, extra?)",
     returns: "{ success: true }",
-    summary: "Resolves a transition by NAME on the issue (defaults to the current issue) and executes it — no numeric id needed. extra = { fields, update }.",
-    detail: "(issueKey?, name, extra?) → { success } — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
+    summary: "Resolves a transition by NAME on the issue (defaults to the current issue) and executes it, no numeric id needed. extra = { fields, update }.",
+    detail: "(issueKey?, name, extra?) → { success }, " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'await api.transitionByName(api.context.issueKey, "Done", { fields: { resolution: { name: "Done" } } });',
     promptDoc: "### api.transitionByName(issueKey?, name, extra?) → { success }\nReads currently available transitions on the issue, matches the transition name case-insensitively (not the destination status name), then runs its id. An unavailable name throws, including during simulation; simulation performs the lookup but skips the write. `extra.fields`/`extra.update` set resolution, add a comment, etc. in the same call. The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`. " + KEY_OPTIONAL_EMPTY_KEY_NOTE,
   },
@@ -486,8 +486,8 @@ Forces the current issue into a status even when no normal transition path exist
     name: "editIssue",
     signature: "api.editIssue(issueKey?, update)",
     returns: "{ success: true }",
-    summary: "Applies Jira `update` operations (add/remove/set) that MERGE server-side. Use this instead of updateIssue when multiple post-functions on one transition touch the same array field — updateIssue REPLACES and concurrent writes clobber.",
-    detail: "(issueKey?, update) → { success } — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
+    summary: "Applies Jira `update` operations (add/remove/set) that MERGE server-side. Use this instead of updateIssue when multiple post-functions on one transition touch the same array field, updateIssue REPLACES and concurrent writes clobber.",
+    detail: "(issueKey?, update) → { success }, " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'await api.editIssue(api.context.issueKey, { labels: [{ add: "triaged" }], components: [{ add: { name: "API" } }] });',
     promptDoc: "### api.editIssue(issueKey?, update) → { success }\nApplies Jira `update` ops, e.g. `{ labels: [{ add: \"x\" }, { remove: \"y\" }] }`. Prefer over api.updateIssue for additive array changes and when several PFs on the same transition modify the same field (avoids lost-update clobbering). The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`. " + KEY_OPTIONAL_EMPTY_KEY_NOTE,
   },
@@ -527,7 +527,7 @@ api.log("Issue data:", { key: issue.key, status: issue.fields.status.name });
     name: "forIssue",
     signature: "api.forIssue(issueKey)",
     returns: "api bound to that issue",
-    summary: "Returns the same api surface bound to ANOTHER issue — for issue-bound helpers (addComment, addLabels, setAssignee…) and for the key-optional methods (getIssue, updateIssue, transitionByName…) on a different key, or when there is no current issue (scheduled jobs, non-issue listener events).",
+    summary: "Returns the same api surface bound to ANOTHER issue, for issue-bound helpers (addComment, addLabels, setAssignee…) and for the key-optional methods (getIssue, updateIssue, transitionByName…) on a different key, or when there is no current issue (scheduled jobs, non-issue listener events).",
     detail: "(issueKey) → api",
     example: 'await api.forIssue("PROJ-7").addComment("Parent was closed");',
     promptDoc: `### api.forIssue(issueKey) → api
@@ -536,7 +536,7 @@ Re-binds the WHOLE surface to another issue. That covers the key-less issue-boun
 const parent = issue.fields.parent?.key;
 if (parent) await api.forIssue(parent).addComment("Child " + api.context.issueKey + " is done");
 \`\`\`
-When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a listener on a version/project/sprint event) every issue-bound call throws — the key-less helpers immediately, the key-optional ones when no key is passed either. Go through api.forIssue(key), or pass the key explicitly.`,
+When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a listener on a version/project/sprint event) every issue-bound call throws, the key-less helpers immediately, the key-optional ones when no key is passed either. Go through api.forIssue(key), or pass the key explicitly.`,
   },
   {
     name: "confluence",
@@ -549,7 +549,7 @@ When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a
     signature: `api.confluence.{ ${CONFLUENCE_API_MEMBERS.join(", ")} }`,
     returns: "depends on the member",
     summary: `Confluence namespace (${CONFLUENCE_API_MEMBERS.length} members: ${CONFLUENCE_API_MEMBERS.join(", ")}). Storage format, never ADF. Throws confluence_unavailable when Confluence is not installed on this site; writes are intercepted in simulation.`,
-    detail: `{ ${CONFLUENCE_API_MEMBERS.join(", ")} } — storage format, not ADF`,
+    detail: `{ ${CONFLUENCE_API_MEMBERS.join(", ")} }, storage format, not ADF`,
     example: 'const page = await api.confluence.getPageByTitle({ spaceKey: "DOCS", title: "Runbook" });',
     get promptDoc() { return confluenceNamespaceDoc(); },
   },
@@ -561,7 +561,7 @@ When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a
     detail: "{ issueKey, runtime, eventType, event, jobId, scheduledFor }",
     example: "const key = api.context.issueKey; // null in a job without scope",
     promptDoc: `### api.context → { issueKey, runtime, ... }
-- \`issueKey\`: the current issue key — the transitioned issue (post-functions), the event's issue (listeners) or the scoped issue (scheduled jobs). **null** for non-issue listener events and unscoped jobs.
+- \`issueKey\`: the current issue key, the transitioned issue (post-functions), the event's issue (listeners) or the scoped issue (scheduled jobs). **null** for non-issue listener events and unscoped jobs.
 - \`runtime\`: "postfunction" | "listener" | "job".
 - Listeners: \`eventType\` (e.g. "avi:jira:commented:issue"), \`event\` (the raw Forge payload: event.issue, event.changelog.items[], event.comment, event.worklog, event.version, ...), \`actorAccountId\`, \`projectKey\`.
 - Scheduled jobs: \`jobId\`, \`jobName\`, \`scheduledFor\` (ISO), \`manual\` (true for "Run now"), \`scopeIssue\` ({ key, summary, status } when running per JQL-scoped issue).`,
@@ -686,13 +686,13 @@ export const resolveIssueKey = (explicitKey, boundKey, methodName, where = "this
   // was PASSED but is empty is a caller bug — `api.updateIssue(parent.key || "", fields)`
   // must not quietly become a write on the bound issue. Same principle as the type check.
   if (typeof explicitKey === "string") {
-    throw new Error(`${label}: the issue key was an empty string — pass a key like "PROJ-123", or omit the argument to target the current issue.`);
+    throw new Error(`${label}: the issue key was an empty string, pass a key like "PROJ-123", or omit the argument to target the current issue.`);
   }
   // Anything else non-nullish (an issue OBJECT, an array, a boolean) is a caller bug.
   // It used to 404 loudly as "/issue/[object Object]"; defaulting it to the current issue
   // would instead WRITE TO THE WRONG ISSUE in silence. Fail loudly and say what to pass.
   if (explicitKey !== undefined && explicitKey !== null) {
-    throw new Error(`${label}: the issue key must be a string like "PROJ-123" (got ${typeof explicitKey}) — pass issue.key, not the issue object.`);
+    throw new Error(`${label}: the issue key must be a string like "PROJ-123" (got ${typeof explicitKey}), pass issue.key, not the issue object.`);
   }
   if (typeof boundKey === "string" && boundKey.trim()) return boundKey;
   throw new Error(`${label} needs a current issue, but ${where} has none (api.context.issueKey is null). ${remedy}`);
@@ -739,7 +739,7 @@ export const normalizeKeyOptionalArgs = (methodName, args) => {
 
 // The lead guard paragraph (verbatim from the system prompt). Names the real surface
 // instead of falsely denying documented methods.
-export const API_USAGE_GUARD = `You must ONLY use methods that exist on the \`api\` object (the methods documented in the API reference below). Never invent methods — anything not documented (e.g. \`api.deleteIssue\`, \`api.batch\`) does NOT exist and will throw at runtime.`;
+export const API_USAGE_GUARD = `You must ONLY use methods that exist on the \`api\` object (the methods documented in the API reference below). Never invent methods, anything not documented (e.g. \`api.deleteIssue\`, \`api.batch\`) does NOT exist and will throw at runtime.`;
 
 // === Field type reference ====================================================
 // One row per Jira field type: how to read it, how to write it. Renders both
@@ -753,17 +753,17 @@ export const FIELD_TYPE_TABLE = [
   { fieldType: "Assignee", read: "`issue.fields.assignee?.accountId`", write: '`{ assignee: { accountId: "..." } }`' },
   { fieldType: "Labels", read: "`issue.fields.labels` (string[])", write: '`{ labels: ["a","b"] }` (overwrites all)' },
   { fieldType: "Components", read: "`issue.fields.components` ({name,id}[])", write: '`{ components: [{ id: "..." }] }`' },
-  { fieldType: "Due date", read: '`issue.fields.duedate` ("YYYY-MM-DD")', write: '`{ duedate: "2025-12-31" }` — strictly YYYY-MM-DD, never a datetime' },
+  { fieldType: "Due date", read: '`issue.fields.duedate` ("YYYY-MM-DD")', write: '`{ duedate: "2025-12-31" }`, strictly YYYY-MM-DD, never a datetime' },
   { fieldType: "Custom text", read: "`issue.fields.customfield_XXXXX`", write: '`{ customfield_XXXXX: "value" }`' },
   { fieldType: "Custom select", read: "`issue.fields.customfield_XXXXX.value`", write: '`{ customfield_XXXXX: { value: "Option" } }`' },
   { fieldType: "Custom multi-select", read: "`.customfield_XXXXX[].value`", write: '`{ customfield_XXXXX: [{ value: "A" }, { value: "B" }] }`' },
   { fieldType: "Custom user", read: "`.customfield_XXXXX.accountId`", write: '`{ customfield_XXXXX: { accountId: "..." } }`' },
   { fieldType: "Cascading select", read: "`.customfield_XXXXX.value` + `.customfield_XXXXX.child.value`", write: '`{ customfield_XXXXX: { value: "Parent", child: { value: "Child" } } }`' },
-  { fieldType: "Group picker", read: "`.customfield_XXXXX.name`", write: '`{ customfield_XXXXX: { name: "group-name" } }` — group NAME only, never an id' },
-  { fieldType: "Custom date", read: '`"YYYY-MM-DD"` string', write: '`{ customfield_XXXXX: "2025-12-31" }` — strictly YYYY-MM-DD' },
-  { fieldType: "Custom datetime", read: "ISO string", write: '`{ customfield_XXXXX: "2025-12-31T15:00:00.000+0000" }` — timezone offset REQUIRED' },
-  { fieldType: "Custom number", read: "`issue.fields.customfield_XXXXX` (number)", write: "`{ customfield_XXXXX: 42 }` — a JSON number, never a string" },
-  { fieldType: "Sprint", read: "`.customfield_XXXXX` (array, read-only here)", write: "NOT writable via updateIssue — use api.moveToSprint(sprintId) or api.moveToBacklog() to change membership" },
+  { fieldType: "Group picker", read: "`.customfield_XXXXX.name`", write: '`{ customfield_XXXXX: { name: "group-name" } }`, group NAME only, never an id' },
+  { fieldType: "Custom date", read: '`"YYYY-MM-DD"` string', write: '`{ customfield_XXXXX: "2025-12-31" }`, strictly YYYY-MM-DD' },
+  { fieldType: "Custom datetime", read: "ISO string", write: '`{ customfield_XXXXX: "2025-12-31T15:00:00.000+0000" }`, timezone offset REQUIRED' },
+  { fieldType: "Custom number", read: "`issue.fields.customfield_XXXXX` (number)", write: "`{ customfield_XXXXX: 42 }`, a JSON number, never a string" },
+  { fieldType: "Sprint", read: "`.customfield_XXXXX` (array, read-only here)", write: "NOT writable via updateIssue, use api.moveToSprint(sprintId) or api.moveToBacklog() to change membership" },
 ];
 
 // Write-format hints keyed by the custom-field type short key
@@ -771,19 +771,19 @@ export const FIELD_TYPE_TABLE = [
 // Powers the dynamic custom-field completions in the editor.
 export const WRITE_FORMATS_BY_CUSTOM_TYPE = {
   textfield: '"plain text"',
-  textarea: 'ADF document — { type: "doc", version: 1, content: [...] }',
+  textarea: 'ADF document, { type: "doc", version: 1, content: [...] }',
   select: '{ value: "Option Name" }',
   multiselect: '[{ value: "A" }, { value: "B" }]',
   radiobuttons: '{ value: "Option Name" }',
   multicheckboxes: '[{ value: "A" }]',
-  userpicker: '{ accountId: "5f..." } — never username',
+  userpicker: '{ accountId: "5f..." }, never username',
   multiuserpicker: '[{ accountId: "5f..." }]',
-  grouppicker: '{ name: "group-name" } — name only, never an id',
+  grouppicker: '{ name: "group-name" }, name only, never an id',
   multigrouppicker: '[{ name: "group-name" }]',
-  datepicker: '"YYYY-MM-DD" — date only, never a datetime',
-  datetime: '"2025-12-31T15:00:00.000+0000" — timezone offset required',
-  float: "42 — a JSON number, never a string",
-  labels: '["a", "b"] — labels cannot contain spaces',
+  datepicker: '"YYYY-MM-DD", date only, never a datetime',
+  datetime: '"2025-12-31T15:00:00.000+0000", timezone offset required',
+  float: "42, a JSON number, never a string",
+  labels: '["a", "b"], labels cannot contain spaces',
   url: '"https://..."',
   version: '{ id: "10000" }',
   multiversion: '[{ id: "10000" }]',
@@ -794,16 +794,16 @@ export const WRITE_FORMATS_BY_CUSTOM_TYPE = {
 // Write-format hints for common system fields, keyed by field id.
 export const WRITE_FORMATS_BY_SYSTEM_FIELD = {
   summary: '"text string"',
-  description: 'ADF document — { type: "doc", version: 1, content: [...] }',
+  description: 'ADF document, { type: "doc", version: 1, content: [...] }',
   environment: "ADF document",
   priority: '{ name: "High" } or { id: "1" }',
-  assignee: '{ accountId: "5f..." } — never username',
+  assignee: '{ accountId: "5f..." }, never username',
   reporter: '{ accountId: "5f..." }',
-  labels: '["bug", "reviewed"] — overwrites all labels, no spaces',
+  labels: '["bug", "reviewed"], overwrites all labels, no spaces',
   components: '[{ id: "10001" }] or [{ name: "Backend" }]',
   fixVersions: '[{ id: "10000" }]',
   versions: '[{ id: "10000" }]',
-  duedate: '"2025-12-31" — ISO date, no time',
+  duedate: '"2025-12-31", ISO date, no time',
 };
 
 // === Static issue-field completions (editor) ================================
@@ -897,13 +897,13 @@ export const SANDBOX_RULES = [
   "Use `return` to pass results to the next step in the chain.",
   "Runtime: Node.js 22 (Forge). No browser APIs, no `require`, no file I/O.",
   "Post-functions run AFTER transition succeeds. Errors don't block the workflow.",
-  "Never write unbounded loops (`while(true)`, `for(;;)`). A synchronous infinite loop cannot be interrupted, hits the function timeout, and may be retried — always give every loop a clear exit condition and bound its iterations.",
-  "Never hardcode issue keys — use `api.context.issueKey` for the current issue.",
+  "Never write unbounded loops (`while(true)`, `for(;;)`). A synchronous infinite loop cannot be interrupted, hits the function timeout, and may be retried, always give every loop a clear exit condition and bound its iterations.",
+  "Never hardcode issue keys, use `api.context.issueKey` for the current issue.",
   "Never pass an EMPTY issue key. On the key-optional methods (getIssue, updateIssue, transitionIssue, transitionByName, editIssue) an explicitly-passed empty string THROWS: `api.updateIssue(issue.fields.parent?.key || \"\", fields)` is a bug, not a request for the current issue. Omit the argument to target the current issue, or check the key exists first.",
   "For description/comment fields, always use ADF format (never plain strings).",
   "When searching by text, escape quotes in the search string.",
   "Use `accountId` for user references, never `username` or `emailAddress`.",
-  'Labels must not contain spaces — use hyphens ("needs-review", not "needs review").',
+  'Labels must not contain spaces, use hyphens ("needs-review", not "needs review").',
 ];
 
 // === Editor snippets =========================================================

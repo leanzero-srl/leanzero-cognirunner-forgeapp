@@ -1177,7 +1177,7 @@ const decide = async (verdict, { jobId, itemKey, issueKey, stagedAt, reason, acc
 
   const who = clampChars(String(accountId == null ? "" : accountId), 128);
   const why = defangFence(clampChars(String(reason == null ? "" : reason), 200));
-  const stamp = `${verdict} by ${who || "an admin"} at ${nowIso(deps.now())}${why ? ` — ${why}` : ""}`;
+  const stamp = `${verdict} by ${who || "an admin"} at ${nowIso(deps.now())}${why ? `: ${why}` : ""}`;
 
   const saved = verdict === "approved"
     // staged → staged. Legal in VA_TRANSITIONS; the draft's WORDS are untouched and the
@@ -1238,7 +1238,7 @@ const setPaused = async (paused, { jobId, accountId, reason } = {}, injected = {
 
   const why = defangFence(clampChars(String(reason == null ? "" : reason), 160));
   const who = clampChars(String(accountId == null ? "" : accountId), 128);
-  const line = `${paused ? "paused" : "resumed"} by ${who || "an admin"}${why ? ` — ${why}` : ""}`;
+  const line = `${paused ? "paused" : "resumed"} by ${who || "an admin"}${why ? `: ${why}` : ""}`;
   const { recordTick } = await import("./va-ledger.js");
   const receipt = await recordTick(deps.store, agent, {
     tickId: `admin-${paused ? "pause" : "resume"}-${deps.now()}`,
@@ -1742,7 +1742,7 @@ export const dryRunJql = async ({ jql, readProjects }, injected = {}) => {
       field: "intake.jql",
       // These reasons are OURS (from `wrapScopedJql`), not Jira's, so they may be shown.
       message: wrapped.reason === "read_scope_empty"
-        ? "Choose which projects the agent may read before setting a filter — the filter is always narrowed to that list."
+        ? "Choose which projects the agent may read before setting a filter. The filter is always narrowed to that list."
         : "The filter could not be bounded to the agent's read scope, so it was not accepted.",
       detail: wrapped.reason,
     });
@@ -2057,7 +2057,7 @@ export const rearmShadow = (va, watchedTickCount) => {
   if (Number.isFinite(current) && current > idx + VA_CEILINGS.shadowTicks.max) {
     notes.push({
       field: "status.shadowUntilTick",
-      reason: `This agent stays in shadow mode until it has watched ${current} of its own ticks — ${current - idx} more than it has now. It stages and proposes but posts nothing until then. Lower it if that is not what you meant.`,
+      reason: `This agent stays in shadow mode until it has watched ${current} of its own ticks, which is ${current - idx} more than it has now. It stages and proposes but posts nothing until then. Lower it if that is not what you meant.`,
     });
   }
   return { va: { ...va, status: { ...va.status, shadowUntilTick: next } }, notes };

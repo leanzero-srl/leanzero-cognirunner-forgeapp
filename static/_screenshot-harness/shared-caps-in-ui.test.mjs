@@ -25,6 +25,14 @@
  *   (with the file importing the shared module) or carry an ALLOW-LIST entry here that
  *   says, in words, why the collision is a coincidence.
  *
+ *   F-855 adds a SECOND cohort with a stricter form: the CAP GUARD SOURCES in section 6,
+ *   offline suites whose job is to guard these caps. There, a bare `const NAME = <literal>`
+ *   counts too, because a guard's second home does not need to sit in a slice to do harm:
+ *   `const DOC_CONTENT_MAX = 200000` compared the seeds against the guard's own copy of a
+ *   cap that had already moved unit (F-836 made it BYTES), and stayed green either way.
+ *   The declaration form is deliberately OFF for UI files, where `const PAGE_SIZE = 25`
+ *   beside an unrelated cap of 25 is a coincidence by the hundred.
+ *
  * WHY THE RULE IS SHAPED THAT WAY, AND WHAT IT DELIBERATELY DOES NOT SEE (all MEASURED on
  * the cohort at the time of writing - 99 source files, 39 hits):
  *
@@ -178,9 +186,12 @@ function callArgSpans(code, openIdx) {
 }
 
 /**
+ * @param {string} src
+ * @param {{declarations?:boolean}} [opts]  `declarations` adds the `const NAME = <literal>`
+ *        form (F-855). See the note inside; it is for CAP GUARD SOURCES, not for UI files.
  * @returns {{value:number, names:string[], how:string, line:number, text:string}[]}
  */
-function scanSource(src) {
+function scanSource(src, { declarations = false } = {}) {
   const code = maskComments(src);
   const raw = [];
   for (const m of code.matchAll(MARKERS)) {
@@ -193,6 +204,21 @@ function scanSource(src) {
   }
   for (const m of code.matchAll(/\.length\s*(>=|<=|>|<)\s*(\d+)(?![\w.])/g)) {
     raw.push([m.index, Number(m[2]), ".length " + m[1]]);
+  }
+  /* F-855 - THE DECLARATION FORM, for CAP GUARD SOURCES only (see section 6).
+     `const DOC_CONTENT_MAX = 200000;` is the shape the doc cap was retyped in, and none
+     of the patterns above can see it: it is not a slice argument and not a length bound,
+     it is a SECOND HOME with a name of its own, compared against later by that name. It
+     is off by default because a UI file declaring `const PAGE_SIZE = 25` next to an
+     unrelated cap of 25 is a coincidence by the hundred; in a file whose whole job is to
+     guard these caps it is the defect itself. */
+  if (declarations) {
+    /* `,\s*` catches the SECOND declarator of `const A = 100, B = 200000;` - which is the
+       exact shape the doc cap was retyped in, so a rule that only understood the first
+       one would have missed the defect it was written for. */
+    for (const m of code.matchAll(/(?:\b(?:const|let|var)\s+|,\s*)([A-Za-z_$][\w$]*)\s*=\s*(\d+)(?![\w.])/g)) {
+      raw.push([m.index, Number(m[2]), `${m[1]} = <literal>`]);
+    }
   }
   const lines = src.split("\n");
   const out = [];
@@ -406,6 +432,74 @@ const rosterStale = ROSTER_ALLOW.map((a, i) => (rosterUsed.has(i) ? null : `${a.
 ok(rosterStale.length === 0, rosterStale.length === 0
   ? `all ${ROSTER_ALLOW.length} roster allow-list entries still match a live line`
   : `stale roster allow-list entries (re-read the reason before deleting):\n    ` + rosterStale.join("\n    "));
+
+/* ---------------------------------------------------------------------------
+ * 7. THE CAP GUARD SOURCES (F-855)
+ *
+ * Files outside the UI apps whose JOB is to guard these caps. They are scanned with the
+ * same scanner PLUS the declaration form, because a guard that retypes the number it
+ * guards asserts against its own copy and goes green while the app and the cap disagree.
+ *
+ * `builtin-seeds.test.mjs` is here because it did exactly that: `const DOC_CONTENT_MAX =
+ * 200000` with `d.content.length` next to it, a CHARACTER count against a cap that F-836
+ * had already established is BYTES. Moving `DOC_CONTENT_MAX_BYTES` would have left that
+ * suite green and the Documentation Library over the KVS value ceiling.
+ *
+ * The list is NAMED, not a glob over `test-harness/scripts`, for the reason measured on
+ * `src/index.js`: 249 uncited hits there, almost all of them display truncations that
+ * coincide with a cap. Each file is added with the sweep that makes it clean.
+ * ------------------------------------------------------------------------- */
+const GUARDS = [
+  "test-harness/scripts/builtin-seeds.test.mjs",
+];
+
+/* The guards' own coincidences. Same shape and same rule as ALLOW, kept separate so the
+   UI list is not diluted by numbers that only ever appear in a test. */
+const GUARD_ALLOW = [
+  { file: "scripts/builtin-seeds.test.mjs", value: 100, match: "const DOC_TITLE_MAX = 100",
+    why: "the TITLE bound, `title.substring(0, 100)` in saveContextDoc. It is owned by index.js and has no home in registry-limits.js, so there is nothing to import; it coincides with GENERATION_META_LIMITS.maxIdChars, which bounds a generated step id" },
+  { file: "scripts/builtin-seeds.test.mjs", value: 200, match: "d.content.length < 200",
+    why: "a FLOOR - a seeded doc shorter than 200 characters is a stub, not a document. The caps enumerated here are maxima, and it coincides with MAX_MEMORIES among others" },
+  { file: "scripts/builtin-seeds.test.mjs", value: 300, match: "const NAME_MAX = 80,",
+    why: "DESCRIPTION_MAX, a skills.js cap (skill description length). Its home is src/skills.js, not registry-limits.js; it coincides with WEB_SEARCH_BRAKE_MAX_PER_BUCKET" },
+  { file: "scripts/builtin-seeds.test.mjs", value: 10, match: "const NAME_MAX = 80,",
+    why: "TAGS_MAX, a skills.js cap (tags per skill), coinciding with VA_HISTORY_MAX / WEB_SEARCH_MAX_PER_RUN" },
+  { file: "scripts/builtin-seeds.test.mjs", value: 30, match: "const NAME_MAX = 80,",
+    why: "TAG_LEN_MAX, a skills.js cap (characters per tag), coinciding with VA_ANTI_PILE_UP_DAYS_MAX / VA_EFFECT_TTL_DAYS" },
+  { file: "scripts/builtin-seeds.test.mjs", value: 4, match: "const apiRefs =",
+    why: "`x.slice(4)` drops the literal prefix `api.` from a matched `api.method` reference - a string offset, not a count, and it coincides with MAX_RULE_SKILL_IDS" },
+];
+
+const guardUsed = new Set();
+const guardOffences = [];
+for (const rel of GUARDS) {
+  const full = join(REPO, ...rel.split("/"));
+  const src = readFileSync(full, "utf8");
+  const importsShared = /from\s+["'][^"']*registry-limits(\.js)?["']/.test(maskComments(src));
+  ok(importsShared, `${rel} imports registry-limits.js rather than retyping its numbers`);
+  for (const hit of scanSource(src, { declarations: true })) {
+    const cited = citations(hit.names).some((n) => new RegExp(`\\b${n}\\b`).test(hit.text));
+    if (cited && importsShared) continue;
+    const idx = GUARD_ALLOW.findIndex((a) => rel.endsWith(a.file) && a.value === hit.value && hit.text.includes(a.match));
+    if (idx >= 0) { guardUsed.add(idx); continue; }
+    guardOffences.push(`${rel}:${hit.line}  ${hit.value} via ${hit.how} looks like ${hit.names.join(" | ")}\n      ${hit.text.trim().slice(0, 140)}`);
+  }
+}
+ok(guardOffences.length === 0, guardOffences.length === 0
+  ? `the ${GUARDS.length} cap guard source(s) cite the shared caps instead of retyping them`
+  : `${guardOffences.length} literal(s) in a cap guard equal a shared cap with no import, no name and no allow-list entry:\n    ` + guardOffences.join("\n    "));
+
+const guardStale = GUARD_ALLOW.map((a, i) => (guardUsed.has(i) ? null : `${a.file} ${a.value} "${a.match}"`)).filter(Boolean);
+ok(guardStale.length === 0, guardStale.length === 0
+  ? `all ${GUARD_ALLOW.length} guard allow-list entries still match a live line`
+  : `stale guard allow-list entries:\n    ` + guardStale.join("\n    "));
+
+/* POSITIVE CONTROL for the declaration form: the exact line F-855 removed. */
+const PRE_F855 = `const DOC_TITLE_MAX = 100, DOC_CONTENT_MAX = 200000;\n`;
+ok(scanSource(PRE_F855, { declarations: true }).some((h) => h.value === 200000 && h.names.includes("DOC_CONTENT_MAX_BYTES")),
+  "positive control: the pre-F-855 `DOC_CONTENT_MAX = 200000` is flagged against DOC_CONTENT_MAX_BYTES");
+ok(scanSource(PRE_F855).length === 0,
+  "negative control: …and it stays invisible WITHOUT the declaration form, which is why the retype survived section 5");
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} - ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

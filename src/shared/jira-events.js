@@ -119,13 +119,13 @@ export const JIRA_EVENTS = [
   }),
   E("avi:jira:deleted:issue", "issue", "Issue deleted", "An issue was permanently deleted.", {
     entity: "issue", issueBound: true, filters: ["projects", "issueTypes"],
-    payloadHint: "event.issue (the deleted issue snapshot — it can no longer be fetched), event.atlassianId",
+    payloadHint: "event.issue (the deleted issue snapshot, it can no longer be fetched), event.atlassianId",
   }),
   E("avi:jira:assigned:issue", "issue", "Issue assigned", "The assignee of an issue changed.", {
     entity: "issue", issueBound: true, filters: ["projects", "issueTypes", "jql"],
     payloadHint: "event.issue, event.changelog (assignee from/to accountIds), event.atlassianId",
   }),
-  E("avi:jira:viewed:issue", "issue", "Issue viewed", "A user opened an issue. VERY high volume — every view invokes the app.", {
+  E("avi:jira:viewed:issue", "issue", "Issue viewed", "A user opened an issue. VERY high volume, every view invokes the app.", {
     entity: "issue", issueBound: true, volume: "high", filters: ["projects", "issueTypes", "jql"],
     payloadHint: "event.issue, event.atlassianId (viewer)",
   }),
@@ -254,7 +254,7 @@ export const JIRA_EVENTS = [
   }),
   G("git:pull_request:synchronize", "Pull request updated", "New commits were pushed to an open pull request (the head SHA moved).", {
     volume: "high",
-    payloadHint: "event.pullRequest (headSha is the NEW head — review claims key on it), event.repoId, event.actor.login",
+    payloadHint: "event.pullRequest (headSha is the NEW head, review claims key on it), event.repoId, event.actor.login",
   }),
   G("git:pull_request:closed", "Pull request closed", "A pull request was closed without merging.", {
     payloadHint: "event.pullRequest {number,state:'closed',merged:false}, event.repoId, event.actor.login",

@@ -424,7 +424,7 @@ export const normalizeVa = (raw, ctx = {}) => {
   const rawName = String(p.name == null ? "" : p.name);
   const name = clampPersonaName(rawName);
   if (!name) throw new Error("va.persona.name is required (letters, digits, spaces, ' - . only)");
-  if (name !== rawName.trim()) report("persona.name", `The persona name was reduced to "${name}" — it may only contain letters, digits, spaces, apostrophes, hyphens and dots, up to ${VA_PERSONA_NAME_MAX} characters.`);
+  if (name !== rawName.trim()) report("persona.name", `The persona name was reduced to "${name}", it may only contain letters, digits, spaces, apostrophes, hyphens and dots, up to ${VA_PERSONA_NAME_MAX} characters.`);
   const v = isObj(p.voice) ? p.voice : {};
   const register = VA_REGISTERS.includes(v.register) ? v.register : VA_DEFAULTS.persona.voice.register;
   if (v.register != null && register !== v.register) report("persona.voice.register", `"${String(v.register).slice(0, 30)}" is not one of ${VA_REGISTERS.join(", ")}, so "${register}" was used.`);
@@ -569,7 +569,7 @@ export const normalizeVa = (raw, ctx = {}) => {
   for (const k of VA_POWERS) powers[k] = bool(rawPowers[k], VA_DEFAULTS.powers[k]);
   for (const k of Object.keys(rawPowers)) {
     if (k === "skillIds" || k === "confluenceSpaces" || VA_POWERS.includes(k)) continue;
-    report(`powers.${k}`, `"${k}" is not a power a Virtual Administrator has, so it was dropped. Configuration changes in particular have no action at all — the agent can only propose them.`);
+    report(`powers.${k}`, `"${k}" is not a power a Virtual Administrator has, so it was dropped. Configuration changes in particular have no action at all, the agent can only propose them.`);
   }
   const skillIds = [];
   for (const s of asArray(rawPowers.skillIds)) {

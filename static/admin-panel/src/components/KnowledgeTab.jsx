@@ -37,11 +37,39 @@
  * a fourth knowledge hue with no relationship to anything would just be decoration. Both
  * themes are defined in App.js injectStyles(); there is no faded tint and no left rail.
  *
- * NO BAKE DATE. The plan's provenance line asked for "source, licence, baked <date>" and
- * the generated index carries no date — `KNOWLEDGE_CONTENT_VERSION` is the corpus
- * fingerprint and is what actually answers "did the text change?". The version line at the
- * foot prints it rather than this tab inventing a date from the build clock, which would be
- * a number that looks like provenance and is not.
+ * NO BAKE DATE, AND NO PER-PACK PURPOSE — and both stay absent until the BAKE emits them
+ * (F-917 re-confirmed this by reading the generated index, not by trusting this comment).
+ *
+ * `src/shared/knowledge-index.js` exports `KNOWLEDGE_PACKS` with exactly five keys —
+ * id, title, sections, bytes, pinned — and `KNOWLEDGE_INDEX` sections whose `provenance`
+ * is { source, path, hash, licence }. There is NO `bakedAt`, no `generatedAt`, and no
+ * pack description anywhere in it. So:
+ *
+ *   • A DATE would have to be invented here from the build clock, and a number that looks
+ *     like provenance and is not is worse than no number. The corpus FINGERPRINT is the
+ *     honest identity of a bake and the foot line prints it, now saying what it is.
+ *   • A PURPOSE cannot be imported either. The text exists — `knowledge/sources.json`
+ *     carries `packs.<id>.purpose`, one plain sentence per pack — but that file also
+ *     carries the `never` refusal list, which names real client engagements, and it is not
+ *     a shared/ module. Bundling it into a shipped Custom UI to reach one sentence is not
+ *     a trade this tab may make. Re-typing the sentences here would mint a second home for
+ *     text that already has one, and the two would diverge on the next bake.
+ *
+ * WHAT `scripts/bake-knowledge.mjs` WOULD HAVE TO EMIT, precisely — two fields, both from
+ * data it already holds at the moment it writes the file:
+ *
+ *   KNOWLEDGE_PACKS[].purpose   — `cfg.packs?.[pack]?.purpose`, read one line below the
+ *                                 `title` it already emits (bake-knowledge.mjs ~line 930).
+ *                                 Zero new inputs; the allow-list already carries it.
+ *   KNOWLEDGE_BAKED_AT          — a module-level ISO string written at bake time, beside
+ *                                 KNOWLEDGE_CONTENT_VERSION. It must be a SEPARATE export
+ *                                 and must NOT feed KNOWLEDGE_INDEX_META_VERSION, or every
+ *                                 bake would report a metadata change it did not make and
+ *                                 `npm run bake:check` would fail on the clock.
+ *
+ * Both are one-line additions to a GENERATED file's emitter, and neither is this tab's to
+ * make. When they land, this component renders `pack.purpose` under the title and the
+ * baked date in the provenance block, and the note below comes out.
  */
 
 import React, { useState, useEffect, useCallback } from "react";
@@ -246,9 +274,16 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
             {/* Provenance comes from the backend as already-joined "source, licence" lines,
                 one per distinct source in the pack. Printed verbatim: re-splitting and
                 re-joining them here would be a second formatter for a string that has one
-                author (describeKnowledgePacks, src/kn-packs.js). */}
+                author (describeKnowledgePacks, src/knowledge-packs.js).
+
+                F-917 — what changed is the LABEL, not the lines. A bare
+                "jira-forge, Apache-2.0 (leanzero-forge-skills, NOTICE retained)" under a
+                row of byte counts reads as noise; an admin cannot tell it is the answer to
+                "where did this text come from and what am I allowed to do with it". The
+                heading is the question the slug answers, and it costs nothing true. */}
             {(pack.provenance || []).length > 0 && (
               <div className="kn-pack-prov">
+                <span className="kn-prov-head">Source and licence</span>
                 {pack.provenance.map((line, i) => (
                   <span className="kn-prov-line" key={i}>{line}</span>
                 ))}
@@ -281,9 +316,20 @@ export default function KnowledgeTab({ invoke, isAdmin }) {
         </div>
       )}
 
+      {/* F-917 — the bake's IDENTITY, in words. A bare hash beside a bare version number
+          answered nothing an admin could act on, and the question underneath it ("is this
+          current?") has no date to answer it with. Saying which bake this is, and saying
+          plainly that the fingerprint is what identifies it, is the honest version of the
+          provenance line the walk asked for. See the docblock for the two fields the bake
+          would have to emit before a date belongs here. */}
       {versions && (
         <p className="kn-version-line">
           Knowledge engine <strong>{versions.knowledge}</strong> · corpus <strong>{versions.content}</strong>
+          <span className="kn-version-note">
+            The corpus fingerprint identifies this bake of the packs. It changes whenever any
+            section of the text changes, so two sites showing the same fingerprint are reading
+            exactly the same knowledge.
+          </span>
         </p>
       )}
     </div>

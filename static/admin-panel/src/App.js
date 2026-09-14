@@ -3759,6 +3759,14 @@ const injectStyles = () => {
     .evp-repo-chip-x { border: none; background: transparent; color: #fff; font-size: 14px; line-height: 1; cursor: pointer; padding: 0; }
     .evp-repopick-add { max-width: 460px; }
     .evp-repopick-none { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
+
+    /* F-917 - KNOWLEDGE PROVENANCE. The lines themselves are unchanged (the backend joins
+       them; see KnowledgeTab's comment). What is added is the QUESTION they answer, in a
+       700-weight heading, and a plain-language note under the corpus fingerprint saying
+       what that hash identifies. No new hue, so no dark override is owed: both reuse
+       --text-secondary / --text-color, which are already defined per theme. */
+    .kn-prov-head { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary); }
+    .kn-version-note { display: block; margin-top: 4px; max-width: 76ch; font-size: 11px; font-weight: 500; line-height: 1.5; color: var(--text-secondary); }
 `;
   document.head.appendChild(style);
 };

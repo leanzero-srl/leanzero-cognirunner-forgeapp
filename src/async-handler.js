@@ -2465,6 +2465,31 @@ const LONG_QUEUE_EVENTS = new WeakSet();
 const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", PIPELINE_TASK, HARNESS_PROBE_TASK, "va-tick", "va-item", "va-post"]);
 
 /**
+ * UNPOLLED TASK TYPES THAT STILL TAKE THE PER-EVENT COMPLETION CLAIM (F-947).
+ *
+ * "Unpolled" answers "is there a status row somebody is waiting on"; it was never an
+ * answer to "does a redelivery cost money". These two spend MODEL tokens and own no
+ * idempotency of any kind, so an at-least-once redelivery bought the work twice:
+ *   memory_distill — one JSON distillation call per delivery, billed to the customer's
+ *                    BYOK key, on a lesson already saved (saveMemoryCandidate would just
+ *                    reinforce the duplicate).
+ *   probe          — the dev `forgeLlm` probe sends up to 3 x 50k tokens of filler on the
+ *                    VENDOR's Forge LLM allowance; a redelivery re-spends all of it.
+ *
+ * The rest of UNPOLLED_TASKS stay out, each for a reason that already exists in the file:
+ * `postfunction`, `git-event` and the three `va-*` tasks carry claims/receipts keyed on the
+ * WORK rather than the delivery (and `git-event` REQUIRES the platform to redeliver its
+ * taskId after a `requeue` throw — claiming here would refuse that retry); `listener` and
+ * `scheduledjob` are gated inside `runListener`/`runJob`; `gitreview` and the two
+ * admin-triggered installs (PIPELINE_TASK, CREDENTIAL_ROTATION_TASK, HARNESS_PROBE_TASK)
+ * are outside this finding's evidence — see the findings ledger.
+ *
+ * Same key, same builder, same TTL as the polled claim: there is still exactly ONE answer
+ * to "has this event already run".
+ */
+const CLAIMED_UNPOLLED_TASKS = new Set(["memory_distill", "probe"]);
+
+/**
  * TASK TYPES THAT TAKE THEIR OWN `task_done:<taskId>` CLAIM, SO `handler` MUST NOT (F-919).
  *
  * The claim is the SAME record built by the SAME builder — `taskDoneClaimKey` — so there is
@@ -2946,6 +2971,40 @@ export async function handler(event) {
   // completion claim below and by every status write after it.
   const polled = !UNPOLLED_TASKS.has(taskType);
 
+  // ===== THE BUDGET SETTLE, DEFINED ONCE (F-946) =====
+  //
+  // `runGatedTask` RESERVED `budgetEstimate` tokens in the minute's TPM bucket a few lines
+  // above. Every path that leaves `handler` after that reservation must release it, and
+  // there must be exactly ONE piece of code that does the releasing — the reserve/release
+  // pair is a pair, not two independent sites that can drift.
+  //
+  // WHY NOT "claim BEFORE the gate" (the other candidate fix): a budget DEFERRAL re-pushes
+  // the SAME taskId (see GATE_DEPS.pushDeferred). A completion claim taken before the gate
+  // would be spent by the delivery that only deferred, and the re-push — the delivery that
+  // was supposed to do the work — would be refused as "a redelivery of a completed task".
+  // Pacing would become dropping. So the claim stays AFTER the gate, and the duplicate path
+  // leaves through this same settle.
+  //
+  // Called on exactly two exits: the duplicate-delivery return below, and the end of the
+  // normal path. `learnRuleCost` is guarded on `spent > 0`, so the duplicate (which runs no
+  // model — `resetInvocationTokens` has already zeroed the counter) only releases.
+  let budgetSettled = false;
+  const settleAiBudget = async () => {
+    if (budgetSettled) return;
+    budgetSettled = true;
+    if (!budgetProvider || !budgetEstimate) return;
+    try {
+      await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs || Date.now());
+      const spent = getInvocationTokens();
+      if (spent > 0) await learnRuleCost(budgetRuleId, spent);
+    } catch { /* best-effort */ }
+  };
+
+  // The invocation token counter is zeroed BEFORE the completion claim (it used to sit
+  // after it) so the duplicate path's settle can never read a warm container's leftover
+  // spend and teach `learnRuleCost` a cost no call in this invocation incurred.
+  resetInvocationTokens();
+
   // ===== THE PER-EVENT COMPLETION CLAIM (F-919) =====
   //
   // Forge async events are at-least-once. Everything below this line is written on EVERY
@@ -2963,23 +3022,32 @@ export async function handler(event) {
   // delivery left it. "Answer the duplicate, write nothing" is the whole contract — the
   // claim outlives the 1 h status row precisely so a late duplicate cannot resurrect one.
   //
-  // UNPOLLED types are deliberately NOT claimed here: they have no status row to clobber,
+  // Plus the UNPOLLED types named in CLAIMED_UNPOLLED_TASKS (F-947): they have no status
+  // row to clobber, but they DO spend model tokens and own no other idempotency, so a
+  // redelivery bought a second billed call. "Unpolled" was never an answer to "free".
+  //
+  // The remaining UNPOLLED types are deliberately NOT claimed here: they have no status row,
   // several of them (postfunction, git-event, the VA tasks) own execution claims of their
   // own keyed on the WORK rather than the delivery, and `git-event` relies on the platform
   // redelivering the same taskId after a `requeue` throw — a completion claim taken here
   // would refuse that retry. Their duplicate-safety stays where it already lives.
   //
   // FAIL OPEN on a KVS fault: an unreachable store must never stop a first delivery.
-  if (polled && !SELF_CLAIMING_TASKS.has(taskType)) {
+  if ((polled || CLAIMED_UNPOLLED_TASKS.has(taskType)) && !SELF_CLAIMING_TASKS.has(taskType)) {
     const firstDelivery = await claimRuleExecution(
       storage, taskDoneClaimKey(taskId), TASK_DONE_TTL, "task-done");
     if (!firstDelivery) {
       console.warn(`Async handler: ${taskType} (${taskId}) is a redelivery of a completed task — nothing run, nothing written`);
+      // F-946 — "nothing written" never meant "nothing released": the tokens this delivery
+      // reserved in the minute's bucket are this delivery's to give back, through the one
+      // settle above. Returning without it leaked the whole estimate per redelivery
+      // (measured 0 -> 4000 -> 8000 over three deliveries of one finished review), and a
+      // redelivery burst silently deferred every other queued AI task until the minute
+      // rolled over.
+      await settleAiBudget();
       return;
     }
   }
-
-  resetInvocationTokens();
 
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
@@ -3074,13 +3142,9 @@ export async function handler(event) {
 
   // Settle the budget ledger: release the reservation and learn this rule's real
   // cost from the tokens metered during THIS invocation (recordAiUsage counts them).
-  if (budgetProvider && budgetEstimate) {
-    try {
-      await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs || Date.now());
-      const spent = getInvocationTokens();
-      if (spent > 0) await learnRuleCost(budgetRuleId, spent);
-    } catch { /* best-effort */ }
-  }
+  // ONE HOME (F-946) — the body is `settleAiBudget`, defined above the completion claim
+  // so the duplicate-delivery exit leaves through the same release this one does.
+  await settleAiBudget();
 
   // Best-effort always-honor: after a PF job runs, opportunistically sweep for DROPPED/
   // killed PF jobs and re-drive them. The sweeper is advisory-locked (90s TTL) so this

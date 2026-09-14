@@ -9070,7 +9070,10 @@ const resolveKnowledgeForPrompt = async ({
       : [];
     const ordered = [...manualRows, ...autoRows];
     if (ordered.length > 0) {
-      const block = await fetchSkillsBlock(ordered.map((s) => s.id), { capBytes: 24576 });
+      // F-868 — no capBytes here: this IS the codegen audience, and `fetchSkillsBlock`'s
+      // default already IS KNOWLEDGE_BUDGET_BYTES.codegen.skills. Retyping the number made
+      // a second home for a budget that has one.
+      const block = await fetchSkillsBlock(ordered.map((s) => s.id));
       if (block.text) {
         const autoIds = new Set(autoRows.map((s) => s.id));
         appliedSkills = block.applied.map((s) => ({ id: s.id, name: s.name, auto: autoIds.has(s.id) }));

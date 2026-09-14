@@ -62,8 +62,8 @@ export default function LinkConfig({
           <strong>How it works</strong>
         </div>
         <ol className="pf-how-steps">
-          <li><strong>Search</strong> — a project-scoped text search finds candidate issues (already-linked ones excluded)</li>
-          <li><strong>Select</strong> — AI conservatively picks the genuinely related ones per your criteria (only from the candidates — it can never invent issue keys)</li>
+          <li><strong>Search</strong>: a project-scoped text search finds candidate issues (already-linked ones excluded)</li>
+          <li><strong>Select</strong>: AI conservatively picks the genuinely related ones per your criteria (only from the candidates, it can never invent issue keys)</li>
           <li>Issue links of your chosen type are created automatically after the transition</li>
         </ol>
       </div>
@@ -96,7 +96,7 @@ export default function LinkConfig({
       <div className="form-group">
         <label className="label">
           Relation criteria <span className="required">*</span>
-          <Tooltip text="When should two issues be linked? Be specific — the AI is instructed to be conservative. e.g. 'Link issues describing the same login failure or sharing the same root cause.'" />
+          <Tooltip text="When should two issues be linked? Be specific, the AI is instructed to be conservative. e.g. 'Link issues describing the same login failure or sharing the same root cause.'" />
         </label>
         <textarea
           value={linkPrompt || ""}
@@ -141,13 +141,13 @@ export default function LinkConfig({
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           <span>{showTest ? "Hide Test" : "Test Run"}</span>
-          <Tooltip text="Runs the candidate search + AI selection on a real issue — it creates NO links. Completely safe." />
+          <Tooltip text="Runs the candidate search + AI selection on a real issue, it creates NO links. Completely safe." />
         </button>
 
         {showTest && (
           <div className="semantic-test-panel">
             <div className="semantic-test-header">
-              <span className="test-panel-badge">Dry run — no links are created</span>
+              <span className="test-panel-badge">Dry run, no links are created</span>
             </div>
             <div className="form-group" style={{ margin: "10px 0 8px" }}>
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>

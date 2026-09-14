@@ -142,7 +142,7 @@ export function MemoryFullBanner({ storeFull }) {
  * the same bytes because the file IS the same bytes.
  */
 export const ROLE_UNKNOWN_NOTE =
-  "CogniRunner could not verify your role with Jira just now — reload to try again.";
+  "CogniRunner could not verify your role with Jira just now, reload to try again.";
 
 export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnknown = false }) {
   const [memories, setMemories] = useState([]);
@@ -430,8 +430,8 @@ export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnk
               element further down; fixing the control and leaving the prompt that points
               at it would just move the dead end. */}
           {canEdit
-            ? "No memories yet. Add facts about your Jira instance — field IDs, conventions, gotchas."
-            : "No memories yet. Editors and admins can add facts about your Jira instance — field IDs, conventions, gotchas."}
+            ? "No memories yet. Add facts about your Jira instance, field IDs, conventions, gotchas."
+            : "No memories yet. Editors and admins can add facts about your Jira instance, field IDs, conventions, gotchas."}
         </div>
       ) : (
         <div className="veil-host">

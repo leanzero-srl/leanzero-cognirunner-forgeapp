@@ -47,7 +47,7 @@ export const buildCatalogPromptBlock = (mode) => {
     if (p.confluence) hints.push('"spaceKey" (a key from the provided confluencespaces list), "mode" ("cql" or "semantic"), "cqlTemplate" (a CQL fragment; {issueKey}, {summary} and {field:<id>} are substituted already quoted), "prompt" (semantic mode only), "strict" (true/false)');
     if (p.git) hints.push('"connectionId" (an id from the provided gitconnections list), "repo" ("owner/name", from the provided gitrepos list), "prMatch" ("property", "branch" or "both"), "strict" (true/false)');
     const params = hints.length ? hints.join("; ") : "no params";
-    return `- ${r.key}: ${r.label} — ${r.help} PARAMS: ${params}`;
+    return `- ${r.key}: ${r.label}. ${r.help} PARAMS: ${params}`;
   }).join("\n");
 };
 

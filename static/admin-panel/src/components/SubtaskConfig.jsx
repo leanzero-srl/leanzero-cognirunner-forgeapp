@@ -58,8 +58,8 @@ export default function SubtaskConfig({
           <strong>How it works</strong>
         </div>
         <ol className="pf-how-steps">
-          <li><strong>Read</strong> — AI reads the parent issue&apos;s source field</li>
-          <li><strong>Draft</strong> — AI writes a sub-task summary + description from your instructions</li>
+          <li><strong>Read</strong>: AI reads the parent issue&apos;s source field</li>
+          <li><strong>Draft</strong>: AI writes a sub-task summary + description from your instructions</li>
           <li>The sub-task is created under the issue automatically after the transition</li>
         </ol>
         <p className="hint" style={{ margin: "6px 0 0" }}>
@@ -113,13 +113,13 @@ export default function SubtaskConfig({
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           <span>{showTest ? "Hide Test" : "Test Run"}</span>
-          <Tooltip text="Drafts the sub-task from a real issue — it does NOT create anything. Completely safe." />
+          <Tooltip text="Drafts the sub-task from a real issue, it does NOT create anything. Completely safe." />
         </button>
 
         {showTest && (
           <div className="semantic-test-panel">
             <div className="semantic-test-header">
-              <span className="test-panel-badge">Dry run — no sub-task is created</span>
+              <span className="test-panel-badge">Dry run, no sub-task is created</span>
             </div>
             <div className="form-group" style={{ margin: "10px 0 8px" }}>
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>

@@ -296,7 +296,7 @@ export const PREMADE_VALIDATORS = [
   {
     key: "confluence-page-exists",
     label: "Confluence: a page for this issue exists",
-    help: "Block unless a Confluence page in the space you pick matches the query you write — searched LIVE on every transition. In Semantic mode the top 3 matching pages are read and the AI judges them against your prompt. If Confluence cannot be reached the transition is ALLOWED (turn Strict on to block instead); a rule with no space or no query BLOCKS either way, because a check that cannot say what it is checking must not read as a pass.",
+    help: "Block unless a Confluence page in the space you pick matches the query you write, searched LIVE on every transition. In Semantic mode the top 3 matching pages are read and the AI judges them against your prompt. If Confluence cannot be reached the transition is ALLOWED (turn Strict on to block instead); a rule with no space or no query BLOCKS either way, because a check that cannot say what it is checking must not read as a pass.",
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",
@@ -415,7 +415,7 @@ export function conditionFieldSupport(field, ruleType) {
   // per-field verified accessor map (v2). The manifest expression enforces the
   // same boundary with its customfield regex guard.
   if (!/^customfield_[0-9]+$/.test(String(field.id))) {
-    return { unsupported: "System fields aren't supported for field conditions yet — Jira's expression engine names them differently from the field picker. Pick a custom field, or use a validator." };
+    return { unsupported: "System fields aren't supported for field conditions yet. Jira's expression engine names them differently from the field picker. Pick a custom field, or use a validator." };
   }
   const kindKey = String(field.schema?.custom || "").split(":").pop();
   const kind = CONDITION_FIELD_KINDS[kindKey];
@@ -435,7 +435,7 @@ export const CONDITION_NOT_EXPRESSIBLE_REASON =
 
 /** Shown when a PICKED FIELD's kind isn't supported for field conditions. */
 export const CONDITION_FIELD_UNSUPPORTED_REASON =
-  "This field's type isn't supported for conditions — only custom fields of a live-verified kind are (text, URL, date, datetime, number, select, radio, user, group, version, project, and the multi-value kinds for has/empty checks). Use a validator for anything else.";
+  "This field's type isn't supported for conditions, only custom fields of a live-verified kind are (text, URL, date, datetime, number, select, radio, user, group, version, project, and the multi-value kinds for has/empty checks). Use a validator for anything else.";
 
 export const PREMADE_CONDITIONS = [
   {
@@ -448,7 +448,7 @@ export const PREMADE_CONDITIONS = [
   {
     key: "field-equals",
     label: "Field equals a value",
-    help: "Only show this transition when the chosen custom field equals a value (case-insensitive). An EMPTY field doesn't hide the transition — combine with “Field has a value” if it should.",
+    help: "Only show this transition when the chosen custom field equals a value (case-insensitive). An EMPTY field doesn't hide the transition, combine with “Field has a value” if it should.",
     params: { field: true, value: true },
     availability: "available",
   },
@@ -557,7 +557,7 @@ export const PREMADE_CONDITIONS = [
     help: "Only show this transition to members of the named project role.",
     params: { picker: { key: "roleName", label: "Project role", source: "roles", ph: "Choose a role…" } },
     availability: "unavailable",
-    unavailableReason: "Deferred — needs project-role-actor resolution and only resolves in company-managed projects. Use Jira's built-in “User Is In Project Role” condition.",
+    unavailableReason: "Deferred, needs project-role-actor resolution and only resolves in company-managed projects. Use Jira's built-in “User Is In Project Role” condition.",
   },
   // --- GIT conditions (1.4 commit 11). Jira evaluates these ITSELF, as branches of
   //     the ONE manifest expression, reading the ADVISORY cognirunner.git issue
@@ -632,7 +632,7 @@ export const PREMADE_LISTENERS = [
   {
     key: "git-pr-review",
     label: "Review every opened PR",
-    help: "When a pull request is opened (or new commits are pushed to it), read the diff and leave one review comment on the PR. Runs per repository — pick the repositories it may act on.",
+    help: "When a pull request is opened (or new commits are pushed to it), read the diff and leave one review comment on the PR. Runs per repository, pick the repositories it may act on.",
     events: ["git:pull_request:opened", "git:pull_request:synchronize"],
     requiresCapability: "git",
     // Seed shape, fed to normalizeListener. `filters.repos` is intentionally EMPTY:
@@ -675,7 +675,7 @@ export const PREMADE_LISTENERS = [
         // breaks. An admin who clears `agentlessTaskType` to run this as a real agent
         // turn ticks the git actions themselves, on an instance whose capability allows
         // them — which is the same act that makes the action saveable.
-        instructions: "A pull request was opened or updated. Read it and report what you find: correctness bugs, missing error handling, secrets or credentials in the diff, and anything that widens permissions. Be specific — name the file and the line. If the change looks fine, say so in one sentence. Never approve or request changes.",
+        instructions: "A pull request was opened or updated. Read it and report what you find: correctness bugs, missing error handling, secrets or credentials in the diff, and anything that widens permissions. Be specific, name the file and the line. If the change looks fine, say so in one sentence. Never approve or request changes.",
       },
     },
     agentlessTaskType: "gitreview",
@@ -725,7 +725,7 @@ export const CODER_PF_MODES = [
     template:
       "A Jira transition on {{issueKey}} asked you to BUILD the change this issue describes, in the repository {{repo}}.\n"
       + "Read the issue first, then create a branch, commit the whole files you changed, and open a pull request that names the issue key in its title.\n"
-      + "Post one Jira comment saying what you did and linking the pull request. If the issue does not describe enough to build, say so in a comment and finish — do not guess.",
+      + "Post one Jira comment saying what you did and linking the pull request. If the issue does not describe enough to build, say so in a comment and finish, do not guess.",
     actions: ["get_issue", "add_comment", "create_branch", "commit_files", "open_pull_request", "get_pull_request", "get_build_state"],
   },
   {
@@ -752,7 +752,7 @@ export const CODER_PF_MODES = [
     help: "Read the failing build on the issue's pull request, commit a fix to its branch, and report what changed.",
     template:
       "A Jira transition on {{issueKey}} asked you to FIX the failing build on this issue's pull request in {{repo}}.\n"
-      + "Read the pull request and its build state, work out what failed, and commit the smallest fix to the SAME branch — never to the default branch. Post one Jira comment saying what failed and what you changed. If the build is passing, change nothing and say so.",
+      + "Read the pull request and its build state, work out what failed, and commit the smallest fix to the SAME branch, never to the default branch. Post one Jira comment saying what failed and what you changed. If the build is passing, change nothing and say so.",
     actions: ["get_issue", "add_comment", "get_pull_request", "get_build_state", "commit_files"],
   },
   {
@@ -761,7 +761,7 @@ export const CODER_PF_MODES = [
     help: "Read the issue's pull request and leave one review comment on it. Never approves and never blocks a merge.",
     template:
       "A Jira transition on {{issueKey}} asked you to REVIEW this issue's pull request in {{repo}}.\n"
-      + "Read the pull request, then leave ONE comment on it naming correctness bugs, missing error handling, secrets in the diff and anything that widens permissions — name the file and the line. If it looks fine, say so in one sentence. Post one Jira comment with your verdict. Never approve and never request changes.",
+      + "Read the pull request, then leave ONE comment on it naming correctness bugs, missing error handling, secrets in the diff and anything that widens permissions, name the file and the line. If it looks fine, say so in one sentence. Post one Jira comment with your verdict. Never approve and never request changes.",
     actions: ["get_issue", "add_comment", "get_pull_request", "get_build_state", "add_pr_comment"],
   },
 ];
@@ -800,7 +800,7 @@ export const PREMADE_POSTFUNCTIONS = [
   {
     key: "postfunction-coder",
     label: "Coder: build / open branch / open PR / fix / review",
-    help: "Hand this transition to the CogniRunner Coder: it reads the issue, works in the repository you pick and reports back on the issue. Pick what it should do. It runs in the BACKGROUND — a coder job takes minutes and a transition cannot wait for it, so the transition completes immediately and the Coder posts its plan, log and result onto the issue.",
+    help: "Hand this transition to the CogniRunner Coder: it reads the issue, works in the repository you pick and reports back on the issue. Pick what it should do. It runs in the BACKGROUND, a coder job takes minutes and a transition cannot wait for it, so the transition completes immediately and the Coder posts its plan, log and result onto the issue.",
     category: "Git",
     network: true,
     requiresCapability: "git",
@@ -820,7 +820,7 @@ export const PREMADE_POSTFUNCTIONS = [
   {
     key: "postfunction-confluence-page",
     label: "Confluence: create or update a page for this issue",
-    help: "Write a Confluence page for the issue in the space you pick — created the first time, UPDATED after that, never duplicated. The page body is authored by the AI from the issue, and the issue gets a link back to the page. It runs in the BACKGROUND: authoring plus two Confluence calls does not fit a transition, so the transition completes immediately and the page appears a few seconds later.",
+    help: "Write a Confluence page for the issue in the space you pick, created the first time, UPDATED after that, never duplicated. The page body is authored by the AI from the issue, and the issue gets a link back to the page. It runs in the BACKGROUND: authoring plus two Confluence calls does not fit a transition, so the transition completes immediately and the page appears a few seconds later.",
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",
@@ -838,7 +838,7 @@ export const PREMADE_POSTFUNCTIONS = [
   {
     key: "postfunction-confluence-comment",
     label: "Confluence: comment on the linked page",
-    help: "Add a comment to the Confluence page CogniRunner has recorded for this issue. DETERMINISTIC — your text with {issueKey}, {summary} and {field:<id>} filled in, no AI and no token cost — so it runs inside the transition. If no page has been linked yet it does nothing and says so.",
+    help: "Add a comment to the Confluence page CogniRunner has recorded for this issue. DETERMINISTIC, your text with {issueKey}, {summary} and {field:<id>} filled in, no AI and no token cost, so it runs inside the transition. If no page has been linked yet it does nothing and says so.",
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",

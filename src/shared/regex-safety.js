@@ -47,7 +47,7 @@ export function redosRisk(pattern) {
   const s = String(pattern == null ? "" : pattern);
   if (!s) return null;
   const REASON =
-    "This pattern has nested unbounded repetition (e.g. (a+)+ ) that can cause catastrophic backtracking and hang the transition for everyone. Simplify it — bound a repetition (e.g. {1,50}), or remove one level of nesting.";
+    "This pattern has nested unbounded repetition (e.g. (a+)+ ) that can cause catastrophic backtracking and hang the transition for everyone. Simplify it, bound a repetition (e.g. {1,50}), or remove one level of nesting.";
   const stack = []; // per open group: { hasUnbounded }
   let inClass = false; // inside a [...] character class
   for (let i = 0; i < s.length; i++) {

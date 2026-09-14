@@ -181,7 +181,7 @@ export const findIdentifierLeak = (text, { projectKeys = null } = {}) => {
     return {
       id: row.id,
       kind: row.kind,
-      message: `Refused: the query contains ${row.kind} from this Jira instance. Nothing was sent to the search engine. Search for the PUBLIC subject only — describe the product, the version, the API or the error text in general terms, with no identifier from this site in it.`,
+      message: `Refused: the query contains ${row.kind} from this Jira instance. Nothing was sent to the search engine. Search for the PUBLIC subject only, describe the product, the version, the API or the error text in general terms, with no identifier from this site in it.`,
     };
   }
   return null;

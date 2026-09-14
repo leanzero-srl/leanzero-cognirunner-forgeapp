@@ -607,7 +607,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
               <div className="br-card">
                 <div className="br-eyebrow">§ WHAT I BUILT</div>
                 {buildExplanation && <div className="br-summary">{buildExplanation}</div>}
-                <div className="br-applied">Applied below — review and save.</div>
+                <div className="br-applied">Applied below, review and save.</div>
                 {buildUnresolved.length > 0 && (
                   <div className="br-hint">Still needs: {buildUnresolved.join(", ")}.</div>
                 )}
@@ -616,14 +616,14 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
             {buildState === "degraded" && (
               <div className="br-note">
                 {buildReason === "lmstudio"
-                  ? "Rule-building isn't available with the self-hosted LM Studio provider — switch to a hosted provider in CogniRunner Settings."
+                  ? "Rule-building isn't available with the self-hosted LM Studio provider, switch to a hosted provider in CogniRunner Settings."
                   : buildReason === "timeout"
-                  ? "The AI provider didn't respond in time — try again in a moment."
-                  : "Couldn't build a rule right now — try again in a moment."}
+                  ? "The AI provider didn't respond in time, try again in a moment."
+                  : "Couldn't build a rule right now, try again in a moment."}
               </div>
             )}
             {buildState === "error" && (
-              <div className="br-note">{buildReason || "Couldn't match a premade rule to that description — try rephrasing."}</div>
+              <div className="br-note">{buildReason || "Couldn't match a premade rule to that description, try rephrasing."}</div>
             )}
           </div>
         )}
@@ -661,7 +661,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
       {!unavailable && mode === "validator" && ruleType === "field-changed" && (
         <div className="pr-note">
           The field must be on this transition's screen. If it isn't, the transition is blocked for
-          everyone — choose a field shown on the transition screen.
+          everyone, choose a field shown on the transition screen.
         </div>
       )}
       {!unavailable && mode === "validator" && ruleType === "comment-required" && (
@@ -763,7 +763,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
               <input className={`input ${boundsInverted ? "input-error" : ""}`} type="number" min="0" placeholder="e.g. 255" value={maxLen} onChange={(e) => setMaxLen(e.target.value)} />
             </div>
           </div>
-          {boundsInverted && <div className="br-hint">Min must not be greater than Max — a rule with Min above Max matches nothing and would block every transition.</div>}
+          {boundsInverted && <div className="br-hint">Min must not be greater than Max, a rule with Min above Max matches nothing and would block every transition.</div>}
         </>
       )}
 
@@ -809,7 +809,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
               onChange={setPickerValue}
               searchable
               options={shown}
-              placeholder={listsError ? "Couldn't load options — Retry below" : (!opts.length ? "None available — check your permissions" : p.picker.ph)}
+              placeholder={listsError ? "Couldn't load options. Retry below" : (!opts.length ? "None available, check your permissions" : p.picker.ph)}
             />
             {listsError && (
               <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px", fontSize: "12px", color: "var(--error-color)" }}>
@@ -932,7 +932,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
               value={connectionId}
               onChange={(v) => { setConnectionId(v); setRepo(""); }}
               searchable
-              placeholder={gitConnections.length ? "Choose a git connection…" : "No git connections — an admin adds them in CogniRunner Settings → Code"}
+              placeholder={gitConnections.length ? "Choose a git connection…" : "No git connections, an admin adds them in CogniRunner Settings → Code"}
               options={gitConnections.map((c) => ({
                 value: c.id,
                 label: c.label || c.id,

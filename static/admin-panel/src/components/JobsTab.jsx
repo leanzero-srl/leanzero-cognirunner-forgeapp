@@ -142,7 +142,7 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
         if (p.status === "error") { showResult({ isValid: false, reason: p.error || "Run failed" }); setRunning(null); load(); return; }
         setRunning({ id, taskId: r.taskId, status: p.status === "processing" ? "running" : "queued" });
       }
-      showResult({ pending: true, reason: "Still running after 3 minutes — the background worker has not reported back yet. This is not a failure: refresh, or open Recent executions / the Execution Logs tab to see how it ended." });
+      showResult({ pending: true, reason: "Still running after 3 minutes, the background worker has not reported back yet. This is not a failure: refresh, or open Recent executions / the Execution Logs tab to see how it ended." });
       setRunning(null);
       load();
     } catch (e) { if (token === pollRef.current) { showToast(e.message, "error"); setRunning(null); } }
@@ -228,7 +228,7 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
             <SchedulePicker value={draft.schedule} onChange={(schedule) => patch({ schedule })} />
           </div>
           <div className="form-group">
-            <span className="label">Scope (optional) — run once per issue matching this JQL</span>
+            <span className="label">Scope (optional), run once per issue matching this JQL</span>
             <div className="job-scope">
               <input type="text" className="lst-input" value={draft.scope.jql} onChange={(e) => patch({ scope: { ...draft.scope, jql: e.target.value } })} placeholder='e.g. project = PROJ AND status = "In Progress" AND updated <= -7d' spellCheck={false} />
               <span className="job-scope-max"><span className="label">Max issues</span><input type="number" min="1" max="100" className="schp-num" value={draft.scope.maxIssues} onChange={(e) => patch({ scope: { ...draft.scope, maxIssues: Math.min(100, Math.max(1, parseInt(e.target.value, 10) || 50)) } })} /></span>
@@ -267,14 +267,14 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
             <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" scoped={!!scoped} invoke={invoke} knowledgeRefusal={knowledgeRefusal} />
           )}
           <div className="lst-options">
-            <label className="lst-check"><input type="checkbox" checked={draft.simulationMode} onChange={(e) => patch({ simulationMode: e.target.checked })} /><span><strong>Simulation mode</strong> — reads are live, writes are logged but never executed.</span></label>
+            <label className="lst-check"><input type="checkbox" checked={draft.simulationMode} onChange={(e) => patch({ simulationMode: e.target.checked })} /><span><strong>Simulation mode</strong>, reads are live, writes are logged but never executed.</span></label>
             <label className="lst-check"><input type="checkbox" checked={draft.suppressNotifications} onChange={(e) => patch({ suppressNotifications: e.target.checked })} /><span><strong>Suppress notifications</strong> on field updates (needs project admin; falls back to notifying).</span></label>
-            <label className="lst-check"><input type="checkbox" checked={draft.enabled !== false} onChange={(e) => patch({ enabled: e.target.checked })} /><span><strong>Enabled</strong> — runs on schedule. Disabled jobs can still be run manually.</span></label>
+            <label className="lst-check"><input type="checkbox" checked={draft.enabled !== false} onChange={(e) => patch({ enabled: e.target.checked })} /><span><strong>Enabled</strong>, runs on schedule. Disabled jobs can still be run manually.</span></label>
           </div>
         </div>
         {((running && running.id === draft.id) || runResult) && (
           <div className="card lst-card lst-test">
-            <div className="lst-test-head"><span className="section-title">Manual run</span>{running && running.id === draft.id && <span className="hint">Queued on the background worker — {running.status}… (polling)</span>}</div>
+            <div className="lst-test-head"><span className="section-title">Manual run</span>{running && running.id === draft.id && <span className="hint">Queued on the background worker, {running.status}… (polling)</span>}</div>
             <RunResultView result={runResult} title="Run now" />
           </div>
         )}
@@ -301,7 +301,7 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
         ) : filtered.length === 0 ? (
           <div className="empty-state lst-empty">
             <div className="lst-empty-title">{rows.length ? "No job matches your search." : "No scheduled jobs yet."}</div>
-            {!rows.length && <div>A scheduled job runs on a cron schedule (every 5 minutes up to monthly, in any time zone) — once, or per issue of a JQL scope — executing AI-generated code or an AI agent.</div>}
+            {!rows.length && <div>A scheduled job runs on a cron schedule (every 5 minutes up to monthly, in any time zone): once, or per issue of a JQL scope, executing AI-generated code or an AI agent.</div>}
             {!rows.length && canEdit && <button type="button" className="btn-small btn-solid" style={{ marginTop: 12 }} onClick={openNew}>+ Add your first job</button>}
           </div>
         ) : (

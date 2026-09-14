@@ -201,8 +201,8 @@ export const resolveField = (rule, sourceIdKey, nameKey, typeKey, fields) => {
   const byName = list.filter((f) => String(f.name || "").trim().toLowerCase() === wantName
     && (!wantType || !f.type || String(f.type) === wantType));
   if (byName.length === 1) return { status: "ready", fieldId: byName[0].id };
-  if (byName.length > 1) return { status: "needs-rebind", reason: `Field "${rule[nameKey]}" is ambiguous on this site (${byName.length} matches) — pick one.` };
-  return { status: "needs-rebind", reason: `Field "${rule[nameKey] || rule[sourceIdKey]}" not found on this site — pick a target field.` };
+  if (byName.length > 1) return { status: "needs-rebind", reason: `Field "${rule[nameKey]}" is ambiguous on this site (${byName.length} matches), pick one.` };
+  return { status: "needs-rebind", reason: `Field "${rule[nameKey] || rule[sourceIdKey]}" not found on this site, pick a target field.` };
 };
 
 // Compute a per-rule import plan row against the target-site maps.
@@ -229,7 +229,7 @@ export const resolveBindings = (rule, maps) => {
     const resolved = []; const dropped = [];
     for (const n of rule.docNames) { const id = map[n] || map[String(n).toLowerCase()]; if (id) resolved.push(id); else dropped.push(n); }
     if (resolved.length) plan.selectedDocIds = resolved;
-    if (dropped.length) notes.push(`${dropped.length} attached doc(s) not on this site — dropped: ${dropped.slice(0, 3).join(", ")}`);
+    if (dropped.length) notes.push(`${dropped.length} attached doc(s) not on this site, dropped: ${dropped.slice(0, 3).join(", ")}`);
   }
   if (unresolved.length) { plan.status = "needs-rebind"; plan.unresolved = unresolved; }
   plan.notes = notes;

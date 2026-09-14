@@ -159,7 +159,7 @@ export default function SkillEditor({
       {cancelled && (
         <div className="async-cancelled-note anim-rise">
           <span className="acn-text">
-            <strong>Distill cancelled.</strong> Cancelled — nothing was changed. Your draft is untouched; try again when the stop is lifted.
+            <strong>Distill cancelled.</strong> Cancelled, nothing was changed. Your draft is untouched; try again when the stop is lifted.
           </span>
           <button className="acn-dismiss" onClick={() => setCancelled(false)} aria-label="Dismiss">&times;</button>
         </div>
@@ -200,7 +200,7 @@ export default function SkillEditor({
         rows={6}
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
-        placeholder="What the AI should know when applying this skill — rules, pitfalls, formats..."
+        placeholder="What the AI should know when applying this skill, rules, pitfalls, formats..."
       />
       <label className="label" style={{ fontSize: "11px", marginBottom: 0 }}>
         Examples (code)

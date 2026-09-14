@@ -48,7 +48,7 @@ const PROVIDER_OPTIONS = [
 const PROVIDER_HELP = {
   openai: { keyPlaceholder: "sk-...", keyLabel: "OpenAI API Key", endpointNeeded: false },
   // Azure OpenAI rides the same OpenAI-compatible path as OpenAI; it is mostly untested end-to-end.
-  azure: { keyPlaceholder: "Enter your Azure OpenAI API key...", keyLabel: "Azure API Key", endpointNeeded: true, endpointPlaceholder: "https://myresource.openai.azure.com/openai/v1", note: "Azure OpenAI is mostly untested — verify your deployment before relying on it." },
+  azure: { keyPlaceholder: "Enter your Azure OpenAI API key...", keyLabel: "Azure API Key", endpointNeeded: true, endpointPlaceholder: "https://myresource.openai.azure.com/openai/v1", note: "Azure OpenAI is mostly untested, verify your deployment before relying on it." },
   openrouter: { keyPlaceholder: "sk-or-...", keyLabel: "OpenRouter API Key", endpointNeeded: false },
   anthropic: { keyPlaceholder: "sk-ant-...", keyLabel: "Anthropic API Key", endpointNeeded: false },
   lmstudio: {
@@ -120,11 +120,11 @@ const healthVerdict = (r) => {
   if (r.ok) return { label: "Connected", hue: "ok", hint: "The active provider answered a live test call." };
   const status = r.status;
   const msg = String(r.message || "");
-  if (status === 401 || status === 403) return { label: "Auth failed", hue: "err", hint: "The API key was rejected — check the key below." };
+  if (status === 401 || status === 403) return { label: "Auth failed", hue: "err", hint: "The API key was rejected, check the key below." };
   if (status === 404) return { label: "Model / endpoint not found", hue: "warn", hint: "The base URL or model may be wrong for this provider." };
-  if (status === 429) return { label: "Rate-limited", hue: "warn", hint: "The provider is throttling — temporary; validators fail OPEN meanwhile." };
-  if (typeof status === "number" && status >= 500) return { label: "Provider error", hue: "warn", hint: `The provider returned a server error${status ? ` (HTTP ${status})` : ""} — usually temporary.` };
-  if (!status && /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|timed?.?out|timeout|aborted|socket hang up/i.test(msg)) return { label: "Unreachable", hue: "err", hint: "Couldn't reach the host — check the base URL, egress, and that the service is up." };
+  if (status === 429) return { label: "Rate-limited", hue: "warn", hint: "The provider is throttling, temporary; validators fail OPEN meanwhile." };
+  if (typeof status === "number" && status >= 500) return { label: "Provider error", hue: "warn", hint: `The provider returned a server error${status ? ` (HTTP ${status})` : ""}, usually temporary.` };
+  if (!status && /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|timed?.?out|timeout|aborted|socket hang up/i.test(msg)) return { label: "Unreachable", hue: "err", hint: "Couldn't reach the host, check the base URL, egress, and that the service is up." };
   return { label: `Error${status ? ` (HTTP ${status})` : ""}`, hue: "err", hint: msg.slice(0, 140) };
 };
 
@@ -816,7 +816,7 @@ export default function OpenAIConfig({ invoke }) {
           if (provider === "lmstudio") {
             const ping = await runLmStudioPing({ silent: true });
             if (ping?.success && ping.ok && ping.authOk) {
-              setSuccess(`${label} is now active — connected, ${ping.modelCount || 0} model(s) found.`);
+              setSuccess(`${label} is now active. Connected, ${ping.modelCount || 0} model(s) found.`);
             } else if (ping?.tokenRequired || ping?.tokenInvalid) {
               setError(ping.error);
             } else if (ping && !ping.success) {
@@ -858,7 +858,7 @@ export default function OpenAIConfig({ invoke }) {
         if (provider === "lmstudio") {
           const ping = await runLmStudioPing({ silent: true });
           if (ping?.success && ping.ok && ping.authOk) {
-            setSuccess(`Endpoint saved — connected, ${ping.modelCount || 0} model(s) found.`);
+            setSuccess(`Endpoint saved. Connected, ${ping.modelCount || 0} model(s) found.`);
           } else if (ping?.tokenRequired) {
             setError(ping.error);
           } else if (ping?.tokenInvalid) {
@@ -905,7 +905,7 @@ export default function OpenAIConfig({ invoke }) {
       setPingResult(result);
       if (!silent) {
         if (result.success && result.ok && result.authOk) {
-          setSuccess(result.message || `Connected — ${result.modelCount || 0} model(s) found.`);
+          setSuccess(result.message || `Connected, ${result.modelCount || 0} model(s) found.`);
         } else if (result.tokenRequired) {
           setError(result.error);
         } else if (result.tokenInvalid) {
@@ -1100,7 +1100,7 @@ export default function OpenAIConfig({ invoke }) {
         if (isLmStudio) {
           const ping = await runLmStudioPing({ tokenOverride: tokenJustSaved, silent: true });
           if (ping?.success && ping.ok && ping.authOk) {
-            setSuccess(`Token saved — connected, ${ping.modelCount || 0} model(s) found.`);
+            setSuccess(`Token saved. Connected, ${ping.modelCount || 0} model(s) found.`);
             showToast("Token saved");
           } else if (ping?.tokenInvalid) {
             setError(ping.error);
@@ -1131,7 +1131,7 @@ export default function OpenAIConfig({ invoke }) {
       const result = await invoke("removeOpenAIKey", { provider });
       if (result.success) {
         setSuccess("Key removed");
-        showToast("Key removed — enter your own key to use this provider");
+        showToast("Key removed, enter your own key to use this provider");
         setModels([]);
         setCurrentModel(null);
         setSelectedModel("");
@@ -1161,7 +1161,7 @@ export default function OpenAIConfig({ invoke }) {
         // upgradeRequired is a refusal, not a crash — its `error` is already a
         // sentence for the admin. Same slot as any other save failure, no alert().
         setError(result.error || (result.upgradeRequired
-          ? "That model is part of CogniRunner Coder — upgrade in Jira's Manage apps."
+          ? "That model is part of CogniRunner Coder, upgrade in Jira's Manage apps."
           : "Failed to save model"));
       }
     } catch (e) {
@@ -1186,7 +1186,7 @@ export default function OpenAIConfig({ invoke }) {
         showToast("Agent model saved");
       } else {
         setError((result && result.error) || (result && result.upgradeRequired
-          ? "The agent model is part of CogniRunner Coder — upgrade in Jira's Manage apps."
+          ? "The agent model is part of CogniRunner Coder, upgrade in Jira's Manage apps."
           : "Failed to save the agent model"));
       }
     } catch (e) {
@@ -1566,7 +1566,7 @@ export default function OpenAIConfig({ invoke }) {
               <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--success-color)" }} />
               Active: <strong style={{ color: "var(--text-color)" }}>{providerLabelFor(activeProvider)}</strong>
               {provider !== activeProvider && (
-                <span style={{ color: "var(--text-muted)" }}>· Viewing <strong style={{ color: "var(--text-color)" }}>{providerLabelFor(provider)}</strong> (not active — its config is shown below; “Set as active” to use it)</span>
+                <span style={{ color: "var(--text-muted)" }}>· Viewing <strong style={{ color: "var(--text-color)" }}>{providerLabelFor(provider)}</strong> (not active, its config is shown below; “Set as active” to use it)</span>
               )}
             </p>
             {/* Active-provider connection HealthChip — user-initiated live probe + a clear verdict. */}
@@ -1591,7 +1591,7 @@ export default function OpenAIConfig({ invoke }) {
               })()}
             </div>
             <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-              All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
+              All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model. Atlassian Forge LLM is text-only for now.
             </p>
             {/* CogniRunner Cloud AI. Two states, one copy home: AVAILABLE gets the data
                 note (the one thing an admin must know before switching - whose systems
@@ -1620,23 +1620,23 @@ export default function OpenAIConfig({ invoke }) {
             {isAtlassian && (
               <div className="anim-rise" style={{ marginTop: "8px", padding: "8px 10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
                 <strong>Atlassian-hosted Claude (Forge LLMs, Preview).</strong> No API key and no
-                egress — prompts and field data never leave the Atlassian platform. Token usage is
+                egress, prompts and field data never leave the Atlassian platform. Token usage is
                 billed to the app vendor (LeanZero), not to your site. Supports tool calling (JQL
                 agentic search works); image/file attachments are not analyzed yet. Requests pass
                 Atlassian's AI moderation checks.
                 <div style={{ marginTop: "6px" }}>
                   <strong>Cost shape.</strong> While a rule waits for a model response, the app also
-                  consumes Forge compute time, which is billed to the vendor as well — long AI waits
+                  consumes Forge compute time, which is billed to the vendor as well, long AI waits
                   cost more than tokens alone. The default model (Claude Haiku) keeps responses fast,
                   and heavy steps such as document generation, research, and fact-checked rules
-                  automatically run in the background queue. Nothing to configure on your side — this
+                  automatically run in the background queue. Nothing to configure on your side, this
                   is simply why the fast default model is recommended.
                 </div>
                 <div style={{ marginTop: "6px" }}>
                   <strong>Edition.</strong>{" "}
                   {isAdvanced
                     ? "CogniRunner Coder covers Claude Sonnet 5 and Opus 5 here from a monthly allowance; when the allowance is spent, rules fall back to Claude Haiku until it resets."
-                    : "On the Standard edition only Claude Haiku runs here — Sonnet 5 and Opus 5 need CogniRunner Coder, and a saved model outside this edition is served as Haiku."}
+                    : "On the Standard edition only Claude Haiku runs here. Sonnet 5 and Opus 5 need CogniRunner Coder, and a saved model outside this edition is served as Haiku."}
                 </div>
               </div>
             )}
@@ -1651,7 +1651,7 @@ export default function OpenAIConfig({ invoke }) {
                   "How to get your Azure OpenAI endpoint:\n\n" +
                   "1. Go to portal.azure.com\n" +
                   "2. Navigate to your Azure OpenAI resource (or create one under 'Azure AI services' > 'Azure OpenAI')\n" +
-                  "3. In the resource overview, find 'Endpoint' — it looks like:\n" +
+                  "3. In the resource overview, find 'Endpoint'. It looks like:\n" +
                   "   https://myresource.openai.azure.com/\n" +
                   "4. Append /openai/v1 to the end, so the full URL is:\n" +
                   "   https://myresource.openai.azure.com/openai/v1\n\n" +
@@ -1702,8 +1702,8 @@ export default function OpenAIConfig({ invoke }) {
                   "   sudo tailscale funnel 1234\n" +
                   "   (or use the GUI: Tailscale menu → Serve & Funnel)\n" +
                   "4. Copy the public HTTPS URL Tailscale prints (looks like https://your-machine.tailXXXX.ts.net) and paste it here.\n" +
-                  "5. REQUIRED for safety: in LM Studio's Developer page, enable authentication and create an API token. Paste it in the 'API Token' field below — without a token, anyone who finds your URL can use your LM Studio server.\n\n" +
-                  "Only *.ts.net (Tailscale Funnel) is allowlisted in the app's egress. Other tunnel providers (ngrok, Cloudflare Tunnel) will not work — requests would be blocked by Forge before leaving the cloud."
+                  "5. REQUIRED for safety: in LM Studio's Developer page, enable authentication and create an API token. Paste it in the 'API Token' field below, without a token, anyone who finds your URL can use your LM Studio server.\n\n" +
+                  "Only *.ts.net (Tailscale Funnel) is allowlisted in the app's egress. Other tunnel providers (ngrok, Cloudflare Tunnel) will not work, requests would be blocked by Forge before leaving the cloud."
                 } />
               </label>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -1737,7 +1737,7 @@ export default function OpenAIConfig({ invoke }) {
                 </button>
               </div>
               <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                Tunnel root URL — the base, not a specific endpoint path. We'll append <code style={{ fontSize: "11px" }}>/v1</code> for inference and <code style={{ fontSize: "11px" }}>/api/v1</code> for model management.
+                Tunnel root URL, the base, not a specific endpoint path. We'll append <code style={{ fontSize: "11px" }}>/v1</code> for inference and <code style={{ fontSize: "11px" }}>/api/v1</code> for model management.
               </p>
               {pingResult && pingResult.ok && (
                 <p style={{
@@ -1781,7 +1781,7 @@ export default function OpenAIConfig({ invoke }) {
                 </button>
               </div>
               <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                Authenticated with a Bedrock API key (bearer token) — no AWS access-key signing. Endpoint: <code style={{ fontSize: "11px" }}>bedrock-runtime.{bedrockRegion}.amazonaws.com</code>
+                Authenticated with a Bedrock API key (bearer token), no AWS access-key signing. Endpoint: <code style={{ fontSize: "11px" }}>bedrock-runtime.{bedrockRegion}.amazonaws.com</code>
               </p>
             </div>
           )}
@@ -1805,11 +1805,11 @@ export default function OpenAIConfig({ invoke }) {
             if (checking) {
               lmStatusColor = "var(--primary-color)";
               lmStatusTitle = "Testing connection…";
-              lmStatusBody = "Contacting your LM Studio server — verifying reachability and auth.";
+              lmStatusBody = "Contacting your LM Studio server, verifying reachability and auth.";
             } else if (isLmStudio && keyReady) {
               if (!pingResult) {
                 lmStatusColor = "var(--text-muted)";
-                lmStatusTitle = "URL saved — not yet tested";
+                lmStatusTitle = "URL saved, not yet tested";
                 lmStatusBody = "Click Test (above) or Save again to verify the connection.";
               } else if (pingResult.tokenRequired) {
                 lmStatusColor = "var(--error-color)";
@@ -1825,15 +1825,15 @@ export default function OpenAIConfig({ invoke }) {
                 lmStatusBody = pingResult.error || "Check that the tunnel is up and the URL is correct.";
               } else if (pingResult.busy) {
                 lmStatusColor = "#d97706";
-                lmStatusTitle = `Reachable — ${pingResult.modelCount || 0} model(s), but busy`;
-                lmStatusBody = "The server is saturated right now, so the inference check timed out. This is not a connection problem — it'll pass once the queue clears.";
+                lmStatusTitle = `Reachable, ${pingResult.modelCount || 0} model(s), but busy`;
+                lmStatusBody = "The server is saturated right now, so the inference check timed out. This is not a connection problem, it'll pass once the queue clears.";
               } else if (!pingResult.authOk) {
                 lmStatusColor = "#d97706";
                 lmStatusTitle = "Reachable, but inference test failed";
                 lmStatusBody = `Models list returned, but a test chat call failed: ${pingResult.pingError || "unknown"}.`;
               } else {
                 lmStatusColor = "var(--success-color)";
-                lmStatusTitle = `Connected — ${pingResult.modelCount || 0} model(s) available`;
+                lmStatusTitle = `Connected, ${pingResult.modelCount || 0} model(s) available`;
                 lmStatusBody = "Inference and field data stay on your machine. Pick a model below.";
               }
             }
@@ -1844,7 +1844,7 @@ export default function OpenAIConfig({ invoke }) {
               : isLmStudio
               ? lmStatusTitle
               : isAtlassian
-                ? "Atlassian-hosted — ready, no key needed"
+                ? "Atlassian-hosted, ready, no key needed"
                 : noKeyNeeded
                   ? "Managed by LeanZero \u2014 ready, no key needed"
                   : (isByok ? `Using your ${providerLabel} key` : "No key configured");
@@ -1873,9 +1873,9 @@ export default function OpenAIConfig({ invoke }) {
                       : isLmStudio
                       ? lmStatusBody
                       : isAtlassian
-                      ? "Claude served inside the Atlassian platform — no key, no egress."
+                      ? "Claude served inside the Atlassian platform, no key, no egress."
                       : noKeyNeeded
-                      ? `${providerLabel} runs on LeanZero's own credential — nothing to paste here, and nothing to rotate. Pick a model below.`
+                      ? `${providerLabel} runs on LeanZero's own credential, nothing to paste here, and nothing to rotate. Pick a model below.`
                       : isByok
                         ? `Connected to ${providerLabel}. You can select from available models. Remove the key to clear it.`
                         : `No API key configured. Provide your ${providerLabel} API key to get started.`
@@ -1912,7 +1912,7 @@ export default function OpenAIConfig({ invoke }) {
                       ) : (
                         <>
                           <strong style={{ color: "var(--primary-color)" }}>Claude Sonnet 5 and Opus 5 are part of CogniRunner Coder</strong>
-                          {" "}— upgrade in Jira&apos;s Manage apps.
+                          , upgrade in Jira&apos;s Manage apps.
                         </>
                       )}
                     </p>
@@ -1922,7 +1922,7 @@ export default function OpenAIConfig({ invoke }) {
                       nothing to clamp, and the generic line read as an error. */}
                   {isAtlassian && modelClamped && typeof clampedFrom === "string" && clampedFrom.trim() !== "" && (
                     <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--text-secondary)" }}>
-                      Saved model <strong>{clampedFrom}</strong> is not available on this edition — using Claude Haiku.
+                      Saved model <strong>{clampedFrom}</strong> is not available on this edition, using Claude Haiku.
                     </p>
                   )}
                 </div>
@@ -1944,8 +1944,8 @@ export default function OpenAIConfig({ invoke }) {
                   "1. Go to portal.azure.com\n" +
                   "2. Open your Azure OpenAI resource\n" +
                   "3. In the left sidebar, click 'Keys and Endpoint' (under Resource Management)\n" +
-                  "4. Copy either Key 1 or Key 2 — both work\n\n" +
-                  "The key is a 32-character hex string (no 'sk-' prefix). Keep it secret — anyone with this key can use your Azure OpenAI quota."
+                  "4. Copy either Key 1 or Key 2, both work\n\n" +
+                  "The key is a 32-character hex string (no 'sk-' prefix). Keep it secret, anyone with this key can use your Azure OpenAI quota."
                 } />
               )}
               {provider === "openrouter" && (
@@ -2033,12 +2033,12 @@ export default function OpenAIConfig({ invoke }) {
           {isBedrock && isByok && (
             <div className="anim-rise" style={{ marginBottom: "16px", padding: "10px 12px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "12px", color: "var(--text-secondary)" }}>
               <strong style={{ color: "var(--text-color)" }}>Anthropic models need a one-time account setup.</strong> Amazon Bedrock
-              requires first-time customers to submit use-case details before Anthropic (Claude) models can be invoked — once per
+              requires first-time customers to submit use-case details before Anthropic (Claude) models can be invoked, once per
               AWS account. In the AWS console, open <strong>Bedrock → Model catalog</strong> and click <strong>“Submit use case
               details”</strong>, then complete the form. Other families (Amazon Nova, Llama, Mistral) don't require this.
               <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginTop: "10px", cursor: "pointer" }}>
                 <input type="checkbox" checked={bedrockAck} disabled={savingAck} onChange={(e) => handleSaveBedrockAck(e.target.checked)} style={{ marginTop: "2px" }} />
-                <span><strong style={{ color: "var(--text-color)" }}>I've submitted Anthropic use-case details in the AWS console</strong> (or I only use non-Anthropic models). Acknowledgment only — the model list below works either way.</span>
+                <span><strong style={{ color: "var(--text-color)" }}>I've submitted Anthropic use-case details in the AWS console</strong> (or I only use non-Anthropic models). Acknowledgment only, the model list below works either way.</span>
               </label>
             </div>
           )}
@@ -2057,7 +2057,7 @@ export default function OpenAIConfig({ invoke }) {
                     ? "No models found. Make sure LM Studio has at least one LLM downloaded, then click Test above to retry."
                     : isBedrock
                       ? (listUnavailable
-                          ? "Couldn't list models from AWS — your API key's IAM policy may not allow listing, or no models are enabled in this region. Enter a model or inference-profile id manually below."
+                          ? "Couldn't list models from AWS, your API key's IAM policy may not allow listing, or no models are enabled in this region. Enter a model or inference-profile id manually below."
                           : "No models found in this region. Enter a model or inference-profile id manually below.")
                       : isAtlassian
                         ? "Couldn't list the Forge LLM models. Reload the page to retry."
@@ -2172,16 +2172,16 @@ export default function OpenAIConfig({ invoke }) {
               {isLmStudio && selectedModelMeta && (
                 <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                   {selectedModelMeta.state === "loaded"
-                    ? "✓ Model is loaded — first call will be fast."
+                    ? "✓ Model is loaded, first call will be fast."
                     : selectedModelMeta.state === "not-loaded"
                       ? "⚠ Model not loaded. First call will JIT-load it (10–60s cold start). Click Load to preload."
                       : null}
                   {selectedModelMeta.arch ? ` · ${selectedModelMeta.arch}` : ""}
                   {selectedModelMeta.vision
                     ? " · Vision-capable (can process Jira attachment images in validators)."
-                    : " · Text-only — Jira attachment images will be ignored. Pick a 👁 vision model to process them."}
+                    : " · Text-only. Jira attachment images will be ignored. Pick a 👁 vision model to process them."}
                   {!selectedModelMeta.toolUse && selectedModelMeta.toolUse !== undefined
-                    ? " · Not trained for tool use — JQL agentic search may produce malformed calls; pick a 🛠 model for that."
+                    ? " · Not trained for tool use, JQL agentic search may produce malformed calls; pick a 🛠 model for that."
                     : ""}
                 </p>
               )}
@@ -2269,12 +2269,12 @@ export default function OpenAIConfig({ invoke }) {
                 </p>
                 {isAtlassian && !isAdvanced && (
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    On Forge LLM the agent model is part of CogniRunner Coder — upgrade in Jira&apos;s Manage apps, or point CogniRunner at your own provider key.
+                    On Forge LLM the agent model is part of CogniRunner Coder, upgrade in Jira&apos;s Manage apps, or point CogniRunner at your own provider key.
                   </p>
                 )}
                 {isAtlassian && isAdvanced && agentFrontierOnly && (
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    Only Sonnet 5 and Opus 5 can drive agents — Haiku never does.
+                    Only Sonnet 5 and Opus 5 can drive agents. Haiku never does.
                   </p>
                 )}
                 {savedAgentModel && (
@@ -2340,7 +2340,7 @@ export default function OpenAIConfig({ invoke }) {
                     </button>
                   </div>
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    Forge runs queued jobs in parallel by default. This caps how many LM Studio jobs run at once (app-wide) — set it to roughly your device count × LM Studio's per-model concurrency to spread work without thrashing a machine. <strong>0 = uncapped.</strong>
+                    Forge runs queued jobs in parallel by default. This caps how many LM Studio jobs run at once (app-wide), set it to roughly your device count × LM Studio's per-model concurrency to spread work without thrashing a machine. <strong>0 = uncapped.</strong>
                   </p>
                 </div>
               )}
@@ -2360,7 +2360,7 @@ export default function OpenAIConfig({ invoke }) {
                         {savingPool && <span className="spin-ring spin-ring-sm" style={{ marginLeft: "8px", verticalAlign: "middle" }} />}
                       </span>
                       <span style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginTop: "3px" }}>
-                        <strong style={{ color: "var(--text-color)" }}>On</strong> (needs 2+ models loaded): every AI call — validators, conditions, <em>and</em> post-functions — is spread across all loaded models (round-robin, capability-aware: agentic calls only go to tool-trained models, vision only to VLMs), so all your devices work in parallel instead of one being hammered while the others idle. <strong style={{ color: "var(--text-color)" }}>Off</strong>: everything uses only the primary model selected above. No-op when a single model is loaded.
+                        <strong style={{ color: "var(--text-color)" }}>On</strong> (needs 2+ models loaded): every AI call, validators, conditions, <em>and</em> post-functions, is spread across all loaded models (round-robin, capability-aware: agentic calls only go to tool-trained models, vision only to VLMs), so all your devices work in parallel instead of one being hammered while the others idle. <strong style={{ color: "var(--text-color)" }}>Off</strong>: everything uses only the primary model selected above. No-op when a single model is loaded.
                       </span>
                     </span>
                   </label>
@@ -2371,7 +2371,7 @@ export default function OpenAIConfig({ invoke }) {
                         {savingWeights && <span className="spin-ring spin-ring-sm" style={{ marginLeft: "8px", verticalAlign: "middle" }} />}
                       </div>
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "8px" }}>
-                        Mark a slower device to receive proportionally less work — a <strong style={{ color: "var(--text-color)" }}>Slow</strong> model gets ~1 job for every 3 a normal one gets, <strong style={{ color: "var(--text-color)" }}>Very slow</strong> ~1 in 6. Stops a slow box backing up while a fast one idles.
+                        Mark a slower device to receive proportionally less work, a <strong style={{ color: "var(--text-color)" }}>Slow</strong> model gets ~1 job for every 3 a normal one gets, <strong style={{ color: "var(--text-color)" }}>Very slow</strong> ~1 in 6. Stops a slow box backing up while a fast one idles.
                       </div>
                       {lmWeightModels.map((m, i) => {
                         // One row per LOADED INSTANCE. Backend returns {wkey,id,quant,ctx};
@@ -2434,8 +2434,8 @@ export default function OpenAIConfig({ invoke }) {
                 </h3>
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                   {isLmStudio
-                    ? <>Extra tools the model can call via your LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> — local to your machine; enable each below and follow its setup.<Tooltip text="JQL agentic search is unaffected — it runs on a separate code path from these MCP tools." /></>
-                    : <><strong>CogniRunner is the middle layer</strong> — it dials each MCP&apos;s URL and runs the tool calls; your AI provider never sees the URL.<Tooltip text="Works the same on OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM. All three MCPs — context7, web-search, doc-reader — are supported on every provider." /></>
+                    ? <>Extra tools the model can call via your LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code>, local to your machine; enable each below and follow its setup.<Tooltip text="JQL agentic search is unaffected, it runs on a separate code path from these MCP tools." /></>
+                    : <><strong>CogniRunner is the middle layer</strong>, it dials each MCP&apos;s URL and runs the tool calls; your AI provider never sees the URL.<Tooltip text="Works the same on OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM. All three MCPs, context7, web-search, doc-reader, are supported on every provider." /></>
                   }
                 </p>
               </div>
@@ -2459,7 +2459,7 @@ export default function OpenAIConfig({ invoke }) {
                 "Run locally via LM Studio" toggle), replacing the old single global flag. */}
             {isLmStudio && (
               <div style={{ margin: "0 0 12px", padding: "10px 12px", background: "var(--card-bg)", border: "2px solid #0d9488", borderRadius: "6px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                <strong style={{ color: "var(--text-color)" }}>LM Studio: choose per MCP where it runs.</strong> Each card below has a <strong>“Run locally via LM Studio (mcp.json)”</strong> toggle — turn it on to load that MCP from LM Studio on your machine, or leave it off to use the hosted bridge (its Service URL / Bearer fields). Only LM Studio supports local MCPs; every other provider always uses the hosted bridge. <strong>Keep all enabled MCPs on the same side:</strong> LM Studio can’t combine local and hosted tools in one request, so if you mix them CogniRunner routes them ALL through the hosted bridge (a “local” MCP would then also need its hosted Service URL / Bearer below).
+                <strong style={{ color: "var(--text-color)" }}>LM Studio: choose per MCP where it runs.</strong> Each card below has a <strong>“Run locally via LM Studio (mcp.json)”</strong> toggle, turn it on to load that MCP from LM Studio on your machine, or leave it off to use the hosted bridge (its Service URL / Bearer fields). Only LM Studio supports local MCPs; every other provider always uses the hosted bridge. <strong>Keep all enabled MCPs on the same side:</strong> LM Studio can’t combine local and hosted tools in one request, so if you mix them CogniRunner routes them ALL through the hosted bridge (a “local” MCP would then also need its hosted Service URL / Bearer below).
               </div>
             )}
 
@@ -2468,13 +2468,13 @@ export default function OpenAIConfig({ invoke }) {
             <div style={{ padding: "10px 12px", marginBottom: "12px", background: "var(--code-bg)", border: "1px solid var(--border-color)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
               <strong style={{ color: "var(--text-color)" }}>Three ways to connect an MCP:</strong>
               <ul style={{ margin: "6px 0 0", paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                <li><strong>LeanZero&apos;s hosted demo</strong> — point <code style={{ fontSize: "11px" }}>web-search</code> / <code style={{ fontSize: "11px" }}>doc-processor</code> at our Mac Studio instance; grab a free demo key at <ExtLink href="https://leanzero.net" style={{ color: "var(--text-color)", fontWeight: 600 }}>leanzero.net</ExtLink> (links in the cards below). Rate-limited, for evaluation. Works on every provider — CogniRunner connects to it for you.</li>
-                <li><strong>Your own self-hosted server</strong> — clone the open-source repo and expose it via <strong>Tailscale Funnel</strong> (<em>required</em> — see the note below), then paste its <code style={{ fontSize: "11px" }}>*.ts.net</code> Service URL + Bearer in the card below. CogniRunner is the client on every hosted provider.</li>
-                <li><strong>LM Studio (local stdio)</strong> — run the server locally and point LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> at it. The MCP runs on your machine — the secure, local-only option (LM Studio provider).</li>
+                <li><strong>LeanZero&apos;s hosted demo</strong>: point <code style={{ fontSize: "11px" }}>web-search</code> / <code style={{ fontSize: "11px" }}>doc-processor</code> at our Mac Studio instance; grab a free demo key at <ExtLink href="https://leanzero.net" style={{ color: "var(--text-color)", fontWeight: 600 }}>leanzero.net</ExtLink> (links in the cards below). Rate-limited, for evaluation. Works on every provider. CogniRunner connects to it for you.</li>
+                <li><strong>Your own self-hosted server</strong>: clone the open-source repo and expose it via <strong>Tailscale Funnel</strong> (<em>required</em>, see the note below), then paste its <code style={{ fontSize: "11px" }}>*.ts.net</code> Service URL + Bearer in the card below. CogniRunner is the client on every hosted provider.</li>
+                <li><strong>LM Studio (local stdio)</strong>: run the server locally and point LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> at it. The MCP runs on your machine, the secure, local-only option (LM Studio provider).</li>
               </ul>
               <div style={{ marginTop: "8px", padding: "8px 10px", background: "var(--card-bg)", border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)", borderRadius: "6px", color: "var(--text-secondary)" }}>
-                <strong style={{ color: "var(--text-color)" }}>⚠ The addresses CogniRunner may reach are fixed by the installed app.</strong> It can only connect to an MCP on a <code style={{ fontSize: "11px" }}>*.ts.net</code> Tailscale&nbsp;Funnel URL on <strong>port 443</strong> (Forge egress reaches only the default HTTPS port — <strong>8443 / 10000 are blocked</strong>, so serve your Funnel on 443) or to context7&apos;s <code style={{ fontSize: "11px" }}>mcp.context7.com</code>. That allow-list ships inside the app and <strong>can&apos;t be changed without re-deploying CogniRunner itself</strong> — which you can&apos;t do as an installer. So to self-host web-search / doc-processor you <strong>must run them behind your own Tailscale Funnel</strong> (any tailnet works — it&apos;s a wildcard); an arbitrary URL like <code style={{ fontSize: "11px" }}>https://mycompany.com/mcp</code> will be blocked. Don&apos;t want to run a Funnel? Use LeanZero&apos;s hosted demo above.</div>
-              <div style={{ marginTop: "6px" }}>Service keys (web-search&apos;s Serper key) live on the MCP server — LeanZero&apos;s hosted demo manages them for you, so you only need the URL + Bearer. Self-hosters can also pass their own per-tenant key in the card below.</div>
+                <strong style={{ color: "var(--text-color)" }}>⚠ The addresses CogniRunner may reach are fixed by the installed app.</strong> It can only connect to an MCP on a <code style={{ fontSize: "11px" }}>*.ts.net</code> Tailscale&nbsp;Funnel URL on <strong>port 443</strong> (Forge egress reaches only the default HTTPS port, <strong>8443 / 10000 are blocked</strong>, so serve your Funnel on 443) or to context7&apos;s <code style={{ fontSize: "11px" }}>mcp.context7.com</code>. That allow-list ships inside the app and <strong>can&apos;t be changed without re-deploying CogniRunner itself</strong>, which you can&apos;t do as an installer. So to self-host web-search / doc-processor you <strong>must run them behind your own Tailscale Funnel</strong> (any tailnet works, it&apos;s a wildcard); an arbitrary URL like <code style={{ fontSize: "11px" }}>https://mycompany.com/mcp</code> will be blocked. Don&apos;t want to run a Funnel? Use LeanZero&apos;s hosted demo above.</div>
+              <div style={{ marginTop: "6px" }}>Service keys (web-search&apos;s Serper key) live on the MCP server. LeanZero&apos;s hosted demo manages them for you, so you only need the URL + Bearer. Self-hosters can also pass their own per-tenant key in the card below.</div>
             </div>
             </div>
             )}
@@ -2503,7 +2503,7 @@ export default function OpenAIConfig({ invoke }) {
                   <div style={{ padding: "10px 12px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--success-color)", boxShadow: "0 4px 12px -4px rgba(22, 163, 106, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted context7 (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
-                      Use the <strong>official hosted endpoint</strong> <code style={{ fontSize: "11px" }}>https://mcp.context7.com/mcp</code> (works without a key — a key only raises rate limits; grab one at <ExtLink href="https://context7.com/dashboard" style={{ color: "var(--success-color)", fontWeight: 600 }}>context7.com/dashboard</ExtLink>), or a self-host behind Tailscale Funnel (<code style={{ fontSize: "11px" }}>*.ts.net</code> on port 443). Those are the only context7 addresses CogniRunner may reach. It connects for you on every provider.
+                      Use the <strong>official hosted endpoint</strong> <code style={{ fontSize: "11px" }}>https://mcp.context7.com/mcp</code> (works without a key, a key only raises rate limits; grab one at <ExtLink href="https://context7.com/dashboard" style={{ color: "var(--success-color)", fontWeight: 600 }}>context7.com/dashboard</ExtLink>), or a self-host behind Tailscale Funnel (<code style={{ fontSize: "11px" }}>*.ts.net</code> on port 443). Those are the only context7 addresses CogniRunner may reach. It connects for you on every provider.
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
                       <input
@@ -2528,7 +2528,7 @@ export default function OpenAIConfig({ invoke }) {
                       ) : (
                         <input
                           type="password"
-                          placeholder="CONTEXT7_API_KEY — OPTIONAL (keyless works; a key raises rate limits)"
+                          placeholder="CONTEXT7_API_KEY, OPTIONAL (keyless works; a key raises rate limits)"
                           value={context7ApiKeyInput}
                           onChange={(e) => setContext7ApiKeyInput(e.target.value)}
                           style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
@@ -2607,7 +2607,7 @@ export default function OpenAIConfig({ invoke }) {
                   <div style={{ padding: "10px 12px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--success-color)", boxShadow: "0 4px 12px -4px rgba(22, 163, 106, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted web-search (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
-                      Point this at a web-search MCP. Use <strong>your own self-host</strong> (clone <code style={{ fontSize: "11px" }}>mcp-web-search</code> and expose it via Tailscale Funnel — the URL <strong>must</strong> be <code style={{ fontSize: "11px" }}>*.ts.net</code> on <strong>port 443</strong>; Forge egress blocks 8443/10000, see the note above) or <strong>LeanZero&apos;s hosted demo</strong> — <ExtLink href="https://leanzero.net/portfolio/mcp-web-search#get-key" style={{ color: "var(--success-color)", fontWeight: 600 }}>get a free demo key →</ExtLink>. Independent from doc-processor (separate URL + Bearer). The MCP is keyless, so also paste a Serper key (free tier at <ExtLink href="https://serper.dev" style={{ color: "var(--success-color)", fontWeight: 600 }}>serper.dev</ExtLink>) — it powers every search.
+                      Point this at a web-search MCP. Use <strong>your own self-host</strong> (clone <code style={{ fontSize: "11px" }}>mcp-web-search</code> and expose it via Tailscale Funnel, the URL <strong>must</strong> be <code style={{ fontSize: "11px" }}>*.ts.net</code> on <strong>port 443</strong>; Forge egress blocks 8443/10000, see the note above) or <strong>LeanZero&apos;s hosted demo</strong> — <ExtLink href="https://leanzero.net/portfolio/mcp-web-search#get-key" style={{ color: "var(--success-color)", fontWeight: 600 }}>get a free demo key →</ExtLink>. Independent from doc-processor (separate URL + Bearer). The MCP is keyless, so also paste a Serper key (free tier at <ExtLink href="https://serper.dev" style={{ color: "var(--success-color)", fontWeight: 600 }}>serper.dev</ExtLink>) — it powers every search.
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
                       <input
@@ -2653,7 +2653,7 @@ export default function OpenAIConfig({ invoke }) {
                       ) : (
                         <input
                           type="password"
-                          placeholder="Serper API key (free tier at serper.dev) — powers web search"
+                          placeholder="Serper API key (free tier at serper.dev), powers web search"
                           value={webSearchSerperInput}
                           onChange={(e) => setWebSearchSerperInput(e.target.value)}
                           style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
@@ -2674,7 +2674,7 @@ export default function OpenAIConfig({ invoke }) {
                       ) : (
                         <input
                           type="password"
-                          placeholder="GitHub token — OPTIONAL, for the github tool (rate limits / private repos)"
+                          placeholder="GitHub token, OPTIONAL, for the github tool (rate limits / private repos)"
                           value={webSearchGithubInput}
                           onChange={(e) => setWebSearchGithubInput(e.target.value)}
                           style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
@@ -2717,7 +2717,7 @@ export default function OpenAIConfig({ invoke }) {
                   {isLmStudio && (
                     <>
                       <p style={{ margin: "0 0 8px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                        <strong>Option A — local stdio (LM Studio):</strong> clone the repo and run from <code style={{ fontSize: "11px" }}>mcp.json</code>:
+                        <strong>Option A, local stdio (LM Studio):</strong> clone the repo and run from <code style={{ fontSize: "11px" }}>mcp.json</code>:
                       </p>
                       <pre style={{ margin: "0 0 8px", padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", overflow: "auto", color: "var(--text-color)" }}>
 {`git clone https://github.com/leanzero-srl/mcp-web-search
@@ -2725,7 +2725,7 @@ cd mcp-web-search
 npm install && npm run build`}
                       </pre>
                       <p style={{ margin: "0 0 8px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                        Add to <code style={{ fontSize: "11px" }}>mcp.json</code> (entry name <strong>must</strong> be <code style={{ fontSize: "11px" }}>web-search</code>). The <code style={{ fontSize: "11px" }}>"args"</code> path <strong>must</strong> be absolute, and <code style={{ fontSize: "11px" }}>"timeout": 120000</code> is required — full searches take 30–90 s and LM Studio's default timeout will kill them otherwise.
+                        Add to <code style={{ fontSize: "11px" }}>mcp.json</code> (entry name <strong>must</strong> be <code style={{ fontSize: "11px" }}>web-search</code>). The <code style={{ fontSize: "11px" }}>"args"</code> path <strong>must</strong> be absolute, and <code style={{ fontSize: "11px" }}>"timeout": 120000</code> is required, full searches take 30–90 s and LM Studio's default timeout will kill them otherwise.
                       </p>
                       <pre style={{ margin: "0 0 8px", padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", overflow: "auto", color: "var(--text-color)" }}>
 {`"web-search": {
@@ -2738,7 +2738,7 @@ npm install && npm run build`}
 }`}
                       </pre>
                       <p style={{ margin: "8px 0 8px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                        <strong>Option B — remote HTTP (LM Studio &ge;0.3.17):</strong> add to <code style={{ fontSize: "11px" }}>mcp.json</code>:
+                        <strong>Option B, remote HTTP (LM Studio &ge;0.3.17):</strong> add to <code style={{ fontSize: "11px" }}>mcp.json</code>:
                       </p>
                       <pre style={{ margin: 0, padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", overflow: "auto", color: "var(--text-color)" }}>
 {`"web-search": {
@@ -2789,7 +2789,7 @@ npm install && npm run build`}
                   <div style={{ padding: "10px 12px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--success-color)", boxShadow: "0 4px 12px -4px rgba(22, 163, 106, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted doc-processor (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
-                      Point this at a doc-processor MCP. Use <strong>your own self-host</strong> (clone <code style={{ fontSize: "11px" }}>leanzero-mcp-doc-processor</code> and expose it via Tailscale Funnel — the URL <strong>must</strong> be <code style={{ fontSize: "11px" }}>*.ts.net</code> on <strong>port 443</strong>; Forge egress blocks 8443/10000, see the note above) or <strong>LeanZero&apos;s hosted demo</strong> on our Mac Studio — <ExtLink href="https://leanzero.net/portfolio/mcp-doc-processor#get-key" style={{ color: "var(--success-color)", fontWeight: 600 }}>get a free demo key →</ExtLink>. Paste the Service URL + Bearer below. LM Studio can alternatively point its <code style={{ fontSize: "11px" }}>mcp.json</code> at the same URL (see below).
+                      Point this at a doc-processor MCP. Use <strong>your own self-host</strong> (clone <code style={{ fontSize: "11px" }}>leanzero-mcp-doc-processor</code> and expose it via Tailscale Funnel, the URL <strong>must</strong> be <code style={{ fontSize: "11px" }}>*.ts.net</code> on <strong>port 443</strong>; Forge egress blocks 8443/10000, see the note above) or <strong>LeanZero&apos;s hosted demo</strong> on our Mac Studio, <ExtLink href="https://leanzero.net/portfolio/mcp-doc-processor#get-key" style={{ color: "var(--success-color)", fontWeight: 600 }}>get a free demo key →</ExtLink>. Paste the Service URL + Bearer below. LM Studio can alternatively point its <code style={{ fontSize: "11px" }}>mcp.json</code> at the same URL (see below).
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
                       <input
@@ -2844,17 +2844,17 @@ npm install && npm run build`}
                   {/* Provider-specific guidance for what happens once saved */}
                   {(provider === "anthropic" || provider === "openai" || provider === "azure" || provider === "openrouter") && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>{provider === "anthropic" ? "Anthropic" : provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> CogniRunner is the MCP client: during agentic validation it lists the enabled doc-reader tools, exposes them to the model as function tools, and proxies the tool calls to the hosted doc-processor. Your AI provider never sees the URL. Configure the URL + Bearer above and enable doc-reader (and doc-writer for the create/edit tools). The single-use upload capability for each Jira issue is bound server-side — the model cannot redirect uploads.
+                      <strong>{provider === "anthropic" ? "Anthropic" : provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> CogniRunner is the MCP client: during agentic validation it lists the enabled doc-reader tools, exposes them to the model as function tools, and proxies the tool calls to the hosted doc-processor. Your AI provider never sees the URL. Configure the URL + Bearer above and enable doc-reader (and doc-writer for the create/edit tools). The single-use upload capability for each Jira issue is bound server-side, the model cannot redirect uploads.
                     </div>
                   )}
                   {isAtlassian && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>Atlassian Forge LLM: works via the CogniRunner MCP bridge.</strong> Doc-reader tools are exposed as function tools and proxied from the Forge backend. Note: Forge LLM accepts no inline file input, so direct attachment analysis is skipped — the model reads attachments through doc-reader's URL variant instead.
+                      <strong>Atlassian Forge LLM: works via the CogniRunner MCP bridge.</strong> Doc-reader tools are exposed as function tools and proxied from the Forge backend. Note: Forge LLM accepts no inline file input, so direct attachment analysis is skipped, the model reads attachments through doc-reader's URL variant instead.
                     </div>
                   )}
                   {isLmStudio && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>Jira attachments:</strong> when this MCP is on, the validator mints a one-shot URL + Bearer token for each attachment and feeds them to the model, so it can call <code style={{ fontSize: "11px" }}>read-doc</code> with <code style={{ fontSize: "11px" }}>url</code> + <code style={{ fontSize: "11px" }}>authHeader</code>. Two ways to wire LM Studio to doc-processor: (a) <strong>local stdio</strong> — clone the repo and run <code style={{ fontSize: "11px" }}>node src/index.js</code> from <code style={{ fontSize: "11px" }}>mcp.json</code>; (b) <strong>remote HTTP</strong> (LM Studio &ge;0.3.17) — point <code style={{ fontSize: "11px" }}>mcp.json</code> at the hosted URL above with the Bearer in headers. Either way, the entry name in <code style={{ fontSize: "11px" }}>mcp.json</code> <strong>must</strong> be <code style={{ fontSize: "11px" }}>doc-reader</code>.
+                      <strong>Jira attachments:</strong> when this MCP is on, the validator mints a one-shot URL + Bearer token for each attachment and feeds them to the model, so it can call <code style={{ fontSize: "11px" }}>read-doc</code> with <code style={{ fontSize: "11px" }}>url</code> + <code style={{ fontSize: "11px" }}>authHeader</code>. Two ways to wire LM Studio to doc-processor: (a) <strong>local stdio</strong>, clone the repo and run <code style={{ fontSize: "11px" }}>node src/index.js</code> from <code style={{ fontSize: "11px" }}>mcp.json</code>; (b) <strong>remote HTTP</strong> (LM Studio &ge;0.3.17), point <code style={{ fontSize: "11px" }}>mcp.json</code> at the hosted URL above with the Bearer in headers. Either way, the entry name in <code style={{ fontSize: "11px" }}>mcp.json</code> <strong>must</strong> be <code style={{ fontSize: "11px" }}>doc-reader</code>.
                     </div>
                   )}
 
@@ -2875,7 +2875,7 @@ npm install && npm run build`}
                       <code style={{ fontSize: "11px" }}>create-markdown</code>, and{" "}
                       <code style={{ fontSize: "11px" }}>create-excel</code>; the resulting file is attached
                       automatically to the issue under validation. Each upload capability is one-shot, 10-min TTL,
-                      and bound to a single issue (the model cannot redirect uploads). <strong>Defaults OFF</strong> —
+                      and bound to a single issue (the model cannot redirect uploads). <strong>Defaults OFF</strong>,
                       enable only if you trust the model with write access. Requires doc-reader (read) to be enabled.
                     </div>
                   </div>
@@ -2884,7 +2884,7 @@ npm install && npm run build`}
                   {isLmStudio && (
                     <>
                       <p style={{ margin: "0 0 8px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                        <strong>Option A — local stdio (LM Studio):</strong> clone the repo and add to <code style={{ fontSize: "11px" }}>mcp.json</code>:
+                        <strong>Option A, local stdio (LM Studio):</strong> clone the repo and add to <code style={{ fontSize: "11px" }}>mcp.json</code>:
                       </p>
                       <pre style={{ margin: "0 0 8px", padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", overflow: "auto", color: "var(--text-color)" }}>
 {`git clone https://github.com/leanzero-srl/leanzero-mcp-doc-processor
@@ -2898,7 +2898,7 @@ npm install`}
 }`}
                       </pre>
                       <p style={{ margin: "8px 0 8px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                        <strong>Option B — remote HTTP (LM Studio &ge;0.3.17):</strong> add to <code style={{ fontSize: "11px" }}>mcp.json</code>:
+                        <strong>Option B, remote HTTP (LM Studio &ge;0.3.17):</strong> add to <code style={{ fontSize: "11px" }}>mcp.json</code>:
                       </p>
                       <pre style={{ margin: 0, padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", overflow: "auto", color: "var(--text-color)" }}>
 {`"doc-reader": {
@@ -3012,8 +3012,8 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
           <span>
             <strong style={{ color: local ? "#0d9488" : "var(--text-color)" }}>Run locally via LM Studio (mcp.json)</strong>
             {local
-              ? " — served by LM Studio on your machine; the hosted Service URL / Bearer below are unused."
-              : " — off: uses the hosted bridge (configure the Service URL / Bearer below)."}
+              ? ", served by LM Studio on your machine; the hosted Service URL / Bearer below are unused."
+              : ", off: uses the hosted bridge (configure the Service URL / Bearer below)."}
           </span>
           {localSaving && <span style={{ color: "var(--text-muted)" }}>saving…</span>}
         </label>
@@ -3052,7 +3052,7 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
         <div className="anim-rise" style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border-color)" }}>
           {hostedGreyed && (
             <p style={{ margin: "0 0 8px", fontSize: "11px", color: "#0d9488", fontWeight: 600 }}>
-              This {title} runs locally via LM Studio (mcp.json) — the hosted URL / Bearer below are not used. Turn off &quot;Run locally&quot; above to use the hosted bridge instead.
+              This {title} runs locally via LM Studio (mcp.json), the hosted URL / Bearer below are not used. Turn off &quot;Run locally&quot; above to use the hosted bridge instead.
             </p>
           )}
           <div style={{ opacity: hostedGreyed ? 0.4 : 1, pointerEvents: hostedGreyed ? "none" : "auto" }} aria-disabled={hostedGreyed}>

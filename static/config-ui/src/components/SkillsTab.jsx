@@ -311,7 +311,7 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
 
       {atMax && (
         <div className="doc-selection-info">
-          Maximum of {MAX_SELECTED_SKILLS} skills per step — deselect one to pick another.
+          Maximum of {MAX_SELECTED_SKILLS} skills per step, deselect one to pick another.
         </div>
       )}
     </div>

@@ -117,7 +117,7 @@ export function buildSandboxLinter({ priorVariables = [] } = {}) {
           from: m.index,
           to: m.index + m[0].length,
           severity: "warning",
-          message: 'Jira labels cannot contain spaces — use hyphens ("needs-review", not "needs review").',
+          message: 'Jira labels cannot contain spaces, use hyphens ("needs-review", not "needs review").',
         });
       }
     }

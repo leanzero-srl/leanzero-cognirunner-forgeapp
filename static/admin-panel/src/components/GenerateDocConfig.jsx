@@ -78,12 +78,12 @@ export default function GenerateDocConfig({
           <strong>How it works</strong>
         </div>
         <ol className="pf-how-steps">
-          <li><strong>Read</strong> — AI reads the source field (and any reference docs)</li>
-          <li><strong>Author</strong> — AI writes a document from your instructions</li>
-          <li><strong>Attach</strong> — the file is generated and attached to the issue automatically</li>
+          <li><strong>Read</strong>: AI reads the source field (and any reference docs)</li>
+          <li><strong>Author</strong>: AI writes a document from your instructions</li>
+          <li><strong>Attach</strong>: the file is generated and attached to the issue automatically</li>
         </ol>
         <p className="hint" style={{ margin: "6px 0 0" }}>
-          Requires the <strong>doc-reader</strong> MCP (Settings → MCP Integrations). The generator is something ScriptRunner can&apos;t do — real PPTX / PDF / DOCX from natural-language instructions.
+          Requires the <strong>doc-reader</strong> MCP (Settings → MCP Integrations). The generator is something ScriptRunner can&apos;t do, real PPTX / PDF / DOCX from natural-language instructions.
         </p>
       </div>
 
@@ -175,13 +175,13 @@ export default function GenerateDocConfig({
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           <span>{showTest ? "Hide Test" : "Test Run"}</span>
-          <Tooltip text="Previews the document the AI would author from a real issue — it does NOT create or attach a file. Completely safe." />
+          <Tooltip text="Previews the document the AI would author from a real issue, it does NOT create or attach a file. Completely safe." />
         </button>
 
         {showTest && (
           <div className="semantic-test-panel">
             <div className="semantic-test-header">
-              <span className="test-panel-badge">Dry run — no file is created or attached</span>
+              <span className="test-panel-badge">Dry run, no file is created or attached</span>
             </div>
             <div className="form-group" style={{ margin: "10px 0 8px" }}>
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>

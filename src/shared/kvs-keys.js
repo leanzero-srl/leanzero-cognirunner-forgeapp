@@ -66,7 +66,7 @@ export const isKvsKey = (key) =>
 export const assertKvsKey = (key) => {
   if (!isKvsKey(key)) {
     const shown = typeof key === "string" ? key.slice(0, 80) : String(key);
-    throw new Error(`Illegal KVS key built: "${shown}" — must match ${KVS_KEY_PATTERN} and be 1..${KVS_KEY_MAX_CHARS} chars`);
+    throw new Error(`Illegal KVS key built: "${shown}", must match ${KVS_KEY_PATTERN} and be 1..${KVS_KEY_MAX_CHARS} chars`);
   }
   return key;
 };

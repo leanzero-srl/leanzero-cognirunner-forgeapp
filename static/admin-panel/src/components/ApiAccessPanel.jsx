@@ -61,7 +61,7 @@ export default function ApiAccessPanel({ invoke }) {
       const r = await invoke("createApiToken", { name: label, label, role });
       // Echo the requested role if the backend row does not carry one back, so the
       // "shown once" banner never claims Admin for a token the admin asked to narrow.
-      if (r.success) { setFresh({ token: r.token, row: { ...(r.row || {}), role: (r.row && r.row.role) || role } }); setName(""); showToast("Token created — copy it now, it will not be shown again"); await load(); } else showToast(r.error || "Could not create token", "error");
+      if (r.success) { setFresh({ token: r.token, row: { ...(r.row || {}), role: (r.row && r.row.role) || role } }); setName(""); showToast("Token created, copy it now, it will not be shown again"); await load(); } else showToast(r.error || "Could not create token", "error");
     } catch (e) { showToast(e.message, "error"); }
     setCreating(false);
   };
@@ -72,7 +72,7 @@ export default function ApiAccessPanel({ invoke }) {
     try { const r = await invoke("revokeApiToken", { id: t.id }); if (r.success) { showToast("Token revoked"); await load(); } else showToast(r.error || "Could not revoke", "error"); } catch (e) { showToast(e.message, "error"); }
     setBusyId(null);
   };
-  const copy = async (text) => { try { await navigator.clipboard.writeText(text); showToast("Copied"); } catch { showToast("Copy failed — select and copy manually", "error"); } };
+  const copy = async (text) => { try { await navigator.clipboard.writeText(text); showToast("Copied"); } catch { showToast("Copy failed, select and copy manually", "error"); } };
   const live = tokens.filter((t) => !t.revokedAt);
   const curl = url ? `curl -s -H "Authorization: Bearer <token>" "${url}?resource=listeners"` : "";
 
@@ -80,7 +80,7 @@ export default function ApiAccessPanel({ invoke }) {
     <div className="card apx">
       <div className="apx-head">
         <div>
-          <div className="apx-title">API access — Listeners &amp; Scheduled Jobs REST API</div>
+          <div className="apx-title">API access: Listeners &amp; Scheduled Jobs REST API</div>
           <div className="apx-sub">Push, list, run and test listeners and scheduled jobs from CI, migration scripts or the test harness. Bearer tokens; only hashes are stored.</div>
         </div>
         <span className="apx-badge">ADMIN</span>
@@ -88,7 +88,7 @@ export default function ApiAccessPanel({ invoke }) {
       {error && <div className="alert alert-warning">{error}</div>}
       <div className="apx-url">
         <span className="label">Endpoint</span>
-        {url ? (<span className="apx-url-row"><code className="apx-code">{url}</code><button type="button" className="btn-small" onClick={() => copy(url)}>Copy</button></span>) : <span className="hint">{loading ? "Loading…" : "URL not available yet — deploy the app and reload."}</span>}
+        {url ? (<span className="apx-url-row"><code className="apx-code">{url}</code><button type="button" className="btn-small" onClick={() => copy(url)}>Copy</button></span>) : <span className="hint">{loading ? "Loading…" : "URL not available yet, deploy the app and reload."}</span>}
       </div>
       <div className="apx-roles-block">
         <span className="label">What this token may do</span>
@@ -108,7 +108,7 @@ export default function ApiAccessPanel({ invoke }) {
       </div>
       {fresh && (
         <div className="apx-fresh">
-          <div className="apx-fresh-title">New token "{fresh.row.name}" ({roleLabel(roleOf(fresh.row))}) — copy it now. It will not be shown again.</div>
+          <div className="apx-fresh-title">New token "{fresh.row.name}" ({roleLabel(roleOf(fresh.row))}), copy it now. It will not be shown again.</div>
           <div className="apx-url-row"><code className="apx-code apx-secret">{fresh.token}</code><button type="button" className="btn-small" onClick={() => copy(fresh.token)}>Copy</button><button type="button" className="btn-small" onClick={() => setFresh(null)}>Dismiss</button></div>
         </div>
       )}

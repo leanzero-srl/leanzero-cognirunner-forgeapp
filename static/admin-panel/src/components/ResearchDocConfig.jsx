@@ -93,9 +93,9 @@ export default function ResearchDocConfig({
           <strong>How it works</strong>
         </div>
         <ol className="pf-how-steps">
-          <li><strong>Research</strong> — gathers evidence from the web and/or library docs (context7)</li>
-          <li><strong>Author</strong> — AI writes a concise, sourced briefing from that evidence</li>
-          <li><strong>Attach</strong> — the brief is generated and attached to the issue automatically</li>
+          <li><strong>Research</strong>: gathers evidence from the web and/or library docs (context7)</li>
+          <li><strong>Author</strong>: AI writes a concise, sourced briefing from that evidence</li>
+          <li><strong>Attach</strong>: the brief is generated and attached to the issue automatically</li>
         </ol>
         <p className="hint" style={{ margin: "6px 0 0" }}>
           Requires the <strong>doc-reader</strong> MCP (to create + attach), plus <strong>web-search</strong> and/or <strong>context7</strong> for the sources you pick (Settings → MCP Integrations).
@@ -223,13 +223,13 @@ export default function ResearchDocConfig({
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           <span>{showTest ? "Hide Test" : "Test Run"}</span>
-          <Tooltip text="Researches and previews the brief the AI would write — it does NOT create or attach a file." />
+          <Tooltip text="Researches and previews the brief the AI would write, it does NOT create or attach a file." />
         </button>
 
         {showTest && (
           <div className="semantic-test-panel">
             <div className="semantic-test-header">
-              <span className="test-panel-badge">Dry run — no file is created or attached</span>
+              <span className="test-panel-badge">Dry run, no file is created or attached</span>
             </div>
             <div className="form-group" style={{ margin: "10px 0 8px" }}>
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>

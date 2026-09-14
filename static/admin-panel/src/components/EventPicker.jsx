@@ -68,7 +68,7 @@ export default function EventPicker({ value = [], onChange, disabled = false, re
   return (
     <div className={`evp ${disabled ? "evp-disabled" : ""}`}>
       <div className="evp-selected">
-        {value.length === 0 && <span className="evp-none">No events selected — pick at least one below.</span>}
+        {value.length === 0 && <span className="evp-none">No events selected, pick at least one below.</span>}
         {value.map((id) => {
           const e = getEvent(id);
           return (

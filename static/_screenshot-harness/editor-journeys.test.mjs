@@ -585,7 +585,7 @@ try {
       /* ONE HOME, proven: byte-identical to the admin panel's role-note sentence
          (listeners-jobs.test.mjs asserts that surface). Compared against the literal, not
          against itself — retyping is exactly how the two would drift. */
-      ok(ntxt === "CogniRunner could not verify your role with Jira just now — reload to try again.",
+      ok(ntxt === "CogniRunner could not verify your role with Jira just now, reload to try again.",
         `F-243 ${T} the sentence matches the admin panel's byte for byte`);
 
       const st = await note.evaluate((el) => {
@@ -1025,7 +1025,7 @@ try {
   // ReviewPanel (review) all fell through to their red error arms and told the user the
   // AI had FAILED — and FunctionBlock additionally clobbered the editor with a generic
   // template. A cancel must be neutral slate and must leave editor state untouched.
-  const CANCEL_TEXT = /Cancelled — nothing was changed/;
+  const CANCEL_TEXT = /Cancelled, nothing was changed/;
   const SLATE = { light: "rgb(71, 85, 105)", dark: "rgb(100, 116, 139)" };
   const noteBg = (scope) => scope.evaluate(() => {
     const el = document.querySelector(".async-cancelled-note");
@@ -1153,7 +1153,7 @@ try {
   // The template fallback keeps its ORIGINAL purpose: a FIRST generate on an empty step.
   // __FAIL__ = ["generatePostFunctionCode"] makes the resolver reject (the catch arm).
   const FIXTURE_CODE = /Find all issues in this project with a similar summary/;
-  const KEPT_TEXT = /Generation failed — your existing code was kept/;
+  const KEPT_TEXT = /Generation failed, your existing code was kept/;
   const RED = { light: "rgb(220, 38, 38)", dark: "rgb(239, 68, 68)" };
   const errBg = (scope) => scope.evaluate(() => {
     const el = document.querySelector(".async-error-note");

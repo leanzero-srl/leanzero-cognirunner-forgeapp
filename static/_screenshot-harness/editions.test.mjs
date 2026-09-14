@@ -203,10 +203,13 @@ async function pickForgeLlm(page) {
     // is not a weak gate, it is a wrong one: it fails honest code and teaches the next
     // person to delete it.
     //
-    // Cut from the DISTINCTIVE tail — the clause after the first em-dash, which carries
-    // the eviction policy and the remedy and belongs to this sentence alone.
-    // Asserted explicitly rather than defaulted, so a rewording that drops the em-dash
-    // fails loudly here instead of quietly producing a needle that guards nothing.
+    // Cut from the DISTINCTIVE tail — the clause after the first sentence break, which
+    // carries the eviction policy and the remedy and belongs to this sentence alone.
+    // F-827 — that break USED TO BE AN EM DASH, and this line asserted the em dash was
+    // still there. The owner's standing rule is that no UI copy carries one, so the
+    // refusal now ends its first clause with a full stop and the needle is cut there
+    // instead. The assertion below is unchanged in spirit: a rewording that removes the
+    // break fails loudly here instead of quietly producing a needle that guards nothing.
     //
     // F-204 — but the tail ALONE is the wrong gate, because it threw away the only half of
     // the sentence that can carry a stale number. The whole reason this scan exists
@@ -219,10 +222,12 @@ async function pickForgeLlm(page) {
     // for that was never to stop scanning the head, it was to include the `(N max)` clause
     // so the needle stops matching the banner title. So: scan BOTH. The head guards the
     // interpolated constant, the tail guards the wording.
-    const emDash = expected.indexOf("—");
-    ok(emDash > 0, `E0 the cap refusal still has the em-dash clause the needle is cut from (got "${expected}")`);
-    const TAIL_NEEDLE = expected.slice(emDash + 1).trim();
-    const HEAD_NEEDLE = expected.slice(0, emDash).trim();
+    const split = expected.indexOf(". ");
+    ok(split > 0, `E0 the cap refusal still has the sentence break the needle is cut from (got "${expected}")`);
+    ok(!expected.includes("—") && !expected.includes("–"),
+      "E0 and it carries no em dash or en dash (the owner rule ui-copy-dashes.test.mjs gates)");
+    const TAIL_NEEDLE = expected.slice(split + 1).trim();
+    const HEAD_NEEDLE = expected.slice(0, split).trim();
     // The floor is well above 20 now. A short needle is what made F-195 possible: a
     // 20-character phrase is a phrase several sentences in this app can legitimately
     // share, and a gate that matches more than the thing it guards flags honest code.
@@ -340,7 +345,7 @@ try {
       const body = await page.locator(".container").innerText();
       ok(body.includes("Claude Sonnet 5 and Opus 5 are part of CogniRunner Coder"), "E2 upgrade notice on Standard");
       ok(body.includes("upgrade in Jira"), "E2 notice points at Manage apps");
-      ok(body.includes("is not available on this edition — using Claude Haiku"), "E2 clamped-model line");
+      ok(body.includes("is not available on this edition, using Claude Haiku"), "E2 clamped-model line");
 
       // open the model picker: Sonnet/Opus render as LOCKED rows with a Coder badge
       await page.locator(".dropdown-trigger").nth(1).click();

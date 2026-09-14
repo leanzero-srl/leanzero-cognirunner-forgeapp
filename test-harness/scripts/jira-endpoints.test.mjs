@@ -71,7 +71,7 @@ ok(full.includes("- GET /rest/api/3/issue/{issueIdOrKey}"), "block lists the GET
 ok(full.includes("- POST /rest/api/3/search/jql"), "block lists the POST search/jql endpoint");
 ok(full.includes("ISSUES:") && full.includes("SEARCH:"), "category headers are uppercased with a colon");
 ok(full.includes("/rest/api/3/issue/{issueIdOrKey}?fields=summary"), "params are concatenated onto the path");
-ok(/— Get issue details \(/.test(full), "description follows an em-dash and notes follow in parentheses");
+ok(/, Get issue details \(/.test(full), "description follows the separator and notes follow in parentheses");
 // every category header should appear in the un-filtered block
 ok(ENDPOINT_CATEGORIES.every((c) => full.includes(`${c.toUpperCase()}:`)), "un-filtered block contains every category header");
 

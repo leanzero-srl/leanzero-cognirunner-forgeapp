@@ -48,7 +48,7 @@ const RULE_TYPE_OPTIONS = [
   // fixed expression:"true". Jira evaluates a condition as a Jira EXPRESSION, which
   // has no network, so a condition can never use AI. It CAN run the deterministic
   // catalog checks, which cost nothing per transition and are enforced everywhere.
-  { value: "condition", label: "Condition", desc: "Hide the transition unless the issue qualifies — no AI cost" },
+  { value: "condition", label: "Condition", desc: "Hide the transition unless the issue qualifies, no AI cost" },
   { value: "postfunction-semantic", label: "Semantic Post Function", desc: "AI modifies a field after transition" },
   { value: "postfunction-generate-doc", label: "Generate Document", desc: "AI writes a doc & attaches it to the issue" },
   { value: "postfunction-research", label: "Research & Save", desc: "Web-search a topic & save it to the doc library" },
@@ -552,7 +552,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
           // the delete path lost its unambiguous handle.
           const warn = (why) => {
             console.warn("[AddRuleWizard] could not record ruleInstanceId:", why);
-            setInstanceIdWarning(`Rule created, but its workflow instance id could not be recorded — ${why}. “Delete everywhere” may have to infer which rule on this transition to remove.`);
+            setInstanceIdWarning(`Rule created, but its workflow instance id could not be recorded, ${why}. “Delete everywhere” may have to infer which rule on this transition to remove.`);
           };
           try {
             const idPatch = await invoke(isPostFunction ? "registerPostFunction" : "registerConfig", {
@@ -1008,7 +1008,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
                   </svg>
                   <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
                     {ruleType === "condition"
-                      ? "Hides the transition unless the issue qualifies. Jira evaluates conditions itself, in a sandbox with no network — so a condition can't use AI, costs nothing per transition, and is enforced on every surface."
+                      ? "Hides the transition unless the issue qualifies. Jira evaluates conditions itself, in a sandbox with no network, so a condition can't use AI, costs nothing per transition, and is enforced on every surface."
                       : "Blocks the transition when the rule isn't met. Premade rules evaluate deterministically (no AI); AI rules use your prompt."
                     }
                   </div>
@@ -1027,7 +1027,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
                     </button>
                     <button type="button" className={`rulekind-opt${ruleKind === "premade" ? " active" : ""}`} onClick={() => setRuleKind("premade")}>
                       <span className="rulekind-opt-title">Premade rule</span>
-                      <span className="rulekind-opt-sub">Pick a ready-made check — no AI, instant, zero cost</span>
+                      <span className="rulekind-opt-sub">Pick a ready-made check, no AI, instant, zero cost</span>
                     </button>
                   </div>
                 </div>
@@ -1159,7 +1159,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
                     </button>
                   </div>
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    Dry run — no transition is blocked. Tests the validation against a real issue.
+                    Dry run, no transition is blocked. Tests the validation against a real issue.
                   </p>
 
                   {testRunning && (
@@ -1341,7 +1341,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
                   Start in Simulation Mode
                 </label>
                 <div style={{ marginTop: "4px", paddingLeft: "22px", fontSize: "11px", color: "var(--text-secondary)" }}>
-                  The rule runs on every real transition and logs exactly what it <strong>would</strong> do —
+                  The rule runs on every real transition and logs exactly what it <strong>would</strong> do,
                   but writes nothing (no field updates, comments, links, sub-tasks, or attachments).
                   Watch the Logs tab, then re-save the rule without simulation when you trust it.
                 </div>
@@ -1360,7 +1360,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
                 </label>
                 <div style={{ marginTop: "4px", paddingLeft: "22px", fontSize: "11px", color: "var(--text-secondary)" }}>
                   Field updates made by this rule won't email watchers (Jira's notifyUsers=false).
-                  Suppression needs the app to have project admin permission — if Jira refuses, the
+                  Suppression needs the app to have project admin permission, if Jira refuses, the
                   update is retried with notifications on and the execution log notes it. Applies to
                   field updates only: transitions, comments, sub-tasks, and links still notify as normal.
                 </div>

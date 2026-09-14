@@ -319,7 +319,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
             </svg>
             <span className="doc-repo-title">Documentation Library</span>
-            <Tooltip text="Shared reference documents available to all users. Select documents to include as context when generating code — the AI uses them to produce more accurate results." />
+            <Tooltip text="Shared reference documents available to all users. Select documents to include as context when generating code, the AI uses them to produce more accurate results." />
           </div>
           <button className="btn-add-doc" onClick={() => setShowAdd(!showAdd)}>
             {showAdd ? "Cancel" : "+ Add Document"}
@@ -500,7 +500,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
 
       {selectedDocs.length > 0 && (
         <div className="doc-selection-info">
-          {selectedDocs.length} document{selectedDocs.length > 1 ? "s" : ""} selected — will be included as context for code generation
+          {selectedDocs.length} document{selectedDocs.length > 1 ? "s" : ""} selected, will be included as context for code generation
         </div>
       )}
     </div>

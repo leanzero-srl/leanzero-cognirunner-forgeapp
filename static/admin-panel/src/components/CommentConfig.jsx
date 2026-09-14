@@ -58,8 +58,8 @@ export default function CommentConfig({
           <strong>How it works</strong>
         </div>
         <ol className="pf-how-steps">
-          <li><strong>Read</strong> — AI reads the source field</li>
-          <li><strong>Draft</strong> — AI writes a comment from your instructions</li>
+          <li><strong>Read</strong>: AI reads the source field</li>
+          <li><strong>Draft</strong>: AI writes a comment from your instructions</li>
           <li>The comment is posted on the issue automatically after the transition</li>
         </ol>
       </div>
@@ -110,13 +110,13 @@ export default function CommentConfig({
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           <span>{showTest ? "Hide Test" : "Test Run"}</span>
-          <Tooltip text="Drafts the comment from a real issue — it does NOT post anything. Completely safe." />
+          <Tooltip text="Drafts the comment from a real issue, it does NOT post anything. Completely safe." />
         </button>
 
         {showTest && (
           <div className="semantic-test-panel">
             <div className="semantic-test-header">
-              <span className="test-panel-badge">Dry run — nothing is posted</span>
+              <span className="test-panel-badge">Dry run, nothing is posted</span>
             </div>
             <div className="form-group" style={{ margin: "10px 0 8px" }}>
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>

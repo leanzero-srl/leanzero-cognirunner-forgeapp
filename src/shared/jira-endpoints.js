@@ -74,7 +74,7 @@ const JIRA_ENDPOINTS = [
     description: "Search issues by JQL",
     params: null,
     body: '{\n  "jql": "project = PROJ AND status = \\"To Do\\"",\n  "maxResults": 20,\n  "fields": ["summary", "status", "assignee", "priority"]\n}',
-    notes: "Returns {issues: [...], nextPageToken?}. No total count — use issues.length; pass nextPageToken to get the next page. Max 100 results per call." },
+    notes: "Returns {issues: [...], nextPageToken?}. No total count, use issues.length; pass nextPageToken to get the next page. Max 100 results per call." },
 
   { category: "Search", method: "POST", path: "/rest/api/3/search/jql",
     description: "Search by assignee",
@@ -284,7 +284,7 @@ export const buildEndpointPromptBlock = ({ categories, maxBytes = 6144, includeB
     const entries = JIRA_ENDPOINTS.filter((e) => e.category === cat);
     if (!entries.length) continue;
     const lines = entries.map((e) => {
-      let line = `- ${e.method} ${e.path}${e.params ? e.params : ""} — ${e.description}${e.notes ? ` (${e.notes})` : ""}`;
+      let line = `- ${e.method} ${e.path}${e.params ? e.params : ""}, ${e.description}${e.notes ? ` (${e.notes})` : ""}`;
       if (includeBodies && e.body) {
         line += `\n  Body template:\n\`\`\`json\n${e.body}\n\`\`\``;
       }

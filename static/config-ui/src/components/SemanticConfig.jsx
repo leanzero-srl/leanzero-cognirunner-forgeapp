@@ -101,8 +101,8 @@ export default function SemanticConfig({
           <strong>How it works</strong>
         </div>
         <ol className="pf-how-steps">
-          <li><strong>Condition</strong> — AI checks if this rule should fire</li>
-          <li><strong>Action</strong> — If yes, AI generates a new value for the target field</li>
+          <li><strong>Condition</strong>: AI checks if this rule should fire</li>
+          <li><strong>Action</strong>: if yes, AI generates a new value for the target field</li>
           <li>The target field is updated automatically after each transition</li>
         </ol>
       </div>
@@ -218,7 +218,7 @@ export default function SemanticConfig({
           />
         )}
         <p className="hint">
-          The AI will update this field when the condition is met. Works best with text-based fields. Fields that can&apos;t be written this way (Status, Sprint, Parent, comments, links, time tracking) aren&apos;t listed — Status changes need a workflow transition, Sprint the Agile API.
+          The AI will update this field when the condition is met. Works best with text-based fields. Fields that can&apos;t be written this way (Status, Sprint, Parent, comments, links, time tracking) aren&apos;t listed. Status changes need a workflow transition, Sprint the Agile API.
         </p>
       </div>
 
@@ -226,7 +226,7 @@ export default function SemanticConfig({
       <div className="form-group">
         <label className="label">
           Cross-check claims
-          <Tooltip text="When on, CogniRunner fact-checks the source field's factual claims against the live web (via the doc-processor + web-search MCPs) and feeds the cited evidence into the AI's decision. Requires both the doc-reader and web-search MCPs enabled in Settings. Best-effort with a 12s timeout — it never blocks the transition." />
+          <Tooltip text="When on, CogniRunner fact-checks the source field's factual claims against the live web (via the doc-processor + web-search MCPs) and feeds the cited evidence into the AI's decision. Requires both the doc-reader and web-search MCPs enabled in Settings. Best-effort with a 12s timeout, it never blocks the transition." />
         </label>
         <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "13px" }}>
           <input
@@ -263,13 +263,13 @@ export default function SemanticConfig({
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           <span>{showTest ? "Hide Test" : "Test Run"}</span>
-          <Tooltip text="Test your semantic post-function against a real issue. The AI evaluates the condition and generates a proposed value — but does NOT write it back. Completely safe." />
+          <Tooltip text="Test your semantic post-function against a real issue. The AI evaluates the condition and generates a proposed value, but does NOT write it back. Completely safe." />
         </button>
 
         {showTest && (
           <div className="semantic-test-panel">
             <div className="semantic-test-header">
-              <span className="test-panel-badge">Dry run — the target field will NOT be updated</span>
+              <span className="test-panel-badge">Dry run, the target field will NOT be updated</span>
             </div>
 
             <div className="form-group" style={{ margin: "10px 0 8px" }}>
@@ -304,8 +304,8 @@ export default function SemanticConfig({
                   )}
                   <span className="test-result-meta">
                     {testResult.issueKey && `${testResult.issueKey}`}
-                    {testResult.executionTimeMs ? ` — ${testResult.executionTimeMs}ms` : ""}
-                    {testResult.tokensUsed ? ` — ${testResult.tokensUsed} tokens` : ""}
+                    {testResult.executionTimeMs ? `, ${testResult.executionTimeMs}ms` : ""}
+                    {testResult.tokensUsed ? `, ${testResult.tokensUsed} tokens` : ""}
                   </span>
                   <button className="test-dismiss" onClick={() => setTestResult(null)}>&times;</button>
                 </div>

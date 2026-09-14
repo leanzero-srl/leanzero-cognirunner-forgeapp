@@ -760,7 +760,14 @@ export const createAgentActionDispatcher = ({ issueKey = null, session, allowed 
     if (ns !== "jira" && ns !== "control") {
       const executor = executors && executors[ns];
       if (!executor || typeof executor.execute !== "function") {
-        return { success: false, code: "not_configured", error: `"${name}" needs a ${ns} connection, and none is configured for this rule.` };
+        // THE ASSEMBLER'S REASON WINS (F-852). "none is configured for this rule" was
+        // the only sentence this branch could say, and on the listener/job surface it
+        // was false as often as it was true: the instance HAD a Git connection, the
+        // rule simply did not name one. `executors.refusals[ns]` is the sentence the
+        // map's builder wrote when it declined to build that namespace
+        // (src/agent-executors.js); when there is none, the generic sentence stands.
+        const named = executors && executors.refusals && typeof executors.refusals[ns] === "string" ? executors.refusals[ns] : null;
+        return { success: false, code: "not_configured", error: named ? `"${name}" cannot run: ${named}` : `"${name}" needs a ${ns} connection, and none is configured for this rule.` };
       }
       const r = await executor.execute(name, args || {});
       // THE WRITE LEDGER, FOR EVERY NAMESPACE (F-403). A git commit, branch or pull

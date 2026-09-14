@@ -40,6 +40,10 @@ import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, f
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep, armingStamp, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
+// ONE HOME for "which namespace executors does this run hold" (F-852) — the SAME
+// assembler the listener run site calls, so the two headless surfaces cannot drift into
+// two answers for one question. See src/agent-executors.js.
+import { assembleAgentExecutors } from "./agent-executors.js";
 import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_MIN_WRITES_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
 // The VA record has ONE normalizer and it is called FROM INSIDE normalizeJob — a parallel
 // save path for agents would be the split this release exists to avoid.
@@ -547,7 +551,15 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   // instance's facts, omitted means the most restrictive context. A scheduled job is
   // NOT an external trigger (the app's own clock started it), so a dangerous action an
   // admin saved survives here; `confirm` actions still need that admin save.
-  gateFacts = null, executors = {} }) => {
+  //
+  // `executors` carries the namespace modules. Since F-852 the DEFAULT is not an empty
+  // map: when a caller passes none, the run ASSEMBLES its own from the job record
+  // (src/agent-executors.js), because every door into this surface passed `{}` and so
+  // every git and Confluence action an admin had saved died at the dispatcher with
+  // "none is configured for this rule" — false on an instance that HAS a connection. A
+  // caller that DOES pass a map still wins, whole and unmerged, exactly as F-842 made
+  // supplied `gateFacts` preferred over the freshly read ones.
+  gateFacts = null, executors = null }) => {
   const m = await idx();
   const started = Date.now();
   const config = { ...job, simulationMode: forceSimulation || job.simulationMode === true };
@@ -572,6 +584,17 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   // the same reason `writesDone` is carried across issues rather than reset per issue. A
   // per-issue counter is not a run budget, and a 100-issue sweep proved it.
   const webRunBudget = createRunSearchBudget();
+  // THE NAMESPACE EXECUTORS (F-852). Assembled ONCE for the whole run and reused for
+  // every scope issue — like `webRunBudget` above and unlike `knowledge` below, because
+  // nothing in the map depends on which issue is being walked, while a git executor
+  // carries a per-run repo-creation budget that a per-issue rebuild would silently
+  // multiply by the size of the scope. Built LAZILY, so a script-mode job pays nothing.
+  // `config.simulationMode` is the run's already-computed verdict, never re-derived.
+  let assembled = executors || null;
+  const executorsFor = async () => {
+    if (!assembled) assembled = await assembleAgentExecutors({ surface: "job", rule: job, ctx: null, simulation: config.simulationMode === true });
+    return assembled;
+  };
   const runOne = async (issue, perDeadline) => {
     const issueKey = issue ? issue.key : null;
     const extraContext = { ...baseCtx, issueKey, projectKey: issue && issue.fields && issue.fields.project ? issue.fields.project.key : null, scopeIssue: issue ? { key: issue.key, summary: issue.fields && issue.fields.summary, status: issue.fields && issue.fields.status && issue.fields.status.name } : null };
@@ -595,7 +618,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       const knowledgeNotices = [];
       const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun", log: (line) => knowledgeNotices.push(String(line)) });
       // The allowance the agent gets is what is LEFT of the run's budget.
-      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone), webRunBudget,
+      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors: await executorsFor(), knowledge, maxWrites: Math.max(0, maxWrites - writesDone), webRunBudget,
         // `writeScope: null` — UNSCOPED, DELIBERATELY (F-411). A scheduled job is bounded
         // by its SCOPE JQL (the issues it walks) and by `maxWritesPerRun`, not by a
         // project allow-list, so `null` is exactly the pre-1.5 behaviour. Explicit, not
@@ -705,7 +728,7 @@ export const claimJobRun = (job, params, taskId) => {
  * caller forgets, so the consumer reads them fresh and passes them (async-handler.js
  * `withFreshGateFacts`). `savedByRole` is NOT part of it: it comes from the job row.
  */
-export const executeScheduledJobTask = async (params, taskId, { gateFacts = null, executors = {} } = {}) => {
+export const executeScheduledJobTask = async (params, taskId, { gateFacts = null, executors = null } = {}) => {
   const m = await idx();
   const { jobId, scheduledFor, missed, manual } = params || {};
   const job = await getJob(jobId);

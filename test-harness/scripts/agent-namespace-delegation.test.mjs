@@ -92,4 +92,62 @@ eq(res.success, true, "a Jira action still runs");
 ok(jira.__calls.length >= 1, "…through the sandbox, against Jira REST");
 eq(seen, [], "…and never through a namespace executor");
 
+/* ---------- F-852: the ASSEMBLER's named reason replaces the generic sentence ----------
+ *
+ * "needs a git connection, and none is configured for this rule" was the only thing this
+ * branch could say, and on a listener or a job it was false as often as true: the
+ * instance had a connection, the rule had no field to name it with. An executor map may
+ * now carry `refusals[ns]` — the sentence its builder wrote when it declined to build
+ * that namespace — and the dispatcher prefers it. A map with NO reason keeps the old
+ * sentence, so every pre-1.5 caller is unchanged.
+ */
+{
+  const { gitNoConnectionReason, LEDGER_NOT_ON_THIS_SURFACE } = await import("../../src/agent-executors.js");
+  jira.__reset();
+  scripted([{ name: "open_pull_request", args: { repo: "acme/app", title: "t", sourceBranch: "feat" } }]);
+  res = await runAgentTask({
+    instructions: "open a PR", allowedActions: ["open_pull_request"], gate: ADMIN_GIT, maxRounds: 3, issueKey: "ABC-1",
+    executors: { refusals: { git: gitNoConnectionReason(2) } },
+  });
+  const named = res.toolCalls[0];
+  eq(named.ok, false, "a namespace the assembler declined to build still reads as a FAILED tool call");
+  // The SENTENCE the model and the operator read is the tool-error line in the run log.
+  const errLine = (r) => (r.logs.find((l) => /tool ERROR/.test(l)) || "");
+  ok(/open_pull_request/.test(errLine(res)), "the refusal names the tool the model actually called");
+  ok(/The instance has 2/.test(errLine(res)), "…and carries the assembler's sentence, which names how many connections there are");
+  ok(!/none is configured for this rule/.test(errLine(res)), "…instead of the sentence that was false");
+  eq(jira.__calls.length, 0, "nothing was attempted");
+
+  // A ledger action on a surface that is not the VA.
+  scripted([{ name: "stage_reply", args: { audience: "internal", body: "b", reason: "r" } }]);
+  res = await runAgentTask({
+    instructions: "reply", allowedActions: ["stage_reply"], gate: { capability: true, savedByRole: "admin" }, maxRounds: 3, issueKey: "ABC-1",
+    executors: { refusals: { ledger: LEDGER_NOT_ON_THIS_SURFACE } },
+  });
+  ok(/Virtual Administrator/.test(res.logs.find((l) => /tool ERROR/.test(l)) || ""), "a ledger action on a listener says whose surface the ledger is");
+
+  // NO reason on the map → the generic sentence, unchanged.
+  scripted([{ name: "open_pull_request", args: { repo: "acme/app", title: "t", sourceBranch: "feat" } }]);
+  res = await runAgentTask({ instructions: "open a PR", allowedActions: ["open_pull_request"], gate: ADMIN_GIT, maxRounds: 3, issueKey: "ABC-1", executors: { refusals: {} } });
+  ok(/none is configured for this rule/.test(res.logs.find((l) => /tool ERROR/.test(l)) || ""), "a map with no reason keeps the pre-1.5 sentence");
+}
+
+/* ---------- F-852: a SIMULATED namespace write still lands in the run's change ledger ---------- */
+{
+  const { createGitActionExecutor } = await import("../../src/git-actions.js");
+  const { default: storage } = await import("@forge/kvs");
+  if (typeof storage.__seed === "function") {
+    storage.__seed("git_conn:gc1", { id: "gc1", kind: "github", status: "active", repos: ["acme/app"] });
+    scripted([{ name: "commit_files", args: { repo: "acme/app", branch: "main", message: "m", files: [{ path: "a.txt", content: "x" }] } }]);
+    res = await runAgentTask({
+      instructions: "commit", allowedActions: ["commit_files"], gate: ADMIN_GIT, maxRounds: 3, issueKey: "ABC-1",
+      config: { simulationMode: true },
+      executors: { git: createGitActionExecutor({ simulation: true, connectionId: "gc1" }), refusals: {} },
+    });
+    eq(res.toolCalls[0].ok, true, "the simulated commit is reported ok");
+    ok(res.changes.some((c) => c.action === "commit_files" && c.namespace === "git" && c.simulated === true),
+      "…and the run's change ledger gains the row — a simulated write is still a write the operator must see");
+  }
+}
+
 console.log(`agent namespace delegation: ${n} assertions passed`);

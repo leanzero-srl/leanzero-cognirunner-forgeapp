@@ -247,7 +247,14 @@ so a 100-issue sweep could make 300 searches with every turn politely inside its
   const jobSrc = await fs.readFile(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
   const lstSrc = await fs.readFile(new URL("../../src/listeners.js", import.meta.url), "utf8");
   const agentSrc = await fs.readFile(new URL("../../src/agent-runner.js", import.meta.url), "utf8");
-  ok(/const webRunBudget = createRunSearchBudget\(\);[\s\S]{0,400}const runOne = async/.test(jobSrc),
+  // Asserts the ORDER, not the DISTANCE. The old pattern allowed 400 characters between
+  // the two lines, which made it an assertion about how much commentary sits between
+  // them: F-852's per-run executor map (assembled outside `runOne` for exactly the same
+  // reason this budget is) pushed them apart and failed a test about neither. What must
+  // be true is that the budget is created BEFORE `runOne` is defined, i.e. once per run.
+  ok(jobSrc.includes("const webRunBudget = createRunSearchBudget();")
+    && jobSrc.indexOf("const webRunBudget = createRunSearchBudget();") < jobSrc.indexOf("const runOne = async")
+    && jobSrc.indexOf("const webRunBudget = createRunSearchBudget();") !== -1,
     "the job creates ONE run budget OUTSIDE runOne — a per-issue counter is not a run budget");
   // Matches the ARGUMENT, not its position in the literal: the old pattern required
   // `webRunBudget` to be the LAST key of the call, so adding any argument after it

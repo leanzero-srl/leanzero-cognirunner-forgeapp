@@ -311,8 +311,15 @@ n++;
   const { readFileSync } = await import("node:fs");
   const lsrc = maskComments(readFileSync(new URL("../../src/listeners.js", import.meta.url), "utf8"));
   const jsrc = maskComments(readFileSync(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8"));
-  ok(/gateFacts = null, executors = \{\}/.test(lsrc) && /gateFacts = null, executors = \{\}/.test(jsrc),
-    "both run sites take gateFacts + executors, defaulting to the restrictive context");
+  // F-852 — the executors DEFAULT is now `null`, not `{}`, and the difference is the
+  // whole cut: `{}` was a map that said "this rule holds no git connection" through all
+  // four doors, and `null` means "nobody supplied one, so assemble it from the rule".
+  // `gateFacts` still defaults to null = the RESTRICTIVE context; a caller-supplied
+  // value still wins on both.
+  ok(/gateFacts = null, executors = null/.test(lsrc) && /gateFacts = null, executors = null/.test(jsrc),
+    "both run sites take gateFacts + executors, gate facts defaulting to the restrictive context");
+  ok(/executors \|\| await assembleAgentExecutors\(\{/.test(lsrc) && /executors \|\| null/.test(jsrc),
+    "…and both prefer a caller-supplied map, assembling one only when none was passed");
   // F-448 — assert the PROPERTIES the gate context carries, not their position in the
   // call literal. A key added after `savedByRole` must not fail a test about what is
   // passed, and a wrong value in the right slot must still fail.
@@ -330,8 +337,71 @@ n++;
   ok(/gate: agentGate, executors/.test(lsrc) && /gate: agentGate, executors/.test(jsrc), "…and both hand the context to runAgentTask");
   // F-302 seam — a TEST run must gate exactly like the live delivery, or "Test with an
   // issue" reports a rule that cannot do what the real run will do.
-  ok(/export const testListener = async \(\{[\s\S]*?gateFacts = null, executors = \{\}/.test(lsrc), "testListener takes the same gate seam");
+  ok(/export const testListener = async \(\{[\s\S]*?gateFacts = null, executors = null/.test(lsrc), "testListener takes the same gate seam");
   ok(/source: "test", gateFacts, executors/.test(lsrc), "…and threads it into runListener");
+}
+
+/* ════ F-852 — ONE assembler, and no fourth private executor map ════
+ *
+ * Three modules were allowed to build a namespace executor before this cut, each for its
+ * own surface, and the listener/job seam had none at all — which is how an admin-saved
+ * git action reached the dispatcher and was told a connection it had never been asked
+ * for was "not configured". The fix is a shared assembler, and the thing that keeps it
+ * shared is this gate: the two FACTORIES may be CALLED only from the assembler, the
+ * Coder engine and the Virtual Administrator (both of which build from records this
+ * assembler cannot see), plus the modules that define them. A fourth caller is a fourth
+ * answer to one question and fails here.
+ */
+{
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { assembleAgentExecutors, ASSEMBLER_NAMESPACE_CONTRACT, ASSEMBLED_NAMESPACE_IDS, namespacesHeld, gitNoConnectionReason, LEDGER_NOT_ON_THIS_SURFACE } =
+    await import("../../src/agent-executors.js");
+
+  const FACTORIES = ["createGitActionExecutor", "createConfluenceActionExecutor"];
+  // The DEFINING modules (they export the factory) and the three permitted CALLERS.
+  const HOMES = new Set(["git-actions.js", "confluence-actions.js", "agent-executors.js", "coder-engine.js", "virtual-admin.js"]);
+  const files = readdirSync(new URL("../../src/", import.meta.url)).filter((f) => f.endsWith(".js")).sort();
+  ok(files.includes("agent-executors.js"), "the assembler module exists in src/");
+  for (const f of files) {
+    if (HOMES.has(f)) continue;
+    // Comments may NAME a factory (several do, explaining why they do not call one);
+    // code may not. The shared mask answers "which bytes are code".
+    const src = maskComments(readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8"));
+    for (const fac of FACTORIES) ok(!src.includes(fac), `${f} does not build its own ${fac} — the assembler is the one home`);
+  }
+
+  // PARITY: every namespace in the catalogue is accounted for exactly once, and the set
+  // this assembler can build is precisely what is left after the inline, runner-owned
+  // and VA-only ones are removed. A new namespace therefore cannot land unnoticed.
+  const { assembled, runner, va, inline, all } = ASSEMBLER_NAMESPACE_CONTRACT;
+  eq([...assembled, ...runner, ...va, ...inline].sort(), [...all].sort(), "the four lists partition AGENT_ACTION_NAMESPACE_IDS");
+  eq([...new Set([...assembled, ...runner, ...va, ...inline])].length, all.length, "…with no namespace named twice");
+  eq(all.filter((ns) => !["jira", "control", "web", "ledger"].includes(ns)).sort(), [...ASSEMBLED_NAMESPACE_IDS].sort(),
+    "the assembler builds exactly the namespaces that are not inline, runner-owned or VA-only");
+  ok(!all.includes("refusals"), "`refusals` is not a namespace id — it may ride on the executor map");
+
+  // The dispatcher PREFERS the assembler's named reason over its own generic sentence.
+  const asrc = maskComments(readFileSync(new URL("../../src/agent-runner.js", import.meta.url), "utf8"));
+  ok(/executors\.refusals\[ns\]/.test(asrc) && /code: "not_configured"/.test(asrc),
+    "the dispatcher reads the assembler's named refusal reason on the not_configured branch");
+
+  eq(namespacesHeld(["get_issue", "commit_files", "finish", "web_search", "confluence_search", "commit_files"]), ["git", "web", "confluence"],
+    "namespacesHeld skips jira and control ids, keeps order and de-duplicates");
+
+  // The refusal SENTENCES. Each names what the reader must do, and the count decides
+  // whether that reader is connecting a provider or choosing between providers.
+  ok(/has none/.test(gitNoConnectionReason(0)) && /Settings/.test(gitNoConnectionReason(0)), "0 connections: somebody must connect one");
+  ok(/has one/.test(gitNoConnectionReason(1)) && /choose it/.test(gitNoConnectionReason(1)), "1 connection: somebody must choose it — never guessed");
+  ok(/has 3/.test(gitNoConnectionReason(3)), "N>1 connections: the sentence says how many");
+  ok(!/none is configured/.test(gitNoConnectionReason(2)), "…and never repeats the false generic sentence");
+  ok(/Virtual Administrator/.test(LEDGER_NOT_ON_THIS_SURFACE), "the ledger refusal names whose surface it is");
+
+  // The assembler builds NOTHING for a rule with only Jira actions — the pre-1.4 run
+  // must stay byte-identical, an empty refusals object and no executor.
+  const plain = await assembleAgentExecutors({ surface: "listener", rule: { agent: { allowedActions: ["get_issue", "add_comment"] } } });
+  eq(Object.keys(plain), ["refusals"], "a Jira-only rule gets no namespace executor at all");
+  eq(plain.refusals, {}, "…and nothing to refuse");
+  ok(typeof assembleAgentExecutors === "function", "the assembler is a function");
 }
 
 console.log(`agent-actions gate: ${n} assertions passed`);

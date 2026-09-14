@@ -2859,5 +2859,99 @@ reset();
     "F-912: no surface mints a `va:<id>` cancel flag any more - the tenant epoch is the one predicate");
 }
 
+/* ══ F-921 — THE PAUSE AND THE KILL SWITCH REACH A RUNNING POST PASS ══════
+ *
+ * Gate 1 read both ONCE, at the top of a pass that posts up to `maxItemsPerTick`
+ * comments over as much as 120 seconds, so a Pause pressed one second in stopped the
+ * NEXT window and not the comments still going out in this one. The same predicate
+ * F-912 put inside the item turn is now asked before every comment: the pause re-read
+ * from the agent's RECORD and the tenant cancel epoch with the run's `enqueuedAt`.
+ */
+const THREE = ["SUP-1", "SUP-2", "SUP-3"];
+const stageThree = async () => {
+  for (const key of THREE) {
+    await L.saveItem(kvs, AG, key, { state: "queued" }, { now: T0 });
+    await L.saveItem(kvs, AG, key, {
+      state: "staged",
+      staged: { audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "r", baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - 30 * MIN).toISOString() },
+    }, { now: T0 });
+  }
+};
+const attemptsOf = async (keys) => {
+  const out = [];
+  for (const key of keys) { const row = (await L.readItem(kvs, AG, key)).row; out.push(Number((row && row.attempts) || 0)); }
+  return out;
+};
+const stillStaged = async (keys) => {
+  const out = [];
+  for (const key of keys) { const row = (await L.readItem(kvs, AG, key)).row; if (row && row.state === "staged" && row.staged) out.push(key); }
+  return out;
+};
+
+reset();
+{
+  // BLOCK — the operator presses Pause after the first comment has gone out.
+  await stageThree();
+  const live = vaJob();
+  const d = postDeps({ getJob: async () => live });
+  const inner = d.addComment;
+  d.addComment = async (k, body, opts) => {
+    const written = await inner(k, body, opts);
+    live.va.status = { ...live.va.status, paused: true };
+    return written;
+  };
+  const r = await V.runVaPost({ agent: live, tickId: "t-pause-mid", deps: d });
+  eq(d.__commented.length, 1, "F-921.BLOCK_paused_mid_pass — exactly one comment went out");
+  eq(r.posted, 1, "F-921.BLOCK_paused_mid_pass — …and the run says so");
+  eq(r.reason, "paused", "F-921.BLOCK_paused_mid_pass — the pass ends with `paused` as its reason");
+  eq(r.postedBefore, 1, "F-921.BLOCK_paused_mid_pass — postedBefore names how many had already gone");
+  // Which of the three the scan reached first is the index's business, not this test's:
+  // what matters is that TWO drafts survive, staged and unattempted, for the next window.
+  eq((await stillStaged(THREE)).length, 2, "F-921.BLOCK_paused_mid_pass — the two unsent drafts are UNTOUCHED, so the next window posts them");
+  eq((await attemptsOf(THREE)).join(","), "0,0,0", "F-921.BLOCK_paused_mid_pass — …and no unsent draft counted an attempt");
+  // NOTHING WAS SPENT ON THE ROW THE PAUSE STOPPED: the check sits above the caps bump
+  // and above the post claim, so a lifted pause posts that draft under its own identity.
+  const caps = await L.readCaps(kvs, AG, { now: T0 });
+  eq(caps.hour, 1, "F-921.BLOCK_paused_mid_pass — one cap slot spent, one comment sent");
+  const receipt = (await L.readTick(kvs, AG, "t-pause-mid", "post")).receipt;
+  eq(receipt.reason, "paused", "F-921: the RECEIPT says what stopped the pass (law 8)");
+  eq(receipt.postedBefore, 1, "F-921: …and how many comments preceded it");
+}
+
+reset();
+{
+  // BLOCK — the same, through the tenant cancel EPOCH rather than the pause.
+  await stageThree();
+  let cancelled = false;
+  const live = vaJob();
+  const d = postDeps({ getJob: async () => live, isKillSwitchActive: async () => cancelled });
+  const inner = d.addComment;
+  d.addComment = async (k, body, opts) => { const written = await inner(k, body, opts); cancelled = true; return written; };
+  const r = await V.runVaPost({ agent: live, tickId: "t-cancel-mid", deps: d });
+  eq(d.__commented.length, 1, "F-921.BLOCK_cancelled_mid_pass — exactly one comment went out");
+  eq(r.reason, "cancelled", "F-921.BLOCK_cancelled_mid_pass — the pass ends with `cancelled` as its reason");
+  eq(r.postedBefore, 1, "F-921.BLOCK_cancelled_mid_pass — postedBefore names how many had already gone");
+  eq((await stillStaged(THREE)).length, 2, "F-921.BLOCK_cancelled_mid_pass — the two unsent drafts are UNTOUCHED");
+  const receipt = (await L.readTick(kvs, AG, "t-cancel-mid", "post")).receipt;
+  eq(receipt.reason, "cancelled", "F-921: the receipt names the cancel");
+}
+
+reset();
+{
+  // ALLOW — nothing flips: all three go out, exactly as they do today, and no receipt
+  // field appears on an ordinary pass.
+  await stageThree();
+  const live = vaJob();
+  const d = postDeps({ getJob: async () => live });
+  const r = await V.runVaPost({ agent: live, tickId: "t-no-flip", deps: d });
+  eq(d.__commented.length, 3, "F-921.ALLOW_nothing_flipped — all three comments went out");
+  eq(r.posted, 3, "F-921.ALLOW_nothing_flipped — …and the run says three");
+  eq(r.reason, undefined, "F-921.ALLOW_nothing_flipped — no stop reason on a clean pass");
+  eq((await stillStaged(THREE)).length, 0, "F-921.ALLOW_nothing_flipped — nothing is left staged");
+  const receipt = (await L.readTick(kvs, AG, "t-no-flip", "post")).receipt;
+  eq(receipt.reason, undefined, "F-921: an ordinary receipt carries no `reason` — a field on every receipt is a field nobody reads");
+  eq(receipt.postedBefore, undefined, "F-921: …nor a `postedBefore`");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

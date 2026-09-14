@@ -1146,7 +1146,7 @@ export const withItemClaim = async (store, agent, issueKey, tickId, fn) => {
  * no separate task that could deliver without it; a second key here would be a row that is
  * always written in lockstep with this one.
  */
-export const recordTick = async (store, agent, { tickId, phase = "prepare", started = null, candidates = 0, staged = 0, skipped = [], next = null, error = null, compacted = null, heldWrites = 0 } = {}) => {
+export const recordTick = async (store, agent, { tickId, phase = "prepare", started = null, candidates = 0, staged = 0, skipped = [], next = null, error = null, compacted = null, heldWrites = 0, stoppedBy = null, postedBefore = 0 } = {}) => {
   const receipt = {
     agent: String(agent),
     phase: phase === "post" ? "post" : "prepare",
@@ -1177,6 +1177,19 @@ export const recordTick = async (store, agent, { tickId, phase = "prepare", star
      * say that the agent wanted to act and was held.
      */
     ...(Math.trunc(Number(heldWrites) || 0) > 0 ? { heldWrites: Math.max(0, Math.trunc(Number(heldWrites))) } : {}),
+    /*
+     * F-921 — THE PASS THE INSTANCE STOPPED MID-WAY.
+     *
+     * `reason` is "paused" or "cancelled" and `postedBefore` is how many comments had
+     * already gone out when the flag was read. Both are ABSENT on an ordinary pass, for
+     * the same reason `heldWrites` is: a field present on every receipt is a field nobody
+     * reads on the one receipt that needed it. An admin who pauses an agent mid-window
+     * has exactly one question - how many went out before I pressed it - and this is the
+     * record that answers it.
+     */
+    ...(stoppedBy === "paused" || stoppedBy === "cancelled"
+      ? { reason: stoppedBy, postedBefore: Math.max(0, Math.trunc(Number(postedBefore) || 0)) }
+      : {}),
     ...(isObj(compacted)
       ? {
         compacted: {

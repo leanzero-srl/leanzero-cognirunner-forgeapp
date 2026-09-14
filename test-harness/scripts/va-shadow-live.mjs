@@ -59,6 +59,13 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+/* F-839 — the receipt list is READ through the lib, and the two waits STOP on a scan fault.
+   `getVaStatus` answers `receipts: []` beside a named `receiptsUnavailable` when its bounded
+   `va_tick:{agent}:*` prefix scan faults. `!!latest(s, phase)` cannot tell "not yet" from
+   "unreadable", so both `pollStatus` calls below spun their FULL wait (TICK_WAIT_S, then
+   POST_WAIT_S) against a door that had already answered, and then read the timeout as
+   "no receipt appeared" — a FAIL against a product that ticked, paid for twice over. */
+import { newestReceipt, receiptPoll, unavailableNote } from "../lib/va-tick-receipt.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "issues"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -235,8 +242,9 @@ const vaRecord = () => ({
 
 /* ── receipts ───────────────────────────────────────────────────────────────── */
 
-const receiptsOf = (status) => (status && Array.isArray(status.receipts) ? status.receipts : []);
-const latest = (status, phase) => receiptsOf(status).filter((r) => r.phase === phase)[0] || null;
+/* The local `receiptsOf`/`latest` pair is DELETED. `newestReceipt` returns
+   `{receipt, unavailable}` so the four read sites below can tell an UNREAD ledger from an
+   empty one, and `receiptPoll` makes "the scan faulted" a reason to STOP waiting. */
 
 async function pollStatus(jobId, predicate, seconds, label) {
   const deadline = Date.now() + seconds * 1000;
@@ -324,9 +332,10 @@ async function main() {
   if (!(ran.body && ran.body.success)) die(`runScheduledJobNow refused: ${JSON.stringify(ran.body)}`);
   PASS(`va-tick enqueued, taskId=${ran.body.taskId}`);
 
-  const afterTick = await pollStatus(jobId, (s) => !!latest(s, "prepare"), TICK_WAIT_S, "prepare receipt");
-  const prep = latest(afterTick, "prepare");
-  if (!prep) { FAIL("no prepare receipt appeared within the wait"); }
+  const afterTick = await pollStatus(jobId, (s) => receiptPoll(s, "prepare").stop, TICK_WAIT_S, "prepare receipt");
+  const { receipt: prep, unavailable: prepUnavailable } = newestReceipt(afterTick, "prepare");
+  if (prepUnavailable) { NV(unavailableNote(prepUnavailable, "the prepare receipt and its swept/worked/skipped numbers")); }
+  else if (!prep) { FAIL("no prepare receipt appeared within the wait"); }
   else {
     PASS(`prepare receipt: ${JSON.stringify(prep).slice(0, 600)}`);
     if (Number(prep.swept) >= 1) PASS(`swept ≥ 1: swept=${prep.swept}`);
@@ -366,9 +375,13 @@ async function main() {
 
   /* ── STEP 4 — the POST phase, and the proof that nothing was posted ──────── */
   console.log("\nSTEP 4 — the post phase (the REAL 5-minute planner enqueues va-post; runVaPostNow is not allow-listed)");
-  const postStatus = await pollStatus(jobId, (s) => !!latest(s, "post"), POST_WAIT_S, "post receipt");
-  const post = latest(postStatus, "post");
-  if (!post) {
+  const postStatus = await pollStatus(jobId, (s) => receiptPoll(s, "post").stop, POST_WAIT_S, "post receipt");
+  const { receipt: post, unavailable: postUnavailable } = newestReceipt(postStatus, "post");
+  if (postUnavailable) {
+    /* The comment-count read below is a DIFFERENT door (Jira's own) and still stands as the
+       proof that nothing was posted; what is unproven here is the receipt's own account. */
+    NV(unavailableNote(postUnavailable, "the post receipt, its posted count and whether skipped[] names the shadow gate"));
+  } else if (!post) {
     FAIL(`no post receipt within ${POST_WAIT_S}s — the post phase could not be observed`);
   } else {
     PASS(`post receipt: ${JSON.stringify(post).slice(0, 600)}`);
@@ -398,8 +411,8 @@ async function main() {
   else info(`second va-tick enqueued, taskId=${ran2.body.taskId}`);
   await sleep(45000);
   const st2 = await invoke("getVaStatus", { jobId });
-  const prep2 = latest(st2.body, "prepare");
-  info(`second prepare receipt: ${JSON.stringify(prep2).slice(0, 500)}`);
+  const { receipt: prep2, unavailable: prep2Unavailable } = newestReceipt(st2.body, "prepare");
+  info(`second prepare receipt: ${JSON.stringify(prep2).slice(0, 500)}${prep2Unavailable ? ` (UNREADABLE: receiptsUnavailable="${prep2Unavailable}")` : ""}`);
   const dr2 = await invoke("listVaDrafts", { jobId });
   const drafts2 = (dr2.body && dr2.body.drafts) || [];
   info(`drafts after the second tick: ${drafts2.length}`);
@@ -427,12 +440,13 @@ async function main() {
   info(`run-now on a paused agent: ${JSON.stringify(ran3.body).slice(0, 200)}`);
   await sleep(40000);
   const st3 = await invoke("getVaStatus", { jobId });
-  const prep3 = latest(st3.body, "prepare");
-  info(`prepare receipt after the pause: ${JSON.stringify(prep3).slice(0, 400)}`);
+  const { receipt: prep3, unavailable: prep3Unavailable } = newestReceipt(st3.body, "prepare");
+  info(`prepare receipt after the pause: ${JSON.stringify(prep3).slice(0, 400)}${prep3Unavailable ? ` (UNREADABLE: receiptsUnavailable="${prep3Unavailable}")` : ""}`);
   if (st3.body && st3.body.paused === true) PASS("getVaStatus reports paused = true");
   else FAIL(`getVaStatus reports paused = ${st3.body && st3.body.paused}`);
   const pausedSkip = (prep3 && (prep3.skipped || []).some((r) => String(r.reason) === "paused"));
-  if (pausedSkip) PASS(`the tick receipt says paused: ${JSON.stringify(prep3.skipped)}`);
+  if (prep3Unavailable) NV(unavailableNote(prep3Unavailable, "whether the tick after the pause RECORDS the pause (a paused tick records skipped[{reason:\"paused\"}], so its absence here would be read as the engine ignoring the pause)"));
+  else if (pausedSkip) PASS(`the tick receipt says paused: ${JSON.stringify(prep3.skipped)}`);
   else FAIL(`the tick after the pause does not say paused: ${JSON.stringify(prep3 && prep3.skipped).slice(0, 300)}`);
 
   /* ── the agent's memory ──────────────────────────────────────────────────── */

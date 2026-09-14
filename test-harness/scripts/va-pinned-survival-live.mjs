@@ -39,6 +39,11 @@ import { resolveFlipModel, judgeAgentCapability, applyVerdict } from "../lib/age
 import fs from "node:fs";
 import { redactSecrets } from "../lib/redact.mjs";
 import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+/* F-839 — the receipt list is READ through the lib. A faulted `va_tick:{agent}:*` prefix
+   scan answers `receipts: []` beside a named `receiptsUnavailable`, and the convergence
+   grade below used to read that emptiness as "the compaction did not converge" and RETURN,
+   ending the run on a FAIL that measured the scan and not the summariser. */
+import { newestReceipt, unavailableNote } from "../lib/va-tick-receipt.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "memories", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -143,7 +148,8 @@ const watchedOf = async (jobId) => {
   const h = await kvs(`va_health:${jobId}`);
   return h.ok && h.value ? Number(h.value.prepareTicks) || 0 : 0;
 };
-const latestPrepare = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []).filter((r) => r.phase === "prepare")[0] || null;
+/* The local `latestPrepare` is DELETED — it read `s.receipts` and nothing else, so an
+   UNREAD ledger and an empty one were the same evidence to it. */
 
 /** The compaction claim is per five-minute bucket — a tick that must buy a turn waits. */
 async function freshBucket(label) {
@@ -160,7 +166,9 @@ async function tickOnce(jobId, label, wantBucket = true) {
   while (Date.now() < deadline) { await sleep(6000); if ((await watchedOf(jobId)) > was) break; }
   await sleep(4000);
   const st = (await invoke("getVaStatus", { jobId })).body;
-  return { st, receipt: latestPrepare(st) };
+  /* `unavailable` travels WITH the receipt so the caller can refuse to grade. */
+  const { receipt, unavailable } = newestReceipt(st, "prepare");
+  return { st, receipt, unavailable };
 }
 
 async function withAgentsTab(fn) {
@@ -267,9 +275,15 @@ async function main() {
   console.log("\nSTEP 3 — the compaction turn, and the pins afterwards");
   const t = await tickOnce(jobId, "compaction tick");
   const r = t && t.receipt;
+  const u = t && t.unavailable;
   info(`receipt.compacted: ${JSON.stringify(r && r.compacted)}`);
   const c = r && r.compacted;
-  if (c && Number(c.after) <= COMPACT_BYTES && c.fellBack !== true) PASS(`the compaction ran and converged: ${c.before} -> ${c.after} bytes`);
+  if (u) {
+    /* Not a failure of the compaction — a failure to READ it. The pins half below is the
+       subject of this driver and it is judged off `getVaMemory`, which is a different door
+       and still readable, so the run continues instead of returning on a scan fault. */
+    NV(unavailableNote(u, "whether the compaction turn ran and converged"));
+  } else if (c && Number(c.after) <= COMPACT_BYTES && c.fellBack !== true) PASS(`the compaction ran and converged: ${c.before} -> ${c.after} bytes`);
   else { FAIL(`the compaction did not converge cleanly: ${JSON.stringify(c)}`); return; }
   const after = await invoke("getVaMemory", { jobId });
   const afterPins = ((after.body && after.body.constraints) || []).map((cc) => (typeof cc === "string" ? cc : cc.text));

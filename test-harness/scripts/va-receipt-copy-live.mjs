@@ -47,6 +47,15 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/agent-capability-precondition.mjs";
 /* F-787 - the commit this run came from, recorded in the evidence file it writes. */
 import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+/* F-839 — THE COUNT WAS THE WRONG QUESTION, AND `.receipts` WAS THE WRONG DOOR.
+   `tick()` waited for `receipts.length` to GROW. `recordTick` `store.set`s
+   `va_tick:{agent}:{phase}-{tickId}` and `tickId` is a FIVE-MINUTE BUCKET, so a second tick
+   inside one bucket OVERWRITES in place: the length never moves, the wait expires, and the
+   driver says "no new receipt within 180s" about a tick that wrote one — which is exactly
+   the arm this driver exists to render. And on a faulted prefix scan `getVaStatus` answers
+   `receipts: []` beside a named `receiptsUnavailable`, which the length read as zero.
+   Both answers now come from the lib, on IDENTITY (`tickId` + `at`). */
+import { receiptAppeared, receiptPollNew, newestReceipt, unavailableNote } from "../lib/va-tick-receipt.mjs";
 
 /* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
    catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
@@ -136,7 +145,6 @@ async function commentTotal() {
   return total;
 }
 
-const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);
 const vaRecord = () => ({
   persona: { name: NAME, voice: { register: "terse", greeting: false, maxSentences: 3, language: "auto" }, signature: false },
   scope: { read: { site: false, projects: [PROJECT] }, write: { projects: [PROJECT] } },
@@ -147,18 +155,34 @@ const vaRecord = () => ({
   status: { paused: false, shadowUntilTick: 500 },
 });
 
+/**
+ * One tick, waited for by the IDENTITY of the newest receipt — `{tickId, at}`, not a count.
+ * `phase` is left open (the newest row of ANY phase) because that is what this driver
+ * renders. Returns the new receipt, or `null` with an N/V already printed naming WHY:
+ * the ledger was unreadable, the identity never moved, or the wait ran out.
+ */
 async function tick(jobId, label, waitS = 180) {
-  const before = receiptsOf((await invoke("getVaStatus", { jobId })).body).length;
+  const before = newestReceipt((await invoke("getVaStatus", { jobId })).body, null);
+  if (before.unavailable) {
+    NV(`${label}: ` + unavailableNote(before.unavailable, "whether this tick writes a NEW receipt (the BEFORE read is the baseline the identity is compared against)"));
+    return null;
+  }
   const ran = await invoke("runScheduledJobNow", { id: jobId });
   if (!(ran.body && ran.body.success)) { FAIL(`${label}: runScheduledJobNow refused`, { body: JSON.stringify(ran.body).slice(0, 260) }); return null; }
   const deadline = Date.now() + waitS * 1000;
+  let last = receiptAppeared(before, before);
   while (Date.now() < deadline) {
     const st = (await invoke("getVaStatus", { jobId })).body;
-    const rs = receiptsOf(st);
-    if (rs.length > before) return rs[0];
+    last = receiptPollNew(before, st, null);
+    if (last.stop) break;
     await sleep(7000);
   }
-  NV(`${label}: no new receipt within ${waitS}s`);
+  if (last.unavailable) { NV(`${label}: ` + unavailableNote(last.unavailable, "whether this tick wrote a new receipt")); return null; }
+  if (last.appeared === true) return last.receipt;
+  /* `appeared === null` here is the same-bucket rewrite the COUNT could never see and this
+     still cannot: `tickId` AND `at` both unchanged means either a byte-identical rewrite or
+     no write, and saying which would be a guess. Either way it is N/V, never a FAIL. */
+  NV(`${label}: ${last.appeared === null ? last.reason : `no new receipt within ${waitS}s`}`, { identity: last.identity, sameBucket: last.sameBucket });
   return null;
 }
 

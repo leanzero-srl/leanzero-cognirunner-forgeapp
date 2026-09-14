@@ -43,6 +43,12 @@ import { decideInstanceFlip, judgeAgentCapability, applyVerdict } from "../lib/a
 import fs from "node:fs";
 import { redactSecrets } from "../lib/redact.mjs";
 import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+/* F-839 — the receipt list is READ through the lib. `getVaStatus` answers `receipts: []`
+   beside a named `receiptsUnavailable` when its bounded `va_tick:{agent}:*` prefix scan
+   faults; the local reader here could not see the reason, so the swept/worked numbers this
+   driver quotes in its "no item row was made" N/V came out as `undefined` with no hint
+   that the ledger had not been read at all. */
+import { newestReceipt } from "../lib/va-tick-receipt.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "providerSlot"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -167,8 +173,9 @@ async function commentCounts(keys) {
   return out;
 }
 
-const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);
-const latest = (s, phase) => receiptsOf(s).filter((r) => r.phase === phase)[0] || null;
+/* The local `receiptsOf`/`latest` pair is DELETED — `newestReceipt` hands back the named
+   unavailability reason beside the row, which is the difference between "the tick swept
+   nothing" and "nobody could read what the tick swept". */
 
 const vaRecord = () => ({
   persona: { name: "Purge", voice: { register: "terse", greeting: false, maxSentences: 3, language: "auto" }, signature: false },
@@ -238,8 +245,8 @@ async function main() {
     if (st && Number(st.staged) >= 1) break;
     await sleep(8000);
   }
-  const prep = latest(st, "prepare");
-  info(`prepare receipt: ${JSON.stringify(prep).slice(0, 500)}`);
+  const { receipt: prep, unavailable: prepUnavailable } = newestReceipt(st, "prepare");
+  info(`prepare receipt: ${JSON.stringify(prep).slice(0, 500)}${prepUnavailable ? ` (UNREADABLE: receiptsUnavailable="${prepUnavailable}" — the status door could not scan va_tick:*, so this is not an absence)` : ""}`);
   info(`staged: ${st && st.staged}`);
 
   // PAUSE IMMEDIATELY: the five-minute planner enqueues a post run for every ENABLED
@@ -263,7 +270,10 @@ async function main() {
   const itemKeys = (idx && Array.isArray(idx.ids) ? idx.ids : []).concat(drafts.map((d) => d.itemKey));
   const ITEMS = [...new Set(itemKeys)];
   info(`va_index.ids -> ${ITEMS.join(", ") || "none"} (parked=${idx && idx.parked})`);
-  if (!ITEMS.length) NV(`no item row was made on this tick (swept=${prep && prep.swept} worked=${prep && prep.worked}), so the va_item purge arm cannot be judged`);
+  /* The receipt is EVIDENCE in this sentence, not the subject: the purge arm is judged off
+     `va_index` and the `?what=kvs` reads below, which are a different door. Naming the
+     unreadable scan keeps `swept=undefined` from reading as "the tick swept nothing". */
+  if (!ITEMS.length) NV(`no item row was made on this tick (${prepUnavailable ? `the prepare receipt could not be READ: receiptsUnavailable="${prepUnavailable}"` : `swept=${prep && prep.swept} worked=${prep && prep.worked}`}), so the va_item purge arm cannot be judged`);
 
   /* ── STEP 2 — the keys, BEFORE the delete ───────────────────────────────── */
   console.log("\nSTEP 2 - every ledger key, read through ?what=kvs while the agent LIVES");

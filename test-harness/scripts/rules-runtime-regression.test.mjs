@@ -674,7 +674,110 @@ try {
       const parsed = JSON.parse((await kvsRead(key)).body);
       assert.deepEqual(parsed.value, value, `${key}: the value still comes back verbatim`);
       assert.equal(parsed.masked, undefined, `${key}: an ordinary row is not marked masked`);
+      assert.equal("maskedFields" in parsed, false, `${key}: a clean row says nothing about masking (F-794)`);
     }
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-794 — THE FIELD CEILING. The F-769 ceiling is per-KEY; a credential is per-FIELD,
+   * and the app's mixed rows (`config_registry`, `pf_code:*`, `job:*`, `listener:*`,
+   * `async_job:*`) answered entirely plain because their KEY says nothing. These pin the
+   * three answers the door now gives: masked-by-field, plain-when-clean, and the
+   * `api_tokens` row that the NAME catch-all used to over-mask whole.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("BLOCK: a secret FIELD inside a non-credential row is masked, and its siblings are not (F-794)", async () => {
+    const BEARER = "zz-harness-planted-endpoint-bearer-zz";
+    const key = "job:field-ceiling";
+    const row = { id: "field-ceiling", name: "Nightly sync", enabled: true,
+      functions: [{ name: "call", endpoint: { url: "https://example.test/x", headers: { Authorization: `Bearer ${BEARER}`, "X-Trace": "t-1" } }, code: "api.log('x')" }] };
+    storage.__seed(key, row);
+    assert.equal(isCredentialKey(key), false, "premise: `job:*` is not and must not become a credential FAMILY — the row is mostly readable");
+    const res = await kvsRead(key);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.includes(BEARER), false, "the endpoint bearer reached the wire — this is F-794");
+    const parsed = JSON.parse(res.body);
+    assert.deepEqual(parsed.maskedFields, ["functions[0].endpoint.headers.Authorization"],
+      "the masked PATH is named to the FIELD, so a driver knows exactly what it is not being shown");
+    assert.deepEqual(parsed.value.value ?? null, null, "the row is not swallowed into a `value` wrapper");
+    assert.equal(parsed.value.name, "Nightly sync", "a sibling field is PLAIN — this is not the per-key ceiling wearing a new name");
+    assert.equal(parsed.value.functions[0].code, "api.log('x')", "…and so is the step code");
+    assert.equal(parsed.value.functions[0].endpoint.url, "https://example.test/x", "…and the endpoint URL, which is not a credential");
+    const masked = parsed.value.functions[0].endpoint.headers.Authorization;
+    assert.equal(masked.masked, true);
+    assert.equal(masked.why, "field-name-reads-like-a-credential");
+    assert.match(masked.fingerprint, /^[0-9a-f]{16}$/, "the ONE credentialFingerprint (F-780), not a second digest");
+    // The header MAP is walked field by field, so a header whose name says nothing stays
+    // readable — and a credential under such a name is the residual the docblock names.
+    assert.equal(parsed.value.functions[0].endpoint.headers["X-Trace"], "t-1",
+      "a header the hints do not name is plain: the ceiling reads NAMES, and that is stated at maskSecretFields");
+  });
+  await check("BLOCK: a value-SHAPED secret in free text is caught even where no field name says so (F-794)", async () => {
+    const key = "pf_code:rule-9:deadbeef";
+    storage.__seed(key, { code: "const k = 'sk-abcdefghijkl';", note: "harmless" });
+    const parsed = JSON.parse((await kvsRead(key)).body);
+    assert.deepEqual(parsed.maskedFields, ["code"], "an `sk-…` shape is masked even inside a field called `code`");
+    assert.equal(parsed.value.note, "harmless", "…and the harmless sibling is plain");
+    // THE RESIDUAL, asserted rather than assumed: a token with no known SHAPE in free text
+    // is NOT caught. Stated at maskSecretFields' docblock; pinned here so it is not a surprise.
+    storage.__seed(key, { code: "const k = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';" });
+    assert.equal("maskedFields" in JSON.parse((await kvsRead(key)).body), false,
+      "a shapeless blob in free text is a KNOWN residual of a field-name ceiling — masking every long string would mask the code");
+  });
+  await check("the api_tokens row is no longer over-masked whole: hash fingerprinted, the rest readable (F-794)", async () => {
+    const { API_TOKENS_KEY, REVOKED_TOKEN_PREFIX } = await import("../../src/rules-api.js");
+    assert.equal(isCredentialKey(API_TOKENS_KEY), false,
+      "the NAME catch-all claimed `api_tokens` for the word `token`, but the row stores sha256(token)+prefix and never the bearer");
+    const HASH = "9f".repeat(32);
+    storage.__seed(API_TOKENS_KEY, [{ id: "tok_1", name: "CI", hash: HASH, prefix: "cgr_0a1b2c", role: "editor", revokedAt: null }]);
+    const parsed = JSON.parse((await kvsRead(API_TOKENS_KEY)).body);
+    assert.deepEqual(parsed.maskedFields, ["[0].hash"], "only the hash is masked, by the REVIEWED per-key rule");
+    assert.equal(parsed.value[0].hash.masked, true);
+    assert.equal(parsed.value[0].hash.why, "reviewed-field-mask-for-this-key");
+    assert.match(parsed.value[0].hash.fingerprint, /^[0-9a-f]{16}$/);
+    assert.equal(JSON.stringify(parsed).includes(HASH), false, "the stored hash verifies a live bearer, so it does not reach the wire");
+    assert.equal(parsed.value[0].prefix, "cgr_0a1b2c", "the PREFIX is plain — it is what the UI shows and cannot authenticate");
+    assert.equal(parsed.value[0].role, "editor", "…and the role, which is the thing a driver reads this row for");
+    // The tombstone carries no secret at all, so it answers completely plain.
+    const stone = `${REVOKED_TOKEN_PREFIX}tok_1`;
+    storage.__seed(stone, { id: "tok_1", revokedAt: "2026-09-14T00:00:00.000Z" });
+    const stoneRes = JSON.parse((await kvsRead(stone)).body);
+    assert.equal(isCredentialKey(stone), false, "a revoke tombstone is not a credential row");
+    assert.deepEqual(stoneRes.value, { id: "tok_1", revokedAt: "2026-09-14T00:00:00.000Z" });
+    assert.equal("maskedFields" in stoneRes, false);
+    // …and the exemption may only ever excuse the CATCH-ALL, never a declared family.
+    assert.equal(isCredentialKey("api_tokens_backup"), true, "a NEW key carrying the word is still claimed until someone reads it");
+  });
+  await check("the kvSet write echo mirrors the read, so the door has ONE shape in both directions (F-794)", async () => {
+    const BEARER = "zz-harness-echo-bearer-zz";
+    const value = { probe: { headers: { Authorization: `Bearer ${BEARER}` } }, label: "echo" };
+    const res = await kvSet("COGNIRUNNER_MEMORY_SETTINGS", value);
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.body.includes(BEARER), false, "the echo handed the caller's own bearer back on the wire");
+    const parsed = JSON.parse(res.body);
+    assert.deepEqual(parsed.maskedFields, ["probe.headers.Authorization"], "the same paths as the GET names");
+    assert.equal(parsed.now.label, "echo", "…and the same plain siblings");
+    assert.equal(parsed.now.probe.headers.Authorization.masked, true);
+    // Same row, same shape, through the READ door.
+    const readBack = JSON.parse((await kvsRead("COGNIRUNNER_MEMORY_SETTINGS")).body);
+    assert.deepEqual(readBack.maskedFields, parsed.maskedFields);
+    assert.equal(readBack.value.probe.headers.Authorization.fingerprint, parsed.now.probe.headers.Authorization.fingerprint,
+      "one fingerprint for one row, whichever door answered");
+  });
+  await check("POSITIVE CONTROL: the field walker still SEES, and fails CLOSED on what it cannot read (F-794)", async () => {
+    const { findSecretFields, findPlantedSecret, maskSecretFields } = await import("../../src/test-hook.js");
+    // It sees both kinds of hit, at depth, and reports ALL of them rather than the first.
+    const hits = findSecretFields({ a: { password: 1 }, b: ["ghp_abcdefgh"], c: "fine" }, { maxDepth: 12 });
+    assert.deepEqual(hits.map((h) => h.field), ["a.password", "b[0]"], "every path, not just the first");
+    // The WRITE refusal is unchanged: the same first hit, the same shape, the same depth 6.
+    assert.deepEqual(findPlantedSecret({ a: { password: 1 }, b: ["ghp_abcdefgh"] }),
+      { field: "a.password", why: "field-name-reads-like-a-credential" });
+    assert.equal(findPlantedSecret({ nothing: "here" }), null, "a clean body is still null, never an empty array");
+    // FAIL CLOSED: a subtree the read walker cannot reach is fingerprinted, not answered.
+    let deep = "leaf"; for (let i = 0; i < 14; i++) deep = { down: deep };
+    const masked = await maskSecretFields(deep);
+    assert.ok(masked && masked.maskedFields.length === 1, "a row deeper than the walker's ceiling is masked, not returned plain");
+    assert.match(masked.maskedFields[0], /^down(\.down)+$/);
+    assert.equal(JSON.stringify(masked.value).includes("leaf"), false, "…and the unread leaf never reaches the wire");
+    assert.equal(await maskSecretFields({ plain: "row" }), null, "a clean row masks NOTHING — the cut is narrow");
   });
   await check("kvStash/kvRestore move a credential by NAME, never by value (F-769)", async () => {
     // THE DRIVER THIS DOOR EXISTS FOR: va-compaction-live.mjs replaces the BYOK key with a
@@ -1212,7 +1315,7 @@ try {
         const line = src.slice(0, wm.index).split("\n").length;
         const keyExpr = parts[0].trim(), valueExpr = parts[1].trim();
         const win = lines.slice(Math.max(0, line - 81), line).join("\n");
-        const fields = new Set();
+        const fields = new Set(), spreads = new Set();
         /* F-788 — TWO WAYS A FIELD NAME APPEARS IN AN OBJECT LITERAL, and the scanner only
            read one. `name:` / `name =` was the whole rule, so `{ url, apiKey }` — the most
            idiomatic way this repo writes a row, and the exact shape at test-hook.js's
@@ -1223,6 +1326,14 @@ try {
         const scanFields = (txt) => {
           for (const m of txt.matchAll(/(?:^|[{,\s])["']?([A-Za-z_$][\w$]*)["']?\s*[:=](?!=)/g)) if (isSecretField(m[1])) fields.add(m[1]);
           for (const m of txt.matchAll(/(?:^|[{,])\s*([A-Za-z_$][\w$]*)\s*(?=[,}])/g)) if (isSecretField(m[1])) fields.add(m[1]);
+          /* F-794 — A SPREAD IS AN UNREADABLE FIELD LIST, one level up from the shorthand
+             F-788 fixed. `storage.set(key, { ...config, id })` stores every field `config`
+             has and NAMES none of them, so a field-name scan sees nothing and the site is
+             never even reported. It cannot be resolved here (the source is usually caller
+             JSON several files away), so it is reported as the pseudo-field `...name` and
+             JUDGED in the review table below: either a normaliser bounds what can be in it,
+             or the door masks it at the point it is read. */
+          for (const m of txt.matchAll(/(?:^|[{,])\s*\.\.\.\s*([A-Za-z_$][\w$.]*)/g)) spreads.add("..." + m[1]);
         };
         if (/^\{[\s\S]*\}$/.test(valueExpr)) scanFields(valueExpr);
         const bare = valueExpr.match(/^([A-Za-z_$][\w$]*)$/);
@@ -1240,7 +1351,7 @@ try {
           }
           for (const m2 of win.matchAll(new RegExp("\\b" + name + "\\.([A-Za-z_$][\\w$]*)\\s*=(?!=)", "g"))) if (isSecretField(m2[1])) fields.add(m2[1]);
         }
-        if (fields.size) sites.push({ file, line, keyExpr, key: resolveKey(keyExpr, win), fields: [...fields].sort() });
+        if (fields.size || spreads.size) sites.push({ file, line, keyExpr, key: resolveKey(keyExpr, win), fields: [...fields].sort(), spreads: [...spreads].sort() });
       }
     }
     return sites;
@@ -1281,14 +1392,85 @@ try {
 
     const sites = scanSecretWriteSites(sources, hints);
     assert.ok(sites.length >= 20, `the scanner must still SEE the write sites (found ${sites.length})`);
-    /* Every site resolves to a key, or the scanner has stopped understanding how this repo
-       builds KVS keys — an unresolved key is a hole, not a pass. */
-    const unresolved = sites.filter((s) => !s.key);
+    const named = sites.filter((s) => s.fields.length);
+    /* Every site that NAMES a secret field resolves to a key, or the scanner has stopped
+       understanding how this repo builds KVS keys — an unresolved key is a hole, not a pass.
+       A SPREAD-only site is judged by identity below, which tolerates an unresolvable key
+       (`setFaultRow(key, …)` takes its key as a parameter) because the judgement there is
+       about the SOURCE of the spread, not about which row it lands on. */
+    const unresolved = named.filter((s) => !s.key);
     assert.deepEqual(unresolved, [], "every secret-carrying write site must resolve to a key prefix");
 
-    const uncovered = sites.filter((s) => !isCredentialKey(s.key) && !NOT_A_CREDENTIAL.has(s.key));
+    const uncovered = named.filter((s) => !isCredentialKey(s.key) && !NOT_A_CREDENTIAL.has(s.key));
     assert.deepEqual(uncovered.map((s) => `${s.file}:${s.line} ${s.key} {${s.fields.join(",")}}`), [],
       "a KVS row stores a secret-looking field under a key the read ceiling does not mask — declare the family in CREDENTIAL_KEY_FAMILIES, or add it to NOT_A_CREDENTIAL with the reason");
+
+    /* ═══════════════════════════════════════════════════════════════════════════════
+     * F-794 — THE SPREAD ARM. Filed by F-788 and shippable only now.
+     *
+     * `storage.set(key, { ...config, id })` stores every field `config` has and names
+     * none of them, so the field scan reported `fields.size === 0` and the site was never
+     * judged at all. F-788 could not ship this arm because the answer for `job:` — a row
+     * that stores a whole job config — was an open question about the READ CEILING, not a
+     * review entry: `src/shared/rule-portability.js` strips `headers` from an export as
+     * "endpoint auth", so a rule-shaped row can carry an endpoint credential under a field
+     * name no hint matches, and the per-KEY ceiling answered the whole row plain.
+     *
+     * F-794's field ceiling IS that answer, so every spread now has one of exactly two
+     * judgements, and there is no third:
+     *   · the NORMALISER that bounds the source — a builder that constructs the stored
+     *     object FIELD BY FIELD, so what can be in it is a closed list somebody wrote.
+     *   · `unbounded-field-masked-at-the-door` — the source is caller JSON or a row this
+     *     check has not proved field-built, and the thing standing between it and an
+     *     evidence file is `maskSecretFields` on the read. That is a real answer, not an
+     *     excuse, BECAUSE the door now masks by field; before F-794 it would have been a
+     *     shrug. Its residual is the one stated at `maskSecretFields`: free text.
+     * A spread with NO entry is a RED — the rule refuses to guess which of the two it is.
+     *
+     * Identified by KEY (a line number moves every commit); the one site whose key is a
+     * function PARAMETER is identified by `file:keyExpr`, which is stable under edits.
+     * ═══════════════════════════════════════════════════════════════════════════════ */
+    const SPREAD_BOUNDED_BY = new Map([
+      // BOUNDED — a normaliser builds the stored object field by field.
+      ["job:", "`normalizeJob` (src/scheduled-jobs.js) builds the record field by field and every step through `normalizeStep`, where `endpoint` is a clamped URL STRING with no header map at all; the residual inside that bound is `generationMeta`, which is passed through as the caller sent it"],
+      ["git_conn:", "the connection row is built field by field at creation (`hasToken` is a boolean and `tokenSlot` is the NAME of the git_conn_secret:* row — the same judgement already recorded in NOT_A_CREDENTIAL), and the identity spread is `identityFields` (src/git-connections.js), a three-field builder of public account ids"],
+      ["harness-fault.js:key", "`setFaultRow` is NOT exported and is reachable only through the six gated levers in src/harness-fault.js, each of which builds its row field by field; the spread adds `until`"],
+      // UNBOUNDED — the source is caller JSON or a row not proved field-built. The field
+      // ceiling on `?what=kvs` is what stands between it and a committed evidence file.
+      ["doc_repo:", "unbounded-field-masked-at-the-door — a Documentation Library record carries the caller's own doc object"],
+      ["skill_repo:", "unbounded-field-masked-at-the-door — a skill record carries the caller's own row"],
+      ["ui_intent:", "unbounded-field-masked-at-the-door — the frontend's intent object, spread wholesale with a timestamp"],
+      ["async_job:", "unbounded-field-masked-at-the-door — `{...existing, ...patch}`, where the patch is whatever the task handler chose to record"],
+      ["log_entry:", "unbounded-field-masked-at-the-door — an execution log entry carries step results and AI output"],
+      ["owner_names", "unbounded-field-masked-at-the-door — learned owner names merged over the current map"],
+      ["registry_migrations", "unbounded-field-masked-at-the-door — the migration bookkeeping map"],
+      ["coder_ticket:", "unbounded-field-masked-at-the-door — a coder ticket is re-stamped by spreading the stored ticket"],
+      ["git_pipeline:", "unbounded-field-masked-at-the-door — the pipeline row is re-stamped by spreading itself"],
+      ["va_purged:", "unbounded-field-masked-at-the-door — a purge ledger row re-stamped with its turn count"],
+      ["va_item:", "unbounded-field-masked-at-the-door — a VA ledger item spread over a base row"],
+      ["probe:", "unbounded-field-masked-at-the-door — a probe result row; `probe:webhook:secret` is separately a DECLARED family, which this entry does not weaken"],
+      ["probe:license:webtrigger", "unbounded-field-masked-at-the-door — the Part 0 licence probe's own row, written by the harness door"],
+      ["COGNIRUNNER_SEAT_SNAPSHOT", "unbounded-field-masked-at-the-door — the seat row as Atlassian's licence API returned it"],
+    ]);
+    const spreadId = (s) => (s.key || `${s.file}:${s.keyExpr}`);
+    const spreadSites = sites.filter((s) => s.spreads.length);
+    assert.ok(spreadSites.length >= 25, `the scanner must SEE the spread sites (found ${spreadSites.length})`);
+    const unjudged = spreadSites.filter((s) => !isCredentialKey(s.key) && !SPREAD_BOUNDED_BY.has(spreadId(s)));
+    assert.deepEqual(unjudged.map((s) => `${s.file}:${s.line} ${spreadId(s)} {${s.spreads.join(",")}}`), [],
+      "a KVS row spreads an object nobody has bounded — name the NORMALISER that builds it field by field, or mark it unbounded-field-masked-at-the-door (which is only true while the ?what=kvs FIELD ceiling stands)");
+    // …and the table may not outlive its sites: an entry for a spread that no longer
+    // exists is a judgement about nothing, and reads as cover for the next one.
+    const live = new Set(spreadSites.map(spreadId));
+    assert.deepEqual([...SPREAD_BOUNDED_BY.keys()].filter((k) => !live.has(k)), [],
+      "a SPREAD_BOUNDED_BY entry names a write site that is gone — delete it rather than leave a stale judgement");
+    // POSITIVE CONTROL: the arm can still SEE a spread, and an unjudged one is a red.
+    const spreadFixture = new Map([["spread.js", 'const SLOT = "cognirunner_spread_row";\nawait storage.set(SLOT, { ...config, id });\n']]);
+    const spreadFound = scanSecretWriteSites(spreadFixture, hints);
+    assert.equal(spreadFound.length, 1, "POSITIVE CONTROL: `{ ...config, id }` IS a write site worth judging — it was invisible before F-794");
+    assert.deepEqual(spreadFound[0].spreads, ["...config"]);
+    assert.deepEqual(spreadFound[0].fields, [], "…and it names no field, which is exactly why the old scan skipped it");
+    assert.equal(isCredentialKey(spreadFound[0].key) || SPREAD_BOUNDED_BY.has(spreadFound[0].key), false,
+      "POSITIVE CONTROL: …and it is UNJUDGED, so the rule above would fail on it");
 
     /* F-788 — THE FINDING, named: the most idiomatic way to store a secret was invisible.
        `storage.set("probe:webhook:secret", { secret, at })` is a SHORTHAND property, so the

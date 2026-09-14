@@ -25,6 +25,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
 // The async consumer — F-089 asserts it imports the clamp rather than owning a copy.
 const asyncSrc = readFileSync(path.join(here, "../../src/async-handler.js"), "utf8");
+// F-826 — the model chain itself. A pure, dependency-free shared module, so it is
+// IMPORTED and EXECUTED here rather than source-parsed out of a backend file.
+const { resolveModelForProvider: chain } = await import("../../src/shared/model-resolution.js");
+const chainSrc = readFileSync(path.join(here, "../../src/shared/model-resolution.js"), "utf8");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -456,11 +460,20 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     const mod = codeOnly.match(/const getOpenAIModel = async \(\) => \{[\s\S]*?\n\};/);
     ok(!!mod, "found getOpenAIModel");
     const mb = mod ? mod[0] : "";
-    const res = codeOnly.match(/const resolveModelForProvider = async \(provider, \{[^}]*\} = \{\}\) => \{[\s\S]*?\n\};/);
-    ok(!!res, "found the ONE home of the model chain, resolveModelForProvider (F-818)");
-    const rb = res ? res[0] : "";
-    ok(!/getProviderConfig\(/.test(rb),
-      "…and it reads NO provider of its own — the provider is the ARGUMENT (F-811, now structural for both readers)");
+    // F-826 — the chain is no longer IN src/index.js at all: it is a pure function in
+    // src/shared/model-resolution.js (the async consumer is a different process and
+    // cannot import index.js, which is how a THIRD copy got there). index.js keeps only
+    // the BINDING. So the source assertions split: the binding is read here, the chain's
+    // own guards are read at the one home, and the behaviour is EXECUTED against the
+    // real shared function rather than an eval of an extracted body.
+    const bind = codeOnly.match(/const resolveModelForProvider = async \(provider, \{[^}]*\} = \{\}\) => resolveModelChain\(\{[\s\S]*?\n\}\);/);
+    ok(!!bind, "src/index.js binds the ONE model chain, src/shared/model-resolution.js (F-826)");
+    const bb = bind ? bind[0] : "";
+    ok(!/getProviderConfig\(/.test(bb),
+      "…and the binding reads NO provider of its own — the provider is the ARGUMENT (F-811, now structural for all three readers)");
+    ok(/readSlot: \(key\) => storage\.get\(key\)/.test(bb) && /onMigrate: \(key, value\) => storage\.set\(key, value\)/.test(bb),
+      "…and it supplies THIS process's storage reader and writer (src/shared may not import @forge/kvs)");
+    ok(/providers: PROVIDERS/.test(bb), "…and this process's PROVIDERS table");
     // F-448 — the property is "EVERY provider read is followed by a refusal", not "there
     // are exactly two refusals". A third read added without a guard must fail this, and a
     // refactor to one read must not.
@@ -474,35 +487,35 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     const iFirst = mb.indexOf("if (!provider) return null;");
     ok(iFirst > 0 && iFirst < mb.indexOf("resolveModelForProvider(") && iFirst < mb.lastIndexOf("_cachedModel ="),
       "…and the refusal precedes the resolver call AND every memo write, so a null-provider fault is never cached for 30s");
-    const iRes = rb.indexOf("if (!provider) return null;");
-    ok(iRes > 0 && iRes < rb.indexOf("providerModelSlot(provider)") && iRes < rb.indexOf("providerAgentModelSlot(provider)"),
-      "…and the resolver's own refusal precedes every slot read, so COGNIRUNNER_MODEL_null is never asked for");
-    // EXECUTED, BOTH FUNCTIONS TOGETHER: with a faulted provider read the model is null,
+    // The chain's OWN refusal, read at its one home: it precedes every slot read.
+    ok(/if \(!provider \|\| typeof provider !== "string"\) return null;/.test(chainSrc),
+      "the shared chain refuses a null/blank provider outright");
+    const iRes = chainSrc.indexOf('if (!provider || typeof provider !== "string") return null;');
+    ok(iRes > 0 && iRes < chainSrc.indexOf("readSlot(providerModelSlot(provider))") && iRes < chainSrc.indexOf("readSlot(providerAgentModelSlot(provider))"),
+      "…and that refusal precedes every slot read, so the null-provider model slot is never asked for");
+    ok(!/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL)_\$\{/.test(chainSrc),
+      "…and the chain derives its slot NAMES from src/shared/provider-slots.js rather than retyping them");
+    // EXECUTED, BINDING + CHAIN TOGETHER: with a faulted provider read the model is null,
     // the memo stays empty, and — the part a source read cannot prove — storage is never
-    // touched at all. MEASURED against both mutations: removing getOpenAIModel's guard
-    // fails the two source assertions above; removing the RESOLVER's fails the ordering
-    // assertion above, and the counter here is what would catch it once any caller reaches
-    // the resolver with a provider it did not check.
+    // touched at all. The chain here is the REAL shared function, not an eval of a body.
     {
       let reads = 0;
       const storageStub = { get: async () => { reads++; return "should-never-be-read"; }, set: async () => { reads++; } };
-      const fn = eval("(async (getProviderConfig, storage, providerModelSlot, providerKeySlot, providerAgentModelSlot, PROVIDERS, MANAGED_PROVIDER_ID, clampManagedModel, FORGE_LLM_MODELS, FORGE_LLM_DEFAULT, console, process) => {"
+      const fn = eval("(async (getProviderConfig, storage, resolveModelChain, PROVIDERS, console, process) => {"
         + "let _cachedModel = null, _cachedModelAt = 0; const _cacheFresh = () => Date.now() - _cachedModelAt < 30000;"
-        + rb + "\n"
+        + bb + "\n"
         + mb.replace("const getOpenAIModel = async () => {", "const f = async () => {").replace(/;\s*$/, "")
         + "; const out = await f(); return { out, _cachedModel }; })");
-      const res2 = await fn(async () => ({ provider: null, baseUrl: null }), storageStub,
-        (p) => `COGNIRUNNER_MODEL_${p}`, (p) => `COGNIRUNNER_KEY_${p}`, (p) => `COGNIRUNNER_AGENT_MODEL_${p}`,
-        { openai: { defaultModel: "gpt-5.4-mini" } }, "managed", (m) => m,
-        { advanced: [], standard: [] }, "claude-haiku-4-5-20251001", { error() {}, log() {} }, { env: {} });
+      const res2 = await fn(async () => ({ provider: null, baseUrl: null }), storageStub, chain,
+        { openai: { defaultModel: "gpt-5.4-mini" } }, { error() {}, log() {} }, { env: {} });
       ok(res2.out === null, "EXECUTED: a null provider yields NO model");
       ok(res2._cachedModel === null, "EXECUTED: …and nothing is written to the 30s model memo");
       ok(reads === 0, "EXECUTED: …and NO slot is read or written at all (both guards, not just the outer one)");
     }
-    // EXECUTED — THE PARITY THE TWO READERS OWE EACH OTHER (F-818). With the agent slot
-    // empty, the ordinary reader and the agent reader must answer the SAME model for every
-    // provider; that is the whole point of one home, and it is what silently stopped being
-    // true while the chain had two.
+    // EXECUTED — THE PARITY THE TWO SYNC READERS OWE EACH OTHER (F-818). With the agent
+    // slot empty, the ordinary reader and the agent reader must answer the SAME model for
+    // every provider; that is the whole point of one home, and it is what silently stopped
+    // being true while the chain had two.
     {
       const gam = codeOnly.match(/export const getAgentModelFor = async \(provider\) => [\s\S]*?;\n/);
       ok(!!gam, "found getAgentModelFor");
@@ -510,19 +523,15 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
         anthropic: { defaultModel: "claude-sonnet-4-5" }, openrouter: { defaultModel: "or/x" },
         lmstudio: { defaultModel: "local-x" }, managed: { defaultModel: "anthropic/claude-sonnet-5" },
         atlassian: { defaultModel: "claude-haiku-4-5-20251001" } };
-      const forgeModels = { advanced: ["claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5"], standard: ["claude-haiku-4-5-20251001"] };
-      const clampManaged = (m) => (["anthropic/claude-sonnet-5", "anthropic/claude-opus-5"].includes(m) ? m : "anthropic/claude-sonnet-5");
-      const build = eval("((storage, providerModelSlot, providerKeySlot, providerAgentModelSlot, PROVIDERS, MANAGED_PROVIDER_ID, clampManagedModel, FORGE_LLM_MODELS, FORGE_LLM_DEFAULT, console, process) => {"
+      const build = eval("((storage, resolveModelChain, PROVIDERS, console, process) => {"
         + "let _cachedModel = null, _cachedModelAt = 0; const _cacheFresh = () => Date.now() - _cachedModelAt < 30000;"
-        + rb + "\n" + gam[0].replace("export const", "const") + "\n"
+        + bb + "\n" + gam[0].replace("export const", "const") + "\n"
         + mb.replace("const getOpenAIModel = async () => {", "const getOpenAIModelFor = async (provider) => { _cachedModel = null;").replace("const { provider } = await getProviderConfig();", "")
         + "\n return { getAgentModelFor, getOpenAIModelFor }; })");
       for (const [slotValue, label] of [[null, "empty slots"], ["some-saved-model", "an ordinary saved model"], ["anthropic/claude-opus-5", "a vendor-prefixed id"]]) {
         const store = new Map();
         const storage2 = { get: async (k) => (slotValue && k.startsWith("COGNIRUNNER_MODEL_") ? slotValue : (store.get(k) ?? null)), set: async (k, v) => { store.set(k, v); } };
-        const { getAgentModelFor: agentFn, getOpenAIModelFor: plainFn } = build(storage2,
-          (p) => `COGNIRUNNER_MODEL_${p}`, (p) => `COGNIRUNNER_KEY_${p}`, (p) => `COGNIRUNNER_AGENT_MODEL_${p}`,
-          providers, "managed", clampManaged, forgeModels, "claude-haiku-4-5-20251001", { error() {}, log() {} }, { env: {} });
+        const { getAgentModelFor: agentFn, getOpenAIModelFor: plainFn } = build(storage2, chain, providers, { error() {}, log() {} }, { env: {} });
         for (const p of Object.keys(providers)) {
           const a = await agentFn(p);
           const b = await plainFn(p);
@@ -530,6 +539,77 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
         }
       }
     }
+  }
+}
+// =====================================================================================
+// F-826 — THE PARITY THE TWO PROCESSES OWE EACH OTHER.
+//
+// The consumer's getOpenAIModel was the THIRD copy of the chain: its own default table,
+// no legacy migration, NO Forge LLM resolution belt, and a tail that answered
+// "gpt-5.4-mini" on a faulted read where the sync seam answered null. A queued
+// codegen/fix/distill task could resolve a different model from the one the sync resolver
+// would have used for the same instance. Both are now bindings of the same pure function,
+// and the property is asserted by EXECUTING both over every provider × slot state.
+//
+// THE RECONCILED TAIL, pinned here: a NULL provider answers null in BOTH (F-112 — callers
+// bail on the key); a FAULTED SLOT READ answers the provider's default model in BOTH, with
+// the fault logged (CLAUDE.md's default-model fallback — a KVS blip must not take a working
+// instance offline). The consumer used to conflate the two by wrapping its PROVIDER read in
+// the same try/catch as its slot reads.
+// =====================================================================================
+{
+  const bind = codeOnly.match(/const resolveModelForProvider = async \(provider, \{[^}]*\} = \{\}\) => resolveModelChain\(\{[\s\S]*?\n\}\);/);
+  const cons = asyncSrc.match(/const getOpenAIModel = async \(providerOverride = null\) => \{[\s\S]*?\n\};/);
+  ok(!!bind && !!cons, "found both bindings of the model chain");
+  ok(!/const PROVIDER_DEFAULT_MODELS = \{/.test(asyncSrc),
+    "the consumer keeps NO second default-model table (F-826)");
+  const syncBind = eval("((storage, resolveModelChain, PROVIDERS, console, process) => { "
+    + bind[0].replace("const resolveModelForProvider =", "const f =") + " return f; })");
+  const consBind = eval("((storage, resolveModelChain, getProviderConfig, console, process) => { "
+    + cons[0].replace("const getOpenAIModel =", "const f =") + " return f; })");
+  const providers = { openai: { defaultModel: "gpt-5.4-mini" }, azure: { defaultModel: "gpt-5.4-mini" },
+    anthropic: { defaultModel: "claude-haiku-4-5-20251001" }, openrouter: { defaultModel: "openai/gpt-5.4-mini" },
+    lmstudio: { defaultModel: null }, bedrock: { defaultModel: "eu.anthropic.claude-sonnet-4-6" },
+    managed: { defaultModel: "anthropic/claude-sonnet-5" }, atlassian: { defaultModel: FORGE_LLM_DEFAULT } };
+  const states = [
+    ["empty slots", () => null],
+    ["an ordinary saved model", (k) => (k.startsWith("COGNIRUNNER_MODEL_") ? "some-saved-model" : null)],
+    ["a vendor-prefixed id in the model slot", (k) => (k.startsWith("COGNIRUNNER_MODEL_") ? "anthropic/claude-opus-5" : null)],
+    ["a frontier Forge id in the model slot", (k) => (k.startsWith("COGNIRUNNER_MODEL_") ? "claude-opus-5" : null)],
+    ["a junk managed id", (k) => (k.startsWith("COGNIRUNNER_MODEL_") ? "openai/gpt-4o" : null)],
+    ["an agent slot set (the ordinary path must ignore it)", (k) => (k.startsWith("COGNIRUNNER_AGENT_MODEL_") ? "agent-only-model" : null)],
+    ["a legacy slot + a BYOK key (migration is the ACTIVE-provider path's alone)",
+      (k) => (k === "COGNIRUNNER_OPENAI_MODEL" ? "legacy-model" : (k.startsWith("COGNIRUNNER_KEY_") ? "sk-x" : null))],
+    ["a FAULTED slot read", () => { throw new Error("kvs blip"); }],
+  ];
+  const quiet = { error() {}, log() {} };
+  for (const [label, get] of states) {
+    for (const p of Object.keys(providers)) {
+      const storage2 = { get: async (k) => get(k), set: async () => {} };
+      // The sync binding as the queued path's equivalent: no migration write, ordinary
+      // slot. (getOpenAIModel adds migrate:true; the consumer deliberately does not
+      // migrate, so the comparable call is migrate:false on both.)
+      const a = await syncBind(storage2, chain, providers, quiet, { env: {} })(p, {});
+      const b = await consBind(storage2, chain, async () => ({ provider: p }), quiet, { env: {} })(p);
+      ok(String(a) === String(b), `PROCESS PARITY (${label}): sync and consumer agree for ${p} (${a} vs ${b})`);
+    }
+  }
+  // THE TAIL, both directions, pinned explicitly.
+  {
+    const faulted = { get: async () => { throw new Error("kvs blip"); }, set: async () => {} };
+    const a = await syncBind(faulted, chain, providers, quiet, { env: {} })("anthropic", {});
+    const b = await consBind(faulted, chain, async () => ({ provider: "anthropic" }), quiet, { env: {} })("anthropic");
+    ok(a === "claude-haiku-4-5-20251001" && b === a,
+      `a FAULTED SLOT read answers the provider's DEFAULT model in BOTH (${a} vs ${b}) — a KVS blip must not take a working instance offline`);
+    let logged = 0;
+    await chain({ provider: "anthropic", readSlot: async () => { throw new Error("blip"); }, log: { error() { logged++; }, log() {} } });
+    ok(logged === 1, "…and the fault is LOGGED, not swallowed");
+    // A faulted PROVIDER read is the OTHER case and answers null in both: the consumer used
+    // to answer "gpt-5.4-mini" here because one try/catch covered both reads.
+    const c = await consBind(faulted, chain, async () => { throw new Error("provider read blip"); }, quiet, { env: {} })(null);
+    ok(c === null, `a FAULTED PROVIDER read answers NO model in the consumer too (got ${c}) — callers bail on the key (F-112)`);
+    const d = await consBind(faulted, chain, async () => ({ provider: null }), quiet, { env: {} })(null);
+    ok(d === null, "…and so does a provider read that simply names none");
   }
 }
 {

@@ -28,8 +28,11 @@ import { chat as forgeLlmChatApi } from "@forge/llm";
 // queued job while the synchronous path refused it. Same rule, one home, both seams.
 import {
   clampForgeLlmModel, FORGE_LLM_DEFAULT, EDITION_IDS,
-  MANAGED_PROVIDER_ID, MANAGED_DEFAULT_MODEL, clampManagedModel,
+  MANAGED_PROVIDER_ID, clampManagedModel,
 } from "./shared/edition.js";
+// F-826 — the model-resolution chain, its policies and its default-model table live in
+// ONE home that both processes bind. This consumer cannot import src/index.js.
+import { resolveModelForProvider as resolveModelChain } from "./shared/model-resolution.js";
 // Heavy post-functions (MCP-backed: generate-doc, research, fact-checked semantics)
 // are queued by executePostFunction and run HERE under this consumer's 120s timeout —
 // the inline jira:workflowPostFunction invocation is hard-capped at 25s by the platform.
@@ -203,35 +206,54 @@ const currentEditionFresh = async () => {
   }
 };
 
-const PROVIDER_DEFAULT_MODELS = {
-  openrouter: "openai/gpt-5.4-mini",
-  anthropic: "claude-haiku-4-5-20251001",
-  atlassian: FORGE_LLM_DEFAULT, // imported, never re-typed — the two must not drift
-  managed: MANAGED_DEFAULT_MODEL, // likewise — src/shared/edition.js owns the offer
-  lmstudio: "gpt-5.4-mini", // placeholder — LM Studio admins always save a model
-  bedrock: "eu.anthropic.claude-sonnet-4-6", // EU inference-profile id (fallback; admins pick a model)
-};
-
+/**
+ * F-826 — THE CONSUMER'S BINDING OF THE ONE MODEL CHAIN.
+ *
+ * This was the THIRD copy of the chain. It had its own PROVIDER_DEFAULT_MODELS table, no
+ * legacy-slot migration, no Forge LLM resolution belt (so a queued task on `atlassian`
+ * whose model slot was written while another provider was active named THAT vendor's id),
+ * and a tail that answered "gpt-5.4-mini" on a faulted PROVIDER read where the sync seam
+ * answered null. A queued codegen/fix/distill task could therefore resolve a different
+ * model from the one the sync resolver would have used for the same instance — the F-811
+ * class, one process over.
+ *
+ * The chain and every policy now live in src/shared/model-resolution.js, which this
+ * process and src/index.js both bind. The ONLY differences allowed here are the ones this
+ * process genuinely owns:
+ *   - the storage read is UNCACHED (`getProviderConfig` is readProviderConfigFresh): this
+ *     consumer runs in a warm container that no provider switch can invalidate, so a memo
+ *     here would keep serving a stale provider's model to queued work.
+ *   - `migrate: false` — the one-time legacy-slot WRITE belongs to the interactive
+ *     active-provider path, not to a queued job that may be running for any provider.
+ *   - `providerOverride` — a task carries the provider it was queued for.
+ *
+ * THE TAIL, RECONCILED (one behaviour in both processes): a NULL provider answers null
+ * BEFORE the chain is entered, so callers bail on the key exactly as the sync seam does;
+ * a FAULTED SLOT read answers the provider's default model with the fault logged, inside
+ * the shared chain. The old code conflated the two by wrapping the provider read in the
+ * same try/catch as the slot reads.
+ */
 const getOpenAIModel = async (providerOverride = null) => {
-  try {
-    const provider = providerOverride || (await getProviderConfig()).provider;
-    // No provider (F-109) → no model. Returning a default here would hand an OpenAI
-    // model id to whatever the caller routes to next; the callers bail on the key first.
-    if (!provider) return null;
-    // Read the saved model unconditionally — keyless providers (LM Studio, Forge LLM)
-    // have no BYOK key, and gating on one made their saved model invisible here.
-    const savedModel = await storage.get(providerModelSlot(provider));
-    // Same server-side backstop as the sync seam: a managed slot holding anything
-    // outside the offer resolves to Sonnet 5 rather than billing LeanZero for it.
-    if (savedModel && provider === MANAGED_PROVIDER_ID) return clampManagedModel(savedModel);
-    if (savedModel) return savedModel;
-    // OPENAI_MODEL env var only makes sense for OpenAI-style factory deployments.
-    if (process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) {
-      return process.env.OPENAI_MODEL;
+  let provider = providerOverride || null;
+  if (!provider) {
+    try {
+      provider = (await getProviderConfig()).provider;
+    } catch (e) {
+      // A faulted PROVIDER read names no provider (F-103/F-112) — and NOT a default model.
+      // Answering "gpt-5.4-mini" here would hand an OpenAI id to whatever the caller routes
+      // to next; the callers bail on the key first.
+      console.error("[async] provider read faulted while resolving a model:", e && e.message);
+      provider = null;
     }
-    if (PROVIDER_DEFAULT_MODELS[provider]) return PROVIDER_DEFAULT_MODELS[provider];
-  } catch (e) { /* fall through */ }
-  return process.env.OPENAI_MODEL || "gpt-5.4-mini";
+  }
+  if (!provider) return null;
+  return resolveModelChain({
+    provider,
+    readSlot: (key) => storage.get(key),
+    env: process.env,
+    migrate: false,
+    log: console,
+  });
 };
 
 // The consumer no longer keeps a PROVIDERS base-URL table: the base URL now comes with

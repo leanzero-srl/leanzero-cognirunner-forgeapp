@@ -25,7 +25,7 @@ import path from "node:path";
 import {
   EDITIONS, EDITION_IDS, normalizeModelId, resolveEdition, ADVANCED_FEATURES, isFeatureAllowed,
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
-  forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, agentCapability,
+  forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, agentCapability, MANAGED_DEFAULT_MODEL,
 } from "../../src/shared/edition.js";
 
 let pass = 0, fail = 0;
@@ -176,15 +176,30 @@ for (const r of ["byok", "needs-coder-edition", "needs-frontier-model", "allowan
 }
 
 // =====================================================================================
-// LOCKSTEP: FORGE_LLM_DEFAULT === PROVIDERS.atlassian.defaultModel in src/index.js
+// LOCKSTEP: FORGE_LLM_DEFAULT === the atlassian default model, wherever it is declared
 // =====================================================================================
+// F-826 — the default-model LITERALS left src/index.js: `PROVIDERS` there now carries only
+// the label and the base URL, and every `defaultModel` is a reference into the ONE table,
+// `PROVIDER_DEFAULT_MODELS` in src/shared/model-resolution.js (which the async consumer
+// binds too, since it cannot import index.js). So the lockstep is asserted at the one home
+// AND the reference is asserted at the call site — a re-typed literal in index.js fails.
 {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
-  const m = indexSrc.match(/atlassian:\s*\{[^}]*defaultModel:\s*"([^"]+)"/);
+  const { PROVIDER_DEFAULT_MODELS } = await import("../../src/shared/model-resolution.js");
+  ok(PROVIDER_DEFAULT_MODELS.atlassian === FORGE_LLM_DEFAULT,
+    `PROVIDER_DEFAULT_MODELS.atlassian (${PROVIDER_DEFAULT_MODELS.atlassian}) === FORGE_LLM_DEFAULT (${FORGE_LLM_DEFAULT}) — the clamp target and the provider default must not drift`);
+  ok(PROVIDER_DEFAULT_MODELS.managed === MANAGED_DEFAULT_MODEL,
+    "PROVIDER_DEFAULT_MODELS.managed is the IMPORTED managed default, not a re-typed literal");
+  const m = indexSrc.match(/atlassian:\s*\{[^}]*defaultModel:\s*([^,}]+)/);
   ok(!!m, "found PROVIDERS.atlassian.defaultModel in src/index.js");
-  ok(m && m[1] === FORGE_LLM_DEFAULT,
-    `PROVIDERS.atlassian.defaultModel (${m && m[1]}) === FORGE_LLM_DEFAULT (${FORGE_LLM_DEFAULT}) — the clamp target and the provider default must not drift`);
+  ok(m && m[1].trim() === "PROVIDER_DEFAULT_MODELS.atlassian",
+    `PROVIDERS.atlassian.defaultModel reads the shared table, not a literal (got ${m && m[1].trim()})`);
+  // No entry of PROVIDERS may carry a string default any more — that is the second table.
+  const pstart = indexSrc.indexOf("const PROVIDERS = {");
+  const pblock = indexSrc.slice(pstart, indexSrc.indexOf("\n};", pstart));
+  ok(!/defaultModel:\s*["'`]/.test(pblock),
+    "no PROVIDERS entry re-types a default model as a literal — src/shared/model-resolution.js is the one home");
 }
 
 // =====================================================================================

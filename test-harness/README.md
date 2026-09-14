@@ -259,6 +259,50 @@ is deliberately two-environment and its override is now `--staging-envid`.
 because they `process.exit(2)` — and asserts each arrives **without** an env file, which is
 what keeps the "refuse before `loadEnv`" ordering honest.
 
+### Git drivers: the webtrigger URL, and the state file (F-764)
+
+Two things make the git drivers look broken on a machine that is otherwise configured, and
+neither is a defect. Both cost the tester a session before they were written down.
+
+**`GIT_WEBHOOK_URL` is minted by hand, once per environment.** It is not the test-state
+trigger and it is not derivable from it — it is the app's own `git-webhook` web trigger, the
+url GitHub posts deliveries to. Without it `git-webhook-setup-live.mjs` and
+`git-rotation-window-live.mjs` exit 2 immediately. Mint it with:
+
+```bash
+forge webtrigger create -f git-webhook -e development     # then: --help for the non-interactive flags
+```
+
+**Treat the result as a secret and never print it.** Its path token is unguessable and is the
+only thing between the open internet and the app's inbound delivery path. HMAC verification
+means a leaked url cannot forge a *delivery*, which is why the dev hook masks rather than
+refuses (`listGitWebhooks` returns `urlMasked{host, conn, repo, fingerprint}` and no `url` at
+all), but a url pasted into a terminal, a commit or an evidence file has been published.
+It goes in `test-harness/.env` as `GIT_WEBHOOK_URL=…` and nowhere else — `.env` is
+git-ignored, and `evidence-redaction.test.mjs` is what keeps it out of the artefacts. The
+same applies to `forge webtrigger list`: read it, do not paste it.
+
+**`results/git-webhook-setup/state.json` outlives the objects it names.** It is written by
+`git-webhook-setup-live.mjs setup` and carries `conn1` / `hook1` / `label1` — the connection
+and GitHub hook that `git-rotation-window-live.mjs` **borrows**. Its lifecycle:
+
+| step | what happens to the file |
+|---|---|
+| `git-webhook-setup-live.mjs setup` | written — the fixture now exists |
+| `... rotate` / `... listener` / `... pr` … | updated in place after each phase |
+| `git-rotation-window-live.mjs <window\|fault>` | **read only** — this driver owns nothing, and its `finally` proves it did not break what it borrowed |
+| `git-webhook-setup-live.mjs cleanup` | the objects are deleted and **the file is left behind**, now naming things that are gone |
+
+That last row is the trap. The rotation driver used to trust the file on `existsSync` alone
+and opened with `FAIL the connection row has no webhook record for <repo>` — which reads as a
+product defect and is in fact stale harness bookkeeping. It now does **one liveness read of
+the connection through the hook before any phase runs**: if `listGitConnections` no longer has
+`conn1`, the file is **renamed aside** to `state.stale-<timestamp>.json` (renamed, not deleted
+— it is the evidence of which id went missing) and the driver stops with a sentence saying so
+and telling you to re-run `setup` then `rotate`. If `listGitConnections` cannot be read *at
+all*, the file is left exactly as it is: an unreachable hook is not evidence of a missing
+connection, and a guess in that direction would throw away a good fixture over a blip.
+
 ### JSM & Assets prerequisites
 
 `test:jsm-assets` needs the API user to be a **service-desk agent AND project admin**

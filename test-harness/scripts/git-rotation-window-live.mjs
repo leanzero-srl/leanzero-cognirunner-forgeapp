@@ -112,12 +112,9 @@ const hookUrl = (connId) => gitHookUrl(TRIGGER, connId, REPO);
 async function main() {
   console.log("\nF-481 - THE ROTATION WINDOW, live on DEV against a real GitHub repository\n");
   if (!TRIGGER) throw new Error("GIT_WEBHOOK_URL is required (forge webtrigger list -f git-webhook -e development)");
-  if (!fs.existsSync(STATE)) throw new Error("run `node scripts/git-webhook-setup-live.mjs setup` then `... rotate` first");
-  const st = JSON.parse(fs.readFileSync(STATE, "utf8"));
-  const connId = st.conn1, hookId = st.hook1;
-  if (!connId || !hookId) throw new Error("the setup state has no conn1/hook1");
-  borrowed.connId = connId; borrowed.hookId = hookId;
-  info(`connection ${connId}, GitHub hook ${hookId}, repo ${REPO}`);
+  /* F-764 — the borrowed fixture is PROVEN to exist before anything is asserted about it,
+     so a deleted connection reads as stale state and not as a product FAIL. */
+  const { connId, hookId } = await loadBorrowedState();
 
   /* ── STEP 1 — the banner field, as the Code tab reads it ─────────────────── */
   console.log("STEP 1 - the F-481 banner field on the connection row");
@@ -281,16 +278,74 @@ const readRec = async (connId) => {
   return { row, rec: row && row.webhooks && row.webhooks[REPO] };
 };
 
+/* ── F-764 — THE STATE FILE IS A CLAIM, NOT A FACT ────────────────────────────────
+ * `results/git-webhook-setup/state.json` is written by `git-webhook-setup-live.mjs setup`
+ * and OUTLIVES the objects it names: run `cleanup`, or let anything else remove the
+ * connection, and the file still sits there naming a `conn1` that no longer exists. Both
+ * phases here used to trust it on `existsSync` alone, so the run opened with
+ *
+ *     FAIL  the connection row has no webhook record for <repo>
+ *
+ * which reads as a DEFECT IN THE PRODUCT and is in fact a defect in the harness's own
+ * bookkeeping. The tester lost time to it. A stale file must be diagnosed as a stale file.
+ *
+ * So: one liveness READ through the hook, before any phase does anything, and a stale file
+ * is RENAMED ASIDE rather than deleted — it is evidence of what the last run thought it
+ * owned, and the next person may want to see the id that went missing. The sentence names
+ * what was gone and what to run.
+ *
+ * DELIBERATELY NOT RENAMED when `listGitConnections` cannot be READ at all: an unreachable
+ * hook is not evidence of a missing connection, and a guess in that direction would throw
+ * away a good state file over a network blip. That is the F-686 "prove the negative on the
+ * same object" rule — a read that failed is not a read that returned nothing.
+ *
+ * The GitHub half (does `hook1` still exist on the repo?) is NOT checked here: the `finally`
+ * at the bottom already proves it against `gh api /repos/…/hooks`, and the phases need the
+ * connection to be live long before they need the hook id.
+ */
+async function loadBorrowedState({ needLabel = false } = {}) {
+  if (!fs.existsSync(STATE)) {
+    throw new Error("run `node scripts/git-webhook-setup-live.mjs setup` then `... rotate` first — there is no state file to borrow from");
+  }
+  const st = JSON.parse(fs.readFileSync(STATE, "utf8"));
+  const { conn1: connId, hook1: hookId, label1: label } = st;
+  if (!connId || !hookId || (needLabel && !label)) {
+    throw new Error(`the setup state names no conn1/hook1${needLabel ? "/label1" : ""} — re-run \`git-webhook-setup-live.mjs setup\``);
+  }
+
+  const conns = await invoke("listGitConnections", {});
+  const rows = conns.body && conns.body.connections;
+  if (!Array.isArray(rows)) {
+    throw new Error(
+      `listGitConnections could not be read (HTTP ${conns.status} ${JSON.stringify(conns.body || conns.raw).slice(0, 160)}), ` +
+      "so the state file is NEITHER confirmed nor stale and has been left exactly as it is — fix the hook and run again"
+    );
+  }
+  const row = rows.find((c) => c.id === connId);
+  if (!row) {
+    const aside = STATE.replace(/\.json$/, `.stale-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+    fs.renameSync(STATE, aside);
+    throw new Error(
+      `STALE STATE, not a product defect: the state file named connection ${connId}, and listGitConnections no longer has it ` +
+      `(${rows.length} connection(s) exist) — something removed it after the last setup, most likely ` +
+      "`git-webhook-setup-live.mjs cleanup`. The file has been renamed aside to " +
+      `${aside.split("/").pop()} rather than deleted, so the id that went missing is still readable. ` +
+      "Run `node scripts/git-webhook-setup-live.mjs setup` then `... rotate` to build a fresh fixture."
+    );
+  }
+
+  borrowed.connId = connId; borrowed.hookId = hookId;
+  info(`state file VALIDATED by a live read: connection ${connId} exists${label ? ` ("${label}")` : ""}, GitHub hook ${hookId}, repo ${REPO}`);
+  return { st, connId, hookId, label, row };
+}
+
 async function faultPhase() {
   console.log("\nF-504 / F-481 / F-491 — the ROTATION-FAILED window, driven for real on DEV\n");
   if (!TRIGGER) throw new Error("GIT_WEBHOOK_URL is required");
   if (!process.env.GH_TOKEN) throw new Error("GH_TOKEN is required");
-  if (!fs.existsSync(STATE)) throw new Error("run `node scripts/git-webhook-setup-live.mjs setup` first");
-  const st = JSON.parse(fs.readFileSync(STATE, "utf8"));
-  const { conn1: connId, hook1: hookId, label1: label } = st;
-  if (!connId || !hookId || !label) throw new Error("the setup state has no conn1/hook1/label1");
-  borrowed.connId = connId; borrowed.hookId = hookId;
-  info(`connection ${connId} ("${label}"), GitHub hook ${hookId}, repo ${REPO}`);
+  /* F-764 — same liveness read; this phase also needs the LABEL, because it finds the
+     connection card in the admin UI by its name. */
+  const { connId, hookId, label } = await loadBorrowedState({ needLabel: true });
 
   /* ── STEP 0 — the baseline, and the negative control on the SAME url ─────── */
   console.log("STEP 0 — baseline: the hook is healthy and its signature IS checked");

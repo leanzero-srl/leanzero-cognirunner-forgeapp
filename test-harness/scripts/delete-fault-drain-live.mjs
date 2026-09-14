@@ -108,6 +108,7 @@ import { redactString, redactSecrets } from "../lib/redact.mjs";
 import {
   drainSweep, answerComplete, decideSweepStep, newDrainState,
   IDENTICAL_ANSWER_LIMIT, DELETES_FAILING_BACKOFF_MS, plantPopulation,
+  leverFacts,
 } from "../lib/sweep-drain.mjs";
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -486,16 +487,12 @@ export const armFacts = (j) => ({
   reason: j?.reason ?? null,
 });
 
-/** What the lever says right now, without naming its key. `armed:false`/`count:0` = not armed. */
-export const leverFacts = (j) => ({
-  ok: j?.ok ?? null,
-  prefix: j?.prefix ?? null,
-  armed: Boolean(j?.value),
-  count: j?.value?.count ?? 0,
-  mode: j?.value?.mode ?? null,
-  expired: j?.expired ?? null,
-  until: j?.value?.until ?? null,
-});
+/* What the lever says right now, without naming its key. `armed:false`/`count:0` = not armed.
+   F-772 — this reader moved to `lib/sweep-drain.mjs`: `plant-sweep-live.mjs` had written a
+   SECOND one in the ARM answer's flat shape and its `--stale` arm was dead from the day it
+   shipped. One home, both drivers. Re-exported so this file's own offline suite, which has
+   always imported it from here, keeps its import. */
+export { leverFacts };
 
 const PLANT_PREFIX = "harness_fault:plant:";
 

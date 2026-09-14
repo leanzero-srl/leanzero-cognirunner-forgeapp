@@ -293,6 +293,44 @@ export async function drainSweep(post, opts = {}) {
  *     would be measuring a keyspace nobody planted.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
+/*
+ * F-772 — WHAT THE DELETE-FAULT LEVER SAYS RIGHT NOW, READ IN THE *READ* ANSWER'S SHAPE.
+ *
+ * There are TWO answer shapes in this family and they are not the same shape:
+ *
+ *   · the ARM answer (`armDeleteFault` via the hook) is FLAT —
+ *     `{ ok, key, prefix, mode, count, ttlSeconds, until, modes, maxCount, maxTtlSeconds }`.
+ *   · the READ answer (`readDeleteFault` -> `readHarnessFault`) is NESTED —
+ *     `{ ok, prefix, key, value: { mode, count, armedAt } | null, until, expired }`.
+ *
+ * `plant-sweep-live.mjs` read the READ answer in the ARM answer's flat shape, so `armed`,
+ * `mode` and `count` were `undefined` on every tenant: its `--stale` arm died at step 2 on
+ * the positive control, and its step 6 "the lever is spent" check read `count: undefined`
+ * as `0` and PASSED without ever looking at the lever. A false FAIL and a false PASS out of
+ * one wrong shape — which is what a SECOND home of one rule buys. `delete-fault-drain-live`
+ * had the correct reader; it lives here now and both drivers call this one.
+ *
+ * `armed` is `Boolean(value)` and NOT `count > 0`: an expired or absent row answers
+ * `value: null`, and F-664 has `readHarnessFault` delete a row past its window on the way
+ * out, so "this cannot be read" and "this is not armed" are deliberately one answer.
+ *
+ * `until` is read TOP-LEVEL first because that is where both real answers carry it —
+ * `setFaultRow` stores `{ mode, count, armedAt }` and the window is computed outside the
+ * row, so a `value.until`-only reader reports `null` on every live run. The `value.until`
+ * fallback is kept so an older recorded fixture still reads the same field.
+ *
+ * The KEY is never among the recorded facts: it names the prefix the lever guards.
+ */
+export const leverFacts = (j) => ({
+  ok: j?.ok ?? null,
+  prefix: j?.prefix ?? null,
+  armed: Boolean(j?.value),
+  count: j?.value?.count ?? 0,
+  mode: j?.value?.mode ?? null,
+  expired: j?.expired ?? null,
+  until: j?.until ?? j?.value?.until ?? null,
+});
+
 /** How many CONSECUTIVE `clearing` answers are an identical re-POST worth making. */
 export const PLANT_CLEARING_LIMIT = 4;
 /** The pause between those identical re-POSTs. The clear is I/O-bound; hammering it helps nobody. */

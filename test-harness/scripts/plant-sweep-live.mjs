@@ -78,7 +78,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
-import { drainSweep, answerComplete, plantPopulation, plantLedgerRow } from "../lib/sweep-drain.mjs";
+import { drainSweep, answerComplete, plantPopulation, plantLedgerRow, leverFacts } from "../lib/sweep-drain.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -134,6 +134,21 @@ const PLANT_PREFIX = "harness_fault:plant:";
 
 const OUT = new URL("../results/plant-sweep", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
+
+/*
+ * F-774 — ONE EVIDENCE FILE PER ARM, BECAUSE THE TWO ARMS PROVE DIFFERENT THINGS.
+ *
+ * `--stale` and the plain run are not two runs of one driver; they are two drivers sharing
+ * a file. The plain arm ends at a swept keyspace; the `--stale` arm is the ONLY witness to
+ * the re-POST trail — `clearedSoFar`, `remainingStale`, `clearToken`, the lever readings.
+ * Both wrote `evidence.json`, so an operator following the instruction to run BOTH ended up
+ * with whichever they ran SECOND, and running the plain arm last silently destroyed the
+ * only evidence with a `stale` key in it. Nothing failed; the claims just were not there.
+ *
+ * The file NAMES the arm, and the summary line prints the name it actually wrote — a
+ * reporter who copies the path out of the terminal then cannot cite the wrong file.
+ */
+const EV_NAME = STALE ? "evidence.stale.json" : "evidence.json";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let passes = 0, fails = 0, unproven = 0;
@@ -237,7 +252,8 @@ const ok200 = (res) => res.status === 200 && res.json?.ok === true;
  * `resume` nor `clearedSoFar` although `plantPopulation` branches the entire loop on the
  * first and reports all its stale-tail progress in the second. A ledger that omits the field
  * the loop switched on cannot tell a stale-tail resume from a start-index resume, which is
- * exactly the pair an operator reading `results/plant-sweep/evidence.json` needs to tell
+ * exactly the pair an operator reading this run's evidence file (F-774: `evidence.json` for
+ * the plain arm, `evidence.stale.json` for `--stale`) needs to tell
  * apart. One home, so the next field added to the answer is added once.
  */
 const plantTo = (n, expired) => plantPopulation((count, startIndex, clearToken) => plant(count, expired, startIndex, clearToken), n, {
@@ -295,8 +311,14 @@ async function stalePhase() {
   step(`2 · arm armDeleteFault mode:"refuse" count=${STALE_REFUSALS} — the stall`);
   const armed = await hook({ action: "armDeleteFault", mode: "refuse", count: STALE_REFUSALS, ttlSeconds: STALE_TTL_SECONDS });
   if (!ok200(armed)) { FAIL(`armDeleteFault did not answer 200/ok (HTTP ${armed.status})`, { reason: armed.json?.reason ?? null }); return; }
+  /* F-772 — the READ answer is NESTED (`value: { mode, count }`), the ARM answer is FLAT.
+     This read used to be parsed in the ARM's shape, so `armed`/`mode`/`count` were undefined
+     on every tenant and this positive control FAILED on every run: the arm below has never
+     executed live. `leverFacts` is the ONE reader of this door, shared with
+     `delete-fault-drain-live.mjs`, and `sweep-drain-decision.test.mjs` pins it to the
+     recorded read shape so a flat answer can never be mistaken for an armed lever again. */
   const read = await hook({ action: "readDeleteFault" });
-  const lever = ok200(read) ? { armed: read.json.armed ?? null, mode: read.json.mode ?? null, count: read.json.count ?? null } : null;
+  const lever = ok200(read) ? leverFacts(read.json) : null;
   ev.stale.lever = lever;
   if (lever && lever.armed === true && Number(lever.count) > 0) PASS(`readDeleteFault SEES the lever: mode=${lever.mode} count=${lever.count} — the positive control for the "it is spent" read at the end`, lever);
   else { FAIL("readDeleteFault did not read back the lever that was just armed — nothing below could be attributed to it", lever); return; }
@@ -366,11 +388,16 @@ async function stalePhase() {
 
   /* ── 6 · THE LEVER IS SPENT, by the same read that saw it armed. */
   step("6 · the lever, read back");
+  /* F-772 — the same ONE reader as the positive control in step 2, and for a second reason:
+     read flat, `count` was `undefined` here, `Number(undefined || 0) === 0` was TRUE, and
+     this step announced "the lever is spent" on every run WITHOUT EVER READING THE LEVER.
+     A false PASS is worse than the false FAIL above, because nothing goes red to report it. */
   const after = await hook({ action: "readDeleteFault" });
-  const spent = ok200(after) ? { armed: after.json.armed ?? null, count: after.json.count ?? null, expired: after.json.expired ?? null } : null;
+  const spent = ok200(after) ? leverFacts(after.json) : null;
   ev.stale.leverAfter = spent;
-  if (spent && Number(spent.count || 0) === 0) PASS(`readDeleteFault answers count:0 (armed=${spent.armed}) — the units went into the refusals observed above`, spent);
-  else NV(`readDeleteFault still reports count=${spent && spent.count} — not every armed unit was consumed by this trail, so some refusals above may belong to fewer batches than armed`, spent);
+  if (!spent) FAIL(`readDeleteFault did not answer 200/ok (HTTP ${after.status}) — whether the lever spent itself is unknown, and step 2 proved this same query CAN see it`, { status: after.status });
+  else if (Number(spent.count || 0) === 0) PASS(`readDeleteFault answers count:0 (armed=${spent.armed}, expired=${spent.expired}) — the units went into the refusals observed above; this is the same query that SAW the lever in step 2`, spent);
+  else NV(`readDeleteFault still reports count=${spent.count} (armed=${spent.armed}) — not every armed unit was consumed by this trail, so some refusals above may belong to fewer batches than armed`, spent);
 }
 
 /* The arm's OWN cleanup. It runs from the driver's `finally` alongside the ballast clear, so
@@ -594,7 +621,8 @@ main()
   .catch((e) => { FAIL(`cleanup threw: ${String((e && e.message) || e).slice(0, 300)}`); })
   .finally(() => {
     ev.summary = { passes, fails, unproven };
-    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
-    console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}  →  results/plant-sweep/evidence.json`);
+    /* F-774 — the arm's OWN file, and the summary names the one it wrote. */
+    fs.writeFileSync(`${OUT}/${EV_NAME}`, JSON.stringify(redactSecrets(ev), null, 2));
+    console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}  →  results/plant-sweep/${EV_NAME}  (${STALE ? "--stale arm: the re-POST trail" : "plain arm: plant + sweep"})`);
     process.exit(fails > 0 ? 1 : 0);
   });

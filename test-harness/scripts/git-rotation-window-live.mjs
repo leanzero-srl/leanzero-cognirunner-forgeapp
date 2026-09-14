@@ -55,6 +55,7 @@ import { loadEnv, requireEnv } from "../lib/env.mjs";
 // F-686 — every driver that arms a harness fault goes through the ONE acknowledgement.
 import { requireEnvAck, forgeEnvId, positionalArgs } from "../lib/shared-env-guard.mjs";
 import { gitHookUrl } from "../lib/git-hook-url.mjs";
+import { maskFaultKey } from "../lib/redact.mjs";
 
 /* F-686 — DEV-ONLY BY CONSTRUCTION: both hook calls below go to `env.TESTSTATE_URL`, and
  * there is no staging trigger for this flow, so `--env` is decided FOR this driver and the
@@ -87,6 +88,26 @@ const PASS = (s) => { passes++; console.log(`  PASS  ${s}`); };
 const FAIL = (s) => { fails++; console.log(`  FAIL  ${s}`); };
 const NV = (s) => { unproven++; console.log(`  N/V   ${s}`); };
 const info = (s) => console.log(`        ${s}`);
+
+/*
+ * F-775 — THE LEVER'S ANSWER, PRINTED WITHOUT ITS ROW KEY.
+ *
+ * Every `armHarnessFault` / `readHarnessFault` answer carries `key`, and for this family
+ * the key IS the subject: `harness_fault:hook-promote:<connectionId>:<owner/name>`. This
+ * driver stringified those answers whole at seven places, so the Git connection id and the
+ * repository path went to the terminal on every run — against the convention its siblings
+ * state outright (`plant-sweep-live`'s `shape()` and `delete-fault-drain-live`'s `armFacts`
+ * both carry a comment saying a key is never recorded, and neither records one).
+ *
+ * `maskFaultKey` keeps the FAMILY and hashes the subject, so two runs against the same
+ * connection+repo still show the same handle and can be correlated — which is the only
+ * reason the key was worth printing — while neither identifier can be read back out.
+ * One helper, used at every site, because five masked prints and one raw one is the same
+ * leak with more code.
+ */
+const answer = (b) => JSON.stringify(
+  b && typeof b === "object" && typeof b.key === "string" ? { ...b, key: maskFaultKey(b.key) } : b,
+);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const gh = (args, body) => {
@@ -373,19 +394,19 @@ async function faultPhase() {
   /* ── STEP 1 — ARM the dev-only promote fault ─────────────────────────────── */
   console.log("\nSTEP 1 — arm the F-504 promote fault (one unit) on this connection+repo");
   const pre = await hookAction({ action: "readHookPromoteFault", connectionId: connId, repoId: REPO });
-  info(`readHookPromoteFault before arming: ${JSON.stringify(pre.body)}`);
+  info(`readHookPromoteFault before arming: ${answer(pre.body)}`);
   const levelCount = (r) => Number((r && r.body && r.body.value && r.body.value.count) || 0);
   if (pre.status === 200 && levelCount(pre) === 0) PASS("the lever starts DISARMED (count absent/0) — the control for 'consumed' below");
-  else FAIL(`the lever is not disarmed before this run: ${JSON.stringify(pre.body)}`);
+  else FAIL(`the lever is not disarmed before this run: ${answer(pre.body)}`);
 
   const armed = await hookAction({ action: "armHookPromoteFault", connectionId: connId, repoId: REPO, count: 1 });
-  info(`armHookPromoteFault -> HTTP ${armed.status} ${JSON.stringify(armed.body)}`);
+  info(`armHookPromoteFault -> HTTP ${armed.status} ${answer(armed.body)}`);
   if (armed.status === 200 && armed.body && armed.body.ok) PASS("armHookPromoteFault accepted one unit");
-  else { FAIL(`armHookPromoteFault refused: ${JSON.stringify(armed.body || armed.raw)}`); return; }
+  else { FAIL(`armHookPromoteFault refused: ${answer(armed.body || armed.raw)}`); return; }
   const armedRead = await hookAction({ action: "readHookPromoteFault", connectionId: connId, repoId: REPO });
-  info(`readHookPromoteFault after arming: ${JSON.stringify(armedRead.body)}`);
+  info(`readHookPromoteFault after arming: ${answer(armedRead.body)}`);
   if (levelCount(armedRead) === 1) PASS("the lever reads back count=1 — it is armed on THIS connection+repo, not another");
-  else FAIL(`the armed lever does not read back as one unit: ${JSON.stringify(armedRead.body)}`);
+  else FAIL(`the armed lever does not read back as one unit: ${answer(armedRead.body)}`);
 
   /* ── STEP 2 — rotate through the REAL Code tab; expect a named refusal ──── */
   console.log("\nSTEP 2 — rotate through the admin panel's Code tab with the fault armed");
@@ -481,7 +502,7 @@ async function faultPhase() {
   }
 
   const consumed = await hookAction({ action: "readHookPromoteFault", connectionId: connId, repoId: REPO });
-  info(`readHookPromoteFault after the rotate: ${JSON.stringify(consumed.body)}`);
+  info(`readHookPromoteFault after the rotate: ${answer(consumed.body)}`);
   if (levelCount(consumed) === 0) PASS("the armed unit was CONSUMED — exactly one planted failure, so what was observed is the planted fault and not a real defect");
   else FAIL(`the lever still reads count=${levelCount(consumed)} — the failure above may not have come from it`);
 

@@ -142,7 +142,35 @@ console.log("\n3 · F-735 — A PINNED ENVIRONMENT MAY NOT BE ARGUED WITH IN ITS
      whether the GUARD refused — `passedTheGuard` is "no REFUSING sentence was printed",
      which is exactly the property the finding is about and the only one an unconfigured
      machine can observe. */
-  const passedTheGuard = (r) => !/REFUSING to run/.test(r.err);
+  /* THE PREDICATE READS EVERY REFUSAL THIS GUARD CAN PRINT, NOT ONE OF THEM.
+   *
+   * It used to be `!/REFUSING to run/`, and the guard has TWO openers: the argv refusals say
+   * "REFUSING to run: …", the shared-tenant one says "REFUSING to point this driver at the
+   * SHARED dev tenant …". So a run that was REFUSED by the shared-dev branch was reported as
+   * having PASSED the guard. Measured on the pinned fixture below: exit 2, the body never
+   * ran, and the old predicate answered TRUE — the `acked`/`bareAcked` assertions would have
+   * stayed green with the acknowledgement path completely broken, which is the only thing
+   * they exist to catch. (Same class as F-772 step 6: a check that reads the wrong field
+   * announces a pass without ever looking.)
+   *
+   * `^REFUSING` at a line start covers both openers and any third; the exit code is asserted
+   * WITH it so a future refusal worded differently still cannot read as a pass — `die()`
+   * exits 2 and nothing else in these fixtures does. */
+  const passedTheGuard = (r) => !/^REFUSING/m.test(r.err) && r.code !== 2;
+
+  /* THE PREDICATE'S OWN POSITIVE CONTROL. Every "it passed the guard" assertion below is
+     only as good as this function, so it is shown to answer FALSE on a run that was in fact
+     refused — by the SHARED-TENANT branch specifically, the one the old predicate could not
+     read. Without this, the repair is itself unfalsifiable. */
+  {
+    const refused = run('requireEnvAck(process.argv.slice(2), { forceEnv: "dev", faults: ["dispatchDrop"], mutates: ["git"] });\nconsole.log("ARMED");', []);
+    ok(refused.code === 2 && !/ARMED/.test(refused.out),
+      "the control fixture IS refused — exit 2 and the body never runs");
+    ok(/SHARED dev tenant/.test(refused.err) && !/REFUSING to run/.test(refused.err),
+      "…by the shared-tenant branch, whose opener is 'REFUSING to point …', NOT 'REFUSING to run' — which is exactly why the old predicate could not see it");
+    ok(!passedTheGuard(refused),
+      "…and passedTheGuard answers FALSE on it. The old `!/REFUSING to run/` answered TRUE, so every acked assertion below would have stayed green with the acknowledgement path broken");
+  }
 
   const OLD = 'requireEnvAck([...process.argv.slice(2), "--env=dev"], { faults: ["dispatchDrop"], mutates: ["git"] });\nconsole.log("ARMED");';
   const bypass = run(OLD, ["--env=staging"]);
@@ -329,6 +357,84 @@ console.log("\n· F-760 — THE HINT MUST BE A COMMAND THAT RUNS");
       readFileSync(path.join(here, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")));
   ok(offenders.length === 0,
     `no *-live.mjs reads a positional by slot — use positionalArgs (F-760). Offenders: ${offenders.join(", ") || "none"}`);
+}
+
+
+/* ── F-773 · THE COMMAND A REFUSAL OFFERS MUST NOT RE-PRINT THE REFUSAL ────────────
+ *
+ * The shared-tenant refusal built its offer out of `defaultEnv` and never looked at
+ * `forceEnv`. On a PINNED driver — the real ones are `git-rotation-window-live.mjs` and its
+ * siblings, `forceEnv: "dev"`, no `--env` of their own — `defaultEnv` is still its own
+ * default of "staging", so the refusal ended with `node scripts/<name>` and
+ * `# staging, the default`. That command cannot reach staging: `envName` takes the pin over
+ * argv. It lands on the identical wall of text, the operator concludes the guard is broken,
+ * and the next refusal is read past — which is the harm, not the wrong word.
+ *
+ * Spawned against a driver built exactly like the real pinned ones, and the offer is then
+ * TAKEN VERBATIM and shown to pass the guard. A hint asserted only by regex is a hint
+ * nobody has run.
+ * ──────────────────────────────────────────────────────────────────────────────── */
+{
+  const PINNED = 'requireEnvAck(process.argv.slice(2), { forceEnv: "dev", faults: ["hookPromote"], mutates: ["git"], script: "git-rotation-window-live.mjs" });\nconsole.log("PROCEEDED");';
+
+  const r = run(PINNED, []);
+  ok(r.code === 2 && !/PROCEEDED/.test(r.out),
+    "F-773: a pinned driver with no args still refuses the shared dev tenant — the ack is mandatory every run");
+  const hints = r.err.split("\n").filter((l) => /^\s+node scripts\//.test(l));
+  ok(hints.length === 1,
+    `F-773: a PINNED driver is offered exactly ONE command — there is no safer environment to offer, so a second line could only be a --env that the pin overrides (got ${hints.length})`);
+
+  /* THE DEFECT, STATED AS THE TWO THINGS THE OLD TEXT DID. */
+  ok(!/# staging, the default/.test(r.err),
+    "F-773: the refusal no longer calls staging 'the default' for a driver that can never run there — that sentence was the whole bug");
+  ok(!hints.some((l) => /--env=/.test(l)),
+    "F-773: …and offers no `--env` at all: every value of it is either refused as a conflict or redundant with the pin");
+
+  /* AND THE TWO THINGS IT MUST SAY INSTEAD, which the forced branch already said. */
+  ok(hints.every((l) => /--i-know-dev-is-shared/.test(l)),
+    "F-773: the offered command carries the acknowledgement flag — on a pinned driver it is the whole of the decision");
+  ok(/# dev, the only environment/.test(r.err),
+    "F-773: …and the comment names the pin rather than a default the driver does not have");
+
+  /* THE PROOF: the offer, RUN. `run`'s argv is the hint minus `node scripts/<name>`.
+     "Passes the guard" is asserted as the ABSENCE OF THE REFUSAL, not as exit 0: past the
+     ack, `requireEnvAck` calls `loadEnv()`, and a machine with no `.env` — this one, and
+     every CI box — dies there. That death is itself the evidence, because it happens on the
+     far side of the door: the old hint could never reach it, it came back to `REFUSING`.
+     `passedGuard` is therefore the honest predicate, and it holds on a configured machine
+     too, where the child simply prints PROCEEDED. */
+  const passedGuard = (x) => !/^REFUSING/m.test(x.err) && (/PROCEEDED/.test(x.out) || /Missing .*\.env/.test(x.err));
+  const offered = hints[0].trim().split(/\s+/).slice(2);
+  const taken = run(PINNED, offered);
+  ok(passedGuard(taken),
+    `F-773: the offered command, taken VERBATIM (${offered.join(" ")}), gets PAST the guard instead of re-printing it — the property the finding is about`);
+  ok(/^REFUSING/m.test(r.err) && !/^REFUSING/m.test(taken.err),
+    "F-773: …stated as the before/after it is: the same driver, one refusal, and the command that refusal offered does not produce a second one");
+
+  /* THE OTHER BRANCH IS UNCHANGED. The forced-conflict refusal (`--env=staging` on a pinned
+     driver) now builds its offer through the same function, so assert it still reads as it
+     did — one home is only an improvement if it did not quietly move the other caller. */
+  const conflict = run(PINNED, ["--env=staging"]);
+  ok(conflict.code === 2 && /can only ever run on dev/.test(conflict.err),
+    "F-773: the forced-conflict refusal still names the pin");
+  const conflictHints = conflict.err.split("\n").filter((l) => /^\s+node scripts\//.test(l));
+  ok(conflictHints.length === 1 && /--i-know-dev-is-shared/.test(conflictHints[0]) && /# dev, the only environment/.test(conflict.err),
+    "F-773: …and offers the same single acknowledged command it always did — the shared builder was taken FROM this branch, so this is the regression check on the move");
+  const takenConflict = run(PINNED, conflictHints[0].trim().split(/\s+/).slice(2));
+  ok(passedGuard(takenConflict), "F-773: …and that one gets past the guard too");
+
+  /* AN UNPINNED DRIVER IS STILL OFFERED THE SAFER ENVIRONMENT BY NAME. The fix must not
+     have collapsed the three cases into the pinned one. */
+  const FREE = 'requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["git"], script: "some-live.mjs" });\nconsole.log("PROCEEDED");';
+  const free = run(FREE, ["--env=dev"]);
+  ok(free.code === 2, "F-773: an unpinned driver sent to dev still refuses");
+  const freeHints = free.err.split("\n").filter((l) => /^\s+node scripts\//.test(l));
+  ok(freeHints.length === 2, `F-773: …and is offered TWO commands, the safer environment and the acknowledged dev (got ${freeHints.length})`);
+  ok(/# staging, the default/.test(free.err),
+    "F-773: …where naming the default IS correct, because this driver can actually run there");
+  const takenFree = run(FREE, freeHints[0].trim().split(/\s+/).slice(2));
+  ok(passedGuard(takenFree),
+    "F-773: …and its first offer gets past as well — the unshared environment needs no acknowledgement");
 }
 
 console.log("\nshared-env-guard: " + pass + " passed, " + fail + " failed");

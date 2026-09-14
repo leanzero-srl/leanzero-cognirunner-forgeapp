@@ -70,6 +70,7 @@
  * exists to record came out as `key=[REDACTED]`. The local mask is deleted; `key=` is now
  * decided by the VALUE's shape, never by the parameter's name.
  * ═══════════════════════════════════════════════════════════════════════════════ */
+import { createHash } from "node:crypto";
 
 export const REDACTED = "[REDACTED]";
 
@@ -159,6 +160,55 @@ export function maskEmail(s) {
   const at = str.lastIndexOf("@");
   if (at <= 0 || at === str.length - 1) return REDACTED;
   return `${str[0]}***@${str.slice(at + 1)}`;
+}
+
+/*
+ * F-775 — A HARNESS FAULT KEY, REDUCED TO ITS FAMILY.
+ *
+ * `armHarnessFault` answers `{ key, count, until, ttlSeconds }`, and the key is built from
+ * the fault's SUBJECT: `harness_fault:hook-promote:<connectionId>:<owner/name>` names the
+ * Git connection and the repository path that were faulted. `git-rotation-window-live.mjs`
+ * printed the whole arm answer, so those accumulated across runs in terminal scrollback,
+ * against the sibling convention that no row KEY is recorded at all (`plant-sweep-live`'s
+ * `shape()`, `delete-fault-drain-live`'s `armFacts`, both of which say so in a comment).
+ *
+ * There is no SECRET here, so deleting the key outright would be the wrong trade: a reader
+ * correlating two runs needs to know they faulted the SAME subject. The family stays — it
+ * is a constant of the code, not a fact about a tenant — and the subject becomes a
+ * sha256-16 of itself. Same subject, same digest, run after run; different subject,
+ * different digest; and neither a connection id nor a repo path can be read back out.
+ *
+ * SIXTEEN hex characters, not the whole digest: this is a correlation handle for a human
+ * reading two evidence files side by side, and 64 characters of hex is a line nobody reads.
+ * 2^64 of collision space is far past what one driver's keyspace can populate.
+ *
+ * NOT wired into `redactString`/`redactSecrets`. Those are the SECRET boundary and they
+ * apply themselves to every string that passes; a fault key is not a secret, and masking
+ * every `harness_fault:` substring that ever appeared in any evidence file would rewrite
+ * the assertions of drivers that legitimately print a PREFIX (`harness_fault:plant:` is
+ * the whole subject of `armDeleteFault`'s `bad-prefix` refusal). It is a helper a driver
+ * calls ON THE KEY, deliberately, which is also what keeps it greppable.
+ *
+ * THE ONE EDGE, STATED RATHER THAN HIDDEN. The idempotence guard recognises an
+ * already-masked subject by its SHAPE — exactly 16 lowercase hex characters — so a real
+ * subject of that exact shape would pass through unmasked. No family in
+ * `src/harness-fault.js` can produce one: `hook-promote`'s subject is
+ * `<connectionId>:<owner/name>` and always carries a colon and a slash, `key-read`'s is a
+ * provider name (`openai`, `anthropic`), `jira`'s is a REST path, and `delete`'s is the
+ * literal plant prefix. A family whose subject IS a bare hex id would need a different
+ * marker, and the test below is where that would be noticed.
+ */
+export function maskFaultKey(key) {
+  const str = String(key == null ? "" : key);
+  const m = /^(harness_fault:)([A-Za-z0-9_.-]+):([\s\S]+)$/.exec(str);
+  if (!m) return str;
+  /* IDEMPOTENT, the property `maskEmail` above documents and for the same reason: a value
+     may cross more than one writer, and a subject hashed twice is a THIRD string for one
+     subject — which silently breaks the correlation the mask exists to preserve. An
+     already-masked subject is exactly 16 lowercase hex characters and is left alone. */
+  if (/^[0-9a-f]{16}$/.test(m[3])) return str;
+  const digest = createHash("sha256").update(m[3]).digest("hex").slice(0, 16);
+  return `${m[1]}${m[2]}:${digest}`;
 }
 
 /** The dev/staging web-trigger host: a bearer-less URL that is itself a capability. */

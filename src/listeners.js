@@ -45,7 +45,7 @@ import { knowledgeBudget, fieldGuideAudience, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WE
 import { redosRisk } from "./shared/regex-safety.js";
 // F-884 — the arming-stamp vocabulary and its default live in ONE dependency-free home,
 // beside the roster vocabulary they are a subset of. See src/shared/roster-roles.js.
-import { DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
+import { SAVED_BY_ROLES, DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { createRunSearchBudget } from "./web-search-tool.js";
 // ONE HOME for "which namespace executors does this run hold" (F-852) — see the header
@@ -154,7 +154,41 @@ export const normalizeSavedByRole = (role) => (isAdminSavedByRole(role) ? ADMIN_
  * construction the role stored on the row.
  */
 export const resolveSavedByRole = ({ gate = undefined, savedByRole = undefined } = {}) =>
-  normalizeSavedByRole(savedByRole !== undefined ? savedByRole : (gate && typeof gate === "object" ? gate.savedByRole : undefined));
+  assertSavedByRole(savedByRole !== undefined ? savedByRole : (gate && typeof gate === "object" ? gate.savedByRole : undefined));
+
+/**
+ * F-891 - THE STRICT VARIANT, FOR SAVE DOORS ONLY.
+ *
+ * `normalizeSavedByRole` answers "editor" to ANYTHING that is not the literal "admin".
+ * That is the right answer when READING a stored row: a row written before the field
+ * existed, or one hand-edited in KVS, must still resolve to the lesser power rather than
+ * throw on a rule the admin is trying to open. It is the WRONG answer at a save door.
+ * A caller that passes `savedByRole: "viewer"`, `"Admin"`, `"owner"` or a misspelled
+ * permission constant is asking for something the product does not have, and the lenient
+ * normaliser silently grants it "editor" - a save that half-worked, with no signal
+ * anywhere that the argument was nonsense. The mistake is undetectable precisely where
+ * detecting it is cheap: at the door, with a human waiting on a response.
+ *
+ * So: STRICT AT THE DOOR, LENIENT ON THE ROW. Silence still means the default - `null`,
+ * `undefined` and `""` are "nobody stated a role", which is the ordinary case for a gate
+ * context built without one, and they take DEFAULT_SAVED_BY_ROLE. A STATED value that is
+ * not in the vocabulary is refused BY NAME: the error carries `reason` so the REST door
+ * returns it as `400 { error, reason }` and the admin UI shows the same sentence.
+ *
+ * This is the only door that needs it. Every other save-time stamp (`stampArming` /
+ * `stampSavedByRole` in src/index.js) computes its role from the roster rather than
+ * accepting one, so there is no argument there to mistype.
+ */
+export const assertSavedByRole = (role) => {
+  if (role === undefined || role === null || role === "") return DEFAULT_SAVED_BY_ROLE;
+  const v = String(role);
+  if (!SAVED_BY_ROLES.includes(v)) {
+    const err = new Error(`savedByRole must be one of ${SAVED_BY_ROLES.join("/")} (got "${v.slice(0, 40)}")`);
+    err.reason = "unknown-saved-by-role";
+    throw err;
+  }
+  return normalizeSavedByRole(v);
+};
 
 /**
  * F-409 — THE ARMING STAMP. ONE home for "who armed this rule", used by post-functions,

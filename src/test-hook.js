@@ -1780,7 +1780,9 @@ export async function testStateTrigger(req) {
       try {
         r = await sweepHarnessStashes({
           dryRun: body.dryRun === true,
-          // Clamped in the lever, where the constant it bounds lives.
+          // Forwarded RAW. The clamp — and the F-787 floor under it — lives in the lever
+          // with the constants it bounds; a second clamp here is the second home that lets
+          // the two drift, and the effective age comes back in `r.olderThanSeconds`.
           olderThanSeconds: typeof body.olderThanSeconds === "number" ? body.olderThanSeconds : undefined,
           maxMs: typeof body.maxMs === "number" ? body.maxMs : undefined,
           cursor,

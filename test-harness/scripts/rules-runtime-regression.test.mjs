@@ -912,6 +912,64 @@ try {
     const live = after[0].key.slice("harness_stash:".length);
     assert.equal(JSON.parse((await POST({ action: "kvRestore", stashId: live })).body).restored, true);
   });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-787 — `olderThanSeconds: 0` MADE THE AGE RULE OPTIONAL.
+   *
+   * The lever clamped at `Math.max(0, …)`, so the drain-everything shape every other sweep
+   * here invites — `{action:"stashSweep", olderThanSeconds:0}` — made `harnessStashReapable`
+   * true for every row: a cleanup run in the same minute as `va-compaction-live`'s plant
+   * deleted the tenant's only copy of `COGNIRUNNER_KEY_openai`, the driver's `kvRestore`
+   * answered 404, and the credential slot kept the planted dead key with no path back.
+   * The floor is in the lever with the constant, the hook forwards raw, and the answer
+   * echoes the age that was APPLIED.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("stashSweep cannot be talked into an unconditional delete (F-787)", async () => {
+    const { HARNESS_STASH_SWEEP_MIN_AGE_SECONDS: MIN, HARNESS_STASH_MAX_AGE_SECONDS: MAX } =
+      await import("../../src/harness-fault.js");
+    assert.ok(MIN > 0, "a floor of zero is the defect");
+    assert.ok(MIN < MAX, "…and a floor at or above the default would cost the lever its reason to exist: reaping a leaked row SOONER than the TTL hour");
+
+    // A LIVE driver's stash, taken through the real door, exactly as va-compaction-live takes it.
+    storage.__seed("COGNIRUNNER_KEY_openai", "zz-the-tenants-own-key-zz");
+    const live = JSON.parse((await POST({ action: "kvStash", key: "COGNIRUNNER_KEY_openai" })).body);
+    assert.equal(live.stashed, true);
+    // …and a row older than the floor but younger than the hour: the ALLOW case, and the
+    // proof the floor did not simply pin every sweep to the default.
+    storage.__seed("harness_stash:f787-old", {
+      key: "COGNIRUNNER_KEY_azure", value: "zz-abandoned-tenant-key-zz", present: true,
+      stashedAt: new Date(Date.now() - (MIN + 200) * 1000).toISOString(),
+    });
+
+    // BLOCK — the age asked for is 0; the age APPLIED is the floor, and it is what comes back.
+    const dry = JSON.parse((await POST({ action: "stashSweep", dryRun: true, olderThanSeconds: 0 })).body);
+    assert.equal(dry.olderThanSeconds, MIN, "the answer echoes the EFFECTIVE age, not the number that was asked for");
+    const byKey = Object.fromEntries(dry.rows.map((r) => [r.key, r]));
+    assert.equal(byKey[`harness_stash:${live.stashId}`].expired, false,
+      "a live driver's stash is NOT reapable at olderThanSeconds:0 — this is the whole finding");
+    assert.equal(byKey["harness_stash:f787-old"].expired, true, "…while the row past the floor still is");
+
+    // The same, for real, plus the two other spellings of "reap everything".
+    for (const asked of [0, -1, 0.9]) {
+      const swept = JSON.parse((await POST({ action: "stashSweep", olderThanSeconds: asked })).body);
+      assert.equal(swept.olderThanSeconds, MIN, `olderThanSeconds:${asked} is floored like every other value below it`);
+    }
+    assert.equal(storage.__raw(`harness_stash:${live.stashId}`) !== undefined, true,
+      "the live stash SURVIVED the drain-everything sweep");
+    assert.equal(storage.__raw("harness_stash:f787-old"), undefined, "ALLOW: the row past the floor was reaped");
+    // The property the floor exists to protect: the driver can still put the tenant's key back.
+    const restored = JSON.parse((await POST({ action: "kvRestore", stashId: live.stashId })).body);
+    assert.equal(restored.restored, true, "…so kvRestore still finds it, which is what a 404 here would have cost");
+    assert.equal(storage.__raw("COGNIRUNNER_KEY_openai"), "zz-the-tenants-own-key-zz");
+
+    // ONE HOME: the clamp is in the lever, and the hook does not keep a second one.
+    const faultSrc = stripJsComments(readFileSync(new URL("../../src/harness-fault.js", import.meta.url), "utf8"));
+    const sweeper = faultSrc.slice(faultSrc.indexOf("export const sweepHarnessStashes"));
+    assert.match(sweeper.slice(0, sweeper.indexOf("const budgetMs")), /Math\.max\(HARNESS_STASH_SWEEP_MIN_AGE_SECONDS,/,
+      "the floor is applied where the constant lives");
+    const hookSrc787 = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    assert.equal(/olderThanSeconds[\s\S]{0,120}Math\.max\(/.test(hookSrc787), false,
+      "the hook forwards the raw number — a second clamp is the second home that drifts");
+  });
   await check("stashSweep stays behind HARNESS_SECRET, and refuses a bad cursor (F-779)", async () => {
     const res = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "stashSweep" }) });
     assert.equal(res.statusCode, 404, "invisible without the secret, like every other lever here");

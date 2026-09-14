@@ -18,7 +18,7 @@ import { normalizeJob, runJob, executeScheduledJobTask, scheduledTick } from "..
 import { JIRA_EVENTS } from "../../src/shared/jira-events.js";
 // F-842 — the SHIPPED gate predicate and context builder; this suite never re-implements
 // either, it only asks them what the run's gate allows.
-import { buildAgentGateContext, normalizeAllowedActions } from "../../src/shared/agent-actions.js";
+import { buildAgentGateContext, normalizeAllowedActions, toolDefinitionsFor } from "../../src/shared/agent-actions.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { testStateTrigger } from "../../src/test-hook.js";
 // F-770 — the platform's key predicate, imported from its ONE home so these checks
@@ -2304,10 +2304,41 @@ await check("cancelled scoped agent run only reports summaries for attempted iss
     assert.deepEqual(v.refused, [{ id: "approve_pull_request", reason: "external-trigger" }]);
   });
 
-  await check("F-852 NEGATIVE: a ledger action on a listener refuses by name — the VA's surface is not this one", async () => {
-    const { args } = await listenerRun({ id: "f852-l-ledger", actions: ["get_issue", "stage_reply"], connectionId: "gc1" });
+  /* F-865 — THE SAVE NOW REFUSES IT, so the run-time refusal below is a BACKSTOP rather
+   * than the first line. `stage_reply` carried no capability, no product, no `confirm`
+   * and no `dangerous`, so it passed every arm of the gate and a listener could SAVE it;
+   * the model was then OFFERED the tool and spent a round discovering F-852's
+   * refusal-by-name. `requiresSurface: "va"` on the ledger namespace moves the no to the
+   * save. Both halves are asserted: the save refuses, and a row that predates the flag
+   * (planted here exactly as an upgraded instance would hold one) is neither given an
+   * executor nor OFFERED the tool. */
+  await check("F-865 BLOCK: saving a listener with a ledger action is refused by name at the SAVE", async () => {
+    reset(); seedConn();
+    assert.throws(() => normalizeListener({ id: "f865-l", name: "x", events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: ["get_issue", "stage_reply"], connectionId: "gc1" } }, { gate: saveGate852, savedByRole: "admin" }),
+      (e) => e.reason === "action-not-allowed" && e.refused.length === 1
+        && e.refused[0].id === "stage_reply" && e.refused[0].reason === "wrong-surface:va"
+        && /Virtual Administrator/.test(e.message),
+      "the save refuses stage_reply by name, with the cause an operator can read");
+  });
+
+  await check("F-852 NEGATIVE: a LEGACY listener row holding a ledger action gets no executor and is offered no tool", async () => {
+    const state = reset(); seedConn();
+    // Planted PAST the normalizer on purpose: no save door can mint this row since F-865,
+    // and an upgraded instance is exactly where one still exists.
+    const clean = normalizeListener({ id: "f852-l-ledger", name: "x", events: [UPDATE], mode: "agent", agent: { instructions: "go", allowedActions: ["get_issue"], connectionId: "gc1" } }, { gate: saveGate852, savedByRole: "admin" });
+    const legacy = { ...clean, agent: { ...clean.agent, allowedActions: ["get_issue", "stage_reply"] } };
+    storage.__seed("listener:f852-l-ledger", legacy);
+    await testListener({ listener: legacy, issueKey: ISSUE.key, gateFacts: { provider: "openai", edition: "standard", agentModel: "gpt-5.4" } });
+    const args = state.runs[0];
     assert.equal(args.executors.ledger, undefined, "no ledger executor is ever built here");
     assert.equal(args.executors.refusals.ledger, LEDGER_NOT_ON_THIS_SURFACE);
+    // F-865 — and the RUN-TIME gate drops it before the tool list is built, so the model
+    // never sees a tool it could only be refused for calling.
+    const v = normalizeAllowedActions(args.allowedActions, args.gate);
+    assert.deepEqual(v.allowed, ["get_issue"], "the run keeps only what this surface can serve");
+    assert.deepEqual(v.refused, [{ id: "stage_reply", reason: "wrong-surface:va" }]);
+    assert.deepEqual(toolDefinitionsFor(v.allowed, { pregated: true }).map((t) => t.function.name), ["get_issue", "finish"],
+      "the offered tools are the Jira read and finish — no stage_reply");
   });
 
   await check("F-852: a GIT-TRIGGERED delivery's connection WINS over the rule's — a run started by A acts on A", async () => {

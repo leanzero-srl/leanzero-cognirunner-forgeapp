@@ -118,10 +118,15 @@ eq(seen, [], "…and never through a namespace executor");
   ok(!/none is configured for this rule/.test(errLine(res)), "…instead of the sentence that was false");
   eq(jira.__calls.length, 0, "nothing was attempted");
 
-  // A ledger action on a surface that is not the VA.
+  // A ledger action whose EXECUTOR was not supplied. The gate itself now refuses the id
+  // on any surface but the VA (F-865, `requiresSurface` on the ledger namespace), so the
+  // gate here says `surface: "va"` in order to reach the DISPATCHER at all — which is the
+  // seam this case is about. Both layers are real and this one is the backstop: the gate
+  // is what stops a listener holding the action, and this sentence is what a VA whose
+  // ledger executor is missing gets instead of a silent nothing.
   scripted([{ name: "stage_reply", args: { audience: "internal", body: "b", reason: "r" } }]);
   res = await runAgentTask({
-    instructions: "reply", allowedActions: ["stage_reply"], gate: { capability: true, savedByRole: "admin" }, maxRounds: 3, issueKey: "ABC-1",
+    instructions: "reply", allowedActions: ["stage_reply"], gate: { capability: true, savedByRole: "admin", surface: "va" }, maxRounds: 3, issueKey: "ABC-1",
     executors: { refusals: { ledger: LEDGER_NOT_ON_THIS_SURFACE } },
   });
   ok(/Virtual Administrator/.test(res.logs.find((l) => /tool ERROR/.test(l)) || ""), "a ledger action on a listener says whose surface the ledger is");

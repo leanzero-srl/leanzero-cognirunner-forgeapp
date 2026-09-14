@@ -216,7 +216,14 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     // never quietly stripped — the admin UI offers the checkbox and the REST API
     // advertises the id, so saving fewer actions than were ticked would leave the
     // operator believing a gate they cannot see. `gate` omitted = restrictive default.
-    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, gate),
+    //
+    // THE SURFACE IS STAMPED HERE (F-865), on top of whatever context the caller built,
+    // because THIS is the only place that knows a listener is being normalised. Putting
+    // it in the callers instead would mean the resolver, the REST collections door, the
+    // premade wizard and the import path each had to remember it, and the one that forgot
+    // would be the hole. It rides ON the caller's gate rather than replacing it, so the
+    // capability, product and role arms keep the answer the instance's facts gave them.
+    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), surface: "listener" }),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
     // Knowledge binding — ONE normalizer, shared with scheduled jobs (1.4 commit 13b).
     ...normalizeAgentKnowledge(a),
@@ -1391,7 +1398,11 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     // block a merge, deploy) is dropped whatever was saved. `savedByRole` comes from
     // the rule ROW, never from the delivery.
     const agentGate = gateFacts
-      ? buildAgentGateContext({ ...gateFacts, triggerSource: "external", savedByRole: listener.savedByRole })
+      // `surface: "listener"` (F-865) makes the RUN agree with the SAVE: a row saved
+      // before the surface flag existed may still hold a ledger action, and this is what
+      // stops `toolDefinitionsFor` offering it. Stated rather than left to the null
+      // default, because a reader must not have to know that null happens to refuse.
+      ? buildAgentGateContext({ ...gateFacts, triggerSource: "external", savedByRole: listener.savedByRole, surface: "listener" })
       : undefined;
     // Knowledge is built by the CALLER (1.4 commit 13b): only here do we know the rule's
     // binding and the run's project. Fail-open — see buildAgentKnowledge.

@@ -112,7 +112,19 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
     // never quietly stripped — the admin UI offers the checkbox and the REST API
     // advertises the id, so saving fewer actions than were ticked would leave the
     // operator believing a gate they cannot see. `gate` omitted = restrictive default.
-    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, gate),
+    //
+    // THE SURFACE IS STAMPED HERE (F-865), from the row's OWN `mode`, because this is the
+    // only place that knows which of the three kinds of job is being normalised. A VA is
+    // the one surface with a ledger, so it is the one surface that may hold `stage_reply`,
+    // `ask_human`, `propose_change`, `ledger_note` and `memory_note`; an `agent` or
+    // `script` job gets "job" and the gate refuses them by name at the save.
+    //
+    // IT READS `mode`, NOT THE PRESENCE OF A `va` BLOCK, and the difference is the F-536
+    // shape: a row already armed must stay RE-SAVABLE, and the va block is normalised
+    // further down, after this line. `mode` is decided above, from the input, with
+    // "script" as the default an unknown value falls to — so a forged mode can only make
+    // the answer MORE restrictive, never less.
+    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, { ...(gate || {}), surface: mode === "va" ? "va" : "job" }),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
     // Knowledge binding — ONE normalizer, shared with listeners (1.4 commit 13b).
     ...normalizeAgentKnowledge(a),
@@ -608,7 +620,10 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
         return { issueKey, success: false, braked: true, reason: slot.reason, changes: [], logs: [slot.reason], tokens: 0, aiTimeMs: 0 };
       }
       const { runAgentTask } = await agentMod();
-      const agentGate = gateFacts ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole: job.savedByRole }) : undefined;
+      // `surface: "job"` (F-865): this arm only ever runs `mode === "agent"` jobs — a VA
+      // is swept by src/virtual-admin.js and never reaches here — so a ledger action on
+      // this row is one no executor could serve, and the run stops offering it as a tool.
+      const agentGate = gateFacts ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole: job.savedByRole, surface: "job" }) : undefined;
       // Knowledge is built PER ISSUE because the memory block is project-scoped and a
       // scoped job walks issues from different projects. The skills half is identical
       // across them; paying one extra KVS read per issue is the cost of not injecting

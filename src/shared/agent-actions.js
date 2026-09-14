@@ -144,7 +144,26 @@ export const AGENT_ACTION_NAMESPACES = Object.freeze({
   // two jobs in one module and give the store a reason to know what a tool call is. The
   // split mirrors git exactly: `git-connections.js` is the store, `git-actions.js` is the
   // executor, and the namespace table names the executor.
-  ledger: Object.freeze({ label: "Agent ledger", requiresCapability: null, requiresProduct: null, executor: "va-ledger-actions", reserved: false }),
+  //
+  // `requiresSurface: "va"` (F-865) IS THE FLAG, and it sits on the NAMESPACE rather than
+  // on the five ids because it is a fact about the EXECUTOR, not about any one action:
+  // only a Virtual Administrator turn carries a ledger to stage into, so every action
+  // whose executor is `va-ledger-actions` is unholdable anywhere else. Per-action flags
+  // would be five copies of one rule, and the sixth action added later would forget it.
+  //
+  // WITHOUT IT the ledger ids passed every arm of the gate — no capability, no product,
+  // no `confirm`, no `dangerous` — so a listener or a scheduled job could SAVE
+  // `stage_reply`, `toolDefinitionsFor` then OFFERED it to the model, and the run-time
+  // refusal-by-name added in F-852 (src/agent-executors.js) was reached only after the
+  // model had already spent a round discovering a tool that can never work. That refusal
+  // was correct and far too late: the place to say no is the save.
+  //
+  // `finish` IS NOT CAUGHT BY THIS. It declares `namespace: "ledger"` but is
+  // `kind: "control"`, and the gate drops control ids before it ever reads a namespace
+  // flag — the same precedence `agentActionNamespace` applies for dispatch. Were that
+  // order reversed, every listener and job run would lose the one tool the loop needs
+  // in order to end cleanly.
+  ledger: Object.freeze({ label: "Agent ledger", requiresCapability: null, requiresProduct: null, requiresSurface: "va", executor: "va-ledger-actions", reserved: false }),
 });
 export const AGENT_ACTION_NAMESPACE_IDS = Object.keys(AGENT_ACTION_NAMESPACES);
 
@@ -484,7 +503,7 @@ export const DEFAULT_AGENT_ROUNDS = 5;
  *                                         the way past every gate.
  *   normalizeAllowedActions(ids, opts)  → returns { allowed: string[], refused: [{id,reason}] }.
  *
- * opts = { capability, products, triggerSource, savedByRole }
+ * opts = { capability, products, triggerSource, savedByRole, surface }
  *   capability    — `agentCapability()`'s result ({enabled, reason}), or true/false, or a
  *                   map of capability id → that. Off ⇒ every id requiring it is refused.
  *   products      — array of product ids present on the site, e.g. ["jira","confluence"].
@@ -494,6 +513,10 @@ export const DEFAULT_AGENT_ROUNDS = 5;
  *   savedByRole   — "admin" when an admin saved the rule. A `confirm` action on a headless
  *                   surface is kept only for an admin-saved rule; anything else is refused.
  *                   Omitted ⇒ treated as NOT admin.
+ *   surface       — WHICH KIND OF RULE this is: "listener", "job", "va". An action whose
+ *                   namespace declares `requiresSurface` is kept only on that surface.
+ *                   Omitted ⇒ no surface, and no surface refuses every surface-bound
+ *                   action — the ledger namespace is the only one today.
  *
  * Save time refuses LOUDLY on a non-empty `refused` (the caller renders the reason);
  * run time drops the refused ids so a permission change is not an outage.
@@ -521,8 +544,9 @@ const capabilityEnabled = (capability, needed) => {
 };
 
 const gateActions = (ids, opts) => {
-  const { capability = null, products = ["jira"], triggerSource = null, savedByRole = null } = opts || {};
+  const { capability = null, products = ["jira"], triggerSource = null, savedByRole = null, surface = null } = opts || {};
   const productList = (Array.isArray(products) ? products : ["jira"]).map((p) => String(p).toLowerCase());
+  const surfaceId = String(surface || "");
   const external = String(triggerSource || "") === "external";
   const admin = String(savedByRole || "") === "admin";
   const allowed = [];
@@ -538,6 +562,13 @@ const gateActions = (ids, opts) => {
     if (!cap.ok) { refused.push({ id: a.id, reason: cap.reason }); continue; }
     const needsProduct = a.requiresProduct || ns.requiresProduct || null;
     if (needsProduct && !productList.includes(String(needsProduct).toLowerCase())) { refused.push({ id: a.id, reason: `missing-product:${needsProduct}` }); continue; }
+    // SURFACE (F-865). An UNNAMED surface is a WRONG surface, not a free pass: a caller
+    // that did not say where the rule lives gets the restrictive answer, the same reading
+    // `capability` and `savedByRole` already take. Only the two normalizers that KNOW the
+    // surface name it — `normalizeListener` says "listener", `normalizeJob` says "job",
+    // or "va" when the row's own mode is a Virtual Administrator.
+    const needsSurface = a.requiresSurface || ns.requiresSurface || null;
+    if (needsSurface && surfaceId !== String(needsSurface)) { refused.push({ id: a.id, reason: `wrong-surface:${needsSurface}` }); continue; }
     if (a.dangerous && external) { refused.push({ id: a.id, reason: "external-trigger" }); continue; }
     if (a.confirm && !admin) { refused.push({ id: a.id, reason: "needs-admin" }); continue; }
     allowed.push(a.id);
@@ -576,7 +607,7 @@ const gateActions = (ids, opts) => {
 // backend can read the managed engine's env var (agentGateFacts, src/index.js). Left
 // undefined it means "not asked", and agentCapability falls through to the edition and
 // allowance arms exactly as before - so every existing caller keeps its answer.
-export const buildAgentGateContext = ({ edition = null, provider = null, agentModel = null, allowanceLevel = null, managedKeyPresent = undefined, products = ["jira"], triggerSource = null, savedByRole = null } = {}) => ({
+export const buildAgentGateContext = ({ edition = null, provider = null, agentModel = null, allowanceLevel = null, managedKeyPresent = undefined, products = ["jira"], triggerSource = null, savedByRole = null, surface = null } = {}) => ({
   // A MAP, not a bare verdict: an absent key is refused rather than assumed (F-281),
   // so adding the `web` namespace later cannot inherit git's answer.
   //
@@ -586,7 +617,12 @@ export const buildAgentGateContext = ({ edition = null, provider = null, agentMo
   // refuses instead: an unknown provider is an unanswered question, and unanswered
   // is refused, exactly like an absent map key.
   capability: { git: provider ? agentCapability({ provider, edition, agentModel, allowanceLevel, managedKeyPresent }) : { enabled: false, reason: "capability-off:git" } },
-  products, triggerSource, savedByRole,
+  // `surface` is a PASS-THROUGH too (F-865), and it is normally left null here: the RUN
+  // sites that build a context are the listener and job runners, and null is the answer
+  // they want. The Virtual Administrator never reaches this builder — its tool list is
+  // `pregated` and decided by the powers — so nothing that legitimately holds a ledger
+  // action loses one by this default.
+  products, triggerSource, savedByRole, surface,
 });
 
 /**
@@ -603,6 +639,8 @@ export const agentActionRefusalText = (reason) => {
   if (code.startsWith("missing-product:")) return `this site does not have ${code.slice("missing-product:".length)}`;
   if (code === "external-trigger") return "an externally triggered rule may not hold an action that approves code, blocks a merge or deploys";
   if (code === "needs-admin") return "this action writes to somebody's repository, so only an ADMIN may save a rule that holds it";
+  if (code === "wrong-surface:va") return "only a Virtual Administrator can use this action: it stages a reply or files a proposal in the agent ledger, and a listener or a scheduled job has no ledger and never speaks";
+  if (code.startsWith("wrong-surface:")) return `this action only works on a ${code.slice("wrong-surface:".length)} rule`;
   return code || "not allowed";
 };
 

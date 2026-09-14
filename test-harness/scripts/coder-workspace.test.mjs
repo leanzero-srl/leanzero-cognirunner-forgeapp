@@ -549,6 +549,36 @@ await check("a fetch TypeError classifies network, a broken-handle TypeError sta
   assert.equal(broken.errorClass, "storage");
 });
 
+/* ───────── 7c. the write-group vocabulary is ENFORCED (F-858) ───────── */
+
+// `WORKSPACE_GROUPS` was exported and read by nobody: the four engine call sites passed
+// bare literals, so a typo would have produced a well-formed entry under a name nothing
+// counts, prints or tests. The list is now a rule, and this asserts both halves of it.
+await check("workspaceEntry refuses an unknown group and accepts each of the four", async () => {
+  assert.deepEqual(ws.WORKSPACE_GROUPS, ["plan", "log", "artifact", "step"]);
+
+  for (const group of ws.WORKSPACE_GROUPS) {
+    assert.equal(ws.workspaceEntry(group, { ok: true }).group, group);
+    const bad = ws.workspaceEntry(group, { ok: false, errorClass: "network", error: "x" });
+    assert.equal(bad.ok, false);
+    assert.equal(bad.errorClass, "network");
+  }
+
+  // The four literals the engine passes ARE members - the point of the vocabulary.
+  const engineSrc = readFileSync(path.join(srcDir, "coder-engine.js"), "utf8");
+  for (const m of engineSrc.matchAll(/(?:noteWorkspace|workspaceEntry)\(\s*"([^"]+)"/g)) {
+    assert.ok(ws.WORKSPACE_GROUPS.includes(m[1]), `coder-engine.js passes "${m[1]}", which is not a known group`);
+  }
+
+  for (const unknown of ["artefact", "logs", "", "comment"]) {
+    assert.throws(
+      () => ws.workspaceEntry(unknown, { ok: true }),
+      (e) => e.name === "UnknownWorkspaceGroupError" && e.message.includes(String(unknown)),
+      `"${unknown}" must be refused by name`,
+    );
+  }
+});
+
 /* ───────── 8. the pure section rule ───────── */
 
 await check("replacePlanSection leaves an unmarked description untouched apart from the append", async () => {

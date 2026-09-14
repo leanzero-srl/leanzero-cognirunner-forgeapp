@@ -745,6 +745,18 @@ export const VA_EFFECT_TTL_DAYS = 30;
  * refuses a state from another version; this TTL is the same refusal applied to age.
  */
 export const VA_WIZARD_TTL_DAYS = 7;
+/**
+ * HELD WRITES: how many a shadow-mode turn may stage on one item row, and how many
+ * characters of each call's arguments are kept (F-910).
+ *
+ * A shadow turn does not write to Jira, Confluence or the approval inbox; it records what
+ * it WOULD have done so a human can read it in the Agents tab. Twenty is the same order as
+ * `JOB_DEFAULT_MAX_WRITES_PER_RUN`, so a turn cannot propose more than it could have
+ * performed, and 300 characters of arguments is enough to say which issue and which value
+ * without letting one field edit carry a 30 KB description into a row KVS must accept.
+ */
+export const VA_HELD_WRITES_MAX = 20;
+export const VA_HELD_WRITE_ARGS_MAX_CHARS = 300;
 /** Per-item bounds: `history[]` entries, `notes` characters, and a staged draft body. */
 export const VA_HISTORY_MAX = 10;
 export const VA_NOTES_MAX_CHARS = 600;

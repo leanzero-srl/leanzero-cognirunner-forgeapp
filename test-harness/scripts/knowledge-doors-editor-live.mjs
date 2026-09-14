@@ -52,7 +52,7 @@ import {
    captures the Permissions tab, which renders real addresses as PIXELS that no text
    redactor will ever see. `evidence-redaction.test.mjs` refuses a raw `.screenshot(` in
    any `*-live.mjs` that mentions `perm-`. */
-import { makeRosterUI, shotMasked } from "../lib/roster-ui.mjs";
+import { makeRosterUI, makeShot } from "../lib/roster-ui.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -77,6 +77,15 @@ const ev = { at: new Date().toISOString(), env: ENV_NAME, editorAccount: EDITOR,
 const PASS = (s, d) => { const r = d ? redactSecrets(d) : d; passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d: r } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
 const FAIL = (s, d) => { const r = d ? redactSecrets(d) : d; fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d: r } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
 const NV = (s, d) => { const r = d ? redactSecrets(d) : d; unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d: r } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+
+/* F-668 — THE CAPTURE'S ANSWER IS RECORDED, NEVER DISCARDED. Every call site here used
+ * to waive the strict flag AND swallow the returned promise, so the branch that REFUSES a
+ * leaking capture never ran, and the `{captured:false, reason}` answer had no reader: a
+ * missing PNG was a silent hole in a green run. `makeShot` binds this driver's N/V writer
+ * once. Strict is the default again — a readable address ABORTS rather than reaching disk
+ * — and a capture that did not happen now says so, with its reason, in the evidence.
+ * `scripts/evidence-redaction.test.mjs` keeps both halves true for the whole directory. */
+const shot_ = makeShot(NV);
 const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 const readRes = async (res) => {
@@ -135,7 +144,7 @@ async function createThrowawayDoc(title) {
     );
     await frame.locator("button.btn-small", { hasText: /^\s*Save\s*$/ }).first().click();
     await sleep(5000);
-    await shotMasked(page, frame, `${OUT}/01-doc-created.png`, { strict: false }).catch(() => {});
+    await shot_(page, frame, `${OUT}/01-doc-created.png`);
     return true;
   });
 }
@@ -185,7 +194,7 @@ const rosterRows = async () => (await kvs("app_admins"))?.value || [];
  * "click the right namesake and put the roster back" is how that happens; there is now
  * one, and both drivers call it. The DECISIONS stay pure in `lib/roster-restore.mjs`. */
 const { grantRole, restoreRosterToSnapshot } =
-  makeRosterUI({ withAdminPanel, rosterRows, out: OUT });
+  makeRosterUI({ withAdminPanel, rosterRows, out: OUT, record: NV });
 
 async function main() {
   console.log(`\nF-642 — the knowledge/provider doors as a scope-"own" EDITOR, live on ${ENV_NAME.toUpperCase()}\n`);

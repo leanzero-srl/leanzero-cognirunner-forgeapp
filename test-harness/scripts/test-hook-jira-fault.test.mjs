@@ -310,8 +310,11 @@ process.env.HARNESS_SECRET = SECRET;
   forgeApi.__calls.length = 0;
   const resolved = await index.resolveUserToAccountId({ query: "Mihai Perdum" });
   const resolveCall = forgeApi.__calls[forgeApi.__calls.length - 1];
-  ok(resolveCall.path === `${PATH}?query=Mihai Perdum&maxResults=20`,
-    `resolveUserToAccountId fetches the SAME derived route (got ${resolveCall.path})`);
+  /* F-669 — THE SPACE IS ESCAPED, and this expectation used to say it was not. The mock's
+     `route` was a plain concatenation, so the assertion asserted a string that can never
+     be on the wire: the real tag encodeURIComponent's a query parameter. */
+  ok(resolveCall.path === `${PATH}?query=Mihai%20Perdum&maxResults=20`,
+    `resolveUserToAccountId fetches the SAME derived route, with the query ESCAPED (got ${resolveCall.path})`);
   ok(resolveCall.opts && resolveCall.opts.headers && resolveCall.opts.headers.Accept === "application/json",
     "…and keeps its own Accept header — the wrapper forwards options untouched");
   ok(resolved.ok === true && resolved.accountId === "8888",
@@ -404,5 +407,80 @@ process.env.HARNESS_SECRET = SECRET;
   process.env.HARNESS_SECRET = SECRET;
 }
 
-console.log(`test-hook-jira-fault (F-655/F-661/F-667): ${pass} passed, ${fail} failed`);
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-669 — THE MOCK MUST BE ABLE TO SEE THE TRUSTED-SLOT RISK.
+ *
+ * F-661 introduced `assumeTrustedRoute`, the one call in the codebase that can put a
+ * string into `route`'s PATH position without the tag inspecting it. Today its argument
+ * is a frozen module constant and the code is correct. The exposure is the NEXT edit:
+ * someone "fixes" a rejected query by writing
+ *   route`${assumeTrustedRoute(JIRA_FAULT_USER_SEARCH_PATH + "?query=" + query)}`
+ * and caller-controlled admin search text reaches the wire unescaped. Every offline
+ * assertion still passed, because the mock concatenated either way and the expectations
+ * were written against a concatenation — so the suite could not see the one thing the
+ * new door made possible.
+ *
+ * The mock now mirrors `@forge/api/out/safeUrl.js`. These checks prove the mirror is
+ * real: the tag REFUSES path manipulation, it ESCAPES in query mode, and — where the
+ * real package is resolvable — it produces the byte-identical string.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+{
+  const { route: mockRoute, assumeTrustedRoute: mockTrust } = await import("../lib/mock-forge-api.mjs");
+  const routes = await import("../../src/jira-routes.js");
+
+  /* THE POSITIVE CONTROL FIRST. A refusal proves nothing until the same tag is shown to
+     ACCEPT the legitimate case on the same shape. */
+  ok(routes.routeString(routes.userSearchRoute("mihai")) === `${PATH}?query=mihai&maxResults=10`,
+    "POSITIVE CONTROL: the real builder still produces the plain route for a plain query");
+
+  let threw = null;
+  try { mockRoute`${"/rest/api/3/user/search?query=x"}`; }
+  catch (e) { threw = String(e.message); }
+  ok(threw !== null, "splicing a plain string containing `/` into the TRUSTED slot THROWS — the mock can now see the risk");
+  ok(/path manipulation/i.test(String(threw)), `…with the real package's message (got: ${threw})`);
+
+  for (const bad of ["a/b", "a\\b", "..", "%2e%2e", "a?b", "a#b"]) {
+    let t = null;
+    try { mockRoute`/x/${bad}`; } catch (e) { t = e; }
+    ok(t !== null, `path mode refuses ${JSON.stringify(bad)} — every rule escapeParameter carries, not just the slash`);
+  }
+
+  ok(routes.routeString(mockRoute`/x/${mockTrust("a/b")}`) === "/x/a/b",
+    "…while a Route object IS spliced verbatim, which is the whole point of assumeTrustedRoute");
+
+  /* QUERY MODE. The mode flips on the template FRAGMENT that carries the `?`, BEFORE the
+     parameter after it is escaped — which is why a slash in the query is encoded, not
+     refused. Get that ordering wrong and the mock is a different function. */
+  const tricky = "a b/c&d=e#f";
+  const built = routes.routeString(routes.userSearchRoute(tricky));
+  ok(built === `${PATH}?query=${encodeURIComponent(tricky)}&maxResults=10`,
+    `a query is ESCAPED, not refused: the mode flips on the "?" fragment first (got ${built})`);
+  ok(!built.includes(" ") && !built.includes("#"),
+    "…so no raw separator from caller text can reach the wire and change the request's parameters");
+
+  /* THE MIRROR, AGAINST THE REAL THING. If @forge/api is installed, the two tags must
+     agree byte-for-byte; if it is not, say so rather than claim a comparison never made. */
+  let real = null;
+  try {
+    const { createRequire } = await import("node:module");
+    real = createRequire(import.meta.url)("@forge/api/out/safeUrl.js");
+  } catch { real = null; }
+  if (real && typeof real.route === "function") {
+    const realBase = real.assumeTrustedRoute(PATH);
+    const expected = real.route`${realBase}?query=${tricky}&maxResults=${10}`.value;
+    ok(built === expected, `the mock's tag is byte-identical to @forge/api's for userSearchRoute(${JSON.stringify(tricky)}) (mock ${built} / real ${expected})`);
+
+    let realThrew = null;
+    try { real.route`${"/rest/api/3/user/search?query=x"}`; } catch (e) { realThrew = String(e.message); }
+    ok(realThrew !== null && /path manipulation/i.test(realThrew),
+      "…and the real tag refuses the same trusted-slot splice, for the same stated reason");
+
+    ok(real.route`/x/${real.assumeTrustedRoute("a/b")}`.value === "/x/a/b",
+      "…and splices a real Route verbatim, exactly as the mock does");
+  } else {
+    console.log("  N/V   @forge/api is not resolvable here, so the mock was checked against the DOCUMENTED safeUrl rules only, not against the package");
+  }
+}
+
+console.log(`test-hook-jira-fault (F-655/F-661/F-667/F-669): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

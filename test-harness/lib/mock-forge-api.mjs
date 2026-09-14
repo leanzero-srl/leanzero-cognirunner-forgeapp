@@ -17,12 +17,75 @@ const fakeResponse = (status, body) => ({
   json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
 });
 
-export const route = (strings, ...vals) => strings.reduce((acc, s, i) => acc + s + (i < vals.length ? String(vals[i]) : ""), "");
+/*
+ * F-669 — THE MOCK `route` MIRRORS `@forge/api`'s safeUrl SEMANTICS, INCLUDING THE THROW.
+ *
+ * It used to be a plain concatenation: it neither escaped nor refused anything. So every
+ * offline assertion on `userSearchRoute(...)` proved STRING SHAPE only — they would have
+ * passed identically if the builder had been changed to splice caller text into the
+ * trusted slot as `route`${assumeTrustedRoute(path + "?query=" + query)}``, which is
+ * exactly the regression `assumeTrustedRoute` newly makes possible. The one thing F-661
+ * introduced was the one thing the suite could not see.
+ *
+ * The real rules, read from node_modules/@forge/api/out/safeUrl.js (escapeParameter /
+ * route), reproduced here:
+ *   - the tag starts in PATH mode and switches to QUERY mode as soon as a template
+ *     FRAGMENT contains `?` or `#` — and the switch happens BEFORE the parameter that
+ *     follows that fragment is escaped, which is why `?query=${q}` escapes `q` as a query
+ *     value rather than refusing its slashes;
+ *   - in PATH mode a `Route` object is spliced in VERBATIM; any other value is stringified
+ *     and THROWS if it contains `/`, `\`, `?`, `#` or a `..` sequence (percent-encoded
+ *     variants included);
+ *   - in QUERY mode a `Route` and a plain value are both encodeURIComponent'd, and a
+ *     URLSearchParams is stringified.
+ *
+ * The returned object carries `value` (what `routeString` reads) and a `toString` (what
+ * `requestJira` records), so every existing assertion that compares a path keeps working.
+ */
+const DOUBLE_DOT = ["..", ".%2e", "%2e.", "%2e%2e", ".%2E", "%2E.", "%2E%2e"];
+const DIRECTORY_PATH = ["/", "\\"];
+const ENDS_PATH = ["?", "#"];
+const containsOneOf = (needles, haystack) => needles.some((n) => haystack.includes(n));
+
+class MockRoute {
+  constructor(value) { this.value_ = value; }
+  get value() { return this.value_; }
+  set value(_) { throw new Error("modification of a Route is not allowed"); }
+  toString() { return this.value_; }
+}
+export const isRoute = (x) => x instanceof MockRoute;
+
+const escapeParameter = (parameter, mode) => {
+  if (mode === "path") {
+    if (isRoute(parameter)) return parameter.value;
+    const p = String(parameter);
+    if (containsOneOf(DOUBLE_DOT, p) || containsOneOf(ENDS_PATH, p) || containsOneOf(DIRECTORY_PATH, p)) {
+      throw new Error("Disallowing path manipulation attempt. For more information see: https://go.atlassian.com/product-fetch-api-route");
+    }
+    return p;
+  }
+  if (isRoute(parameter)) return encodeURIComponent(parameter.value);
+  if (parameter instanceof URLSearchParams) return parameter.toString();
+  return encodeURIComponent(parameter);
+};
+
+export const route = (template, ...parameters) => {
+  let mode = "path";
+  let result = "";
+  for (let i = 0; i < template.length; i++) {
+    const fragment = template[i];
+    if (containsOneOf(ENDS_PATH, fragment)) mode = "query";
+    result += fragment;
+    if (i >= parameters.length) break;
+    result += escapeParameter(parameters[i], mode);
+  }
+  return new MockRoute(result);
+};
 
 // F-661 — src/jira-routes.js splices the ONE path constant into `route` as a pre-trusted
-// Route so the real tag will not throw on its slashes. The mock's Route is a plain string,
-// and the reduce above already inserts one verbatim, so the built URL matches the real one.
-export const assumeTrustedRoute = (r) => String(r);
+// Route so the real tag will not throw on its slashes. Same contract here: a Route goes
+// into path position verbatim, and ONLY a Route may.
+export const assumeTrustedRoute = (r) => new MockRoute(String(r));
 
 const requestJira = async (path, opts = {}) => {
   calls.push({ path: String(path), opts });

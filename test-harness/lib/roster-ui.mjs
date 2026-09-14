@@ -124,10 +124,12 @@ export async function restoreMaskedEmails(frame) {
  * THE ONLY WAY A PERMISSIONS-TAB SCREENSHOT IS TAKEN. Mask, assert nothing readable is
  * left, capture, restore.
  *
- * @param opts.strict  when true (the default) a readable address ABORTS the capture and
- *   throws — a PNG that leaks is worse than a missing one, because the missing one gets
- *   noticed. Pass false where a failed capture must not take the run down with it; the
- *   answer then carries `captured:false` and the reason, which the caller should record.
+ * @param opts.strict  when true (the DEFAULT, and F-668 is why it is no longer waived at
+ *   any call site) a readable address ABORTS the capture and throws — a PNG that leaks is
+ *   worse than a missing one, because the missing one gets noticed. `strict:false` is not
+ *   used by any driver any more: it survives as the unit-testable branch, and a caller
+ *   that passes it must still RECORD the `{captured:false, reason}` answer. Prefer
+ *   `makeShot` below — it is the one home of that recording.
  */
 export async function shotMasked(page, frame, path, opts = {}) {
   const strict = opts.strict !== false;
@@ -148,6 +150,39 @@ export async function shotMasked(page, frame, path, opts = {}) {
   return { path, total: m.total, masked: m.masked, readable: m.readable, captured };
 }
 
+/**
+ * THE ONE HOME OF "A CAPTURE THAT DID NOT HAPPEN IS RECORDED".
+ *
+ * F-668 — THE GUARANTEE WAS ARMED AT ZERO CALL SITES. `strict` defaulted to true, and
+ * every one of the nine live call sites passed `{ strict: false }` and then wrote
+ * `.catch(() => {})` around the call, throwing the answer away. So the branch that
+ * REFUSES a leaking capture never ran anywhere, and the branch that reports WHY a capture
+ * is missing had no reader: the run stayed green, the PNG was silently absent, and
+ * nothing in the evidence said why — while this file's own docblock told a reader the
+ * answer "should be recorded".
+ *
+ * Fixing the nine sites one at a time would schedule the tenth. This wrapper is the fix:
+ * a driver hands it its own N/V writer ONCE, and every capture in that driver is then
+ * recorded on failure, with no `.catch` to remember to omit and no `strict` to remember
+ * to set. A LEAK still throws out — that is the F-660 promise, and softening it is not
+ * this function's job.
+ *
+ * @param record  the driver's N/V writer, `(sentence, detail) => void`.
+ */
+export function makeShot(record) {
+  const note = typeof record === "function" ? record : () => {};
+  return async function shot(page, frame, path, opts = {}) {
+    const r = await shotMasked(page, frame, path, opts);
+    if (!r.captured) {
+      note("a screenshot was not captured: " + path, {
+        reason: r.reason || "page.screenshot() failed (the mask itself passed: nothing readable was left)",
+        readable: r.readable, spans: r.total, masked: r.masked,
+      });
+    }
+    return r;
+  };
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * THE ROSTER, THROUGH THE PERMISSIONS TAB — ONE IMPLEMENTATION.
  *
@@ -157,9 +192,13 @@ export async function shotMasked(page, frame, path, opts = {}) {
  * @param deps.withAdminPanel  (fn(page, frame)) => result — opens the panel, closes it
  * @param deps.rosterRows      () => the raw `app_admins` array, straight from KVS
  * @param deps.out             the results directory screenshots are written to
+ * @param deps.record          (F-668) the driver's N/V writer. Its captures are recorded
+ *   through it exactly as the driver's own are; omitted, the answer still rides out on
+ *   the returned `shot` field, which `restoreRosterToSnapshot` folds into `actions`.
  * ═══════════════════════════════════════════════════════════════════════════════ */
-export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
+export function makeRosterUI({ withAdminPanel, rosterRows, out, record }) {
   const rosterIds = async () => (await rosterRows()).map(rosterIdOf);
+  const shot = makeShot(record);
 
   /** Every search row / roster card with its discriminator — read in the SAME context. */
   async function readRows(frame, sel) {
@@ -193,10 +232,28 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
    * NOTHING and the stray survived the run.
    *
    * F-658 — a role or scope the UI cannot express is REFUSED, never rounded to a label.
+   *
+   * F-666 — ADMIN HAS NO SCOPE CONTROL, SO THERE IS NOTHING TO CLICK. PermissionsTab
+   * renders the scope `CustomSelect` behind `{addRole !== "admin" && (` and forces
+   * `effectiveScope = "all"` itself, so the moment Admin is chosen the second `.dropdown`
+   * UNMOUNTS. `nth(1).click()` then had no element, hung to the Playwright timeout and
+   * THREW — out of `grantRole`, out of `restoreRosterToSnapshot`, past every remaining
+   * repair. That is not an edge: `rosterRowRole` makes every LEGACY roster row (a bare
+   * accountId string, or an object with no `role`) an admin, and `isReproducibleRosterRow`
+   * declares admin reproducible — so the common shape is the one that could not be put
+   * back. And the `changed` path removes BEFORE it re-grants, so the throw left a real
+   * site admin deleted from `app_admins` with no second pass coming.
+   *
+   * So: for admin the scope dropdown is SKIPPED, and `all` is the only scope that may be
+   * asked for (anything else is a refusal, not a silent rounding — F-658's rule).
    */
   async function grantRole(accountId, role, scope, queries) {
-    if (!ROLE_LABEL[role] || !SCOPE_LABEL[scope]) {
+    const adminGrant = role === "admin";
+    if (!ROLE_LABEL[role] || (!adminGrant && !SCOPE_LABEL[scope])) {
       return { ok: false, refused: true, reason: "refusing to click a default for role=" + JSON.stringify(role) + " scope=" + JSON.stringify(scope) + " - the UI cannot express it" };
+    }
+    if (adminGrant && scope !== undefined && scope !== "all") {
+      return { ok: false, refused: true, reason: "refusing to grant admin with scope=" + JSON.stringify(scope) + " - the UI renders no scope control for Admin and stores \"all\"; asking for anything else cannot be expressed" };
     }
     const qs = (queries && queries.length ? queries : ["Mihai"]).concat([idTail(accountId)]);
     let lastReason = null;
@@ -207,8 +264,18 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
         await frame.locator(".perm-search-wrap .dropdown").nth(0).click();
         await frame.locator(".dropdown-item-name", { hasText: ROLE_LABEL[role] }).first().click();
         await sleep(500);
-        await frame.locator(".perm-search-wrap .dropdown").nth(1).click();
-        await frame.locator(".dropdown-item-name", { hasText: SCOPE_LABEL[scope] }).first().click();
+        if (adminGrant) {
+          /* F-666 — the scope select is GONE now that Admin is selected. Prove that, rather
+             than assume it: a second `.dropdown` here would mean the product changed and
+             this branch is silently skipping a real control. */
+          const scopeControls = await frame.locator(".perm-search-wrap .dropdown").count();
+          if (scopeControls !== 1) {
+            return { clicked: false, rows: 0, reason: "expected the scope control to unmount for Admin, but the search row carries " + scopeControls + " dropdown(s) - PermissionsTab's `addRole !== \"admin\"` guard has changed and grantRole's admin path is now wrong" };
+          }
+        } else {
+          await frame.locator(".perm-search-wrap .dropdown").nth(1).click();
+          await frame.locator(".dropdown-item-name", { hasText: SCOPE_LABEL[scope] }).first().click();
+        }
         await sleep(400);
         await frame.locator(".perm-search-input").fill(q);
         await sleep(4500);
@@ -230,15 +297,40 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
         }
         await target.click();
         await sleep(4500);
-        const shot = await shotMasked(page, frame, out + "/02-roster-granted.png", { strict: false });
-        return { clicked: true, rows: rows.length, how: pick.how, index: pick.index, shot };
+        const grantShot = await shot(page, frame, out + "/02-roster-granted.png");
+
+        /* F-666 — READ THE CARD THE GRANT PRODUCED, by the same discriminator. The storage
+           read below is the authority, but it cannot tell an operator whether the UI AGREES
+           with it; for admin in particular the whole point is that the card renders its
+           scope as "All rules (always)" with no control beside it. `.perm-admin-role` is
+           `scopeLabel(role, scope)` — the one sentence the product shows for this row. */
+        let card = null;
+        const cards = await readRows(frame, ".perm-admin-card").catch(() => []);
+        const cardPick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
+        if (cardPick.index >= 0) {
+          const roleEl = frame.locator(".perm-admin-card").nth(cardPick.index).locator(".perm-admin-role");
+          card = (await roleEl.count()) > 0 ? (await roleEl.first().innerText()).trim() : null;
+        }
+        return { clicked: true, rows: rows.length, how: pick.how, index: pick.index, shot: grantShot, card, cardHow: cardPick.how || cardPick.reason };
       });
       if (r.disabledHit) return { ok: true, alreadyPresent: true, query: q };
       if (r.clicked) {
-        /* SECOND READ: the product's own storage, not the click's return value. */
+        /* SECOND READ: the product's own storage, not the click's return value. For admin
+           the stored scope is "all" whatever the caller passed — PermissionsTab forces it
+           (`effectiveScope = addRole === "admin" ? "all" : addScope`), so that, not the
+           argument, is what the row must equal. */
+        const wantScope = adminGrant ? "all" : scope;
         const row = (await rosterRows()).find((x) => rosterIdOf(x) === accountId);
-        if (row && row.role === role && (row.scope === scope || scope === undefined)) return { ok: true, how: r.how, index: r.index, query: q, shot: r.shot };
-        return { ok: false, reason: "the click landed but the roster row is " + JSON.stringify(row ? { role: row.role, scope: row.scope } : null) };
+        if (row && row.role === role && (row.scope === wantScope || wantScope === undefined)) {
+          /* F-666 — the CARD must agree with the store. `scopeLabel` says "All rules
+             (always)" for admin, "All rules"/"Own rules only" otherwise. A disagreement is
+             reported, not swallowed: it means the grant landed but the UI shows something
+             else, which is exactly what an operator reading a screenshot would be misled by. */
+          const wantCard = role === "admin" ? "All rules (always)" : (wantScope === "all" ? "All rules" : "Own rules only");
+          const cardAgrees = r.card === null || r.card === wantCard;
+          return { ok: true, how: r.how, index: r.index, query: q, shot: r.shot, card: r.card, cardAgrees, ...(cardAgrees ? {} : { cardMismatch: "the roster card reads " + JSON.stringify(r.card) + " but the stored row is " + JSON.stringify({ role: row.role, scope: row.scope }) + " (expected the card to read " + JSON.stringify(wantCard) + ")" }) };
+        }
+        return { ok: false, reason: "the click landed but the roster row is " + JSON.stringify(row ? { role: row.role, scope: row.scope } : null) + " (wanted " + JSON.stringify({ role, scope: wantScope }) + ")" };
       }
       lastReason = r.reason;
       if (r.raced) return { ok: false, raced: true, reason: r.reason };
@@ -266,12 +358,12 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
       await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
       await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
       await sleep(3500);
-      await shotMasked(page, frame, out + "/03-roster-restore-" + idTail(accountId).slice(0, 8) + ".png", { strict: false });
-      return { removed: true, how: pick.how, index: pick.index };
+      const rmShot = await shot(page, frame, out + "/03-roster-restore-" + idTail(accountId).slice(0, 8) + ".png");
+      return { removed: true, how: pick.how, index: pick.index, shot: rmShot };
     });
     if (!r.removed) return r;
     const gone = !(await rosterIds()).includes(accountId);   // SECOND READ
-    return { removed: gone, how: r.how, index: r.index, ...(gone ? {} : { reason: "the card was clicked but the row is still in app_admins" }) };
+    return { removed: gone, how: r.how, index: r.index, shot: r.shot, ...(gone ? {} : { reason: "the card was clicked but the row is still in app_admins" }) };
   }
 
   /**
@@ -279,40 +371,77 @@ export function makeRosterUI({ withAdminPanel, rosterRows, out }) {
    * damage this run never recorded causing. A driver runs this UNCONDITIONALLY in its
    * `finally`: the state that needs repairing is the state on the tenant, not the state
    * the run believes it caused.
+   *
+   * F-666 — ONE FAILED REPAIR MUST NOT CANCEL THE REST. Every repair here used to run
+   * un-guarded, so the first `grantRole` or `removeAccount` that THREW (the admin scope
+   * dropdown that is not rendered, a Playwright timeout, a detached frame) propagated
+   * straight out of this function, past every remaining `changed` and `missing` row. The
+   * `changed` path removes BEFORE it re-grants, so the throw left real site admins
+   * DELETED from `app_admins` and no second pass ever came. A restore is the last thing
+   * that runs and it is repairing damage, so it attempts EVERY row and reports ALL the
+   * failures at the end — it does not stop at the first one.
    */
   async function restoreRosterToSnapshot(snapshot) {
     const actions = [];
+    const failures = [];
+    /* The one seam that turns a throw into a recorded failure. It never rethrows: the
+       verdict below is computed from a fresh READ of the roster, so a lie here would be
+       caught anyway — and a repair that crashed is exactly the thing the operator needs
+       spelled out rather than replaced by a stack trace from row one. */
+    const attempt = async (act, id, fn) => {
+      try {
+        const r = await fn();
+        const entry = { act, id: idTail(id), ...r };
+        actions.push(entry);
+        if (r && r.ok === false) failures.push({ act, id: idTail(id), reason: r.reason || "refused" });
+        if (r && r.removed === false) failures.push({ act, id: idTail(id), reason: r.reason || "not removed" });
+        return entry;
+      } catch (e) {
+        const reason = "threw: " + String((e && e.message) || e).slice(0, 200);
+        actions.push({ act, id: idTail(id), ok: false, threw: true, reason });
+        failures.push({ act, id: idTail(id), reason });
+        return { ok: false, threw: true, removed: false, reason };
+      }
+    };
+
     for (let pass = 0; pass < 4; pass++) {
       const plan = planRosterRestore(snapshot, await rosterRows());
-      if (plan.clean) return { ok: true, actions, verdict: "byte-identical" };
+      if (plan.clean) return { ok: true, actions, verdict: "byte-identical", ...(failures.length ? { failures, info: failures.length + " repair(s) failed on the way, but the roster ended byte-identical" } : {}) };
       /* Strays first: a wrong grant is the thing that must not survive this process. */
       for (const r of plan.strays) {
         const id = rosterIdOf(r);
-        actions.push({ act: "remove-stray", id: idTail(id), ...(await removeAccount(id)) });
+        await attempt("remove-stray", id, () => removeAccount(id));
       }
       /* A changed row goes back by removing it and re-granting the role the PRODUCT reads
          off the snapshot row (F-658), and is REFUSED if the UI cannot express it. */
       for (const c of plan.changed) {
         const repro = isReproducibleRosterRow(c.before);
-        if (!repro.ok) { actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: false, refused: true, reason: repro.reason }); continue; }
-        const r1 = await removeAccount(c.accountId);
-        actions.push({ act: "remove-changed", id: idTail(c.accountId), ...r1 });
+        if (!repro.ok) { actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: false, refused: true, reason: repro.reason }); failures.push({ act: "readd-changed", id: idTail(c.accountId), reason: repro.reason }); continue; }
+        const r1 = await attempt("remove-changed", c.accountId, () => removeAccount(c.accountId));
         if (r1.removed) {
-          const r2 = await grantRole(c.accountId, repro.role, repro.scope, [c.before.displayName, c.before.emailAddress].filter(Boolean));
-          actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: !!r2.ok, role: repro.role, scope: repro.scope, reason: r2.reason });
+          await attempt("readd-changed", c.accountId, async () => {
+            const r2 = await grantRole(c.accountId, repro.role, repro.scope, [c.before.displayName, c.before.emailAddress].filter(Boolean));
+            return { ok: !!r2.ok, role: repro.role, scope: repro.scope, reason: r2.reason, card: r2.card };
+          });
         }
       }
       for (const r of plan.missing) {
         const id = rosterIdOf(r);
         const repro = isReproducibleRosterRow(r);
-        if (!repro.ok) { actions.push({ act: "readd-missing", id: idTail(id), ok: false, refused: true, reason: repro.reason }); continue; }
-        const g = await grantRole(id, repro.role, repro.scope, [r.displayName, r.emailAddress].filter(Boolean));
-        actions.push({ act: "readd-missing", id: idTail(id), ok: !!g.ok, role: repro.role, scope: repro.scope, reason: g.reason });
+        if (!repro.ok) { actions.push({ act: "readd-missing", id: idTail(id), ok: false, refused: true, reason: repro.reason }); failures.push({ act: "readd-missing", id: idTail(id), reason: repro.reason }); continue; }
+        await attempt("readd-missing", id, async () => {
+          const g = await grantRole(id, repro.role, repro.scope, [r.displayName, r.emailAddress].filter(Boolean));
+          return { ok: !!g.ok, role: repro.role, scope: repro.scope, reason: g.reason, card: g.card };
+        });
       }
       if (plan.sameSet) break;   // F-659 - order only; no click can fix it, and it is a pass
     }
+    /* THE VERDICT IS A FRESH READ, NOT A TALLY OF THE ATTEMPTS. `failures` rides alongside
+       it so an operator can see WHAT could not be repaired even on a run that ended
+       byte-identical (a row another pass fixed), and so a failed restore names every
+       broken repair rather than only the first one that threw (F-666). */
     const v = rosterRestoreVerdict(snapshot, await rosterRows());
-    return { ok: v.ok, actions, verdict: v.verdict, ...(v.info ? { info: v.info } : {}), plan: describePlan(v.plan) };
+    return { ok: v.ok, actions, verdict: v.verdict, ...(v.info ? { info: v.info } : {}), ...(failures.length ? { failures } : {}), plan: describePlan(v.plan) };
   }
 
   return { readRows, grantRole, removeAccount, restoreRosterToSnapshot, rosterIds };

@@ -30,7 +30,7 @@ import { redactSecrets, redactString } from "../lib/redact.mjs";
    a full-page shot of the Permissions tab renders real addresses as PIXELS that no text
    redactor can see. Every capture goes through `shotMasked`, which masks every
    `.perm-ident-email`, asserts nothing readable is left, shoots, and restores. */
-import { shotMasked } from "../lib/roster-ui.mjs";
+import { makeShot } from "../lib/roster-ui.mjs";
 /* F-657 — the ROW is chosen by `selectByDiscriminator`, which matches the FULL account id
    in the `.perm-ident-id` title, falls back to the visible segment only when it is unique,
    and refuses on a duplicate or a miss. Never `.perm-ident` `.first()`: that class is the
@@ -65,6 +65,15 @@ const ev = { at: new Date().toISOString(), env: ENV_NAME, target: TARGET, checks
 const PASS = (s, d) => { const r = d ? redactSecrets(d) : d; passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d: r } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
 const FAIL = (s, d) => { const r = d ? redactSecrets(d) : d; fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d: r } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
 const NV = (s, d) => { const r = d ? redactSecrets(d) : d; unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d: r } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+
+/* F-668 — THE CAPTURE'S ANSWER IS RECORDED, NEVER DISCARDED. Every call site here used
+ * to waive the strict flag AND swallow the returned promise, so the branch that REFUSES a
+ * leaking capture never ran, and the `{captured:false, reason}` answer had no reader: a
+ * missing PNG was a silent hole in a green run. `makeShot` binds this driver's N/V writer
+ * once. Strict is the default again — a readable address ABORTS rather than reaching disk
+ * — and a capture that did not happen now says so, with its reason, in the evidence.
+ * `scripts/evidence-redaction.test.mjs` keeps both halves true for the whole directory. */
+const shot_ = makeShot(NV);
 const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 async function hook(body, method = "POST", qs = "") {
@@ -126,7 +135,7 @@ async function readSearchRows(shot) {
         cls: (await r.getAttribute("class")) || "",
       });
     }
-    if (shot) await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
+    if (shot) await shot_(page, frame, `${OUT}/${shot}`);
     return out;
   });
 }
@@ -182,7 +191,7 @@ async function clickRowBySegment(segment, role = "Editor", scope = /^Own Rules/)
     }
     await target.click();
     await sleep(5000);
-    await shotMasked(page, frame, `${OUT}/02-granted-roster.png`, { strict: false }).catch(() => {});
+    await shot_(page, frame, `${OUT}/02-granted-roster.png`);
     return { clicked: true, index: pick.index, how: pick.how, ident: confirmShown };
   });
 }
@@ -209,7 +218,7 @@ async function readRosterCards(shot) {
         identTitle: hasIdent ? await identLoc.first().getAttribute("title") : null,
       });
     }
-    if (shot) await shotMasked(page, frame, `${OUT}/${shot}`, { strict: false }).catch(() => {});
+    if (shot) await shot_(page, frame, `${OUT}/${shot}`);
     return out;
   });
 }
@@ -241,7 +250,7 @@ async function removeRosterBySegment(segment) {
       await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
       await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
       await sleep(4000);
-      await shotMasked(page, frame, `${OUT}/04-roster-restored.png`, { strict: false }).catch(() => {});
+      await shot_(page, frame, `${OUT}/04-roster-restored.png`);
       return { removed: true, index: pick.index, how: pick.how };
     }
     return { removed: false, cards: n, reason: pick.reason };

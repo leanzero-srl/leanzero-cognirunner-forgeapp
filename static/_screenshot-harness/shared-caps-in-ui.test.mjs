@@ -443,8 +443,8 @@ const ROSTER_ALLOW = [
   /* F-878 CLOSED the src/rules-api.js `tokenRole` entry: the token vocabulary IS the roster
      vocabulary (`TOKEN_ROLES = VALID_ROLES` by identity) and an unrecognised role now falls
      to DEFAULT_ROSTER_ROLE; only an ABSENT role keeps the documented legacy admin. */
-  { file: "src/async-handler.js", match: 'p.savedByRole || "editor"',
-    why: "the ARMING STAMP vocabulary (savedByRole: admin|editor), not a roster grant - editor is its RESTRICTIVE value, so this default narrows rather than widens. Its home is listeners.js normalizeSavedByRole; that the literal is re-typed here, in rules-api.js (REST_SAVED_BY_ROLE) and in index.js stampSavedByRole is a SEPARATE finding, filed, and not this arm's rule" },
+  /* F-884 CLOSED the src/async-handler.js `p.savedByRole || "editor"` entry: the arming-stamp
+     vocabulary now has one home (`DEFAULT_SAVED_BY_ROLE`, roster-roles.js) and section 8 guards it. */
 ];
 
 /* F-864 - THE BACKEND IS SCANNED BY THE SAME SCANNER, NOT A SECOND COPY OF IT.
@@ -645,15 +645,10 @@ ok(scanSavedByLiterals(`const savedByRole = p.savedByRole || DEFAULT_SAVED_BY_RO
 ok(scanSavedByLiterals(`const role = user.role || "admin";\n`).length === 0,
   "negative control: a roster `role` literal is not a saved-by literal - section 6 owns that");
 
-const backendSources = [];
-const walkSrc = (dir) => {
-  for (const name of readdirSync(dir)) {
-    const full = join(dir, name);
-    if (statSync(full).isDirectory()) walkSrc(full);
-    else if (/\.js$/.test(name)) backendSources.push(full);
-  }
-};
-walkSrc(join(REPO, "src"));
+/* Section 6's `backendSources` walk (src/ + src/shared/, the roster home excluded) is reused
+   here: the F-884 merge had declared a second walker under the same name, which is a
+   SyntaxError, and the two lists differed only by the roster home itself, which types no
+   saved-by literal. One list, one walk. */
 ok(backendSources.length > 20, `scanned ${backendSources.length} backend source files under src/`);
 
 /* Every file that reads or writes the arming stamp must take the vocabulary from the one

@@ -15259,8 +15259,88 @@ let _cachedModel = null;
 let _cachedModelAt = 0;
 
 /**
- * Get the active provider's model. Checks per-provider KVS slot first,
- * falls back to legacy slot, then env var, then provider default.
+ * F-818 — THE ONE HOME OF THE MODEL-RESOLUTION CHAIN.
+ *
+ * agent slot (agent readers only) → ordinary model slot → legacy slot (migrating readers
+ * only) → `OPENAI_MODEL` env var (OpenAI-shaped providers only) → `PROVIDERS[provider].defaultModel`.
+ *
+ * F-811 built the agent reader self-contained rather than extracting this, which left the
+ * chain with TWO homes: a policy added to one (a clamp, a migration, a belt) silently
+ * missed the other. Both readers now derive from here and differ ONLY in the two options:
+ *
+ *   `agentSlot` — read `COGNIRUNNER_AGENT_MODEL_{provider}` first. Agent surfaces only;
+ *                 the ordinary path must never serve the agent's pick to a validator.
+ *   `migrate`   — the one-time legacy-slot write. ACTIVE-provider path only: it must not
+ *                 fire for a provider that is not even active (that write would plant a
+ *                 model in a slot nobody asked about).
+ *
+ * The provider is an ARGUMENT and is read NOWHERE in here — that is F-811's fix and it is
+ * now structural for both readers. A null provider yields null and writes nothing (F-112):
+ * `COGNIRUNNER_MODEL_null` is not a slot, and a memoised default would outlive the fault.
+ *
+ * THE POLICIES ARE THE SHARED ONES (src/shared/edition.js), applied server-side AFTER the
+ * read, and they are here — not at one call site — because they belong to EVERY reader:
+ *
+ *  - `clampManagedModel` on the managed engine: a slot outside the offer resolves to
+ *    Sonnet 5 rather than being sent to OpenRouter on our account. A billing backstop is
+ *    not an agent concern.
+ *  - THE ATLASSIAN BELT on Forge LLM: a slot written while another provider was active can
+ *    hold that vendor's id (`anthropic/claude-opus-5`). F-811 put this on the agent reader
+ *    only, and that is exactly the asymmetry F-818 is about — "what would this provider
+ *    actually run" is a question every reader asks, and the ordinary reader answering
+ *    another vendor's id is the same half-and-half fact set one surface over. It is a
+ *    RESOLUTION belt, never access control: `agentCapability` still refuses Haiku for
+ *    agents, and the EDITION clamp (`clampForgeLlmModel`) still runs at dispatch, where
+ *    Standard-vs-Coder is known. NOT a prefix strip — the exact-id policy in edition.js is
+ *    a pricing decision, so "anthropic/claude-opus-5" does not become "claude-opus-5".
+ */
+const resolveModelForProvider = async (provider, { migrate = false, agentSlot = false } = {}) => {
+  // F-112 — refuse BEFORE any slot read and before any memo write upstream.
+  if (!provider) return null;
+  let model = null;
+  try {
+    if (agentSlot) {
+      const savedAgent = await storage.get(providerAgentModelSlot(provider));
+      if (savedAgent) model = String(savedAgent);
+    }
+    if (!model) {
+      // Read the saved per-provider model UNCONDITIONALLY. Gating this on a BYOK key
+      // broke keyless providers: LM Studio (auth optional) and Forge LLM (no key at all)
+      // would silently ignore the admin's saved model and fall through to a default that
+      // doesn't exist on those providers. The slot is cleared when reverting to factory
+      // (removeOpenAIKey deletes it), so reading it is always safe.
+      const saved = await storage.get(providerModelSlot(provider));
+      if (saved) model = String(saved);
+    }
+    if (!model && migrate) {
+      // Migrate the legacy slot to the per-provider one (only meaningful when a key exists).
+      const byokKey = await storage.get(providerKeySlot(provider));
+      if (byokKey) {
+        const legacy = await storage.get("COGNIRUNNER_OPENAI_MODEL");
+        if (legacy) {
+          await storage.set(providerModelSlot(provider), legacy);
+          console.log(`Migrated legacy model to ${providerModelSlot(provider)}`);
+          model = String(legacy);
+        }
+      }
+    }
+    if (model && provider === MANAGED_PROVIDER_ID) model = clampManagedModel(model);
+  } catch (error) {
+    // Restrictive: an unread slot falls through to the env var / provider default rather
+    // than answering null, which would take a working instance offline over a read blip.
+    console.error("Error reading model from storage:", error);
+  }
+  // The OPENAI_MODEL env var names an OpenAI model — applying it to Anthropic, LM Studio
+  // or Forge LLM would 404 at inference time.
+  if (!model && process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) model = process.env.OPENAI_MODEL;
+  if (!model) model = (PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || "gpt-5.4-mini";
+  if (provider === "atlassian" && !FORGE_LLM_MODELS.advanced.includes(String(model))) return FORGE_LLM_DEFAULT;
+  return model;
+};
+
+/**
+ * The ACTIVE provider's ordinary model — `resolveModelForProvider` for the memoised
+ * provider, with the one-time legacy migration. The chain itself lives in ONE home above.
  *
  * Returns null when there is NO active provider (getProviderConfig faulted, F-103),
  * exactly as getOpenAIKey does — and without memoising that, because a cached default
@@ -15269,52 +15349,15 @@ let _cachedModelAt = 0;
 const getOpenAIModel = async () => {
   if (_cachedModel && _cacheFresh(_cachedModelAt)) return _cachedModel;
 
-  try {
-    const { provider } = await getProviderConfig();
-    // No provider (F-112) → no model, and NOTHING memoised. Mirrors getOpenAIKey: when
-    // getProviderConfig faults it names no provider (F-103), and `COGNIRUNNER_MODEL_null`
-    // is not a slot. Falling through used to cache "gpt-5.4-mini" for the full 30s TTL,
-    // so calls correctly routed to Anthropic AFTER the fault cleared still carried an
-    // OpenAI model id — 400/404, validators failing OPEN, with no fault visible anywhere.
-    if (!provider) return null;
-    // Read the saved per-provider model UNCONDITIONALLY. Gating this on a BYOK key
-    // broke keyless providers: LM Studio (auth optional) and Forge LLM (no key at all)
-    // would silently ignore the admin's saved model and fall through to a default
-    // that doesn't exist on those providers. The slot is cleared when reverting to
-    // factory (removeOpenAIKey deletes it), so reading it is always safe.
-    let savedModel = await storage.get(providerModelSlot(provider));
-    if (!savedModel) {
-      // Migrate: check legacy model slot (only meaningful when a key exists)
-      const byokKey = await storage.get(providerKeySlot(provider));
-      if (byokKey) {
-        savedModel = await storage.get("COGNIRUNNER_OPENAI_MODEL");
-        if (savedModel) {
-          await storage.set(providerModelSlot(provider), savedModel);
-          console.log(`Migrated legacy model to ${providerModelSlot(provider)}`);
-        }
-      }
-    }
-    // Clamp the managed engine's saved model to the offer, server-side after the read —
-    // the same backstop clampForgeLlmModel is for Forge LLM. A slot holding anything
-    // else resolves to Sonnet 5 rather than being sent to OpenRouter on our account.
-    if (savedModel && provider === MANAGED_PROVIDER_ID) savedModel = clampManagedModel(savedModel);
-    if (savedModel) { _cachedModel = savedModel; _cachedModelAt = Date.now(); return savedModel; }
-  } catch (error) {
-    console.error("Error reading model from storage:", error);
-  }
-
-  // Use env var (factory OpenAI-style deployments only), or provider-specific default.
-  // The OPENAI_MODEL env var names an OpenAI model — applying it to Anthropic,
-  // LM Studio, or Forge LLM would 404 at inference time.
   const { provider } = await getProviderConfig();
-  // Same rule on the tail path — this is a SECOND read, and it can fault on its own.
+  // No provider (F-112) → no model, and NOTHING memoised. Mirrors getOpenAIKey: when
+  // getProviderConfig faults it names no provider (F-103). Falling through used to cache
+  // "gpt-5.4-mini" for the full 30s TTL, so calls correctly routed to Anthropic AFTER the
+  // fault cleared still carried an OpenAI model id — 400/404, validators failing OPEN,
+  // with no fault visible anywhere.
   if (!provider) return null;
-  if (process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) {
-    _cachedModel = process.env.OPENAI_MODEL;
-    _cachedModelAt = Date.now();
-    return _cachedModel;
-  }
-  const model = (PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || "gpt-5.4-mini";
+  const model = await resolveModelForProvider(provider, { migrate: true });
+  if (!model) return null;
   _cachedModel = model;
   _cachedModelAt = Date.now();
   return model;
@@ -15333,47 +15376,24 @@ const getOpenAIModel = async () => {
  * the SAME memo-derived model, refused with `needs-frontier-model`. Two doors, one
  * instance, opposite answers — and the permissive one was the one a user sees.
  *
- * So the chain takes the provider as an ARGUMENT and reads NO provider anywhere:
- * agent slot → ordinary model slot → env var → `PROVIDERS[provider].defaultModel`.
- * Falling back to the ordinary model rather than to a literal keeps one default in the
- * app; on Forge LLM that means Haiku, which agentCapability() then refuses — a
- * deliberate, visible refusal instead of a silent frontier upgrade.
+ * So the chain takes the provider as an ARGUMENT and reads NO provider anywhere. The chain
+ * itself is `resolveModelForProvider` (F-818 — ONE home, shared with `getOpenAIModel`);
+ * this reader differs in exactly two options and nothing else:
+ *   `agentSlot:true`  — the agent slot is consulted first, then the ORDINARY model slot.
+ *                       Falling back to the ordinary model rather than to a literal keeps
+ *                       one default in the app; on Forge LLM that means Haiku, which
+ *                       agentCapability() then refuses — a deliberate, visible refusal
+ *                       instead of a silent frontier upgrade.
+ *   `migrate:false`   — the legacy-slot migration is a one-time WRITE that belongs on the
+ *                       active-provider path and must not fire for a provider that is not
+ *                       even active.
+ * Every policy (the managed clamp, the Forge LLM belt) is in the resolver, so it can no
+ * longer be true of one reader and not the other.
  *
- * NOT a second home for the model rule: the two POLICIES it applies (clampManagedModel,
- * FORGE_LLM_MODELS) are the shared ones in src/shared/edition.js. What it deliberately
- * does not carry is getOpenAIModel's legacy-slot MIGRATION, which is a one-time write
- * that belongs on the active-provider path and must not fire for a provider that is not
- * even active, and the 30 s memo, which is what this exists to escape.
- *
- * Not cached: agent surfaces are rare and low-frequency compared with validators.
+ * Not cached: agent surfaces are rare and low-frequency compared with validators, and the
+ * 30 s memo is what this exists to escape.
  */
-export const getAgentModelFor = async (provider) => {
-  if (!provider) return null;
-  let model = null;
-  try {
-    const saved = await storage.get(providerAgentModelSlot(provider));
-    if (saved) model = String(saved);
-    if (!model) {
-      const savedOrdinary = await storage.get(providerModelSlot(provider));
-      if (savedOrdinary) model = String(savedOrdinary);
-    }
-    // The same server-side billing backstop the ordinary path applies, from the same
-    // one home: a slot holding anything outside the offer resolves to Sonnet 5 rather
-    // than being sent to OpenRouter on our account.
-    if (model && provider === MANAGED_PROVIDER_ID) model = clampManagedModel(model);
-  } catch (e) { /* restrictive: an unread slot falls through to the provider default */ }
-  if (!model && process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) model = process.env.OPENAI_MODEL;
-  if (!model) model = (PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || "gpt-5.4-mini";
-  // BELT: a slot written while another provider was active can still hold that vendor's
-  // id. On Forge LLM the gate is an EXACT-ID check (FORGE_LLM_FRONTIER, edition.js), so
-  // such an id could only ever be refused — but it would be refused while NAMING a model
-  // this provider cannot run, which is the same half-and-half fact set in miniature.
-  // Resolve it to what Forge LLM would actually run. NOT a prefix strip: the exact-id
-  // policy in edition.js is a PRICING decision, and "anthropic/claude-opus-5" is not
-  // "claude-opus-5". Access control stays with agentCapability, which is unchanged.
-  if (provider === "atlassian" && !FORGE_LLM_MODELS.advanced.includes(String(model))) return FORGE_LLM_DEFAULT;
-  return model;
-};
+export const getAgentModelFor = async (provider) => resolveModelForProvider(provider, { agentSlot: true, migrate: false });
 
 /**
  * The ACTIVE provider's agent model — a thin wrapper on getAgentModelFor for the callers

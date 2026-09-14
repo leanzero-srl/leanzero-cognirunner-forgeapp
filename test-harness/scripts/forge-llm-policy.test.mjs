@@ -448,10 +448,19 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   // COGNIRUNNER_MODEL_null, then cached PROVIDERS[null]?.defaultModel || "gpt-5.4-mini"
   // into _cachedModel for the full 30s TTL. Calls correctly routed to Anthropic after
   // the fault cleared still carried an OpenAI model id → 400/404 → validators fail OPEN.
+  // F-818 — the chain now has ONE home (`resolveModelForProvider`) and getOpenAIModel is
+  // the active-provider reader over it, so the F-112 property is a property of BOTH: the
+  // caller refuses a null provider before it calls the resolver, and the resolver refuses
+  // one before it touches a slot. Assert the pair, and EXECUTE the pair together.
   {
     const mod = codeOnly.match(/const getOpenAIModel = async \(\) => \{[\s\S]*?\n\};/);
     ok(!!mod, "found getOpenAIModel");
     const mb = mod ? mod[0] : "";
+    const res = codeOnly.match(/const resolveModelForProvider = async \(provider, \{[^}]*\} = \{\}\) => \{[\s\S]*?\n\};/);
+    ok(!!res, "found the ONE home of the model chain, resolveModelForProvider (F-818)");
+    const rb = res ? res[0] : "";
+    ok(!/getProviderConfig\(/.test(rb),
+      "…and it reads NO provider of its own — the provider is the ARGUMENT (F-811, now structural for both readers)");
     // F-448 — the property is "EVERY provider read is followed by a refusal", not "there
     // are exactly two refusals". A third read added without a guard must fail this, and a
     // refactor to one read must not.
@@ -463,22 +472,63 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
         "EVERY provider read in getOpenAIModel is followed by a null-provider refusal (the tail read can fault on its own)");
     }
     const iFirst = mb.indexOf("if (!provider) return null;");
-    ok(iFirst > 0 && iFirst < mb.indexOf("_cachedModel = savedModel") && iFirst < mb.lastIndexOf("_cachedModel ="),
-      "…and each refusal precedes every memo write, so a null-provider fault is never cached for 30s");
-    ok(iFirst < mb.indexOf("providerModelSlot(provider)"),
-      "…and precedes the slot read, so COGNIRUNNER_MODEL_null is never asked for");
-    // EXECUTED: with a faulted provider read the model is null, and the memo stays empty.
+    ok(iFirst > 0 && iFirst < mb.indexOf("resolveModelForProvider(") && iFirst < mb.lastIndexOf("_cachedModel ="),
+      "…and the refusal precedes the resolver call AND every memo write, so a null-provider fault is never cached for 30s");
+    const iRes = rb.indexOf("if (!provider) return null;");
+    ok(iRes > 0 && iRes < rb.indexOf("providerModelSlot(provider)") && iRes < rb.indexOf("providerAgentModelSlot(provider)"),
+      "…and the resolver's own refusal precedes every slot read, so COGNIRUNNER_MODEL_null is never asked for");
+    // EXECUTED, BOTH FUNCTIONS TOGETHER: with a faulted provider read the model is null,
+    // the memo stays empty, and — the part a source read cannot prove — storage is never
+    // touched at all. MEASURED against both mutations: removing getOpenAIModel's guard
+    // fails the two source assertions above; removing the RESOLVER's fails the ordering
+    // assertion above, and the counter here is what would catch it once any caller reaches
+    // the resolver with a provider it did not check.
     {
-      let cached = null;
-      const fn = eval("(async (getProviderConfig, storage, providerModelSlot, providerKeySlot, PROVIDERS, console, process) => {"
+      let reads = 0;
+      const storageStub = { get: async () => { reads++; return "should-never-be-read"; }, set: async () => { reads++; } };
+      const fn = eval("(async (getProviderConfig, storage, providerModelSlot, providerKeySlot, providerAgentModelSlot, PROVIDERS, MANAGED_PROVIDER_ID, clampManagedModel, FORGE_LLM_MODELS, FORGE_LLM_DEFAULT, console, process) => {"
         + "let _cachedModel = null, _cachedModelAt = 0; const _cacheFresh = () => Date.now() - _cachedModelAt < 30000;"
+        + rb + "\n"
         + mb.replace("const getOpenAIModel = async () => {", "const f = async () => {").replace(/;\s*$/, "")
         + "; const out = await f(); return { out, _cachedModel }; })");
-      const res = await fn(async () => ({ provider: null, baseUrl: null }), { get: async () => "should-never-be-read" },
-        (p) => `COGNIRUNNER_MODEL_${p}`, (p) => `COGNIRUNNER_KEY_${p}`, { openai: { defaultModel: "gpt-5.4-mini" } }, { error() {} }, { env: {} });
-      ok(res.out === null, "EXECUTED: a null provider yields NO model");
-      ok(res._cachedModel === null, "EXECUTED: …and nothing is written to the 30s model memo");
-      cached = res._cachedModel; void cached;
+      const res2 = await fn(async () => ({ provider: null, baseUrl: null }), storageStub,
+        (p) => `COGNIRUNNER_MODEL_${p}`, (p) => `COGNIRUNNER_KEY_${p}`, (p) => `COGNIRUNNER_AGENT_MODEL_${p}`,
+        { openai: { defaultModel: "gpt-5.4-mini" } }, "managed", (m) => m,
+        { advanced: [], standard: [] }, "claude-haiku-4-5-20251001", { error() {}, log() {} }, { env: {} });
+      ok(res2.out === null, "EXECUTED: a null provider yields NO model");
+      ok(res2._cachedModel === null, "EXECUTED: …and nothing is written to the 30s model memo");
+      ok(reads === 0, "EXECUTED: …and NO slot is read or written at all (both guards, not just the outer one)");
+    }
+    // EXECUTED — THE PARITY THE TWO READERS OWE EACH OTHER (F-818). With the agent slot
+    // empty, the ordinary reader and the agent reader must answer the SAME model for every
+    // provider; that is the whole point of one home, and it is what silently stopped being
+    // true while the chain had two.
+    {
+      const gam = codeOnly.match(/export const getAgentModelFor = async \(provider\) => [\s\S]*?;\n/);
+      ok(!!gam, "found getAgentModelFor");
+      const providers = { openai: { defaultModel: "gpt-5.4-mini" }, azure: { defaultModel: "gpt-5.4-mini" },
+        anthropic: { defaultModel: "claude-sonnet-4-5" }, openrouter: { defaultModel: "or/x" },
+        lmstudio: { defaultModel: "local-x" }, managed: { defaultModel: "anthropic/claude-sonnet-5" },
+        atlassian: { defaultModel: "claude-haiku-4-5-20251001" } };
+      const forgeModels = { advanced: ["claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5"], standard: ["claude-haiku-4-5-20251001"] };
+      const clampManaged = (m) => (["anthropic/claude-sonnet-5", "anthropic/claude-opus-5"].includes(m) ? m : "anthropic/claude-sonnet-5");
+      const build = eval("((storage, providerModelSlot, providerKeySlot, providerAgentModelSlot, PROVIDERS, MANAGED_PROVIDER_ID, clampManagedModel, FORGE_LLM_MODELS, FORGE_LLM_DEFAULT, console, process) => {"
+        + "let _cachedModel = null, _cachedModelAt = 0; const _cacheFresh = () => Date.now() - _cachedModelAt < 30000;"
+        + rb + "\n" + gam[0].replace("export const", "const") + "\n"
+        + mb.replace("const getOpenAIModel = async () => {", "const getOpenAIModelFor = async (provider) => { _cachedModel = null;").replace("const { provider } = await getProviderConfig();", "")
+        + "\n return { getAgentModelFor, getOpenAIModelFor }; })");
+      for (const [slotValue, label] of [[null, "empty slots"], ["some-saved-model", "an ordinary saved model"], ["anthropic/claude-opus-5", "a vendor-prefixed id"]]) {
+        const store = new Map();
+        const storage2 = { get: async (k) => (slotValue && k.startsWith("COGNIRUNNER_MODEL_") ? slotValue : (store.get(k) ?? null)), set: async (k, v) => { store.set(k, v); } };
+        const { getAgentModelFor: agentFn, getOpenAIModelFor: plainFn } = build(storage2,
+          (p) => `COGNIRUNNER_MODEL_${p}`, (p) => `COGNIRUNNER_KEY_${p}`, (p) => `COGNIRUNNER_AGENT_MODEL_${p}`,
+          providers, "managed", clampManaged, forgeModels, "claude-haiku-4-5-20251001", { error() {}, log() {} }, { env: {} });
+        for (const p of Object.keys(providers)) {
+          const a = await agentFn(p);
+          const b = await plainFn(p);
+          ok(String(a) === String(b), `EXECUTED PARITY (${label}): both readers answer the same model for ${p} (${a} vs ${b})`);
+        }
+      }
     }
   }
 }

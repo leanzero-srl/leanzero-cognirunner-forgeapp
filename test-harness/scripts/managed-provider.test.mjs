@@ -579,15 +579,27 @@ ok(/probe \(g\)/.test(readFileSync(path.join(srcDir, "shared/ai-budget.js"), "ut
   // engine's Sonnet id (or the reverse) and two doors then disagreed about one instance.
   ok(/getAgentModelFor\(facts\.provider\)/.test(gf),
     "agentGateFacts resolves the agent model FOR THE PROVIDER IT JUST READ, not for the memo's");
-  const gam = (indexSrc.match(/export const getAgentModelFor = async \(provider\) => \{[\s\S]*?\n\};/) || [, ""])[0] || "";
+  // F-818 — the agent reader is now a one-line derivation of the ONE model chain
+  // (`resolveModelForProvider`), so the properties below belong to that chain: asserting
+  // them on the wrapper alone would prove nothing once the body moved.
+  const gam = (indexSrc.match(/export const getAgentModelFor = async \(provider\) => [\s\S]*?;\n/) || [, ""])[0] || "";
   ok(gam.length > 0, "found getAgentModelFor");
-  ok(!/getProviderConfig\(/.test(gam),
-    "…and it reads NO provider of its own — the provider is the ARGUMENT, which is the whole fix");
-  // It is a SECOND reader of the model slot, so it must share the POLICY: a managed slot
-  // holding anything outside the offer is clamped server-side here too, or the agent path
-  // would be the one place a junk id could name a model we never agreed to bill for.
-  ok(/clampManagedModel\(model\)/.test(gam),
-    "…and it applies the SAME managed clamp, from the same one home in src/shared/edition.js");
+  ok(/resolveModelForProvider\(provider, \{ agentSlot: true, migrate: false \}\)/.test(gam),
+    "…and it derives from the ONE model chain, reading the agent slot and doing NO legacy migration write (F-818)");
+  const rmp = (indexSrc.match(/const resolveModelForProvider = async \(provider, \{[^}]*\} = \{\}\) => \{[\s\S]*?\n\};/) || [, ""])[0] || "";
+  ok(rmp.length > 0, "found resolveModelForProvider — the ONE home of the model chain");
+  ok(!/getProviderConfig\(/.test(gam) && !/getProviderConfig\(/.test(rmp),
+    "…and NEITHER reads a provider of its own — the provider is the ARGUMENT, which is the whole fix");
+  // Every reader of the model slot shares the POLICY: a managed slot holding anything
+  // outside the offer is clamped server-side, or the agent path would be the one place a
+  // junk id could name a model we never agreed to bill for.
+  ok(/provider === MANAGED_PROVIDER_ID\) model = clampManagedModel\(model\)/.test(rmp),
+    "…and the chain applies the managed clamp for EVERY reader, from the one home in src/shared/edition.js");
+  // The Forge LLM belt is in the chain too (F-818), not on the agent reader alone: a slot
+  // written under another provider must not make the ORDINARY reader name a vendor id
+  // Forge LLM cannot run either.
+  ok(/provider === "atlassian" && !FORGE_LLM_MODELS\.advanced\.includes\(String\(model\)\)\) return FORGE_LLM_DEFAULT/.test(rmp),
+    "…and so does the Forge LLM resolution belt");
 }
 
 console.log(`managed-provider: ${pass} passed, ${fail} failed`);

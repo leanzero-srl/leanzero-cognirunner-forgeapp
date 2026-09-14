@@ -10,7 +10,7 @@ import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
 import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 import { confirmDialog } from "../confirmDialog";
-import { DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "../../../../src/shared/roster-roles.js";
+import { DEFAULT_ROSTER_ROLE, DEFAULT_ROSTER_SCOPE, VALID_ROLES, VALID_SCOPES } from "../../../../src/shared/roster-roles.js";
 
 /* F-844 — the VALUES come from the shared vocabulary; only the LABELS are local. These
    dropdowns used to re-type `"viewer"/"editor"/"admin"` and `"own"/"all"` verbatim — a
@@ -132,7 +132,9 @@ export default function PermissionsTab({ invoke }) {
   const [searchRefusal, setSearchRefusal] = useState(null);
   const [searchError, setSearchError] = useState(null);
   const [adding, setAdding] = useState(null);
-  const [addRole, setAddRole] = useState("viewer");
+  // F-853 — the Add form seeds the ROLE from the one home too. It seeded a hand-typed
+  // "viewer" while the line below already imported its scope; the gate caught the pair.
+  const [addRole, setAddRole] = useState(DEFAULT_ROSTER_ROLE);
   // F-843 — the Add form seeds the scope from the one home, not a re-typed literal.
   const [addScope, setAddScope] = useState(DEFAULT_ROSTER_SCOPE);
   const [removing, setRemoving] = useState(null);

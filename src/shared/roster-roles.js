@@ -75,3 +75,17 @@ export const VALID_ROLES = Object.freeze(["viewer", "editor", "admin"]);
 
 /** Every scope a non-admin roster row may confer. Admin is "all" by construction. */
 export const VALID_SCOPES = Object.freeze(["own", "all"]);
+
+/*
+ * F-853 — the ROLE a form offers before anyone chooses, for the same reason the scope
+ * default lives here. The Permissions tab's Add form seeded `useState("viewer")` — a
+ * fourth hand-typed roster literal, and the one the F-853 gate caught on its first run.
+ * `viewer` is `VALID_ROLES[0]`, the narrowest reach, and that is not a coincidence: a
+ * grant form must never pre-select more reach than the admin asked for, because the
+ * fastest possible mis-click (open the form, pick a person, press Add) should hand over
+ * the least. Kept as its own export rather than derived from `VALID_ROLES[0]` so that
+ * re-ordering the vocabulary for display can never silently move the default.
+ */
+
+/** The role a grant form offers before the admin chooses one. The narrowest. */
+export const DEFAULT_ROSTER_ROLE = "viewer";

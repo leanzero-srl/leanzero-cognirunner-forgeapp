@@ -329,6 +329,17 @@ const ADMINS = {
     { accountId: "557058:22222222-2222-2222-2222-222222222222", displayName: "Dana Editor", avatarUrl: "https://secure.gravatar.com/avatar/bbb?d=identicon&s=48", role: "editor", scope: "all", emailAddress: "dana.editor@wolfaenpak.example" },
     { accountId: "557058:33333333-3333-3333-3333-333333333333", displayName: "Sam Viewer", avatarUrl: "https://secure.gravatar.com/avatar/ccc?d=identicon&s=48", role: "viewer", scope: "own" },
     { accountId: "557058:44444444-4444-4444-4444-444444444444", displayName: "Priya Editor", avatarUrl: null, role: "editor", scope: "own" },
+    /* F-840/F-843/F-853 — the PERMANENTLY SCOPE-LESS editor. This row states a role and no
+       `scope` at all, which is the stored shape whose meaning the read and the writes once
+       disagreed about: the card used to print "All rules" (a private `|| "all"`) over a
+       backend that enforces `own`. It is a FIXTURE, not a bug to be tidied away — deleting
+       the missing `scope` key, or "fixing" it to `scope: "own"`, removes the only row in
+       the harness that can ever catch that regression. The card must read "Own rules only"
+       and the scope dropdown must seed "Own Rules", in both themes.
+       Its account id deliberately collides with NOTHING the picker can return (555... is
+       Alex Newman's): a roster row whose id matches a searchable one is already granted,
+       so the picker disables that row and the F-653 grant journey clicks a no-op. */
+    { accountId: "557058:5c0e5c0e-5c0e-45c0-8c0e-5c0e5c0e5c0e", displayName: "Noa Unscoped", avatarUrl: null, role: "editor", emailAddress: "noa.unscoped@wolfaenpak.example" },
     /* F-645 — the roster's own namesake: a SECOND "Mihai Perdum", exactly the pair that
        made Remove a coin flip live. This row deliberately carries NO emailAddress (a grant
        made before 0811b8a, or a Jira account whose email is hidden), so it is the fixture

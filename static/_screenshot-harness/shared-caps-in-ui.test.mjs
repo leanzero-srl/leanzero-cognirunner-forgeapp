@@ -440,8 +440,9 @@ const ROSTER_ALLOW = [
     why: "rosterRowRole itself: the LEGACY-ROW rule the whole product reads by, and the line the PermissionsTab entry above exists to mirror. A bare account-id string, or an object with no role at all, IS an admin row - F-840 settled that deliberately and did not narrow it" },
   { file: "src/index.js", match: '.role || "admin"',
     why: "the same LEGACY-ROW rule, applied where the roster is COUNTED and where a demotion target is read (the last-admin guard). Reading a role-less row as anything narrower here would let the last admin demote themselves off the instance" },
-  { file: "src/rules-api.js", match: 'const tokenRole = (t) =>',
-    why: "an API-TOKEN role (TOKEN_ROLES), not a roster row - the backend twin of the allow-listed ApiAccessPanel fallback, and carrying the same filed concern that the fallback is the WIDEST value. Shares the words, not the vocabulary" },
+  /* F-878 CLOSED the src/rules-api.js `tokenRole` entry: the token vocabulary IS the roster
+     vocabulary (`TOKEN_ROLES = VALID_ROLES` by identity) and an unrecognised role now falls
+     to DEFAULT_ROSTER_ROLE; only an ABSENT role keeps the documented legacy admin. */
   { file: "src/async-handler.js", match: 'p.savedByRole || "editor"',
     why: "the ARMING STAMP vocabulary (savedByRole: admin|editor), not a roster grant - editor is its RESTRICTIVE value, so this default narrows rather than widens. Its home is listeners.js normalizeSavedByRole; that the literal is re-typed here, in rules-api.js (REST_SAVED_BY_ROLE) and in index.js stampSavedByRole is a SEPARATE finding, filed, and not this arm's rule" },
 ];

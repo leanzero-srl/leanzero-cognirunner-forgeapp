@@ -636,7 +636,9 @@ export const postWindowInstants = (va, nowMs) => {
 
   const mf = HHMM.exec(String(w.from || ""));
   const mt = HHMM.exec(String(w.to || ""));
-  if (!mf || !mt) return { from: null, to: null, timeZone, open: live.ok === true, reason: "no_window_hours" };
+  // F-951: the reason is the engine's own (`window_unreadable` since F-948), never a copy that
+  // can say "no hours" while `open` says closed.
+  if (!mf || !mt) return { from: null, to: null, timeZone, open: live.ok === true, reason: live.reason || "no_window_hours" };
   const fromH = Number(mf[1]); const fromM = Number(mf[2]);
   const toH = Number(mt[1]); const toM = Number(mt[2]);
   const wraps = (fromH * 60 + fromM) > (toH * 60 + toM);

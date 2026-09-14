@@ -177,5 +177,72 @@ await check("every refusal on the surface goes through errBody (F-337)", async (
   assert.equal(out.reason, "jql-invalid", "…and the machine-readable half survives");
 });
 
+/* ── F-878 — MISSING role and UNRECOGNISED role are two different answers ──────
+ *
+ * `tokenRole` read both as ADMIN. Missing is admin BY DESIGN (a row minted before the
+ * field existed could already do everything here, and narrowing it on upgrade would
+ * revoke live integrations silently). Unrecognised is the opposite case: retire or
+ * rename an entry in the vocabulary and every token still stamped with the old word
+ * would have been PROMOTED to admin, with `tokenRoleAtLeast` waving it through every
+ * floor. `normalizeMintRole` refuses unknown roles at mint, so only a hand-edited KVS
+ * row — or that vocabulary change — reaches this arm; these cases are the proof for the
+ * day it happens. The floor used below is `?resource=samples` (editor), because it is
+ * the cheapest route with a floor above viewer.
+ */
+await check("F-878: a legacy row with NO role still reads as admin", async () => {
+  storage.__reset();
+  const a = await createApiTokenInternal({ name: "legacy", accountId: "admin-1" });
+  const row = rowOf(a.row.id);
+  delete row.role;                                  // the pre-role-field shape, exactly
+  await storage.set(API_TOKENS_KEY, rows());
+  const who = await call(req(a.token));
+  assert.equal(who.statusCode, 200);
+  assert.equal(who.body.token.role, "admin", "the wire role the admin panel renders");
+  const samples = await call(req(a.token, "samples", { query: { eventType: ["jira:issue_created"] } }));
+  assert.notEqual(samples.statusCode, 403, "an editor floor does not refuse it");
+  for (const empty of [null, ""]) {
+    rowOf(a.row.id).role = empty;
+    await storage.set(API_TOKENS_KEY, rows());
+    assert.equal((await call(req(a.token))).body.token.role, "admin", `role ${JSON.stringify(empty)} is still the compatibility default`);
+  }
+});
+
+await check("F-878: a role OUTSIDE the vocabulary reads as the narrowest and fails an editor floor", async () => {
+  storage.__reset();
+  const a = await createApiTokenInternal({ name: "stale-vocab", accountId: "admin-1" });
+  rowOf(a.row.id).role = "superuser";               // e.g. a role the product later retired
+  await storage.set(API_TOKENS_KEY, rows());
+  const who = await call(req(a.token));
+  assert.equal(who.statusCode, 200, "it is still a VALID token — this is about reach, not auth");
+  assert.equal(who.body.token.role, "viewer", "it reads as the narrowest role, never admin");
+  const samples = await call(req(a.token, "samples", { query: { eventType: ["jira:issue_created"] } }));
+  assert.equal(samples.statusCode, 403, "…so the editor floor refuses it");
+  assert.equal(samples.body.reason, "no-permission");
+  assert.equal(samples.body.needsRole, "editor");
+  // The shapes a hand-edited row can actually take, all of them non-empty and unknown.
+  for (const bogus of ["ADMIN", " admin", "admin ", "owner", 7, true, {}]) {
+    rowOf(a.row.id).role = bogus;
+    await storage.set(API_TOKENS_KEY, rows());
+    assert.equal((await call(req(a.token))).body.token.role, "viewer", `role ${JSON.stringify(bogus)} must not be promoted`);
+  }
+});
+
+await check("F-878: every role IN the vocabulary reads as itself, and the list is the shared one", async () => {
+  storage.__reset();
+  const { TOKEN_ROLES } = await import("../../src/rules-api.js");
+  const { VALID_ROLES, DEFAULT_ROSTER_ROLE } = await import("../../src/shared/roster-roles.js");
+  // IDENTITY, not deep equality: a re-typed private copy must not pass (the F-844 rule).
+  assert.equal(TOKEN_ROLES, VALID_ROLES, "the token vocabulary IS the roster vocabulary");
+  assert.equal(DEFAULT_ROSTER_ROLE, VALID_ROLES[0], "the narrowest role is the fallback");
+  for (const role of VALID_ROLES) {
+    const t = await createApiTokenInternal({ name: `as-${role}`, accountId: "admin-1", role });
+    const who = await call(req(t.token));
+    assert.equal(who.body.token.role, role, `a ${role} token reads as ${role}`);
+    const samples = await call(req(t.token, "samples", { query: { eventType: ["jira:issue_created"] } }));
+    if (role === "viewer") assert.equal(samples.statusCode, 403, "viewer is below the samples floor");
+    else assert.notEqual(samples.statusCode, 403, `${role} clears the samples floor`);
+  }
+});
+
 console.log(`rules-api tokens: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

@@ -256,6 +256,50 @@ for (const f of drivers) {
     "RULE 2 (F-712) " + f + ": uses SCREAMING_SNAKE name(s) nothing in the file binds: " + v.unbound.join(", "));
 }
 
+/* RULE 3 (F-715) - NO SECOND HOME FOR AN ENVIRONMENT ID.
+ *
+ * `evidence-redaction.test.mjs` rule 4f already forbids a retyped environment id, but its
+ * cohort is `scripts/*-live.mjs` only - so on the day it shipped, the dev id had a second
+ * home in `lib/workflow.mjs` (exported, and imported by 58 scripts, which builds every
+ * extension ARI the workflow-attach path uses) and the staging id a third in
+ * `scripts/_probe-shadow-badge.mjs`. Both are invisible to 4f, and a LIBRARY is precisely
+ * where "the next driver is written by copying the nearest sibling" bites hardest.
+ *
+ * This widens the cohort to every `lib/*.mjs` and every `scripts/*.mjs`. It belongs in 4f
+ * and should be folded there when that file is not held by another pass; until then the
+ * two rules agree by construction, because both read the ids out of the guard. */
+{
+  const ids = [...guardSrc.matchAll(/forgeEnvId:\s*"([0-9a-f-]{36})"/g)].map((m) => m[1]);
+  ok(ids.length === 2, "the guard's table carries both environment ids (" + ids.length + ")");
+
+  /* `org-workflow-compiler.test.mjs` is a FIXTURE: it asserts a compiled ARI string, so
+     the id is the thing under test rather than a configuration copy. */
+  /* `evidence-redaction.test.mjs` is the rule 4f HOME: it asserts that the guard contains
+     both ids, so the literals there are the subject of a check, not a copy of config. */
+  const EXEMPT = new Set(["shared-env-guard.mjs", "org-workflow-compiler.test.mjs", "evidence-redaction.test.mjs"]);
+  const cohort = [
+    ...fs.readdirSync(libDir).filter((f) => f.endsWith(".mjs")).map((f) => ["lib", f, path.join(libDir, f)]),
+    ...fs.readdirSync(here).filter((f) => f.endsWith(".mjs")).map((f) => ["scripts", f, path.join(here, f)]),
+  ].filter(([, f]) => !EXEMPT.has(f));
+  ok(cohort.length > 80, "the env-id cohort covers lib and scripts (" + cohort.length + " files)");
+
+  for (const [dir, f, full] of cohort) {
+    const src = fs.readFileSync(full, "utf8");
+    const hits = ids.filter((id) => src.includes(id));
+    ok(hits.length === 0,
+      "RULE 3 (F-715) " + dir + "/" + f + ": retypes an environment id literal instead of reading forgeEnvId(): " + hits.join(", "));
+  }
+
+  /* POSITIVE CONTROLS: the two pre-fix lines, verbatim, through the same predicate. */
+  const flags = (src) => ids.filter((id) => src.includes(id));
+  ok(flags('export const ENV_ID = "' + ids[0] + '";').length === 1,
+    "POSITIVE CONTROL (F-715): the pre-fix lib/workflow.mjs export of the dev id is caught");
+  ok(flags('await p.goto("https://wolfaenpak.atlassian.net/jira/apps/x/' + ids[1] + '")').length === 1,
+    "POSITIVE CONTROL (F-715): the pre-fix _probe-shadow-badge.mjs staging admin-page URL is caught");
+  ok(flags('const ENV_ID = forgeEnvId("dev");').length === 0,
+    "NEGATIVE CONTROL (F-715): reading the id through forgeEnvId() is clean");
+}
+
 /* POSITIVE CONTROLS - the two real breakages, verbatim, plus their fixed twins. */
 {
   const f711 = [

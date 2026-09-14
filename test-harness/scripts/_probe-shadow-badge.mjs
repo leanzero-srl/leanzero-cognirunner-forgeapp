@@ -1,5 +1,11 @@
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+/* F-715 — this probe carried the THIRD home of a Forge environment id (staging, inside
+   the admin-page URL below). It is a `_probe-` file, so rule 4f in
+   evidence-redaction.test.mjs never looked at it, and it is exactly the "nearest sibling"
+   a new driver gets copied from. One row, one home. */
+import { forgeEnvId } from "../lib/shared-env-guard.mjs";
 const env = loadEnv();
+const ENV_ID = forgeEnvId("staging");
 const U = env.STAGING_TESTSTATE_URL, S = requireEnv("HARNESS_SECRET"), A = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 const post=async(b)=>{const r=await fetch(U,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+S},body:JSON.stringify(b)});return {s:r.status,j:JSON.parse(await r.text())};};
@@ -25,7 +31,7 @@ const {chromium}=await import("../../static/_screenshot-harness/node_modules/pla
 const ctx=await chromium.launchPersistentContext("/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile",{headless:true,viewport:{width:1500,height:1200}});
 try{
  const p=ctx.pages()[0]||await ctx.newPage();
- await p.goto("https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/1abe9beb-537b-43c1-b94f-e877e251f779",{waitUntil:"domcontentloaded"});
+ await p.goto("https://wolfaenpak.atlassian.net/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/"+ENV_ID,{waitUntil:"domcontentloaded"});
  let f=null;for(let i=0;i<90;i++){f=p.frames().find(x=>x.url().includes("cdn.prod.atlassian-dev.net"));if(f&&await f.locator(".tab-btn").count()>0)break;await sleep(1000);}
  await f.locator(".tab-btn",{hasText:/^\s*Agents\s*$/}).click();
  const card=f.locator(".va-agent").filter({has:f.locator(".va-agent-name",{hasText:"Probe"})}).first();

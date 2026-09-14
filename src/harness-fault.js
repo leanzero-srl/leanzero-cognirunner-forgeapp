@@ -136,7 +136,14 @@ export const HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS = 300;
  */
 export const HARNESS_FAULT_JIRA = "jira";
 
-/** THE one home of the path string the F-648 consumer and this lever must agree on. */
+/**
+ * THE one home of the path string the F-648 consumers and this lever must agree on.
+ *
+ * F-661 — "one home" became a MECHANISM here rather than a promise: this constant is what
+ * `userSearchRoute()` in src/jira-routes.js BUILDS the URL from, so the fault key and the
+ * bytes on the wire cannot drift apart. Nothing may re-type this path in a `route` literal;
+ * if the endpoint ever moves, this line moves and both consumers follow it.
+ */
 export const JIRA_FAULT_USER_SEARCH_PATH = "/rest/api/3/user/search";
 
 /** The ONLY faultable paths. Exact equality — never a prefix, never a pattern. */
@@ -324,7 +331,11 @@ export const armJiraFault = async (path, status, ttlSeconds) => {
 };
 
 /**
- * F-655 — the CONSUMING side, asked by `searchUsers` (src/index.js) and nothing else.
+ * F-655 / F-661 — the CONSUMING side, asked through the ONE seam `jiraFetchWithFault`
+ * (src/jira-routes.js) and nothing else. That seam serves BOTH consumers of the endpoint:
+ * `searchUsers` (the admin picker) and `resolveUserToAccountId` (the semantic-PF assignee
+ * WRITE path). It used to be asked by `searchUsers` alone, which made arming the lever a
+ * proof of one of two call sites while reading as a proof of the endpoint.
  *
  * The armed HTTP status, or `null`. NON-CONSUMING: the window, not a count, is what bounds
  * it. Best-effort on every storage error, exactly like `harnessFaultArmed`: a lever that

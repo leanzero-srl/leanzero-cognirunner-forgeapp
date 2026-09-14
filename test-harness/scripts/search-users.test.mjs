@@ -117,5 +117,30 @@ for (const status of [403, 429, 500]) {
     "a grant with no email stores NO key, so the UI falls back to the account id segment");
 }
 
+/* ===== 6. F-661 — the URL this resolver puts on the wire is DERIVED from the constant ==
+ *
+ * `JIRA_FAULT_USER_SEARCH_PATH` called itself "THE one home of the path string" while this
+ * resolver still carried its own `route` literal — so a migration of the endpoint would
+ * have left the fault lever pointing at a path nobody calls, and the live door would have
+ * reported "no fault" rather than "the constant is stale". String equality, here, is what
+ * turns that comment into a mechanism.
+ */
+{
+  const { JIRA_FAULT_USER_SEARCH_PATH } = await import("../../src/harness-fault.js");
+  const { userSearchRoute, routeString } = await import("../../src/jira-routes.js");
+
+  ok(routeString(userSearchRoute("mihai", { maxResults: 10 })) === `${JIRA_FAULT_USER_SEARCH_PATH}?query=mihai&maxResults=10`,
+    "the builder composes the URL out of the one path constant");
+
+  forgeApi.__reset();
+  forgeApi.__respond(() => forgeApi.__response(200, []));
+  await call("searchUsers", { query: "mihai" });
+  const last = forgeApi.__calls[forgeApi.__calls.length - 1];
+  ok(last.path === routeString(userSearchRoute("mihai", { maxResults: 10 })),
+    `…and searchUsers fetches exactly that string (got ${last.path})`);
+  ok(last.path.startsWith(`${JIRA_FAULT_USER_SEARCH_PATH}?`),
+    "…so the fault key and the bytes on the wire cannot drift apart");
+}
+
 console.log(`\nsearch-users: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

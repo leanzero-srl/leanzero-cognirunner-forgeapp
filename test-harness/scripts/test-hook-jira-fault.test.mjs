@@ -235,5 +235,96 @@ process.env.HARNESS_SECRET = SECRET;
     `…and the same search that failed above now takes the real fetch path (got ${JSON.stringify(r).slice(0, 160)})`);
 }
 
-console.log(`test-hook-jira-fault (F-655): ${pass} passed, ${fail} failed`);
+/* ═════ 11. F-661 — ONE ROUTE HOME, AND BOTH CONSUMERS BEHIND THE SAME LEVER ═════
+ *
+ * F-655 shipped `JIRA_FAULT_USER_SEARCH_PATH` as "THE one home of the path string" while
+ * NOTHING built a fetch from it: both consumers carried their own `route` literal, so the
+ * agreement was a comment. And the SECOND consumer — `resolveUserToAccountId`, on the
+ * semantic-PF assignee WRITE path — never asked the lever at all, so every block above
+ * proved ONE of the two call sites while reading as a proof of the endpoint.
+ */
+{
+  const routes = await import("../../src/jira-routes.js");
+  const index = await import("../../src/index.js");
+
+  /* 11a. THE URL IS DERIVED FROM THE CONSTANT — string equality, not a code review. */
+  const built = routes.routeString(routes.userSearchRoute("mihai", { maxResults: 10 }));
+  ok(built === `${PATH}?query=mihai&maxResults=10`,
+    `the builder composes the URL out of the constant (got ${built})`);
+  ok(built.startsWith(`${PATH}?`),
+    "…so a migration of the endpoint moves the constant and BOTH routes follow it");
+  ok(routes.routeString(routes.userSearchRoute("x", { maxResults: 20 })) === `${PATH}?query=x&maxResults=20`,
+    "…and the second consumer's page size rides the SAME builder, not a second literal");
+  ok(!/route`\/rest\/api\/3\/user\/search\?/.test(
+    await (await import("node:fs/promises")).readFile(new URL("../../src/index.js", import.meta.url), "utf8")),
+    "…and no `route`/rest/api/3/user/search?…`` literal survives in src/index.js");
+
+  /* 11b. BOTH consumers put that exact URL on the wire, with the lever DISARMED. */
+  await disarm();
+  forgeApi.__reset();
+  forgeApi.__respond(() => forgeApi.__response(200, [REAL_ROW]));
+  await handler({ call: { functionKey: "searchUsers", payload: { query: "mihai" } } }, { principal: { accountId: ADMIN } });
+  const searchCall = forgeApi.__calls[forgeApi.__calls.length - 1];
+  ok(searchCall.path === `${PATH}?query=mihai&maxResults=10`,
+    `searchUsers fetches exactly the built route (got ${searchCall.path})`);
+  ok(searchCall.opts === undefined || Object.keys(searchCall.opts).length === 0,
+    `…with the SAME fetch arity it had before the wrapper (got ${JSON.stringify(searchCall.opts)})`);
+
+  forgeApi.__calls.length = 0;
+  const resolved = await index.resolveUserToAccountId({ query: "Mihai Perdum" });
+  const resolveCall = forgeApi.__calls[forgeApi.__calls.length - 1];
+  ok(resolveCall.path === `${PATH}?query=Mihai Perdum&maxResults=20`,
+    `resolveUserToAccountId fetches the SAME derived route (got ${resolveCall.path})`);
+  ok(resolveCall.opts && resolveCall.opts.headers && resolveCall.opts.headers.Accept === "application/json",
+    "…and keeps its own Accept header — the wrapper forwards options untouched");
+  ok(resolved.ok === true && resolved.accountId === "8888",
+    `…and with no lever it resolves for real (got ${JSON.stringify(resolved)})`);
+
+  /* 11c. The assignable branch is a DIFFERENT endpoint and is NOT faultable. */
+  forgeApi.__calls.length = 0;
+  await index.resolveUserToAccountId({ query: "Mihai Perdum", issueKey: "TEST-1", assignable: true });
+  ok(forgeApi.__calls[forgeApi.__calls.length - 1].path.startsWith("/rest/api/3/user/assignable/search?"),
+    "the assignable branch still calls its own endpoint, unchanged");
+  ok(!fault.JIRA_FAULT_PATHS.includes("/rest/api/3/user/assignable/search"),
+    "…which is deliberately NOT on JIRA_FAULT_PATHS — widening that list is a decision");
+
+  /* 11d. THE FINDING: an armed 429 reaches the SECOND consumer too. */
+  await arm({ status: 429, ttlSeconds: 60 });
+  const faulted = await index.resolveUserToAccountId({ query: "Mihai Perdum" });
+  ok(faulted.ok === false, `an armed 429 makes the assignee lookup REFUSE (got ${JSON.stringify(faulted)})`);
+  ok(/HTTP 429/.test(String(faulted.reason)),
+    `…through its own pre-existing !resp.ok arm, carrying the status (got ${faulted.reason})`);
+  ok(faulted.accountId === undefined,
+    "…and NEVER an ok:true with nobody in it — a failed lookup must not read as a successful assignment");
+  // The lever is armed for the user-search path only: the assignable branch runs for real.
+  forgeApi.__calls.length = 0;
+  const stillReal = await index.resolveUserToAccountId({ query: "Mihai Perdum", issueKey: "TEST-1", assignable: true });
+  ok(stillReal.ok === true, "…while the assignable branch, on a path with no lever, still runs for real");
+  ok(forgeApi.__calls.length === 1, "…i.e. a real fetch happened on that branch");
+  // And the FIRST consumer is still faulted by the same single row — one lever, two sites.
+  const bothFaulted = await handler({ call: { functionKey: "searchUsers", payload: { query: "mihai" } } }, { principal: { accountId: ADMIN } });
+  ok(bothFaulted.success === false && bothFaulted.status === 429,
+    "…and the SAME armed row still faults searchUsers — one lever, both consumers");
+
+  /* 11e. HARNESS OFF → BYTE-IDENTICAL FETCH ARGS on both, with the row still armed. */
+  process.env.HARNESS_SECRET = "";
+  forgeApi.__calls.length = 0;
+  await handler({ call: { functionKey: "searchUsers", payload: { query: "mihai" } } }, { principal: { accountId: ADMIN } });
+  const offSearch = forgeApi.__calls[forgeApi.__calls.length - 1];
+  const offResolveBefore = forgeApi.__calls.length;
+  const offResolved = await index.resolveUserToAccountId({ query: "Mihai Perdum" });
+  const offResolve = forgeApi.__calls[forgeApi.__calls.length - 1];
+  process.env.HARNESS_SECRET = SECRET;
+
+  ok(offSearch.path === searchCall.path && JSON.stringify(offSearch.opts) === JSON.stringify(searchCall.opts),
+    `harness-off searchUsers issues a BYTE-IDENTICAL fetch (got ${offSearch.path} / ${JSON.stringify(offSearch.opts)})`);
+  ok(offResolve.path === resolveCall.path && JSON.stringify(offResolve.opts) === JSON.stringify(resolveCall.opts),
+    `harness-off resolveUserToAccountId issues a BYTE-IDENTICAL fetch (got ${offResolve.path} / ${JSON.stringify(offResolve.opts)})`);
+  ok(forgeApi.__calls.length === offResolveBefore + 1 && offResolved.ok === true,
+    "…and the still-armed row changed nothing once the gate closed");
+
+  await disarm();
+}
+
+console.log(`test-hook-jira-fault (F-655/F-661): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -61,7 +61,10 @@ import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBas
 // F-629 — the dev-only key-read fault lever, in the same one-home/one-gate family as the
 // git ones (src/harness-fault.js). Inert without HARNESS_SECRET, i.e. in production.
 // F-655 — the sibling lever for a planted Jira transport failure, same file, same gate.
-import { keyReadFaultMode, harnessEnabled, HarnessFault, jiraFaultStatus, JIRA_FAULT_USER_SEARCH_PATH } from "./harness-fault.js";
+import { keyReadFaultMode, harnessEnabled, HarnessFault, JIRA_FAULT_USER_SEARCH_PATH } from "./harness-fault.js";
+// F-661 — the ONE builder of the user-search route (from that same constant) and the ONE
+// seam that consults the lever. BOTH consumers of the endpoint use BOTH; see src/jira-routes.js.
+import { userSearchRoute, jiraFetchWithFault } from "./jira-routes.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
 // model, auth_dead, queued rotation — lives in src/git-connections.js and is
 // never re-implemented here. Aliased where a name would collide with a resolver
@@ -5091,28 +5094,32 @@ resolver.define("searchUsers", async ({ payload, context }) => {
   try {
     const { query } = payload;
     if (!query || query.length < 2) return { success: true, users: [] };
-    /* ── F-655 — THE DEV-ONLY JIRA FAULT, asked ONCE, here and nowhere else. ──────────
+    /* ── F-655 / F-661 — THE DEV-ONLY JIRA FAULT, asked through the ONE seam. ────────
      * F-648's fail-closed arm is about what this resolver does when Jira's user search
      * FAILS, and nothing a tester can do from outside makes that endpoint fail — so the
      * arm and the ORDER it sits in (the admin gate above runs FIRST: a non-admin is
      * refused before this line is ever reached) had no live door at all.
      *
+     * F-661 — the route is BUILT from `JIRA_FAULT_USER_SEARCH_PATH` by `userSearchRoute`
+     * and the lever is asked by `jiraFetchWithFault`, both in src/jira-routes.js, because
+     * this resolver is only ONE of the two consumers of this endpoint (the other is
+     * `resolveUserToAccountId`, on the assignee-write path) and a lever that covers one of
+     * them reads as a proof of the endpoint. The path string, the URL and the fault key
+     * are now the same constant by construction rather than by review.
+     *
      * The lever lives in src/harness-fault.js with the others, behind the same single
      * `harnessEnabled()` gate (`process.env.HARNESS_SECRET`, absent in production), so on
-     * a production deployment this performs NO KVS access and can change no outcome. It
-     * is asked FIRST so a production build does not pay a KVS read per keystroke to
-     * answer a question that is always "no lever", and it is keyed by the EXACT path —
-     * `JIRA_FAULT_USER_SEARCH_PATH` is the one home of that string, shared with the lever.
+     * a production deployment this performs NO KVS access, forwards a BYTE-IDENTICAL
+     * fetch, and can change no outcome. It is asked AFTER the admin gate above, never
+     * before it — the ordering is half of what F-655 exists to prove.
      *
      * A planted fault becomes a synthetic `{ ok: false, status }` rather than a separate
      * return: the real `!ok` arm below then runs UNCHANGED, which is the only thing that
      * makes this a proof of the product's behaviour instead of a proof of the lever's. */
-    const plantedStatus = harnessEnabled() ? await jiraFaultStatus(JIRA_FAULT_USER_SEARCH_PATH) : null;
-    const resp = plantedStatus !== null
-      ? { ok: false, status: plantedStatus }
-      : await api.asApp().requestJira(
-        route`/rest/api/3/user/search?query=${query}&maxResults=10`,
-      );
+    const resp = await jiraFetchWithFault(
+      JIRA_FAULT_USER_SEARCH_PATH,
+      userSearchRoute(query, { maxResults: 10 }),
+    );
     if (!resp.ok) {
       // `reason: "jira_unavailable"` keeps this distinct from the admin-gate refusal
       // shape above (`reason: "no-permission"`, with needsRole/hint).
@@ -17505,18 +17512,46 @@ const validateValueAgainstField = (formatted, fieldMeta) => {
 const looksLikeAccountId = (s) => !/[\s@]/.test(s) && /^[A-Za-z0-9:_-]{16,128}$/.test(s);
 
 /**
+ * The OTHER user-search endpoint this resolver may call. Named only so the fault seam is
+ * handed a path rather than a boolean; it is deliberately NOT on `JIRA_FAULT_PATHS`.
+ */
+const JIRA_ASSIGNABLE_SEARCH_PATH = "/rest/api/3/user/assignable/search";
+
+/**
  * Resolve a display name or email to an accountId via user search (read:jira-user).
  * Cloud user fields accept ONLY accountIds — names/emails 400. Resolution must be
  * UNAMBIGUOUS: 0 or >1 candidates → refuse, never write the wrong person.
  * Note: emailAddress is hidden (null) for most users under GDPR privacy controls,
  * so disambiguation usually rides on exact displayName matches.
  */
-const resolveUserToAccountId = async ({ query, issueKey, assignable }) => {
+// F-661 — EXPORTED so the second consumer of the faultable endpoint can be driven
+// directly. The lever now covers both call sites, and a proof that only ever reached
+// `searchUsers` is exactly the defect F-661 names; the semantic-PF fixture needed to
+// reach this function through `prepareSemanticValue` would test the fixture, not the
+// seam. Nothing in the product imports it — it stays the one home of this rule.
+export const resolveUserToAccountId = async ({ query, issueKey, assignable }) => {
   try {
-    const resp = await api.asApp().requestJira(
+    /* F-661 — THE SECOND CONSUMER of `/rest/api/3/user/search`, and until now the one the
+     * fault lever could not reach. The non-assignable branch builds its route from
+     * `JIRA_FAULT_USER_SEARCH_PATH` through the same `userSearchRoute` builder as
+     * `searchUsers`, and goes out through the same `jiraFetchWithFault` seam, so arming the
+     * lever exercises BOTH call sites instead of one. The assignable branch is a DIFFERENT
+     * endpoint (`/user/assignable/search`), is not on `JIRA_FAULT_PATHS`, and is passed its
+     * own path here: `jiraFaultStatus` matches by exact equality and simply never plants
+     * for it — widening that list is a decision, not a convenience.
+     *
+     * FAILURE SEMANTICS ARE UNCHANGED, and they are CLOSED with respect to the WRITE: a
+     * fault (planted or real) takes the `!resp.ok` arm below and returns `{ ok:false }`,
+     * which the caller in `prepareSemanticValue` turns into a SKIP — no assignee is written
+     * and the reason is logged. It is fail-OPEN only with respect to the TRANSITION (a post
+     * function that cannot resolve a person must not wedge the workflow). What must never
+     * happen, and does not, is a failed lookup reported as a successful assignment of
+     * nobody: there is no `ok:true` path out of a failed search. */
+    const resp = await jiraFetchWithFault(
+      assignable ? JIRA_ASSIGNABLE_SEARCH_PATH : JIRA_FAULT_USER_SEARCH_PATH,
       assignable
         ? route`/rest/api/3/user/assignable/search?issueKey=${issueKey}&query=${query}&maxResults=20`
-        : route`/rest/api/3/user/search?query=${query}&maxResults=20`,
+        : userSearchRoute(query, { maxResults: 20 }),
       { headers: { Accept: "application/json" } },
     );
     if (!resp.ok) return { ok: false, reason: `user search for "${query}" failed (HTTP ${resp.status})` };

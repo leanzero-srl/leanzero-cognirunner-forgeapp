@@ -19,6 +19,11 @@ const fakeResponse = (status, body) => ({
 
 export const route = (strings, ...vals) => strings.reduce((acc, s, i) => acc + s + (i < vals.length ? String(vals[i]) : ""), "");
 
+// F-661 — src/jira-routes.js splices the ONE path constant into `route` as a pre-trusted
+// Route so the real tag will not throw on its slashes. The mock's Route is a plain string,
+// and the reduce above already inserts one verbatim, so the built URL matches the real one.
+export const assumeTrustedRoute = (r) => String(r);
+
 const requestJira = async (path, opts = {}) => {
   calls.push({ path: String(path), opts });
   if (responder) return responder(String(path), opts);

@@ -785,8 +785,58 @@ try {
     const code = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
     const truncated = (code.match(/digest\("hex"\)\.slice\(0, 16\)/g) || []).length;
     assert.equal(truncated, 1, `a second sha256-16 is a second serialisation waiting to disagree (found ${truncated})`);
-    assert.match(code, /createHash\("sha256"\)\.update\(fingerprintInput\(value\)\)/,
-      "…and the one home hashes the DOCUMENTED serialisation, not a raw JSON.stringify");
+    assert.match(code, /createHmac\("sha256", await fingerprintKey\(\)\)\.update\(fingerprintInput\(value\)\)/,
+      "…and the one home keys the HMAC (F-781) over the DOCUMENTED serialisation, not a raw JSON.stringify");
+  });
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * F-781 — THE FINGERPRINT IS KEYED, BECAUSE AN UNSALTED HASH IS A GUESS ORACLE.
+   *
+   * 64 bits is far too little to brute a key back out of — true of a PREIMAGE search, and
+   * beside the point. The attack is a GUESS CHECK: hash your candidate, compare. The
+   * values behind these rows are not all high-entropy — `probe:webhook:secret` is an HMAC
+   * secret a TESTER types — so a reader holding the harness secret could recover one from
+   * a wordlist offline and then forge a signed request at the UNAUTHENTICATED
+   * `gitWebhookProbe` door. Keyed under `HARNESS_SECRET`, that wordlist is useless.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+  await check("the fingerprint is keyed per installation, so it is not a guess oracle (F-781)", async () => {
+    const { credentialFingerprint } = await import("../../src/test-hook.js");
+    const GUESSABLE = "s3cr3t";
+    const here781 = await credentialFingerprint(GUESSABLE);
+    // THE ORACLE, SHUT: the bare digest an attacker computes offline is NOT the answer.
+    const { createHash } = await import("node:crypto");
+    const bare = createHash("sha256").update(GUESSABLE).digest("hex").slice(0, 16);
+    assert.notEqual(here781, bare, "a wordlist candidate hashed offline no longer matches — this is the finding");
+    assert.match(here781, /^[0-9a-f]{16}$/, "…and the shape drivers parse is unchanged");
+    // EQUALITY SEMANTICS ARE UNTOUCHED, which is what the witness library compares.
+    assert.equal(await credentialFingerprint(GUESSABLE), here781, "same value, same run, same fingerprint");
+    assert.notEqual(await credentialFingerprint(GUESSABLE + "!"), here781, "a changed value still changes it");
+    // …AND THE KEY IS THE INSTALLATION'S. Rotate the secret and the fingerprint moves —
+    // the documented cost: fingerprints compare within ONE installation, and only while
+    // the secret is unchanged. Every use in this repo compares within a single run.
+    const secretNow = process.env.HARNESS_SECRET;
+    try {
+      process.env.HARNESS_SECRET = "a-different-installations-secret";
+      assert.notEqual(await credentialFingerprint(GUESSABLE), here781,
+        "another installation fingerprints the SAME value differently — that is the salt");
+    } finally { process.env.HARNESS_SECRET = secretNow; }
+    assert.equal(await credentialFingerprint(GUESSABLE), here781, "…and restoring the secret restores comparability");
+    // The secret is never the HMAC key directly, so no answer is computed under the bearer token.
+    const code781 = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8"));
+    assert.match(code781, /createHash\("sha256"\)\.update\("cognirunner:test-hook:fingerprint:v1[\s\S]{0,40}process\.env\.HARNESS_SECRET/,
+      "the HMAC key is a domain-separated DERIVATION of HARNESS_SECRET, never the secret itself");
+    assert.equal(/createHmac\("sha256", (?:String\()?process\.env\.HARNESS_SECRET/.test(code781), false,
+      "…asserted against the shortcut, not just for today's spelling");
+  });
+  await check("a masked read still answers a keyed fingerprint end to end (F-781)", async () => {
+    const { credentialFingerprint } = await import("../../src/test-hook.js");
+    storage.__seed("probe:webhook:secret", "s3cr3t");
+    const read = JSON.parse((await kvsRead("probe:webhook:secret")).body);
+    assert.equal(read.masked, true);
+    assert.equal(read.fingerprint, await credentialFingerprint("s3cr3t"),
+      "the door answers the ONE helper's value — the keying is not a second home either");
+    const { createHash } = await import("node:crypto");
+    assert.notEqual(read.fingerprint, createHash("sha256").update("s3cr3t").digest("hex").slice(0, 16),
+      "…and what reaches the wire is not the bare digest a wordlist would produce");
   });
   /* ═══════════════════════════════════════════════════════════════════════════════
    * F-779 — THE STASH TTL IS A GUARANTEE, AND SOMETHING FINALLY ENUMERATES THE KEYSPACE.

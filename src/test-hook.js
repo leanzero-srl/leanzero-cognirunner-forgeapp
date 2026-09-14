@@ -188,8 +188,8 @@ const canonicalJson = (value) => {
 export const fingerprintInput = (value) => (typeof value === "string" ? value : canonicalJson(value));
 
 /**
- * What a masked read answers INSTEAD of the value: a sha256, truncated to 16 hex
- * characters, of the row under `fingerprintInput` above.
+ * What a masked read answers INSTEAD of the value: an HMAC-SHA256 of the row under
+ * `fingerprintInput` above, keyed per installation, truncated to 16 hex characters.
  *
  * WHY A FINGERPRINT AND NOT JUST `present`. The two things drivers actually do with a
  * credential row are "prove the F-126 planted fault landed" (present/absent) and "prove
@@ -197,14 +197,44 @@ export const fingerprintInput = (value) => (typeof value === "string" ? value : 
  * without serving the value. `null` and a missing row both fingerprint as `null`, never
  * as a hash of the string "null", so "absent" is one answer and not two.
  *
- * THIS IS THE ONLY sha256-16 IN THIS FILE. It was not: the githooks URL mask carried a
- * second one, inline, on a different serialisation (F-780). A rule about what a masked
- * answer may say is exactly the rule that must not have two homes.
+ * F-781 — WHY IT IS KEYED, AND NOT A BARE sha256. The old docblock argued that 64 bits is
+ * "far too little to brute a key back out of". That is true of a PREIMAGE SEARCH and false
+ * of the attack that matters: a GUESS CHECK. An unsalted hash is a verification oracle —
+ * hash your candidate, compare, done — and the values behind these rows are not all
+ * high-entropy. `probe:webhook:secret` is an HMAC secret a TESTER types (`s3cr3t`, the repo
+ * name, today's date); a credential slot a tenant filled with a placeholder is the same
+ * shape. A reader who holds the harness secret could read the fingerprint, run a wordlist
+ * offline, recover the value and then forge a signed request at the UNAUTHENTICATED
+ * `gitWebhookProbe` door — turning "masked" back into "recoverable" for exactly the values
+ * a human chose. So the fingerprint is an HMAC under a key DERIVED FROM `HARNESS_SECRET`,
+ * the env var this whole file is already gated on: no new secret to manage, no new storage
+ * row, and an offline wordlist is useless without it.
+ *
+ * WHAT THIS COSTS, STATED. A fingerprint is comparable ONLY within one installation and
+ * ONLY while `HARNESS_SECRET` is unchanged. Rotate the secret and every previously
+ * recorded fingerprint becomes incomparable — which is correct, because it is no longer
+ * the same oracle. Every use this exists for compares fingerprints FROM THE SAME RUN
+ * (`lib/key-slot-witness.mjs`, the stash/restore round trip, before-vs-after on one slot),
+ * so equality semantics are untouched; what is lost is comparing a fingerprint in an old
+ * evidence file against a fresh read, which was never a check anyone wrote.
+ *
+ * The derivation is one HKDF-ish step rather than the raw secret as the key, so a
+ * fingerprint can never be a distinguisher on `HARNESS_SECRET` itself.
+ *
+ * THIS IS THE ONLY TRUNCATED DIGEST IN THIS FILE. It was not: the githooks URL mask
+ * carried a second one, inline, on a different serialisation (F-780). A rule about what a
+ * masked answer may say is exactly the rule that must not have two homes.
  */
+const fingerprintKey = async () => {
+  const { createHash } = await import("node:crypto");
+  // Domain-separated from any other use of the secret, and a HASH of it rather than the
+  // secret itself, so no answer this file gives is computed directly under the bearer token.
+  return createHash("sha256").update("cognirunner:test-hook:fingerprint:v1\n" + String(process.env.HARNESS_SECRET || "")).digest();
+};
 export const credentialFingerprint = async (value) => {
   if (value === null || value === undefined) return null;
-  const { createHash } = await import("node:crypto");
-  return createHash("sha256").update(fingerprintInput(value)).digest("hex").slice(0, 16);
+  const { createHmac } = await import("node:crypto");
+  return createHmac("sha256", await fingerprintKey()).update(fingerprintInput(value)).digest("hex").slice(0, 16);
 };
 
 /** Regex-escape a literal so a family prefix can be spliced into `SECRET_VALUE_RE`. */

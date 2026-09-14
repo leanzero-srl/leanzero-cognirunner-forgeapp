@@ -208,6 +208,84 @@ ok(redactString("https://wolfaenpak.atlassian.net/browse/COG-1") === "https://wo
 ok(redactString("2 + 2 = 4 and a/b?c") === "2 + 2 = 4 and a/b?c",
   "F-662 NEGATIVE: …nor ordinary prose that happens to contain atext punctuation");
 
+/* ── 2c-iii. F-822 — THE EMAIL MASK IS LINEAR, AND STAYS LINEAR ──────────────────
+   The rule that masked an address used to be an UNBOUNDED GREEDY RUN followed by a
+   REQUIRED `@` — the same structure F-815 had just cut out of the credential half. Every
+   character of a long atext run is a candidate start, each one re-scans the rest of the run
+   before failing on the missing `@`, and the cost is quadratic. MEASURED on the pre-fix
+   tree: `redactString` over 240 KiB of `-eyA` = 27,349 ms, while the already-linear
+   credential scanner over the SAME input was 2.0 ms. A driver that hands `redactSecrets` a
+   long dense evidence string — a step body, a stringified registry row, a 240 KiB kvs answer
+   — reads as a DEAD DRIVER, not as a slow regex, which is what makes this worth a gate.
+
+   THE BUDGET IS DELIBERATELY LOOSE. Post-fix these inputs measure ~3 ms and ~9 ms; 500 ms is
+   two orders of magnitude of headroom, so this goes red on a REINTRODUCED QUADRATIC and not
+   on a loaded CI box. The dense-email arm is here because the pathological arm alone would
+   pass a mask that simply stopped matching addresses. */
+{
+  const KIB240 = 245760;
+  const patho = "-eyA".repeat(KIB240 / 4);                       // one atext run, no `@` at all
+  const oneAddr = "user.name+tag@tenant-two.co.uk, ";            // 32 chars → ~7,680 addresses
+  const denseUnit = oneAddr.repeat(Math.ceil(KIB240 / oneAddr.length)).slice(0, KIB240);
+  const tenK = "u@a.co ".repeat(10000);                          // 10,000 addresses exactly
+  const timed = (s) => { const t = process.hrtime.bigint(); const out = redactString(s); return { ms: Number(process.hrtime.bigint() - t) / 1e6, out }; };
+
+  const tPatho = timed(patho);
+  ok(tPatho.ms < 500, `F-822: 240 KiB of dot-free atext masks in under 500 ms (took ${tPatho.ms.toFixed(1)} ms)`);
+  ok(tPatho.out === patho, "…and a string with no `@` in it comes back untouched");
+
+  const tDense = timed(denseUnit);
+  ok(tDense.ms < 500, `F-822: 240 KiB of DENSE addresses masks in under 500 ms (took ${tDense.ms.toFixed(1)} ms)`);
+  ok(!tDense.out.includes("user.name+tag@"), "…and the dense arm really did mask — the budget is not passing a no-op");
+
+  const tTenK = timed(tenK);
+  ok(tTenK.ms < 500, `F-822: 10,000 addresses in one string mask in under 500 ms (took ${tTenK.ms.toFixed(1)} ms)`);
+  ok(tTenK.out === "u***@a.co ".repeat(10000), "…every one of the 10,000 is masked, and nothing between them moved");
+
+  /* POSITIVE CONTROL — the deleted regex, on a SHORT pathological input so the control itself
+     cannot hang the suite. 40,000 chars is 1/6 of the budgeted input; if the old rule is not
+     dramatically slower than the scanner here, this gate is measuring nothing. */
+  const OLD_EMAIL = /[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+  const small = "-eyA".repeat(10000);                            // 40,000 chars
+  const tOld = (() => { const t = process.hrtime.bigint(); small.replace(OLD_EMAIL, maskEmail); return Number(process.hrtime.bigint() - t) / 1e6; })();
+  const tNew = (() => { const t = process.hrtime.bigint(); redactString(small); return Number(process.hrtime.bigint() - t) / 1e6; })();
+  ok(tOld > tNew * 20,
+    `F-822 POSITIVE CONTROL: the deleted regex IS catastrophically slower on the same 40 KB (old ${tOld.toFixed(1)} ms vs new ${tNew.toFixed(1)} ms)`);
+}
+
+/* ── 2c-iv. F-822 — THE SCANNER IS THE OLD REGEX, TRANSCRIBED ───────────────────
+   A faster mask that masks DIFFERENTLY is a behaviour change wearing a performance fix, and
+   the F-652/F-662 contract above only pins the addresses anyone thought to write down. These
+   are the grammar edges where a hand scanner drifts from the engine — each was checked
+   against the deleted regex, and `a@b.cc-` is here because the first version of the scanner
+   GOT IT WRONG: it required a whole label to be alphabetic, while the regex's final
+   `\.[A-Za-z]{2,}` is a maximal munch of letters that can stop INSIDE the label. */
+for (const [input, expected] of [
+  ["a@b.co.1x",       "a***@b.co.1x"],   // `.1x` is not a TLD — the match ends at `.co`
+  ["a@b.cc-",         "a***@b.cc-"],     // the TLD stops inside the label, before the `-`
+  ["a@b.com-",        "a***@b.com-"],
+  ["a@b-.com",        "a@b-.com"],       // a first label ending in `-` cannot be followed by `.`
+  ["a@-b.com",        "a@-b.com"],       // …nor start with one
+  ["a@b..com",        "a@b..com"],       // an empty label ends the domain
+  ["a@b.c",           "a@b.c"],          // a one-letter TLD is not `{2,}`
+  ["a@b.co",          "a***@b.co"],
+  ["A@B.COM",         "A***@B.COM"],
+  ["x@tenant-two.com", "x***@tenant-two.com"],
+  ["a@b-c-d.e-f.com", "a***@b-c-d.e-f.com"],
+  ["a@b.co.uk.info",  "a***@b.co.uk.info"],  // greedy — the LAST legal TLD wins
+  ["a@b.com.",        "a***@b.com."],
+  ["x@y@z.com",       "x@y***@z.com"],   // the first `@` has no legal domain; the second does
+  ["a@b.com@c.org",   "a***@b.com@c.org"],  // the second `@` has no local part LEFT to consume
+  ["a@@b.com",        "a@@b.com"],
+  ["@tenant.com",     "@tenant.com"],    // no local part at all
+  ["a@",              "a@"],
+  ["-@b.com",         "-***@b.com"],     // `-` IS atext
+  ["a...@b.com",      "a***@b.com"],
+]) {
+  ok(redactString(input) === expected,
+    `F-822: the scanner matches the engine on \`${input}\` (expected \`${expected}\`, got \`${redactString(input)}\`)`);
+}
+
 /* THE RESTORE MUST STILL WORK. The byte-identical roster restore compares the RAW
    snapshot held in memory. Redacted comparison is what would break, and it breaks the
    dangerous way: two DIFFERENT addresses collapse onto one mask and compare EQUAL. */

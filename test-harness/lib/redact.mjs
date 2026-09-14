@@ -166,7 +166,90 @@ export function looksLikeCredentialValue(v) {
  * and the class below is the RFC 5322 `atext` set, so there is ONE answer to "what is an
  * address" and it lives here.
  */
-const EMAIL = /[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+/*
+ * F-822 — AND IT IS NO LONGER A REGEX EITHER, FOR THE SAME REASON F-815 KILLED THE JWT ONE.
+ *
+ * The rule that lived here was
+ *   /[atext]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g
+ * — an UNBOUNDED GREEDY RUN followed by a REQUIRED literal `@`. Every character of a long
+ * atext run is a candidate start, and each one re-scans the rest of the run before failing
+ * on the missing `@`, so the cost is quadratic in the run length. MEASURED on the post-F-815
+ * tree: `EMAIL.replace()` over 80,000 chars of `-eyA` = 3,176 ms, and `redactString` over the
+ * 240 KiB pathological string = 27,349 ms — while `findCredentialSpans` over the SAME input,
+ * already linear, was 2.0 ms. F-815 made the credential half linear and left `redactString`
+ * just as slow, because this rule had the identical structure. This is the other half.
+ *
+ * WHY A SCANNER AND NOT A BOUNDED REGEX. A cap on the local part (`{1,64}`, the RFC limit)
+ * bounds the backtracking but CHANGES THE MASK: on a longer atext run the match would start
+ * 64 characters before the `@`, and `maskEmail` keeps the FIRST character of what it is
+ * given — so the leading characters of the local part would be printed verbatim next to
+ * `<initial>***@domain`. A redactor may not leak a prefix of the thing it is masking, so the
+ * left walk stays unbounded. It is still linear: the atext runs consumed by successive `@`
+ * signs are DISJOINT (they are separated by the `@` characters themselves, and `@` is not
+ * atext), and so are the domain runs to the right (`@` is not a domain character either).
+ * Every character of the input is visited a bounded number of times.
+ *
+ * THE GRAMMAR IS THE REGEX'S, TRANSCRIBED — this is a performance cut, not a policy change.
+ * Local part: the RFC 5322 `atext` set F-662 settled on, one or more, greedy leftwards, so a
+ * match still starts at the beginning of the run (leftmost-first, as the engine did).
+ * Domain: a first label that starts AND ends alphanumeric (a trailing `-` could not be
+ * followed by the required `.`, so the old first-label group could never match a short
+ * prefix of it), then `.`-separated labels, and the match ends at the LAST label that is
+ * `[A-Za-z]{2,}` — the greedy reading of `(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`, which is why
+ * `a@b.co.1x` still masks as `a***@b.co` and leaves `.1x` outside the match.
+ * A `@` with no atext to its left, or no legal domain to its right, is skipped exactly as the
+ * engine skipped it: any later start inside the same run needs that same `@` and that same
+ * domain, so it fails identically.
+ */
+const EMAIL_LOCAL_CHAR = /[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]/;
+const DOMAIN_CHAR = /[A-Za-z0-9-]/;
+const ALNUM = /[A-Za-z0-9]/;
+const ALPHA = /[A-Za-z]/;
+
+/**
+ * The end index of the domain that starts at `i`, or -1 when there is no legal domain
+ * there. Greedy: the LAST `.`-separated label that is two-or-more letters wins.
+ */
+function domainEnd(s, i) {
+  const n = s.length;
+  if (i >= n || !ALNUM.test(s[i])) return -1;
+  let p = i;
+  while (p < n && DOMAIN_CHAR.test(s[p])) p++;
+  if (!ALNUM.test(s[p - 1])) return -1;          // a first label ending in `-` cannot be followed by `.`
+  let best = -1;
+  while (p < n && s[p] === ".") {
+    let r = p + 1, alpha = p + 1;
+    while (r < n && DOMAIN_CHAR.test(s[r])) { if (r === alpha && ALPHA.test(s[r])) alpha++; r++; }
+    if (r === p + 1) break;                      // an empty label ends the domain
+    /* The final `\.[A-Za-z]{2,}` is a maximal munch of LETTERS, which need not reach the end
+       of the label: in `a@b.cc-` the `*` group takes no label at all and the TLD is `.cc`,
+       leaving the `-` outside the match. Measured against the old regex — a label-wise
+       reading that required the WHOLE label to be alphabetic lost exactly that case. */
+    if (alpha - p - 1 >= 2) best = alpha;
+    p = r;
+  }
+  return best;
+}
+
+/** `EMAIL.replace(…, maskEmail)`, linear. Same matches, same replacement, same order. */
+function maskEmailSpans(str) {
+  if (str.indexOf("@") < 0) return str;          // the overwhelmingly common case
+  let out = "", cursor = 0, at = str.indexOf("@");
+  while (at >= 0) {
+    /* Leftmost-first: the match starts at the head of the atext run ending at `at`, but may
+       not reach back into a span already consumed by the previous match (the `lastIndex`
+       contract of a `g` regex). */
+    let start = at;
+    while (start > cursor && EMAIL_LOCAL_CHAR.test(str[start - 1])) start--;
+    const end = start === at ? -1 : domainEnd(str, at + 1);
+    if (end < 0) { at = str.indexOf("@", at + 1); continue; }
+    out += str.slice(cursor, start) + maskEmail(str.slice(start, end));
+    cursor = end;
+    at = str.indexOf("@", cursor);
+  }
+  return out + str.slice(cursor);
+}
+
 const PII_KEY = /^(email|emailaddress|email_address|mail|useremail|user_email)$/i;
 
 /**
@@ -251,18 +334,20 @@ const isDevUrlKey = (key, value) =>
  * Order is load-bearing: EMBEDDED_PAIR first so a `"token":"…"` pair keeps its readable
  * shape instead of being eaten value-first, and DEV_URL before SECRET_QUERY so a dev
  * web-trigger URL is swallowed whole rather than surviving with masked parameters.
- * EMAIL runs last, on whatever text is left (F-652).
+ * The EMAIL scanner runs last, on whatever text is left (F-652, linear since F-822).
  */
 export function redactString(s) {
   if (typeof s !== "string") return s;
   // F-815 — the credential-SHAPE pass is a SCANNER, not a `.replace(regex)`, and it sits in
   // exactly the position the regex did. Same input, same output, linear worst case.
-  return redactCredentialShapes(s
+  const masked = redactCredentialShapes(s
     .replace(EMBEDDED_PAIR, `$1"${REDACTED}"`)
     .replace(DEV_URL, REDACTED))
     .replace(SECRET_QUERY, `$1${REDACTED}`)
-    .replace(KEY_QUERY, (m, pre, val) => (looksLikeCredentialValue(val) ? `${pre}${REDACTED}` : m))
-    .replace(EMAIL, maskEmail);
+    .replace(KEY_QUERY, (m, pre, val) => (looksLikeCredentialValue(val) ? `${pre}${REDACTED}` : m));
+  // F-822 — the EMAIL pass is a SCANNER too, in exactly the position the regex held (last,
+  // on whatever text the credential rules left). Same input, same output, linear worst case.
+  return maskEmailSpans(masked);
 }
 
 /**

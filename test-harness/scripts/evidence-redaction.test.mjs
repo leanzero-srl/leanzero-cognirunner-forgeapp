@@ -847,10 +847,33 @@ const writesShotLedger = (code) => /\bev\.shots\s*=/.test(code)
   || /\bev\.[A-Za-z_$][\w$]*\s*=\s*[^=;]*\bshots\b/.test(code);
 /** A `leaked` flag is read AND turned into a FAIL. */
 const failsOnLeak = (code) => /\.leaked\b|\bleaked\s*\(\s*\)/.test(code) && /FAIL\s*\(/.test(code);
-/** F-701 (folded in from f689-drivers.test.mjs) — the leak FAIL names the artefacts. */
+/** F-701 (folded in from f689-drivers.test.mjs) — the leak FAIL names the artefacts.
+ *
+ * F-716 — THE WINDOW WAS UNBOUNDED, SO THE RULE MEANT "A `paths:` EXISTS NEARBY".
+ * The predicate used to be `code.match(/FAIL\([\s\S]{0,120}?REFUSED[\s\S]{0,600}/)` and then
+ * test `/\b(paths|leaks)\s*:/` over that MATCH. The 600-character tail runs clean past the
+ * closing paren of the leak FAIL and on into whatever follows it, so a leak FAIL that names
+ * NOTHING passed whenever any `paths:` or `leaks:` token turned up in the next 600
+ * characters — which is the shape of every one of the four drivers it covers. Two measured
+ * shapes both returned `true` from the old predicate:
+ *   · `FAIL("…REFUSED…");` followed by an unrelated `FAIL("restore leaked", { paths: … });`
+ *     — the pre-F-700 driver text with the artefacts dropped from the arm that MATTERS;
+ *   · `FAIL("…REFUSED…");` followed by `ev.summary = { leaks: leaks.length };` — a COUNT,
+ *     not a path, and not even on a failure arm.
+ * The suite's own control (`!leakFailNamesArtefacts("FAIL('…REFUSED…');")`) passed only
+ * because nothing followed it in that one-line string: it proved the rule could go red on
+ * an EMPTY file, never on a FILE.
+ *
+ * The fix is the walker this file already owns. `callArgs` closes each `FAIL(` on its
+ * MATCHING paren, so the text examined is exactly that call's own argument list and stops
+ * there. Every FAIL whose arguments mention a refused capture must name the artefacts
+ * INSIDE its own parens; a call the walker cannot close is `null` and counts as a failure,
+ * never as a pass. At least one such FAIL must exist, or a driver that simply never
+ * mentions REFUSED would satisfy the rule vacuously — which is what `!!m` used to buy. */
 const leakFailNamesArtefacts = (code) => {
-  const m = code.match(/FAIL\([\s\S]{0,120}?REFUSED[\s\S]{0,600}/);
-  return !!m && /\b(paths|leaks)\s*:/.test(m[0]);
+  const refusalArgs = callArgs(code, "FAIL").filter((a) => a === null || /REFUSED/.test(a));
+  return refusalArgs.length > 0
+    && refusalArgs.every((a) => a !== null && /\b(paths|leaks)\s*:/.test(a));
 };
 
 /* POSITIVE CONTROLS — the PRE-FIX shapes, written out, so a green rule is evidence that
@@ -950,6 +973,29 @@ ok(!leakFailNamesArtefacts("FAIL('a capture was REFUSED because an address survi
   "POSITIVE CONTROL (F-701): …and FIRES on a leak FAIL that names nothing, leaving the operator no PNG to destroy");
 ok(!leakFailNamesArtefacts("FAIL('something unrelated', { paths });"),
   "POSITIVE CONTROL: …and is not satisfied by a `paths:` on some OTHER failure arm");
+/* F-716 — THE TWO SHAPES THE 600-CHARACTER WINDOW USED TO PASS. Both are a leak FAIL that
+   names NOTHING, followed by a `paths:`/`leaks:` token the old tail ran on into. These are
+   the controls the one-line control above could not be: a file, not an empty string. */
+ok(!leakFailNamesArtefacts(
+  `FAIL("a capture was REFUSED because an address survived");
+   if (restore && restore.leaked) FAIL("restore leaked", { paths: restore.paths });`),
+  "POSITIVE CONTROL (F-716): a bare leak FAIL followed by a SECOND, unrelated FAIL that does name paths is REFUSED — the old window read past the first call's closing paren and passed the exact pre-F-700 driver text with the artefacts dropped from the arm that matters");
+ok(!leakFailNamesArtefacts(
+  `FAIL("a capture was REFUSED because an address survived");
+   const leaks = all.filter((s) => s.readable);
+   ev.summary = { leaks: leaks.length };`),
+  "POSITIVE CONTROL (F-716): …and a bare leak FAIL followed by `ev.summary = { leaks }` is REFUSED too — a COUNT on an evidence field is not a path, and is not even on a failure arm");
+/* …and the bound really is the FAIL call's own parens, not a shorter window: a leak FAIL
+   whose argument list is LONGER than the old 120/600 budget still passes when it names the
+   artefacts inside itself. A rule that went red here would be trading one arbitrary cutoff
+   for another. */
+ok(leakFailNamesArtefacts(
+  `FAIL("a capture of the Permissions tab was REFUSED because a bare e-mail address survived the redactor in the rendered roster row, which means the PNG on disk carries it too and must be destroyed before this evidence directory is shared with anyone",
+     { paths: shot_.leaks.map((s) => s.path), leaks: shot_.leaks });`),
+  "NEGATIVE CONTROL (F-716): a long, correct leak FAIL is still ACCEPTED — the bound is the call's matching paren, not a shorter character budget");
+/* A FAIL the walker cannot close is not a proven one, exactly as `hasPassWriter` treats it. */
+ok(!leakFailNamesArtefacts('FAIL("a capture was REFUSED", { paths: p });\nFAIL("unclosed", { paths: q };'),
+  "NEGATIVE CONTROL (F-716): an unbalanced FAIL( is a FAILURE, never a pass — the walker returns null and the rule refuses rather than guessing");
 
 /* F-705 — THE COHORT IS EVERY DRIVER THAT CAPTURES, NOT EVERY DRIVER THAT BINDS `makeShot`.
    `makeRosterUI({ record })` calls `makeShot(record)` internally and `grantRole` /

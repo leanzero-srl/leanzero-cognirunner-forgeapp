@@ -42,6 +42,7 @@ import { testState } from "../lib/rules-api.mjs";
    of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
    web trigger out of the mapping it has no use for (F-699's reasoning). */
 import { declareMutations } from "../lib/shared-env-guard.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 declareMutations(["listeners", "kvs"]);
 
 const ACCT = process.env.HARNESS_ADMIN_ACCOUNT_ID;
@@ -159,6 +160,8 @@ finally {
     check("a revoked token is refused at the door", live.status === 401 || live.status === 403, { status: live.status });
   } catch (e) { console.error("token verification:", e.message); failures += 1; }
   const { url, ...safe } = evidence;      // the web-trigger URL is a secret: never written out
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  safe.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(safe, null, 2));
   console.log(`\n${failures} failure(s). Evidence: ${OUT}/evidence.json`);
   process.exit(failures ? 1 : 0);

@@ -38,7 +38,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -261,6 +261,8 @@ async function main() {
     else FAIL("a minted token is still live", { names: live.map((t) => t.name) });
     /* F-646 — redacted AGAIN at the file boundary: `ev` also carries fields assigned
        outside PASS/FAIL/NV, and the file is the artefact that outlives the terminal. */
+    /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(redactSecrets(ev), null, 2));
     console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
   }

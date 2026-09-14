@@ -36,7 +36,7 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: URL_, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "skills", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -249,6 +249,8 @@ async function main() {
     const now = await kvGet(SLOT);
     if (JSON.stringify(now) === JSON.stringify(providerBefore)) PASS(`${SLOT} restored to its recorded value`, { now: mask(now) });
     else FAIL(`${SLOT} NOT restored`, { now: mask(now), before: mask(providerBefore) });
+    /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(ev, null, 2));
     console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
     process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;

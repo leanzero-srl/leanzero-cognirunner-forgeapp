@@ -2481,25 +2481,22 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
  *
  * THIS RULE WARNS, IT DOES NOT YET DEMAND. Measured on the pass that introduced the helper:
  * 28 drivers write an evidence.json and 23 of them do not record provenance. Turning 23
- * files red at once would have made this rule the thing people delete, so it is a DEBT
- * LEDGER: the named 23 are permitted, the COUNT MAY NOT GROW, and any writer NOT on the list
- * must record provenance. That makes the rule bite on exactly the case that matters — the
+ * files red at once would have made this rule the thing people delete, so it was cut as a DEBT
+ * LEDGER: the named 23 permitted, the COUNT MAY NOT GROW, and any writer NOT on the list
+ * must record provenance. F-793 then converted all 23 and the ledger is EMPTY — the rule now
+ * DEMANDS provenance of every evidence writer, which is what it was always meant to do. That makes the rule bite on exactly the case that matters — the
  * next evidence writer somebody adds — while the existing cohort is converted by whoever
  * next has reason to touch each file. An entry that has been converted must be REMOVED from
  * the list, and the rule says so, because a warn-list nobody prunes becomes a permanent
  * exemption. */
 {
-  const PROVENANCE_DEBT = [
-    "attachment-positive-live.mjs", "campaign-ui-live.mjs", "coder-pin-kept-live.mjs",
-    "coder-round-cache-live.mjs", "coder-skills-live.mjs", "coder-wire-replay-live.mjs",
-    "config-view-provenance-live.mjs", "delete-fault-drain-live.mjs",
-    "key-status-fault-live.mjs", "key-status-fault-ui-live.mjs",
-    "knowledge-doors-editor-live.mjs", "listeners-jobs-review-live.mjs",
-    "parity-doors-live.mjs", "perm-discriminator-live.mjs", "perm-namesake-ui-live.mjs",
-    "pipeline-outdated-live.mjs", "plant-sweep-live.mjs", "rules-api-roles-live.mjs",
-    "skills-knowledge-ui-live.mjs", "user-search-fault-live.mjs", "va-purge-carrier-live.mjs",
-    "va-purge-panel-ui-live.mjs", "workflow-simulation-live.mjs",
-  ];
+  /* F-793 — THE LEDGER IS EMPTY, AND THAT IS THE POINT. All 23 named writers now call
+     `runProvenance()`, so the rule below no longer permits anybody: every evidence writer
+     must record the commit that produced it, and the `strangers` assertion is now the whole
+     rule rather than a growth cap. The array stays, empty, because the shape it enforces
+     (name the exemption, prune it when converted) is what a future debt must be written in —
+     and an empty list makes "there are no exemptions" a thing the file SAYS. */
+  const PROVENANCE_DEBT = [];
   /* An evidence WRITER is a file that writes an evidence.json, found the same crude textual
      way rule 4b's redaction check finds it — deliberately the same predicate, so the two
      rules can never disagree about which files are evidence writers. */

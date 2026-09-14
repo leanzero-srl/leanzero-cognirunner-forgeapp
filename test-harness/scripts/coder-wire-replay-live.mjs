@@ -28,6 +28,7 @@
 import fs from "node:fs";
 import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 
 const { hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -176,6 +177,8 @@ try {
   console.log(`${AGENT_MODEL_SLOT} restored: ${ev.slotsRestored[AGENT_MODEL_SLOT].restored ? "YES" : "NO"} (${ev.slotsRestored[AGENT_MODEL_SLOT].now})`);
   const failed = ev.checks.filter((c) => c.verdict === "FAIL");
   ev.verdict = ev.fatal ? "FAIL (fatal)" : failed.length ? `FAIL (${failed.length}/${ev.checks.length})` : `PASS (${ev.checks.length}/${ev.checks.length})`;
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  ev.provenance = runProvenance();
   fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(ev, null, 2));
   console.log(`\nVERDICT ${ev.verdict}`);
   console.log(`evidence: ${OUT}/evidence.json`);

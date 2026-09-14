@@ -54,7 +54,7 @@ import {
    redactor will ever see. `evidence-redaction.test.mjs` refuses a raw `.screenshot(` in
    any `*-live.mjs` that mentions `perm-`. */
 import { makeRosterUI, makeShot, maskPositiveControl } from "../lib/roster-ui.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["roster", "skills", "docs"], defaultEnv: "dev" });
 const env = loadEnv();
@@ -595,6 +595,8 @@ async function main() {
        `perm-discriminator-live` — FAIL on `ok:false`. */
     ev.maskPositiveControl = { ...maskPositiveControl(allShots), gated: false, why: "no view this driver captures is guaranteed to render an email span" };
     ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length, maskSpans: ev.maskPositiveControl.spanTotal };
+    /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
     process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;

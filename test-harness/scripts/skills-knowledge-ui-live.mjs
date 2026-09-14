@@ -31,6 +31,7 @@
 import { forgeEnvId, declareMutations } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -203,6 +204,8 @@ finally {
       info(`emergency restore of builtin ${b.row.id} attempted`);
     } catch (e) { console.error("BUILTIN RESTORE FAILED", e.message); fails += 1; }
   }
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  ev.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
   console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/`);
   process.exit(fails ? 1 : 0);

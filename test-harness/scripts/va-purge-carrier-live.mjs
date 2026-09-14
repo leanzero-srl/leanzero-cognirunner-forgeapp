@@ -35,7 +35,7 @@
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["agents", "jobs", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -231,6 +231,8 @@ async function main() {
       NV("--keep: the planted tombstone and the job were left in place");
     }
     if (rest && rest.id) { await invoke("revokeApiToken", { id: rest.id }); info("the minted REST token was revoked"); }
+    /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
     console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
   }

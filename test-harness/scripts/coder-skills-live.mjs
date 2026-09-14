@@ -41,6 +41,7 @@ import { loadEnv } from "../lib/env.mjs";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 /* F-782 — the flip decision and the precondition verdict have ONE home, and it is not here. */
 import { decideInstanceFlip, judgeAgentCapability } from "../lib/agent-capability-precondition.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 
 const { envName: ENV_NAME, hookUrl: URL_ } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["providerSlot", "kvs"], defaultEnv: "staging" });
 const env = loadEnv();
@@ -263,6 +264,8 @@ finally {
       { enabled: after.enabled, reason: after.reason, agentModel: after.agentModel });
     }
   } catch (e) { console.error("RESTORE FAILED", e.message); failures += 1; }
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  evidence.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(evidence, null, 2));
   console.log(`\n${failures} failure(s). Evidence: ${OUT}/evidence.json`);
   process.exit(failures ? 1 : 0);

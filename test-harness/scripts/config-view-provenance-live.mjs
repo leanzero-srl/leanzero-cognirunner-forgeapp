@@ -43,6 +43,7 @@ import { readWorkflow, updateWorkflow, removeTransitionsByName, attachSelfLoopRu
    of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
    web trigger out of the mapping it has no use for (F-699's reasoning). */
 import { declareMutations } from "../lib/shared-env-guard.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 declareMutations(["rules"]);
 
 const env = loadEnv();
@@ -179,6 +180,8 @@ finally {
       else FAIL(`cleanup: ${left} copy of ${TRANSITION_NAME} remains`);
     } catch (e) { console.error("CLEANUP FAILED", e.message); fails += 1; }
   }
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  ev.provenance = runProvenance();
   fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
   console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/`);
   process.exit(fails ? 1 : 0);

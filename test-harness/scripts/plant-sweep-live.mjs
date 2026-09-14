@@ -79,6 +79,7 @@ import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 import { drainSweep, answerComplete, plantPopulation, plantLedgerRow, leverFacts } from "../lib/sweep-drain.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const h = argv.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -622,6 +623,8 @@ main()
   .finally(() => {
     ev.summary = { passes, fails, unproven };
     /* F-774 — the arm's OWN file, and the summary names the one it wrote. */
+    /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(`${OUT}/${EV_NAME}`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}  →  results/plant-sweep/${EV_NAME}  (${STALE ? "--stale arm: the re-POST trail" : "plain arm: plant + sweep"})`);
     process.exit(fails > 0 ? 1 : 0);

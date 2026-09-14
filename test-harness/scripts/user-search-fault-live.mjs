@@ -61,6 +61,7 @@ import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
 import { makeShot } from "../lib/roster-ui.mjs";
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 
 /* F-686 — `--env` now EXISTS here and defaults to `staging`, and the dev tenant needs
  * `--i-know-dev-is-shared`. The longest window this driver arms is step 3's 240s: the UI
@@ -397,6 +398,8 @@ try {
   }
   ev.summary = { passes, fails, unproven, shots: shot_.shots.length, captured: shot_.shots.filter((s) => s.captured).length, leaks: leaks.length };
   const file = `${OUT}/evidence.json`;
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  ev.provenance = runProvenance();
   fs.writeFileSync(file, JSON.stringify(redactSecrets(ev), null, 2));
   console.log(`\nPASS ${passes}  FAIL ${fails}  N/V ${unproven}`);
   console.log(`evidence: ${file}`);

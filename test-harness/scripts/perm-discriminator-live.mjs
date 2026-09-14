@@ -37,7 +37,7 @@ import { makeRosterUI, makeShot, maskPositiveControl } from "../lib/roster-ui.mj
 import {
   rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
 } from "../lib/roster-restore.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -442,6 +442,8 @@ async function main() {
     if (mask.ok) PASS(mask.sentence, { spans: mask.spanTotal, masked: mask.maskedTotal, captures: mask.captures });
     else FAIL(mask.sentence, { spans: mask.spanTotal, captures: mask.captures, expected: "the user-search dropdown renders at least one `.perm-ident-email`" });
     ev.summary = { passes, fails, unproven, shots: allShots.length, captured: allShots.filter((s) => s.captured).length, leaks: leaks.length, maskSpans: mask.spanTotal };
+    /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2)); // F-656/F-662: the shared redactor is the ONLY gate
     console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
     process.exitCode = resultExitCode({ fails, crashed }) || process.exitCode;

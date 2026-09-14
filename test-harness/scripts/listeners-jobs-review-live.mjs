@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { chromium } from '../../static/_screenshot-harness/node_modules/playwright/index.mjs';
 import { testState } from '../lib/rules-api.mjs';
 import { getMyself,get,getIssue,post,del,BASE } from '../lib/jira.mjs';
+import { runProvenance } from "../lib/driver-report.mjs";
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -68,5 +69,7 @@ if(browser)await browser.close();
 for(const id of created.listeners){try{await call('deleteListener',{id});evidence.cleanup.push({listener:id,removed:true});}catch(e){evidence.cleanup.push({listener:id,error:e.message});process.exitCode=1;}}
 for(const id of created.jobs){try{await call('deleteScheduledJob',{id});evidence.cleanup.push({job:id,removed:true});}catch(e){evidence.cleanup.push({job:id,error:e.message});process.exitCode=1;}}
 for(const key of created.issues){try{await del('/rest/api/3/issue/'+key);let missing=false;try{await getIssue(key,['summary']);}catch(e){if(e.status===404)missing=true;else throw e;}assert.ok(missing);evidence.cleanup.push({issue:key,removed:true});}catch(e){evidence.cleanup.push({issue:key,error:e.message});process.exitCode=1;}}
+/* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+evidence.provenance=runProvenance();
 fs.writeFileSync(out+'/evidence.json',JSON.stringify(evidence,null,2));console.log('Evidence',out,'checks',evidence.checks.length,'cleanup',JSON.stringify(evidence.cleanup));
 }

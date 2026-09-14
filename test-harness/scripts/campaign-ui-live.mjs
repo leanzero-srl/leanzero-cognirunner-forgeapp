@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {chromium} from '../../static/_screenshot-harness/node_modules/playwright/index.mjs';
 import {JIRA_EVENTS} from '../../src/shared/jira-events.js';
 import {AGENT_ACTIONS} from '../../src/shared/agent-actions.js';
+import { runProvenance } from "../lib/driver-report.mjs";
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -16,6 +17,8 @@ declareMutations([]);
 const out=process.env.PROOF_OUT||new URL('../results/listeners-jobs-campaign/ui-final/',import.meta.url).pathname, state=JSON.parse(fs.readFileSync(new URL('../results/listeners-jobs-campaign/state.json',import.meta.url)));
 fs.mkdirSync(out,{recursive:true});
 const evidence={startedAt:new Date().toISOString(),records:[],checks:[],errors:[],console:[],screenshots:[]};
+/* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+evidence.provenance=runProvenance();
 const flush=()=>fs.writeFileSync(out+'/evidence.json',JSON.stringify(evidence,null,2));
 function check(key,a,b){let pass=true;try{assert.deepEqual(a,b);}catch{pass=false;}evidence.checks.push({key,pass,...(!pass?{actual:a,expected:b}:{})});if(!pass)console.log('MISMATCH',key,JSON.stringify(a),JSON.stringify(b));}
 const browser=await chromium.launch({headless:true});const ctx=await browser.newContext({storageState:'/Users/mihaiperdum/Projects/forge-live-harness/.auth/storage-state.json',viewport:{width:1440,height:1100}});const page=await ctx.newPage();const frame=page.frameLocator('iframe').first();

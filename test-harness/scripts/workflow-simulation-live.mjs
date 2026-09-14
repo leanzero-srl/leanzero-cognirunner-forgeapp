@@ -4,6 +4,7 @@ import fs from "node:fs";
 import assert from "node:assert/strict";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
 import { get, post, put, del, getIssue, getMyself, BASE } from "../lib/jira.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 
 /* F-733 — THIS DRIVER IS DEV-ONLY BY CONSTRUCTION (no `--env`), AND THE SHARED TENANT IS
    THE ONLY TENANT IT HAS. So it declares what it CHANGES and leaves changed, in the guard's
@@ -123,5 +124,7 @@ finally {
     await assert.rejects(() => getIssue(key, ["summary"]), e => e.status === 404);
     evidence.cleanup.push({ key, absent: true });
   } catch (e) { evidence.cleanup.push({ key, error: e.message }); process.exitCode = 1; }
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  evidence.provenance = runProvenance();
   fs.writeFileSync(out + "evidence.json", JSON.stringify(evidence, null, 2));
 }

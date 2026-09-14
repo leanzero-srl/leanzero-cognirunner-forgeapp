@@ -105,6 +105,7 @@ import { fileURLToPath } from "node:url";
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactString, redactSecrets } from "../lib/redact.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 import {
   drainSweep, answerComplete, decideSweepStep, newDrainState,
   IDENTICAL_ANSWER_LIMIT, DELETES_FAILING_BACKOFF_MS, plantPopulation,
@@ -856,6 +857,8 @@ if (isEntry) {
   }
   state.ev.summary = { passes: state.passes, fails: state.fails, unproven: state.unproven };
   fs.mkdirSync(OUT, { recursive: true });
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  state.ev.provenance = runProvenance();
   fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(state.ev), null, 2));
   console.log(`\nPASS ${state.passes}  FAIL ${state.fails}  N/V ${state.unproven}  →  results/delete-fault-drain/evidence.json`);
   process.exit(state.fails > 0 ? 1 : 0);

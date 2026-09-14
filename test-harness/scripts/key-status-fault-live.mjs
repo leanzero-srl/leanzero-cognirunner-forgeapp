@@ -51,7 +51,7 @@ import { providerKeySlot } from "../../src/shared/provider-slots.js";
 // ceiling". The copy that used to live in this file read `r.json.value`, a field the
 // ceiling no longer answers for a credential-family key.
 import { readKeySlotWitness, describeKeySlot, sameKeySlot } from "../lib/key-slot-witness.mjs";
-import { formatResultLine, resultExitCode } from "../lib/driver-report.mjs";
+import { formatResultLine, resultExitCode, runProvenance } from "../lib/driver-report.mjs";
 
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const PROVIDER = arg("provider", "openai");
@@ -243,6 +243,8 @@ async function main() {
       FAIL("the provider key slot is not the one this run found", { before: describeKeySlot(slotBefore), after: describeKeySlot(slotAfter), why: verdict.why });
     }
 
+    /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
     console.log("\n" + formatResultLine({ passes, fails, unproven, crashed, suffix: `. Evidence: ${OUT}/evidence.json` }));
   }

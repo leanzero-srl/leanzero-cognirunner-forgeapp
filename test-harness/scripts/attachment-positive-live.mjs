@@ -13,6 +13,7 @@ import { readWorkflow, updateWorkflow, attachSelfLoopRules, initialStatusRef } f
    of `requireEnvAck` on its own, which is what keeps a Playwright script that never opens a
    web trigger out of the mapping it has no use for (F-699's reasoning). */
 import { declareMutations } from "../lib/shared-env-guard.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 declareMutations(["issues", "rules"]);
 assert.equal(new URL(BASE).hostname, "wolfaenpak.atlassian.net");
 const tag = "cgr-attachment-" + Date.now().toString(36), evidence = { tag, cleanup: [] };
@@ -93,5 +94,7 @@ finally {
   evidence.pass = evidence.deliveryPass === true && evidence.cleanup.length === 2 && evidence.cleanup.every(item => item.absent === true) && !process.exitCode;
   if (evidence.pass) console.log("PASS actual workflow → AI document → Jira attachment + comment → byte download → verified cleanup", JSON.stringify({ key, id: evidence.attachment.id, filename: evidence.attachment.filename, bytes: evidence.attachment.downloadedBytes }));
   fs.mkdirSync(new URL("../results/attachment-positive/", import.meta.url), { recursive: true });
+  /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+  evidence.provenance = runProvenance();
   fs.writeFileSync(new URL("../results/attachment-positive/evidence.json", import.meta.url), JSON.stringify(evidence, null, 2));
 }

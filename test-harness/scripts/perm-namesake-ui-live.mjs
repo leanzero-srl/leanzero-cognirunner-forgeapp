@@ -41,6 +41,7 @@ import { makeShot } from "../lib/roster-ui.mjs";
    BASE class on the email span too, so on a row carrying an address `.first()` is the
    address, and the segment comparison could only ever fail. */
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
+import { runProvenance } from "../lib/driver-report.mjs";
 
 /* F-734 — THIS DRIVER IS NOT READ-ONLY, AND FOR TWO YEARS OF FINDINGS IT SAID IT WAS.
    Step 2 above GRANTS AN APP ROLE on the shared dev tenant, and the whole proof rests on
@@ -454,6 +455,8 @@ async function main() {
     if (mask.ok) PASS(mask.sentence, { spans: mask.spanTotal, masked: mask.maskedTotal, captures: mask.captures });
     else FAIL(mask.sentence, { spans: mask.spanTotal, captures: mask.captures, expected: "the user-search dropdown on a namesake fixture renders at least one `.perm-ident-email`" });
     ev.summary = { passes, fails, unproven, shots: shot_.shots.length, captured: shot_.shots.filter((s) => s.captured).length, leaks: shot_.leaks.length, maskSpans: mask.spanTotal };
+    /* F-787 — WHICH COMMIT PRODUCED THIS FILE. Evidence is read weeks later beside a findings row; `dirty` is reported because evidence made from uncommitted edits is not reproducible from the commit it names. */
+    ev.provenance = runProvenance();
     fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n  ${passes} PASS · ${fails} FAIL · ${unproven} N/V   -> ${OUT}/evidence.json\n`);
     process.exit(fails ? 1 : 0);

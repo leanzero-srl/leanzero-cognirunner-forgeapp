@@ -66,7 +66,7 @@ import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue, buildKnowledgeMessages, logKnowledgeInjection, reportCrossTurnCacheDefect } from "./agent-runner.js";
 import { createGitActionExecutor } from "./git-actions.js";
-import { createCoderWorkspace } from "./coder-workspace.js";
+import { createCoderWorkspace, workspaceEntry, renderWorkspaceSummaryLine } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
 import { clampChars } from "./shared/text-clamp.js";
 
@@ -767,7 +767,19 @@ const runCoderTurnClaimed = async ({
   // its calls can fail the turn: they all answer {ok:false,...} instead of throwing, and
   // the turn records the answer rather than acting on it.
   const workspace = deps.workspace || createCoderWorkspace({ simulation: simulated });
-  const workspaceResults = [];
+  // ONE ENTRY PER WRITE GROUP (F-841), in the shape `coder-workspace.js` owns. Keyed by
+  // group because the log is flushed once per ROUND: without the key a turn of eight
+  // rounds reported eight "log" entries and "2 of 9 writes failed" was arithmetic about
+  // nothing. A FAILURE IS STICKY - a later round that succeeds does not erase an earlier
+  // failure, because the line the operator needs is "the log write failed at some point
+  // in this turn", not "the last attempt happened to land".
+  const workspaceResults = new Map();
+  const noteWorkspace = (group, r) => {
+    const entry = workspaceEntry(group, r);
+    const prior = workspaceResults.get(entry.group);
+    if (prior && prior.ok === false) return;
+    workspaceResults.set(entry.group, entry);
+  };
   // The running log is flushed ONCE PER ROUND, with only the lines added since the last
   // flush: the writer appends to what it already stored, so re-sending the whole buffer
   // would duplicate every line.
@@ -777,7 +789,7 @@ const runCoderTurnClaimed = async ({
     flushedLogs = logs.length;
     if (!fresh.length) return;
     const r = await workspace.updateCoderLog({ issueKey: key, threadId: thread, lines: fresh });
-    if (r && r.ok === false) workspaceResults.push({ what: "log", ...r });
+    noteWorkspace("log", r);
   };
 
   // ── the consent ticket ────────────────────────────────────────────────────
@@ -1176,22 +1188,32 @@ const runCoderTurnClaimed = async ({
   const planText = String((loop && loop.summary) || "").trim() || lastAssistantText(loop);
   if (record.turns === 1 && planText) {
     const r = await workspace.writeCoderPlan({ issueKey: key, plan: planText });
-    workspaceResults.push({ what: "plan", ...r });
+    noteWorkspace("plan", r);
   }
-  // Whatever the last round added to the log, including the loop's own ending line.
-  try { await onRound(); } catch (e) { log(`log flush failed: ${(e && e.message) || e}`); }
   // THE SESSION ARTIFACT, only when the model actually finished. A turn that halted for a
   // confirmation or ran out of rounds is not a session - attaching one per round would put
   // eight near-identical files on the issue.
+  // IT RUNS BEFORE THE FINAL LOG FLUSH (F-841): the flush is the last write of the turn,
+  // so the summary line it carries can name the artifact's outcome too. Nothing in this
+  // block writes log lines, so no line is lost by the reorder.
   if (loop.endedBy === "finish") {
     const r = await workspace.attachSessionArtifact({
       issueKey: key,
       name: `coder-session-${Math.min(999999, record.turns)}.md`,
       content: renderSessionMarkdown(record),
     });
-    workspaceResults.push({ what: "artifact", ...r });
+    noteWorkspace("artifact", r);
   }
+  // THE TURN SUMMARY LINE, then whatever the last round added to the log including the
+  // loop's own ending line. The line is added ONLY when something failed, and it goes in
+  // the log the operator already reads rather than on a surface they must go and find. A
+  // log write that fails cannot carry its own obituary, which is the other half of why
+  // the turn record carries the count.
+  const summaryLine = renderWorkspaceSummaryLine([...workspaceResults.values()]);
+  if (summaryLine) log(summaryLine);
+  try { await onRound(); } catch (e) { log(`log flush failed: ${(e && e.message) || e}`); }
 
+  const workspaceEntries = [...workspaceResults.values()];
   const out = {
     success: loop.outcome !== "failed",
     threadId: thread,
@@ -1203,9 +1225,13 @@ const runCoderTurnClaimed = async ({
     rounds: loop.rounds,
     compacted: compacted.compacted,
     logs,
-    // What the writer did, or refused to do. REPORTED, never acted on: a failed comment
-    // must not change what the turn says happened in the repository.
-    workspace: workspaceResults,
+    // What the writer did, or refused to do, ONE ENTRY PER GROUP. REPORTED, never acted
+    // on: a failed comment must not change what the turn says happened in the repository.
+    // The COUNT rides beside it (F-841) so `getAsyncTaskResult` and the panel can say
+    // "some of this turn's writes did not land" without walking the array, and so a turn
+    // with `success:true` and three dead write groups can no longer read as clean.
+    workspace: workspaceEntries,
+    workspaceFailures: workspaceEntries.filter((e) => e.ok === false).length,
   };
   if (loop.error) out.error = loop.error;
   // …and the same receipt on the RESULT, so `getAsyncTaskResult` and the panel can read
@@ -1520,6 +1546,10 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
     ...(verdict === "confirm" && !executedOk ? { error: String((result && result.error) || "The confirmed step failed.").slice(0, 300) } : {}),
     resume: true,
     resumeMessage: decisionText,
-    ...(stepComment ? { workspace: [{ what: "step", ...stepComment }] } : {}),
+    // The same one shape a turn reports (F-841), so a caller reads `workspace` and
+    // `workspaceFailures` the same way whichever entry point produced them.
+    ...(stepComment
+      ? { workspace: [workspaceEntry("step", stepComment)], workspaceFailures: stepComment.ok === false ? 1 : 0 }
+      : {}),
   };
 };

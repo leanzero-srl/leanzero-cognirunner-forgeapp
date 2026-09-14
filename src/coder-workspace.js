@@ -108,6 +108,58 @@ export const ARTIFACT_NAME_RE = /^coder-session-\d{1,6}\.md$/;
  */
 export const WORKSPACE_LOCK_TTL = { ttl: { value: 1, unit: "MINUTES" } };
 
+/* ──────────────────── the write groups, and how a turn reports them ──────────────────── */
+
+/**
+ * THE GROUP NAMES, ONE HOME (F-841).
+ *
+ * A coder turn makes up to three writes onto the issue and a confirmed ticket makes a
+ * fourth, and until F-841 each of those sites invented its own label (`what:"log"`,
+ * `what:"plan"`, `what:"artifact"`, `what:"step"`) inline while NOTHING read them: every
+ * failure was collected into a `workspaceResults` array the turn never counted, never
+ * reported and no offline test ever opened, which is how three failing write groups per
+ * turn stayed invisible for the life of the surface. The names live here because this is
+ * the module that performs the writes, and the engine, the log line and the tests must
+ * all say the same word for the same write.
+ *
+ * DEGRADING IS STILL THE RULE (module header): a failed write is REPORTED on the turn and
+ * never kills it. What changes is that it is now counted and named.
+ */
+export const WORKSPACE_GROUPS = ["plan", "log", "artifact", "step"];
+
+/**
+ * The ONE stable entry shape a turn reports per write group: `{group, ok, errorClass?,
+ * detail?}` and nothing else. The writer's success payloads carry ids (commentId,
+ * attachmentId, bytes) that are useful to the writer and noise on a task row, so they are
+ * projected away here rather than at each call site.
+ */
+export const workspaceEntry = (group, r) => {
+  const ok = !(r && r.ok === false);
+  const entry = { group: String(group), ok };
+  if (!ok) {
+    if (r.errorClass) entry.errorClass = String(r.errorClass).slice(0, 40);
+    if (r.error) entry.detail = clampChars(String(r.error), 300);
+  }
+  return entry;
+};
+
+/**
+ * THE TURN SUMMARY LINE for the running Coder log, when at least one group failed.
+ *
+ * Reads "Workspace: 2 of 3 writes failed (log: storage, artifact: network)". It names the
+ * GROUPS, because "a write failed" tells an operator nothing about which repair to make,
+ * and it names each group's error class, because storage and network point at different
+ * repairs (F-833). No em dash, by owner rule. Returns "" when everything landed: a healthy
+ * turn adds no line at all.
+ */
+export const renderWorkspaceSummaryLine = (entries) => {
+  const list = Array.isArray(entries) ? entries : [];
+  const failed = list.filter((e) => e && e.ok === false);
+  if (!failed.length) return "";
+  const named = failed.map((e) => `${e.group}: ${e.errorClass || "unknown"}`).join(", ");
+  return `Workspace: ${failed.length} of ${list.length} write${list.length === 1 ? "" : "s"} failed (${named})`;
+};
+
 /* ───────────────────────────── keys ───────────────────────────── */
 // Every key part goes through `safeKeyPart` and every built key through `assertKvsKey`
 // (F-346/F-349: a key part is never a raw id, and an illegal key fails at the builder).

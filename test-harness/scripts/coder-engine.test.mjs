@@ -1793,5 +1793,94 @@ await check("F-833: a full turn swallows no storage fault and its writes reach J
     "the Coder log comment is a REAL measured write now, not a swallowed failure");
 });
 
+/* ═════════ F-841. a failed workspace write is COUNTED and NAMED ═════════
+ *
+ * The turn collected every write failure into an array nothing read: `success:true` with
+ * three dead write groups was indistinguishable from a clean turn, on the task row and in
+ * the Coder log alike. F-833 made the writes real in this suite; these checks are what
+ * finally READ them.
+ *
+ * Degrading rather than killing the turn stays (module header). What is asserted is that
+ * the degradation is VISIBLE: one entry per group in the one shape, a count beside it, and
+ * a log line that names the groups that failed and what kind of fault each was.
+ */
+const { updateCoderLog, attachSessionArtifact, createCoderWorkspace, renderWorkspaceSummaryLine }
+  = await import("../../src/coder-workspace.js");
+
+/** The real writer, with ONE group re-pointed at a faulting store (the rest stay real). */
+const workspaceWithFaultyLog = (faultStore) => ({
+  ...createCoderWorkspace({}),
+  updateCoderLog: (args) => updateCoderLog({ ...args, deps: { store: faultStore } }),
+});
+
+await check("F-841: a healthy turn reports every write group ok and workspaceFailures 0", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const r = await startTurn(world, { userMessage: "do the thing" });
+
+  assert.equal(r.success, true);
+  assert.ok(Array.isArray(r.workspace), "the turn record carries the workspace receipt");
+  assert.deepEqual([...r.workspace].map((e) => e.group).sort(), ["artifact", "log", "plan"],
+    "all three groups of a finished first turn are reported, once each");
+  assert.ok(r.workspace.every((e) => e.ok === true), `every group landed: ${JSON.stringify(r.workspace)}`);
+  assert.equal(r.workspaceFailures, 0, "…and the count the panel reads says so");
+  assert.equal((r.logs || []).filter((l) => /^Workspace:/.test(l)).length, 0,
+    "a clean turn adds no summary line at all");
+});
+
+await check("F-841: a faulted lock take names the group with errorClass storage, turn still succeeds", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const kvsFault = new Error("Field 'key' must match pattern");
+  kvsFault.name = "ForgeKvsError";
+  kvsFault.code = "INVALID_KEY";
+  const faultStore = { set: async () => { throw kvsFault; }, get: async () => undefined, delete: async () => {} };
+
+  const { out: r } = await catchWarn(() => startTurn(world, {
+    userMessage: "log it", deps: { store, gitExecutor: recordingGit(world), workspace: workspaceWithFaultyLog(faultStore) },
+  }));
+
+  assert.equal(r.success, true, "DEGRADING, NOT KILLING: a failed comment never fails the turn");
+  const logEntry = r.workspace.find((e) => e.group === "log");
+  assert.ok(logEntry, "the failed group is named");
+  assert.equal(logEntry.ok, false);
+  assert.equal(logEntry.errorClass, "storage", "a KVS fault is storage, never network (F-833)");
+  assert.match(logEntry.detail, /INVALID_KEY/, "…and the detail carries which storage fault it was");
+  assert.equal(r.workspaceFailures, 1, "ONE failure, not one per round: the entry is keyed by group");
+  assert.ok(r.workspace.find((e) => e.group === "plan").ok, "the groups that landed are still reported ok");
+  const line = (r.logs || []).find((l) => /^Workspace:/.test(l));
+  assert.ok(line, "the Coder log's turn summary says so");
+  assert.match(line, /1 of 3 writes failed/);
+  assert.match(line, /log: storage/, "…naming the group and its fault class");
+  assert.equal(/—/.test(line), false, "no em dash, by owner rule");
+});
+
+await check("F-841: an unreachable product names the group with errorClass network", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("Done")])] });
+  const base = workspaceResponder(world);
+  forgeApi.__respond((path, opts) => {
+    if (/\/attachments$/.test(String(path))) throw new Error("fetch failed");
+    return base(path, opts);
+  });
+
+  const { out: r } = await catchWarn(() => startTurn(world, { userMessage: "attach it" }));
+
+  assert.equal(r.success, true);
+  const artifact = r.workspace.find((e) => e.group === "artifact");
+  assert.equal(artifact.ok, false);
+  assert.equal(artifact.errorClass, "network", "the remote product being unreachable keeps its own name");
+  assert.equal(r.workspaceFailures, 1);
+  assert.match((r.logs || []).find((l) => /^Workspace:/.test(l)) || "", /artifact: network/);
+});
+
+await check("F-841: the summary line is empty when nothing failed and counts only failures", async () => {
+  assert.equal(renderWorkspaceSummaryLine([{ group: "log", ok: true }]), "");
+  assert.equal(renderWorkspaceSummaryLine([]), "");
+  assert.equal(
+    renderWorkspaceSummaryLine([{ group: "plan", ok: true }, { group: "log", ok: false, errorClass: "storage" }, { group: "artifact", ok: false }]),
+    "Workspace: 2 of 3 writes failed (log: storage, artifact: unknown)");
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -30,6 +30,15 @@
  *       low-alpha tint.
  *   K7  the version line names both versions, because they answer two different questions
  *       ("did the text change?" and "did the way we pick text change?").
+ *   K8  (F-956) switching off a pack that has PINNED sections tells the admin exactly which
+ *       surfaces lose their core, in a solid red sentence naming them from `pinnedFor` -
+ *       and the switch still works. That last clause is the assertion that matters: the
+ *       owner's rule is that a warning informs and never blocks, and a warning that had
+ *       quietly become a gate would photograph identically.
+ *
+ * F-956 also moved the provenance line from slugs to NAMES ("From LeanZero Forge Skills,
+ * Apache-2.0 (NOTICE retained), baked 14 September 2026"), so K1 now asserts the name on
+ * screen and the source id in the title attribute - hidden, not lost.
  *
  * Run: node static/_screenshot-harness/knowledge-tab.test.mjs   (add --shots to save PNGs)
  */
@@ -163,12 +172,24 @@ try {
           const packTitle = (KNOWLEDGE_PACKS.find((x) => x.id === licensed.pack) || {}).title;
           const lcard = page.locator(".kn-pack").filter({ hasText: packTitle }).first();
           const ptxt = (await lcard.locator(".kn-pack-prov").innerText()).replace(/\s+/g, " ");
-          ok(ptxt.includes(licensed.provenance.source), `F-917 ${packTitle} names its source (got "${ptxt.slice(0, 90)}")`);
+          /* F-956 - the line names the SOURCE BY NAME. The id is a slug an admin has never
+             seen anywhere else in the product, so what is asserted on screen is the baked
+             `sourceName`, and the id is asserted in the title attribute below. Both come
+             from the generated index, so a re-bake that renames a source moves the test. */
+          ok(!!licensed.provenance.sourceName, "F-956 the baked provenance carries a source NAME");
+          ok(ptxt.includes(licensed.provenance.sourceName), `F-956 ${packTitle} names its source in words (got "${ptxt.slice(0, 110)}")`);
+          ok(!new RegExp(`From ${licensed.provenance.source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(ptxt),
+            `F-956 ${packTitle} does NOT lead with the slug (got "${ptxt.slice(0, 110)}")`);
           ok(ptxt.includes(licensed.provenance.licence), `F-917 ${packTitle} names its licence verbatim, NOTICE clause and all`);
-          /* F-933 - the whole sentence, in the order it is read: where the text came from,
-             what the licence is, and when it was baked. */
-          ok(new RegExp(`From ${licensed.provenance.source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\n]*, baked ${BAKED_DATE}`).test(ptxt),
-            `F-933 ${packTitle} reads "From <source>, <licence>, baked <date>" (got "${ptxt.slice(0, 140)}")`);
+          /* F-933/F-956 - the whole sentence, in the order it is read: where the text came
+             from BY NAME, what the licence is, and when it was baked. */
+          ok(new RegExp(`From ${licensed.provenance.sourceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\n]*, baked ${BAKED_DATE}`).test(ptxt),
+            `F-933 ${packTitle} reads "From <source name>, <licence>, baked <date>" (got "${ptxt.slice(0, 140)}")`);
+          /* ...and the id is STILL REACHABLE, in the title attribute, for whoever greps the
+             corpus. Hiding it and losing it are two different things. */
+          const titles = await lcard.locator(".kn-prov-line").evaluateAll((els) => els.map((e) => e.getAttribute("title") || ""));
+          ok(titles.some((t) => t.includes(licensed.provenance.source)),
+            `F-956 the source id survives in a title attribute (got ${JSON.stringify(titles)})`);
         }
       }
       /* F-933 - WHAT F-917 RECORDED AS ABSENT IS NOW PRESENT, and asserted from the index
@@ -197,6 +218,45 @@ try {
       }
       ok(/baked/i.test(await page.locator(".kn-tab").innerText()),
         "F-933 the tab now says when the packs were baked");
+
+      /* F-956 - THE PURPOSES ARE FOR THE ADMIN, NOT FOR THE BUILD. The second cold walk
+         found one that read "DATA tables consumed by <a source file>, not prose for the
+         model" - true, and useless to the person deciding whether to switch it off. The
+         shape assertion lives in the bake suite (no purpose may name a path or a module);
+         what is asserted HERE is that every sentence that reaches the screen is a real
+         sentence about the product rather than a file reference. */
+      {
+        const purposes = await page.locator(".kn-pack-purpose").allInnerTexts();
+        ok(purposes.length === KNOWLEDGE_PACKS.length, `F-956 every card carries a purpose (${purposes.length}/${KNOWLEDGE_PACKS.length})`);
+        const codey = purposes.filter((t) => /src\/|\.js\b|\.mjs\b/.test(t));
+        ok(codey.length === 0, `F-956 no purpose on screen names a source file (${codey.join(" | ").slice(0, 120)})`);
+        const short = purposes.filter((t) => t.trim().length < 80);
+        ok(short.length === 0, `F-956 every purpose is a real explanation, not a label (${short.join(" | ").slice(0, 120)})`);
+      }
+
+      /* F-956 - THE PINNED CHIP IS EXPLAINED. A bare "1 pinned section" is a count, and a
+         count carries no meaning: the note says a pin is sent on EVERY turn of the surfaces
+         the bake names, which is the fact that makes the switch beside it consequential. */
+      {
+        const pinnedCards = page.locator(".kn-pack").filter({ has: page.locator(".kn-pack-pinned") });
+        const n = await pinnedCards.count();
+        ok(n > 0, "F-956 the corpus still has a pinned pack to assert on");
+        const notes = await pinnedCards.locator(".kn-pack-pin-note").allInnerTexts();
+        ok(notes.length === n, `F-956 every pinned pack explains its chip (${notes.length}/${n})`);
+        ok(notes.every((t) => /sent on every/i.test(t) && /turn/i.test(t)),
+          `F-956 the note says pins ride on every turn (got "${(notes[0] || "").slice(0, 90)}")`);
+        /* The SURFACES are named from `pinnedFor`, never typed here: the va-pinned pack must
+           say "Virtual Administrator", the codegen/fix one must say both. */
+        const vaPack = KNOWLEDGE_PACKS.find((x) => (x.pinnedFor || []).includes("va"));
+        ok(!!vaPack, "F-956 the index still carries a va-pinned pack");
+        if (vaPack) {
+          const t = await page.locator(".kn-pack").filter({ hasText: vaPack.title }).first().locator(".kn-pack-pin-note").innerText();
+          ok(/Virtual Administrator/.test(t), `F-956 the va-pinned pack names its surface (got "${t}")`);
+        }
+        /* Nothing is warned about while the pack is ON. The red sentence is a consequence,
+           not decoration, so it must not be on screen when there is no consequence. */
+        ok(await page.locator(".kn-pack-pin-warn").count() === 0, "F-956 no warning while every pack is on");
+      }
 
       /* THE PINNED PACKS, DERIVED, NEVER COUNTED BY HAND (F-564). This read used to take the
          FIRST pack with pins and assert that exactly one chip existed on the page. That is a
@@ -343,6 +403,59 @@ try {
     } finally { await close(env); }
   }
 
+  /* ---------- K8 switching a PINNED pack off: told, never blocked ---------- */
+  {
+    console.log("K8 a pinned pack switched off");
+    const pinnedPack = KNOWLEDGE_PACKS.find((p) => (p.pinned || []).length > 0 && (p.pinnedFor || []).length > 0);
+    const env = await openKnowledge(browser);
+    const { page } = env;
+    try {
+      ok(!!pinnedPack, "K8 the index carries a pack with pins and an audience");
+      const card = page.locator(".kn-pack").filter({ hasText: pinnedPack.title }).first();
+      ok(await card.locator(".kn-pack-pin-warn").count() === 0, "K8 nothing is warned about while it is on");
+
+      /* THE SWITCH STILL WORKS. This is the assertion the owner's rule turns on: a warning
+         that quietly became a gate would look identical in a screenshot, and the whole
+         finding is that an admin should be TOLD, not stopped. */
+      await card.locator(".kn-switch").click();
+      const off = page.locator(".kn-pack").filter({ hasText: pinnedPack.title }).first();
+      await off.locator(".kn-switch[aria-checked='false']").waitFor({ timeout: 8000 });
+      ok(true, "K8 the switch still turns a pinned pack off - the warning does not block it");
+
+      const warn = off.locator(".kn-pack-pin-warn");
+      ok(await warn.count() === 1, "K8 and the consequence is named, once");
+      const wtxt = (await warn.innerText()).replace(/\s+/g, " ");
+      /* The surfaces come from `pinnedFor`, so the sentence moves with the corpus. */
+      for (const aud of pinnedPack.pinnedFor) {
+        const want = { codegen: "code generation", fix: "AI fix", validator: "validator", agent: "listener and job agent", va: "Virtual Administrator", coder: "Coder", review: "AI review" }[aud];
+        ok(wtxt.includes(want), `K8 the sentence names the ${aud} surface as "${want}" (got "${wtxt}")`);
+      }
+      ok(/loses its/.test(wtxt) && /while this is off/.test(wtxt), `K8 it says what is lost and for how long (got "${wtxt}")`);
+      ok(wtxt.toLowerCase().includes(pinnedPack.title.toLowerCase()), `K8 and which core (got "${wtxt}")`);
+
+      /* SOLID RED, WHITE INK. Not a tint, not a rail: the fill is opaque and the left
+         border is not thicker than the others. */
+      const paint = await warn.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, ink: c.color, weight: c.fontWeight, bl: c.borderLeftWidth };
+      });
+      ok(paint.bg === "rgb(220, 38, 38)", `K8 the warning is solid red, got ${paint.bg}`);
+      ok(paint.ink === "rgb(255, 255, 255)", `K8 with white ink, got ${paint.ink}`);
+      ok(Number(paint.weight) >= 600, `K8 at 600-700 weight, got ${paint.weight}`);
+      ok(parseFloat(paint.bl) < 3, `K8 and no left rail, got ${paint.bl}`);
+
+      await shot(page, "kn-tab-pinned-off");
+
+      /* Back on, and the sentence goes with it. */
+      await off.locator(".kn-switch").click();
+      await page.locator(".kn-pack").filter({ hasText: pinnedPack.title }).first()
+        .locator(".kn-switch[aria-checked='true']").waitFor({ timeout: 8000 });
+      ok(await page.locator(".kn-pack").filter({ hasText: pinnedPack.title }).first().locator(".kn-pack-pin-warn").count() === 0,
+        "K8 switching it back on clears the warning");
+      ok(env.errors.length === 0, `K8 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
   /* ---------- K6/K7 both themes, computed colours, the version line ---------- */
   for (const theme of ["light", "dark"]) {
     console.log(`K6/K7 ${theme}`);
@@ -368,7 +481,19 @@ try {
       const ink = await page.locator(".kn-switch.is-on").first().evaluate((el) => getComputedStyle(el).color);
       ok(theme === "light" ? ink === "rgb(255, 255, 255)" : ink === "rgb(42, 22, 2)", `K6 ${theme} the switch ink is legible on its fill, got ${ink}`);
 
-      await assertNoRailsOrTints(page, `K6 ${theme}`, ".kn-tab .card, .kn-tab .kn-switch, .kn-tab .kn-state, .kn-tab .kn-pack-fact, .kn-tab .kn-pack-purpose, .kn-tab .kn-prov-line");
+      await assertNoRailsOrTints(page, `K6 ${theme}`, ".kn-tab .card, .kn-tab .kn-switch, .kn-tab .kn-state, .kn-tab .kn-pack-fact, .kn-tab .kn-pack-purpose, .kn-tab .kn-prov-line, .kn-tab .kn-pack-pin-note, .kn-tab .kn-pack-pin-warn");
+
+      /* F-956 - the seeded-OFF pack is a pinned one, so both themes photograph the red
+         consequence sentence as well as the off card. Dark takes the one-shade-lighter red;
+         the ink stays white in both. */
+      if ((KNOWLEDGE_PACKS[0].pinned || []).length > 0) {
+        const warn = off.locator(".kn-pack-pin-warn");
+        ok(await warn.count() === 1, `F-956 ${theme} the off pinned pack names what it costs`);
+        const bg = await warn.evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(bg === (theme === "light" ? "rgb(220, 38, 38)" : "rgb(239, 68, 68)"), `F-956 ${theme} the warning is solid red, got ${bg}`);
+        const ink = await warn.evaluate((el) => getComputedStyle(el).color);
+        ok(ink === "rgb(255, 255, 255)", `F-956 ${theme} white ink on the warning, got ${ink}`);
+      }
 
       const version = await page.locator(".kn-version-line").innerText();
       ok(version.includes(KNOWLEDGE_VERSION), `K7 ${theme} the engine version is named, got "${version}"`);

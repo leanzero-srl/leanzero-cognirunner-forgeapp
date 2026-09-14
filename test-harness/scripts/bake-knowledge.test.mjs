@@ -485,6 +485,71 @@ const secLit = JSON.stringify(sections);
   ok(packs.every((p) => (p.purpose || "") === ((cfg.packs?.[p.id]?.purpose) || "")),
     "and each one is knowledge/sources.json's sentence verbatim - ONE home for the text");
 
+  /* F-956 - THE PURPOSE IS WRITTEN FOR AN ADMIN, NOT FOR THE BUILD.
+     The second cold walk found the voice-rules purpose reading "DATA tables consumed by
+     src/shared/voice-lint.js, not prose for the model" - accurate, and meaningless to the
+     person deciding whether to switch the pack off. A sentence naming a source file is the
+     tell, so the tell is what fails here: no path, no module name, no extension. The length
+     floor catches the other half of the same defect, a purpose that is a LABEL ("Queues,
+     sd.public.comment, agent visibility, audience.") rather than an explanation. */
+  {
+    const codey = packs.filter((p) => /src\/|\b\w+\.(js|mjs|json|jsx)\b|knowledge\//.test(p.purpose || ""));
+    ok(codey.length === 0, `F-956 no pack purpose names a file or a module (${codey.map((p) => p.id).join(",")})`);
+    const shortOnes = packs.filter((p) => (p.purpose || "").trim().length < 120);
+    ok(shortOnes.length === 0, `F-956 every purpose explains rather than labels (${shortOnes.map((p) => p.id).join(",")})`);
+    /* And it answers the admin's actual question: what happens if I turn this off. */
+    const noConsequence = packs.filter((p) => !/switch it off|without it|turn(ed)? off/i.test(p.purpose || ""));
+    ok(noConsequence.length === 0, `F-956 every purpose says what degrades when the pack is off (${noConsequence.map((p) => p.id).join(",")})`);
+  }
+
+  /* F-956 - EVERY SOURCE HAS A HUMAN NAME, AND EVERY BAKED SECTION CARRIES IT.
+     Two halves of one rule, asserted separately because they fail differently: the config
+     half catches a source added without a name (the bake refuses it, see below), and the
+     index half catches a bake that dropped the field on the way through. */
+  {
+    const unnamed = (cfg.sources || []).filter((s) => !s.sourceName || !String(s.sourceName).trim());
+    ok(unnamed.length === 0, `F-956 every source in sources.json has a sourceName (${unnamed.map((s) => s.id).join(",")})`);
+
+    const sections = idx.KNOWLEDGE_INDEX || [];
+    const byId = new Map((cfg.sources || []).map((s) => [s.id, s.sourceName]));
+    const missing = sections.filter((s) => !((s.provenance || {}).sourceName));
+    ok(sections.length > 0 && missing.length === 0,
+      `F-956 every baked section carries its source NAME (${missing.length} of ${sections.length} without)`);
+    const wrong = sections.filter((s) => byId.has((s.provenance || {}).source)
+      && s.provenance.sourceName !== byId.get(s.provenance.source));
+    ok(wrong.length === 0, `F-956 and it is the name sources.json gives that source, verbatim (${wrong.length} mismatched)`);
+    /* The licence no longer repeats the source: the NAME carries the attribution now, so a
+       parenthetical slug beside it would be the duplication the finding removed. */
+    const slugged = sections.filter((s) => /leanzero-forge-skills/i.test((s.provenance || {}).licence || ""));
+    ok(slugged.length === 0, `F-956 the licence no longer repeats the source slug (${slugged.length} sections)`);
+  }
+
+  /* ...and the REFUSAL, on the exit code. A source with no name must stop the bake rather
+     than default to its id, because defaulting puts the slug silently back on an admin's
+     screen - the exact defect, wearing a fallback's clothes. Asserted on the message,
+     since the bake dies of many things and a green "non-zero" proves nothing. */
+  {
+    const corpusPresent = fs.existsSync(path.join(repoRoot, "knowledge/raw"))
+      && fs.existsSync(path.join(repoRoot, "knowledge/denylist.local"));
+    if (corpusPresent) {
+      const originalSources = fs.readFileSync(sourcesPath, "utf8");
+      try {
+        const broken = JSON.parse(originalSources);
+        delete broken.sources[0].sourceName;
+        fs.writeFileSync(sourcesPath, JSON.stringify(broken, null, 2));
+        const r = spawnSync(process.execPath, [bakePath, "--check"], { encoding: "utf8", cwd: repoRoot });
+        ok(r.status !== 0, `F-956 a source with no sourceName REFUSES the bake (exit ${r.status})`);
+        ok(/sourceName/.test(`${r.stdout}${r.stderr}`), "F-956 and the refusal names the missing field");
+      } finally {
+        fs.writeFileSync(sourcesPath, originalSources);
+      }
+      const back = spawnSync(process.execPath, [bakePath, "--check"], { encoding: "utf8", cwd: repoRoot });
+      ok(back.status === 0, `F-956 sources.json is restored byte for byte (exit ${back.status})`);
+    } else {
+      console.log("  (skipped the F-956 sourceName refusal arm: knowledge/raw or denylist.local absent)");
+    }
+  }
+
   /* THE CLOCK IS NOT HASHED. Asserted on the function, not on the file: feed
      indexMetaFingerprint the same packs with and without a bakedAt-shaped extra field and
      the fingerprint must not move - it hashes ids, pins and audiences and nothing else. */

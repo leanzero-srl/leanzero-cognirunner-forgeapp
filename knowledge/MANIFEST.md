@@ -39,30 +39,30 @@ an audience's byte budget between them — the rest always answers the request.
 
 | source | tier | document | licence | lines removed | spans rewritten |
 |---|---|---|---|---:|---:|
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/01-core-concepts.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/25-workflow-modules-deep-dive.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/26-async-events-and-queues.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 3 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 1 | 0 |
-| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 1 |
-| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/12-permissions-scopes.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 2 |
-| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/14-macros-and-section-sealing.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/28-adf-and-storage-format.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/31-points-rate-limiting.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 4 | 0 |
-| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 14 | 0 |
-| forge-security-review | A | `~/Projects/skill-jira-forge/forge-security-review/docs/gotchas.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 4 | 0 |
-| forge-security-review | A | `~/Projects/skill-jira-forge/forge-security-review/docs/03-beyond-scanners.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 2 | 0 |
-| forge-security-review | A | `~/Projects/skill-jira-forge/forge-security-review/SKILL.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 4 | 0 |
-| jira-api | A | `~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| jira-api | A | `~/Projects/skill-jira-forge/jira-api-skill/docs/gotchas.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| confluence-api | A | `~/Projects/skill-jira-forge/confluence-api-skill/docs/problem-patterns.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 0 | 0 |
-| confluence-api | A | `~/Projects/skill-jira-forge/confluence-api-skill/docs/gotchas.md` | Apache-2.0 (leanzero-forge-skills, NOTICE retained) | 1 | 0 |
-| cognirunner-gotchas | B | `~/Projects/CogniRunner/.claude/skills/cognirunner-development/references/GOTCHAS.md` | ours (CogniRunner development skill) | 5 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/01-core-concepts.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/16-resolver-patterns.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/24-production-patterns.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/25-workflow-modules-deep-dive.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/26-async-events-and-queues.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/27-faas-limits-and-cost.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/31-forge-ai-and-llm.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/19-rate-limit-handling.md` | Apache-2.0 (NOTICE retained) | 3 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/gotchas.md` | Apache-2.0 (NOTICE retained) | 1 | 0 |
+| jira-forge | A | `~/Projects/skill-jira-forge/atlassian-jira-forge-skill/docs/22-jira-service-management.md` | Apache-2.0 (NOTICE retained) | 0 | 1 |
+| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/01-core-concepts.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/12-permissions-scopes.md` | Apache-2.0 (NOTICE retained) | 0 | 2 |
+| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/14-macros-and-section-sealing.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/28-adf-and-storage-format.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/31-points-rate-limiting.md` | Apache-2.0 (NOTICE retained) | 4 | 0 |
+| confluence-forge | A | `~/Projects/skill-jira-forge/atlassian-confluence-forge-skill/docs/24-production-patterns.md` | Apache-2.0 (NOTICE retained) | 14 | 0 |
+| forge-security-review | A | `~/Projects/skill-jira-forge/forge-security-review/docs/gotchas.md` | Apache-2.0 (NOTICE retained) | 4 | 0 |
+| forge-security-review | A | `~/Projects/skill-jira-forge/forge-security-review/docs/03-beyond-scanners.md` | Apache-2.0 (NOTICE retained) | 2 | 0 |
+| forge-security-review | A | `~/Projects/skill-jira-forge/forge-security-review/SKILL.md` | Apache-2.0 (NOTICE retained) | 4 | 0 |
+| jira-api | A | `~/Projects/skill-jira-forge/jira-api-skill/docs/problem-patterns.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| jira-api | A | `~/Projects/skill-jira-forge/jira-api-skill/docs/gotchas.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| confluence-api | A | `~/Projects/skill-jira-forge/confluence-api-skill/docs/problem-patterns.md` | Apache-2.0 (NOTICE retained) | 0 | 0 |
+| confluence-api | A | `~/Projects/skill-jira-forge/confluence-api-skill/docs/gotchas.md` | Apache-2.0 (NOTICE retained) | 1 | 0 |
+| cognirunner-gotchas | B | `~/Projects/CogniRunner/.claude/skills/cognirunner-development/references/GOTCHAS.md` | ours | 5 | 0 |
 | platform-fact-memories | C | `knowledge/authored/forge-platform-facts.md` | ours (re-authored) | — | — |
 | administrator-practice | D | `knowledge/authored/administrator-practice.md` | ours (re-authored) | — | — |
 | voice-rules | D | `knowledge/authored/voice-rules.md` | ours (re-authored) | — | — |

@@ -3866,6 +3866,34 @@ const injectStyles = () => {
        every surface in the app reads. The --text-secondary token clears 4.5:1 in both
        themes and is still visibly secondary. */
     .code-tab .empty-state { color: var(--text-secondary); }
+
+    /* ======================================================================
+       F-956 - THE PINNED-SECTION SENTENCES on the Knowledge tab. Appended at the
+       foot for the same reason the F-914 block is: several surgeons grow this
+       string at once and a block that only ever grows at the end cannot collide.
+
+       .kn-pack-pin-note is the explanation of the chip: plain secondary text, no
+       fill, no new hue, so nothing is owed in dark.
+
+       .kn-pack-pin-warn is the consequence of switching a PINNED pack off. Solid
+       #dc2626 with white text at 700, the same red the transport-fault card uses,
+       one shade lighter (#ef4444) in dark. It is a SENTENCE, not a rail and not a
+       tint: full-width solid fill, no border-left, alpha 1. And it is purely
+       informational - the switch above it stays live, which is the owner's rule.
+       ====================================================================== */
+    .kn-pack-pin-note { display: block; max-width: 84ch; font-size: 11.5px; line-height: 1.5; color: var(--text-secondary); }
+    .kn-pack-pin-warn {
+      display: block;
+      max-width: 84ch;
+      background: #dc2626;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.45;
+      padding: 7px 10px;
+      border-radius: 6px;
+    }
+    html[data-color-mode="dark"] .kn-pack-pin-warn { background: #ef4444; color: #fff; }
 `;
   document.head.appendChild(style);
 };

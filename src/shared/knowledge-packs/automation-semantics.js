@@ -42,6 +42,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "path": "knowledge/authored/automation-semantics.md",
       "hash": "ad709467d2e3b15b",
       "licence": "ours (re-authored)"
@@ -73,6 +74,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "path": "knowledge/authored/automation-semantics.md",
       "hash": "ad709467d2e3b15b",
       "licence": "ours (re-authored)"
@@ -108,6 +110,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "path": "knowledge/authored/automation-semantics.md",
       "hash": "ad709467d2e3b15b",
       "licence": "ours (re-authored)"
@@ -136,6 +139,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "path": "knowledge/authored/automation-semantics.md",
       "hash": "ad709467d2e3b15b",
       "licence": "ours (re-authored)"

@@ -17,6 +17,17 @@
     "Licences: tier A is Apache-2.0 with a NOTICE (leanzero-forge-skills); tier B and",
     "the authored replacements are ours.",
     "",
+    "F-956: `sourceName` and `purpose` are the two strings an ADMIN reads, and both are",
+    "authored HERE and nowhere else. `sourceName` is the human name of a source ('LeanZero",
+    "Forge Skills'), which is what the Knowledge tab prints; the source `id` is a slug that",
+    "means nothing to a reader, so it survives only in a title attribute. Because the name",
+    "now carries the attribution, the tier A licence dropped its redundant '(leanzero-forge-",
+    "skills, ...)' parenthetical and keeps only the NOTICE clause, which is the part that is",
+    "a licence condition rather than a label. `purpose` is written for the admin deciding",
+    "whether to switch a pack OFF: what it teaches, which surfaces read it, and what degrades",
+    "without it. No file paths and no code identifiers: a purpose that names a module is the",
+    "build talking to itself, and test-harness/scripts/bake-knowledge.test.mjs fails on one.",
+    "",
     "AUDIENCES are the only thing in this file that decides what a SURFACE can see, and",
     "they are the easiest thing to under-declare, because nothing fails when a surface is",
     "offered nothing — its field guide simply comes back short (F-539: `fix` was declared",
@@ -47,50 +58,50 @@
   "packs": {
     "forge-app-builder": {
       "title": "Forge app builder",
-      "purpose": "What the Coder needs to produce a Forge app that deploys: modules, manifest shape, resolver and Custom UI patterns, production patterns, FaaS limits and cost, async events, Forge LLM, the security golden rules.",
+      "purpose": "Teaches the models how a Forge app is actually shaped: modules and manifests, resolvers and their Custom UI, async queues, the platform's limits and cost, and the security rules an app has to pass before it ships. The Coder, code generation, validators and AI review read it. Switch it off and generated apps start guessing at structure the platform will reject.",
       "pinned": ["forge-app-builder#core-forge-concepts"],
       "pinnedFor": ["coder"]
     },
     "forge-platform-facts": {
       "title": "Forge platform facts",
-      "purpose": "The reconciled traps: what the platform actually does, as opposed to what the docs imply. Rate limits, quotas, the gotchas.",
+      "purpose": "The reconciled traps: what the Atlassian platform really does, as opposed to what its documentation implies, including rate limits, quotas and the failures that only appear under real load. The Coder, code generation, AI fix, listener and job agents, Virtual Administrators, validators and AI review all read it. Switch it off and the models stop anticipating the limits that break a rule at runtime.",
       "pinned": []
     },
     "cognirunner-sandbox-traps": {
       "title": "CogniRunner sandbox traps",
-      "purpose": "The traps this app has paid for, re-keyed to the sandbox API. Pinned for codegen and fix, because these are the mistakes the model makes unprompted.",
+      "purpose": "The mistakes this product has already paid for, re-keyed to the automation sandbox your rules run inside. Code generation and AI fix are sent its core on every turn, and the Coder and AI review read the rest. Switch it off and generated steps start repeating traps that were fixed long ago.",
       "pinned": ["cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt"],
       "pinnedFor": ["codegen", "fix"]
     },
     "jira-rest-correctness": {
       "title": "Jira REST correctness",
-      "purpose": "Problem patterns and gotchas for the Jira Cloud REST API.",
+      "purpose": "How the Jira API behaves when it is asked to do real work: the recurring problem patterns, the error shapes, and the calls that look correct and are not. Code generation, AI fix, listener and job agents, Virtual Administrators and validators read it. Switch it off and the models write Jira calls that fail on the first real issue.",
       "pinned": []
     },
     "confluence-rest-correctness": {
       "title": "Confluence REST correctness",
-      "purpose": "Confluence modules, auth, macros, ADF and storage format, points-based rate limiting.",
+      "purpose": "How Confluence is built and addressed: its modules, permissions and scopes, macros, page bodies in both formats, and the points-based rate limiting that throttles bulk work. The Coder, code generation, AI fix, listener and job agents, Virtual Administrators and AI review read it. Switch it off and anything writing to Confluence gets the page format and the throttling wrong.",
       "pinned": []
     },
     "jsm-correctness": {
       "title": "Jira Service Management correctness",
-      "purpose": "Queues, sd.public.comment, agent visibility, audience.",
+      "purpose": "How Jira Service Management differs from an ordinary project: queues, request types, agent-only versus customer-visible comments, and who is allowed to see what. Listener and job agents, Virtual Administrators, code generation, AI fix and validators read it. Switch it off and the models risk posting an internal note where a customer can read it.",
       "pinned": []
     },
     "automation-semantics": {
       "title": "Automation semantics",
-      "purpose": "Smart values, loops, and what Jira Automation can and cannot be driven to do over REST.",
+      "purpose": "What Jira Automation can and cannot be driven to do, including smart values, branch loops, and the limits that bite on large rules. The Coder, code generation, listener and job agents, Virtual Administrators, validators and AI review read it. Switch it off and advice about automation drifts into things Jira will not actually do.",
       "pinned": []
     },
     "administrator-practice": {
       "title": "Administrator practice",
-      "purpose": "The confidence ladder, proven negatives, speaking vs changing, blast radius, the effects ledger, guard discipline, unattended operation, burstiness. Pinned for every Virtual Administrator turn.",
+      "purpose": "How a careful Jira administrator works: proving a negative before acting on it, judging the blast radius of a change, keeping a record of effects, and knowing when to speak rather than change something. Every Virtual Administrator turn is sent its core, and the Coder, code generation, listener and job agents and AI review read the rest. Switch it off and Virtual Administrators lose the judgement that holds them back from unrequested changes.",
       "pinned": ["administrator-practice#administrator-practice"],
       "pinnedFor": ["va"]
     },
     "voice-rules": {
       "title": "Voice rules",
-      "purpose": "DATA tables consumed by src/shared/voice-lint.js, not prose for the model.",
+      "purpose": "The house rules for how written output should read: the phrasings that are blocked outright, the ones that only earn a warning, and the hedges and stock openers that give AI text away. It feeds the wording checks applied to drafted comments and documents. Switch it off and drafted text stops being measured against the house voice.",
       "pinned": []
     }
   },
@@ -98,10 +109,11 @@
   "sources": [
     {
       "id": "jira-forge",
+      "sourceName": "LeanZero Forge Skills",
       "tier": "A",
       "root": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill",
       "raw": "tier-a/jira-forge",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "licence": "Apache-2.0 (NOTICE retained)",
       "sync": "local",
       "scrub": {
         "$comment": "The last four entries were PROVED necessary by the first real bake: the leak scanner found four provenance lines naming the internal apps and client engagements the docs were observed on (plan §3.15 predicted 12). They are deleted rather than rewritten because a provenance line carries no field-guide value at all.",
@@ -133,10 +145,11 @@
     },
     {
       "id": "confluence-forge",
+      "sourceName": "LeanZero Forge Skills",
       "tier": "A",
       "root": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill",
       "raw": "tier-a/confluence-forge",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "licence": "Apache-2.0 (NOTICE retained)",
       "sync": "local",
       "scrub": {
         "deleteLinesMatching": ["(?i)license leash", "(?i)axpo"],
@@ -153,10 +166,11 @@
     },
     {
       "id": "forge-security-review",
+      "sourceName": "LeanZero Forge Skills",
       "tier": "A",
       "root": "~/Projects/skill-jira-forge/forge-security-review",
       "raw": "tier-a/forge-security-review",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "licence": "Apache-2.0 (NOTICE retained)",
       "sync": "local",
       "scrub": {
         "$comment": "SKILL.md line 16 names a client, a ticket id and a person. The named-line deletion is the reason this scrub block exists at all, and the leak scanner is the proof it worked.",
@@ -176,10 +190,11 @@
     },
     {
       "id": "jira-api",
+      "sourceName": "LeanZero Forge Skills",
       "tier": "A",
       "root": "~/Projects/skill-jira-forge/jira-api-skill",
       "raw": "tier-a/jira-api",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "licence": "Apache-2.0 (NOTICE retained)",
       "sync": "local",
       "scrub": {
         "replace": [["[a-z0-9-]+\\.atlassian\\.net", "your-domain.atlassian.net"]]
@@ -191,10 +206,11 @@
     },
     {
       "id": "confluence-api",
+      "sourceName": "LeanZero Forge Skills",
       "tier": "A",
       "root": "~/Projects/skill-jira-forge/confluence-api-skill",
       "raw": "tier-a/confluence-api",
-      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "licence": "Apache-2.0 (NOTICE retained)",
       "sync": "local",
       "scrub": {
         "deleteLinesMatching": ["(?i)license leash", "(?i)axpo", "(?i)^source:"],
@@ -207,10 +223,11 @@
     },
     {
       "id": "cognirunner-gotchas",
+      "sourceName": "CogniRunner development notes",
       "tier": "B",
       "root": "~/Projects/CogniRunner/.claude/skills/cognirunner-development/references",
       "raw": "tier-b/cognirunner",
-      "licence": "ours (CogniRunner development skill)",
+      "licence": "ours",
       "sync": "local",
       "scrub": {
         "$comment": "The harness bed and its shared secret are ours, but they are operational detail that means nothing to a model generating a post-function — and HARNESS_SECRET is a secret-shaped word the scanner would rightly flag.",
@@ -223,6 +240,7 @@
 
     {
       "id": "platform-fact-memories",
+      "sourceName": "LeanZero platform notes",
       "tier": "C",
       "reauthor": true,
       "pack": "forge-platform-facts",
@@ -255,6 +273,7 @@
     },
     {
       "id": "administrator-practice",
+      "sourceName": "LeanZero administrator notes",
       "tier": "D",
       "reauthor": true,
       "pack": "administrator-practice",
@@ -273,6 +292,7 @@
     },
     {
       "id": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "tier": "D",
       "reauthor": true,
       "pack": "voice-rules",
@@ -287,6 +307,7 @@
     },
     {
       "id": "automation-semantics",
+      "sourceName": "LeanZero automation notes",
       "tier": "E",
       "reauthor": true,
       "pack": "automation-semantics",

@@ -39,6 +39,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -62,6 +63,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -87,6 +89,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -111,6 +114,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -136,6 +140,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -160,6 +165,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -183,6 +189,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -207,6 +214,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"
@@ -232,6 +240,7 @@ export const SECTIONS = [
     ],
     "provenance": {
       "source": "voice-rules",
+      "sourceName": "LeanZero voice rules",
       "path": "knowledge/authored/voice-rules.md",
       "hash": "a8baf7ec6b97a0bf",
       "licence": "ours (re-authored)"

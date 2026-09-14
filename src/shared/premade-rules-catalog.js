@@ -302,7 +302,12 @@ export const PREMADE_VALIDATORS = [
   {
     key: "confluence-page-exists",
     label: "Confluence: a page for this issue exists",
-    help: "Block unless a Confluence page in the space you pick matches the query you write, searched LIVE on every transition. In Semantic mode the top 3 matching pages are read and the AI judges them against your prompt. If Confluence cannot be reached the transition is ALLOWED (turn Strict on to block instead); a rule with no space or no query BLOCKS either way, because a check that cannot say what it is checking must not read as a pass.",
+    /* F-958 - the fail-open/Strict half of this sentence used to live here TOO, and the
+       form then said the same thing three times on one screen (this paragraph, the Strict
+       paragraph, the footer). The Strict paragraph is the one that stays: it is beside the
+       checkbox that flips the behaviour and it states both columns. This one says only
+       what the rule CHECKS. */
+    help: "Block unless a Confluence page in the space you pick matches the query you write, searched LIVE on every transition. In Semantic mode the top 3 matching pages are read and the AI judges them against your prompt.",
     category: "Confluence",
     network: true,
     requiresProduct: "confluence",

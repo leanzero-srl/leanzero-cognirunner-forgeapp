@@ -26,7 +26,7 @@
  *   onChange  (config, valid) => void — config is { ruleType, ...params }.
  */
 import React, { useState, useEffect, useRef } from "react";
-import { invoke } from "@forge/bridge";
+import { invoke, router, view } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import {
   getCatalog, findRule, COMPARE_OPS, EXPRESSION_BACKED_CONDITIONS, CONDITION_NOT_EXPRESSIBLE_REASON,
@@ -43,6 +43,7 @@ import {
   CONFLUENCE_DEFAULT_TITLE_TEMPLATE, renderTextTemplate, renderCqlTemplate,
   CONFLUENCE_NOT_INSTALLED, CONFLUENCE_INSTALL_REMEDY,
 } from "../../../../src/shared/confluence-rules.js";
+import { manageAppsUrl } from "../../../../src/shared/manage-apps.js";
 import { redosRisk } from "../../../../src/shared/regex-safety.js";
 import { gitProviderKindMeta, normalizeRepoId } from "../../../../src/shared/git-ids.js";
 import { isPermissionRefusal } from "./refusal";
@@ -144,6 +145,38 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   const [buildExplanation, setBuildExplanation] = useState("");
   const [buildReason, setBuildReason] = useState("");
   const [buildUnresolved, setBuildUnresolved] = useState([]);
+  /* F-958 - the builder sits COLLAPSED at the top of the form, and the required CQL box
+     sits far below it, so a designer who does not write CQL met a required field with no
+     way forward. `brBodyRef`/`brInputRef` give the "Describe the page instead" button
+     beside that field a real destination: it opens the builder, scrolls it into view and
+     puts the caret in the textarea, which is the same thing the reader would have had to
+     find by hand. */
+  const brBodyRef = useRef(null);
+  const brInputRef = useRef(null);
+  const [brFocusPending, setBrFocusPending] = useState(false);
+  const openBuilderForCql = () => { setBrOpen(true); setBrFocusPending(true); };
+  /* The scroll and the focus happen AFTER the body exists, which is why they are an
+     effect and not the click handler: the textarea is mounted by the state change the
+     click makes, so a handler that reaches for it finds null. */
+  useEffect(() => {
+    if (!brFocusPending || !brOpen) return;
+    if (brBodyRef.current && brBodyRef.current.scrollIntoView) {
+      brBodyRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    if (brInputRef.current && brInputRef.current.focus) brInputRef.current.focus();
+    setBrFocusPending(false);
+  }, [brFocusPending, brOpen]);
+
+  /* The site origin, for the Manage apps link on the not-installed card. No origin means
+     no link and the prose stands alone - it never renders a dead href. */
+  const [siteUrl, setSiteUrl] = useState("");
+  useEffect(() => {
+    let live = true;
+    Promise.resolve(view.getContext())
+      .then((ctx) => { if (live && ctx && ctx.siteUrl) setSiteUrl(String(ctx.siteUrl)); })
+      .catch(() => { /* no origin, no link */ });
+    return () => { live = false; };
+  }, []);
 
   // Fetch REST-backed picker lists once (issue types / statuses / resolutions / link types / priorities).
   // A fetch failure is kept distinct from a genuinely-empty list so the picker can offer Retry
@@ -588,9 +621,10 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
           <span className="br-toggle-hint">let AI pick the rule for you</span>
         </button>
         {brOpen && (
-          <div className="br-body">
+          <div className="br-body" ref={brBodyRef}>
             <textarea
               className="br-input"
+              ref={brInputRef}
               value={nlText}
               onChange={(e) => setNlText(e.target.value)}
               placeholder="Describe the rule in plain English, e.g. “require the Rollback Plan field to be filled in”…"
@@ -1102,6 +1136,21 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
                     <span className="pr-conf-missing-text">
                       {CONFLUENCE_INSTALL_REMEDY} This rule cannot be saved until a space can be picked.
                     </span>
+                    {/* F-958 - "Apps, Manage apps" was prose only, so the reader had to go
+                        hunting for a page this app knows the address of. Site-relative
+                        path from src/shared/manage-apps.js, new tab, and only when the
+                        context gave us an origin. */}
+                    {manageAppsUrl(siteUrl) && (
+                      <a
+                        className="pr-conf-missing-link"
+                        href={manageAppsUrl(siteUrl)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => { e.preventDefault(); router.open(manageAppsUrl(siteUrl)); }}
+                      >
+                        Open Manage apps
+                      </a>
+                    )}
                   </div>
                 )}
                 {listsError && (
@@ -1137,7 +1186,19 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
 
             {confluenceSubEnabled(p, "cqlTemplate") && (
               <div className="form-group">
-                <label className="label">Which page to look for <span className="required">*</span></label>
+                {/* F-958 - the route OUT of CQL, on the field that demands it. The
+                    builder writes this template from a plain-English description, and
+                    until now nothing on this required field said so. Solid indigo button,
+                    white text, no rail and no tint. Only on the halves that actually draw
+                    the builder (it is not rendered for post-functions). */}
+                <div className="pr-conf-cql-head">
+                  <label className="label">Which page to look for <span className="required">*</span></label>
+                  {mode !== "postfunction" && (
+                    <button type="button" className="pr-describe-btn" onClick={openBuilderForCql}>
+                      Describe the page instead
+                    </button>
+                  )}
+                </div>
                 <textarea
                   className="input pr-conf-tpl"
                   rows={3}
@@ -1297,7 +1358,14 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
             || "This runs AFTER the transition, so it never blocks anyone."
           : mode === "condition"
           ? "If the rule isn't met, the transition is hidden (no message). If the check can't run, the transition is shown (it never silently hides one). No AI is used."
-          : (hasGitGroup(p) || hasConfluenceGroup(p)) && strict
+          // F-958 - the CONFLUENCE group carries its own Strict paragraph, beside the
+          // checkbox, stating BOTH columns of the degradation table. Repeating the same
+          // fail-open/fail-closed sentence down here made one screen say the rule's
+          // behaviour three times over. The footer keeps only what the Strict paragraph
+          // does not say: what happens on a plain fail, and the AI cost of Semantic mode.
+          : hasConfluenceGroup(p)
+          ? `If the rule isn't met, the transition is blocked and your message is shown.${confMode === "semantic" ? " Semantic mode uses one AI call per transition." : " No AI is used."}`
+          : hasGitGroup(p) && strict
           // Strict is the admin opting OUT of the app-wide fail-OPEN contract for this one
           // rule, so the footer must stop promising the opposite (it is the sentence a
           // reader trusts when the gate starts refusing during an outage).

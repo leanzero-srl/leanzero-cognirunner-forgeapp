@@ -6778,6 +6778,29 @@ const injectCopiedComponentStyles = () => {
     .gen-meta-chip.gmc-recipe { background: #4f46e5; color: #fff; }
     html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #6366f1; }
 
+    /* ── F-958 — THE ROUTE OUT OF CQL, AND THE LINK THE BANNER OWED ─────────────────
+       "Describe the page instead" sits on the required CQL field's own label row and
+       opens the description builder that writes the template. It is a real button, solid
+       indigo with white text, because it is an ACTION and the reader had none here.
+       The Manage apps link on the not-installed card is white-on-slate inside a solid
+       card, underlined so it reads as a link rather than more prose. No rail, no tint.
+       Dark: indigo one shade lighter (#6366f1), matching the hue map. */
+    .pr-conf-cql-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .pr-conf-cql-head .label { margin-bottom: 0; }
+    .pr-describe-btn {
+      display: inline-flex; align-items: center; padding: 4px 10px;
+      font-size: 11.5px; font-weight: 700; color: #fff; background: #4f46e5;
+      border: none; border-radius: var(--r-sm, 6px); cursor: pointer;
+    }
+    .pr-describe-btn:hover { opacity: 0.9; }
+    html[data-color-mode="dark"] .pr-describe-btn { background: #6366f1; }
+    .pr-conf-missing-link {
+      align-self: flex-start; margin-top: 5px; font-size: 12px; font-weight: 700;
+      color: #fff; text-decoration: underline; cursor: pointer;
+    }
+    .pr-conf-missing-link:hover { color: #fff; opacity: 0.9; }
+    html[data-color-mode="dark"] .pr-conf-missing-link { color: #fff; }
+
 
   `;
   document.head.appendChild(style);

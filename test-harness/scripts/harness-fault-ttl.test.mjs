@@ -1762,13 +1762,80 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       && fault.plantResumeMode("writes-failed", false) === "start-index"
       && fault.plantResumeMode(null, true) === null,
       "F-724: `plantResumeMode` is the ONE mapping from a stop reason to how it is resumed");
-    ok(fault.PLANT_REPOST_REASONS.length === 1 && fault.PLANT_REPOST_REASONS[0] === "clearing",
-      "F-724: …and `clearing` is the only re-POST answer the plant has");
+    ok(fault.PLANT_REPOST_REASONS.includes("clearing") && !fault.PLANT_REPOST_REASONS.includes("budget")
+      && !fault.PLANT_REPOST_REASONS.includes("call-max") && !fault.PLANT_REPOST_REASONS.includes("writes-failed"),
+      "F-724: …and the re-POST answers are exactly the clear's, never a resumable truncation");
     ok(fault.HARNESS_UNGATED_EXPORTS.includes("plantResumeMode")
       && fault.HARNESS_UNGATED_EXPORTS.includes("PLANT_REPOST_REASONS"),
       "F-724: …both on the UNGATED census, because neither reaches storage");
-    ok((faultCode.match(/resume: plantResumeMode\(/g) || []).length === 3,
+    ok((faultCode.match(/resume: plantResumeMode\(/g) || []).length === 4,
       "F-724.SOURCE: every plant answer takes `resume` from the mapping — none of them hand-writes one");
+  }
+
+
+  /* ═════ 7k-quater. F-725 — A CLEAR THAT REFUSED DELETES IS NOT A CLEAN PLANT ═════
+   *
+   * `clearStalePlantedRows` returns `{cleared, failed, done}`, and the lever read `failed`
+   * ONLY on the `!done` path. A clear that landed at least one delete per batch therefore
+   * ended `done: true` WITH failures inside it, the lever planted over the top, and the answer
+   * said `complete: true` — while rows of the previous, LARGER population were still in the
+   * keyspace under an answer naming the new, smaller `n`. That is the exact shape the
+   * `armDeleteFault` lever produces (one refusal per batch, the rest land), and it is LAW 3:
+   * a failure reported as a success.
+   *
+   * Driven with the lever's own inputs. ── */
+  {
+    await purge();
+    const PLANT725 = fault.HARNESS_FAULT_PLANT_PREFIX;
+    const big = await fault.plantHarnessFaults({ n: 30, expired: false, maxMs: 20_000 });
+    ok(big.planted === 30 && (await countPrefix(PLANT725)) === 30,
+      `(fixture) a 30-row population to be shrunk (planted ${big.planted})`);
+
+    /* ── BLOCK: one refused delete, every other delete in its batch landing, so the clear
+     * reaches the end of the condemned set and still reports `done: true`. ── */
+    const armed = await fault.armDeleteFault({ prefix: PLANT725, mode: "refuse", count: 1, ttlSeconds: 60 });
+    ok(armed.count === 1, `(fixture) the delete lever armed for exactly one refusal (count ${armed.count})`);
+
+    const shrink = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 20_000 });
+    ok(shrink.truncated === true && shrink.reason === "clear-failed" && shrink.complete === false,
+      `F-725: a clear that refused a delete is NOT a complete plant — it says \`clear-failed\` (got ${JSON.stringify({ truncated: shrink.truncated, reason: shrink.reason, complete: shrink.complete })})`);
+    ok(shrink.planted === 0,
+      `F-725: …and it plants NOTHING over a keyspace it could not make into the one its \`n\` describes (planted ${shrink.planted})`);
+    ok(shrink.staleFailed === 1 && shrink.remainingStale === 1,
+      `F-725: …naming how many stale rows survived (staleFailed ${shrink.staleFailed}, remainingStale ${shrink.remainingStale})`);
+    ok(Array.isArray(shrink.staleFailedKeys) && shrink.staleFailedKeys.length === 1
+      && shrink.staleFailedKeys[0].startsWith(PLANT725)
+      && shrink.staleFailedKeys.length <= fault.CLEAR_FAILED_KEYS_REPORTED,
+      `F-725: …and WHICH, capped at CLEAR_FAILED_KEYS_REPORTED (got ${JSON.stringify(shrink.staleFailedKeys)})`);
+    ok((await countPrefix(PLANT725)) === 3,
+      `F-725: …and the store really does still hold the survivor the old answer called complete — two kept rows plus one stale (rows ${await countPrefix(PLANT725)})`);
+    ok(shrink.resume === "repost" && shrink.nextIndex === shrink.startIndex,
+      `F-725: …and it is re-POSTed identically, like \`clearing\` (resume ${JSON.stringify(shrink.resume)})`);
+
+    /* THE CONVERGENCE the `armDeleteFault` cap guarantees: the lever is count-bounded
+     * (DELETE_FAULT_DRAINABLE_MAX is DERIVED from the drain's spin limit), so the very next
+     * identical re-POST finds no units left and finishes the job. */
+    const retry = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 20_000 });
+    ok(retry.complete === true && retry.planted === 2 && retry.resume === null,
+      `F-725: the identical re-POST converges once the armed lever is spent (got ${JSON.stringify({ complete: retry.complete, planted: retry.planted })})`);
+    ok((await countPrefix(PLANT725)) === 2,
+      `F-725: …with the keyspace finally holding exactly the population the answer names (rows ${await countPrefix(PLANT725)})`);
+
+    /* ── ALLOW: the identical shrink with NOTHING armed. If this also said `clear-failed` the
+     * block above would be measuring the clear and not the failure. ── */
+    await purge();
+    await fault.plantHarnessFaults({ n: 30, expired: false, maxMs: 20_000 });
+    const clean = await fault.plantHarnessFaults({ n: 2, expired: false, maxMs: 20_000 });
+    ok(clean.reason === null && clean.complete === true && clean.planted === 2
+      && clean.cleared === 28 && clean.staleFailed === undefined,
+      `F-725 (negative control): with no delete fault armed the SAME shrink is the unchanged happy path (got ${JSON.stringify({ reason: clean.reason, complete: clean.complete, cleared: clean.cleared })})`);
+    ok((await countPrefix(PLANT725)) === 2, "F-725 (negative control): …and the old tail really is gone");
+    await purge();
+
+    ok(/if \(stale\.failed > 0\) \{/.test(faultCode),
+      "F-725.SOURCE: `failed` is judged on the FINISHED path too, not only on `!done`");
+    ok(fault.PLANT_REPOST_REASONS.includes("clear-failed"),
+      "F-725: `clear-failed` is in the re-POST vocabulary's one home, beside `clearing`");
   }
 
 

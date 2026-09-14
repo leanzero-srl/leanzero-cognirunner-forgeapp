@@ -336,6 +336,7 @@ export const HARNESS_UNGATED_EXPORTS = Object.freeze([
   "plantStartRefusal",
   "PLANT_REPOST_REASONS",
   "plantResumeMode",
+  "CLEAR_FAILED_KEYS_REPORTED",
   "plantMaxForCall",
   "plantTtlSeconds",
   "plantedFaultKey",
@@ -1487,6 +1488,9 @@ const plantedRowIndex = (key) => {
  * the call plants nothing and asks to be re-POSTed, and the rows it did remove are gone for
  * good, so an identical retry strictly converges.
  */
+/** How many surviving stale keys a `clear-failed` answer names (F-725). A diagnostic, not an inventory. */
+export const CLEAR_FAILED_KEYS_REPORTED = 10;
+
 const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
   const doomed = [];
   let cursor = null;
@@ -1511,19 +1515,30 @@ const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
   const condemned = doomed.length;
   const deleteFault = await loadDeleteFault();
   let cleared = 0, failed = 0;
+  /* F-725 — THE SURVIVORS ARE NAMED, CHEAPLY. They are already in hand (the batch is right
+   * there and the outcome is per-key), and a caller told "some stale rows are still there"
+   * with no idea WHICH has nothing to go and look at. Capped, because this is a diagnostic
+   * on an answer and not an inventory. */
+  const failedKeys = [];
   for (let i = 0; i < doomed.length; i += KVS_DELETE_BATCH) {
     if (i > 0) {
-      if (overBudget()) return { cleared, failed, done: false, condemned };
+      if (overBudget()) return { cleared, failed, done: false, condemned, failedKeys };
       await sweepPause(KVS_DELETE_PAUSE_MS);
     }
     const batch = doomed.slice(i, i + KVS_DELETE_BATCH);
     const settled = await settleDeletes(batch, deleteFault);
     let landed = 0;
-    for (const outcome of settled) { if (outcome.status === "fulfilled") { cleared++; landed++; } else failed++; }
+    for (let k = 0; k < settled.length; k++) {
+      if (settled[k].status === "fulfilled") { cleared++; landed++; }
+      else {
+        failed++;
+        if (failedKeys.length < CLEAR_FAILED_KEYS_REPORTED) failedKeys.push(batch[k]);
+      }
+    }
     // A batch in which nothing landed shrinks nothing (F-682's rule, same words): stop, say so.
-    if (landed === 0 && settled.length > 0) return { cleared, failed, done: false, condemned };
+    if (landed === 0 && settled.length > 0) return { cleared, failed, done: false, condemned, failedKeys };
   }
-  return { cleared, failed, done: true, condemned };
+  return { cleared, failed, done: true, condemned, failedKeys };
 };
 
 /*
@@ -1551,7 +1566,7 @@ const clearStalePlantedRows = async (firstStaleIndex, overBudget) => {
  * A consumer that cannot tell the two apart must treat `repost` as a stop; one that can
  * watches `remainingStale` fall and only calls it stuck when it does not.
  */
-export const PLANT_REPOST_REASONS = Object.freeze(["clearing"]);
+export const PLANT_REPOST_REASONS = Object.freeze(["clearing", "clear-failed"]);
 
 /** The ONE mapping from a plant's stop `reason` to how the caller resumes it. Pure. */
 export const plantResumeMode = (reason, complete) => {
@@ -1570,6 +1585,13 @@ export const plantResumeMode = (reason, complete) => {
  * = nothing to resume. Only `reason: "clearing"` is a `"repost"`, it is the one answer whose
  * `nextIndex` deliberately does NOT advance, and it carries `clearedSoFar` / `remainingStale`
  * so a caller can tell converging progress from a spin without an advancing index.
+ *
+ * F-725 — `reason: "clear-failed"` IS THE OTHER `"repost"`. A stale clear that REFUSED some
+ * deletes is never `complete`, even when it reached the end of the condemned set (it used to
+ * be, because `failed` was read only on the unfinished path): the keyspace still holds rows
+ * of the previous, larger population that this answer's `n` does not name. It reports
+ * `staleFailed` and up to `CLEAR_FAILED_KEYS_REPORTED` surviving keys, plants nothing, and
+ * asks to be re-POSTed — which re-condemns exactly what is left.
  *
  * F-708/F-723 — `startIndex` IS JUDGED AGAINST THE POPULATION, RAW, BEFORE IT IS CLAMPED
  * (`plantStartRefusal`). Past it is a REFUSAL (`bad-start`),
@@ -1679,6 +1701,34 @@ export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex
         clearedSoFar: cleared, remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
         truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
         resume: plantResumeMode(tail.reason, tail.complete),
+      };
+    }
+    /* F-725 — A CLEAR THAT REFUSED DELETES IS NOT A CLEAN PLANT, HOWEVER IT ENDED.
+     *
+     * `stale.failed` was read ONLY on the `!stale.done` path, so a clear that landed at least
+     * one delete per batch — the exact shape the `armDeleteFault` lever produces, one refusal
+     * a batch — ended `done: true` with failures inside it, the lever planted over the top,
+     * and the answer said `complete: true`. Stale rows from the previous, LARGER population
+     * were still in the keyspace under an answer naming the new smaller `n`, so the sweep test
+     * that followed counted rows nobody planted and blamed the sweep. LAW 3: a failure that is
+     * reported as a success is worse than the failure.
+     *
+     * So `failed > 0` stops the call, whatever `done` said. Nothing is planted (the keyspace
+     * is not the one the answer would describe), the survivors are named, and it is a `repost`
+     * like `clearing` — a re-POST re-condemns exactly the rows that are left. It converges for
+     * the same reason the drain does: `DELETE_FAULT_DRAINABLE_MAX` is DERIVED from
+     * `DRAIN_IDENTICAL_ANSWER_LIMIT * KVS_DELETE_BATCH - 1`, so an armed lever always runs out
+     * of units with a call to spare. This branch changes nothing about that budget — it spends
+     * no units of its own; `settleDeletes` above already spent what it spent. */
+    if (stale.failed > 0) {
+      const tail = sweepAnswerTail({ truncated: true, reason: "clear-failed", cursor: null, unresolved: true, failedResume: null });
+      return {
+        ok: true, planted: 0, failed: 0, n: population, startIndex: from, nextIndex: from,
+        expired: past, ttlSeconds, budgetMs, keys: [], cleared,
+        clearedSoFar: cleared, remainingStale: Math.max(0, (stale.condemned || 0) - cleared),
+        staleFailed: stale.failed, staleFailedKeys: stale.failedKeys || [],
+        truncated: tail.truncated, reason: "clear-failed", complete: tail.complete,
+        resume: plantResumeMode("clear-failed", tail.complete),
       };
     }
   }

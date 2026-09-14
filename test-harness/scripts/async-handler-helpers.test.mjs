@@ -1599,6 +1599,15 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
       gated, inherited: faultMod.HARNESS_INHERITED_GATE_EXPORTS, ungated: faultMod.HARNESS_UNGATED_EXPORTS,
     }).some((m) => /purgeHarnessFaults/.test(m)),
     "F-704 (negative control): an unlisted export FAILS the census here too");
+  /* F-719: …and so does one that reaches KVS through a module-PRIVATE storage home, which the
+   * old `storage.`-grep purity rule could not see. Same shared contract, asked here too. */
+  ok(gatedExportViolations({
+      names: [...Object.keys(faultMod), "seedFaultRow"],
+      src: `${faultSrc}\nexport const seedFaultRow = (k, r) => setFaultRow(k, r, 60);\n`,
+      gated, inherited: faultMod.HARNESS_INHERITED_GATE_EXPORTS,
+      ungated: [...faultMod.HARNESS_UNGATED_EXPORTS, "seedFaultRow"],
+    }).some((m) => /seedFaultRow/.test(m) && /setFaultRow/.test(m)),
+    "F-719 (negative control): an UNGATED export calling a private storage home FAILS the census here too");
   ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === gated.length,
     `F-522.SOURCE: …and asked by every export on HARNESS_GATED_EXPORTS (${gated.length}) and by nothing else (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
   for (const fn of gated) {

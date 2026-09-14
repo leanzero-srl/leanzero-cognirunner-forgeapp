@@ -257,8 +257,19 @@ export const HARNESS_GATED_EXPORTS = Object.freeze([
  *    inherits the gate instead of restating it. This pair used to be a hand-written denylist
  *    inside `harness-fault-ttl.test.mjs` — a THIRD home of the rule, which is why it is here.
  *  · `HARNESS_UNGATED_EXPORTS`        — pure: constants, key builders, clamps, predicates,
- *    encoders and the error class. None of them names `storage.` at all, and the shared
- *    contract asserts that of every one of them, so "pure" is checked and not asserted.
+ *    encoders and the error class. None of them REACHES storage, directly or otherwise.
+ *
+ * F-719 — and "reaches" is the word, because "names `storage.`" was not enough. The purity
+ * check was a text grep over each ungated export's own slice, while this module's storage
+ * homes (`setFaultRow`, `getFaultRow`, `settleDeletes`, `plantPopulationDeadline`,
+ * `clearStalePlantedRows`) are module-PRIVATE consts callable by bare name — so
+ * `export const seedFaultRow = (k, r) => setFaultRow(k, r, 60);` on the ungated list passed
+ * every assertion in both suites and wrote a fault row with no `HARNESS_SECRET`. The contract
+ * now DERIVES the storage homes from the source (a private top-level name whose body says
+ * `storage.`, transitively through private callers) and fails any inherited/ungated export
+ * that names one. Derived, not listed: the next private helper is covered on the day it is
+ * written. Exports are deliberately not taint carriers — reaching storage through a GATED
+ * export is what `HARNESS_INHERITED_GATE_EXPORTS` means.
  *
  * The contract itself has ONE home — `test-harness/lib/gated-export-contract.mjs` — asked by
  * both suites, with a fake extra export as its negative control.

@@ -46,7 +46,7 @@ import storage, { kvs } from "../lib/mock-kvs.mjs";
  * This suite must not carry a second, hand-written copy of it. */
 import { decideSweepStep, newDrainState, DELETES_FAILING_BACKOFF_MS } from "../lib/sweep-drain.mjs";
 /* F-704: the gated-export contract is a shared rule, not a second hand-written copy. */
-import { gatedExportViolations } from "../lib/gated-export-contract.mjs";
+import { gatedExportViolations, storageTaintedPrivates, exportSources } from "../lib/gated-export-contract.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -163,6 +163,25 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       src: faultSrc.replace(/(export const disarmHarnessFault = async \(kind, parts\) => \{)/, "$1 const k0 = 1;") })
       .some((m) => /disarmHarnessFault/.test(m) && /first statement/.test(m)),
     "F-704 (negative control): a gated export that acts before asking FAILS the contract");
+
+  /* F-719 — "NAMES NO `storage.`" WAS NEVER "TOUCHES NO STORAGE".
+   * The purity rule was a text grep for `storage.` in the export's OWN slice, and this
+   * module's storage homes (`setFaultRow`, `getFaultRow`, `settleDeletes`, the raw planted-
+   * head read) are module-PRIVATE consts callable by bare name. So the one-liner below — the
+   * breaker's exact export — wrote a fault row with no HARNESS_SECRET while passing the
+   * census, the gate-line count and both `storage.<op>(` counts. The homes are DERIVED from
+   * the source now, transitively, so the next private helper is covered the day it is written. */
+  const taintedPrivates = [...storageTaintedPrivates(faultSrc)];
+  ok(["setFaultRow", "getFaultRow", "settleDeletes"].every((n) => taintedPrivates.includes(n)),
+    `F-719: the private storage homes are DERIVED from the source, never listed (got ${taintedPrivates.join(", ")})`);
+  const seedSrc = `${faultSrc}\nexport const seedFaultRow = (k, r) => setFaultRow(k, r, 60);\n`;
+  ok(!/\bstorage\./.test(exportSources(seedSrc).get("seedFaultRow") || ""),
+    "F-719 (fixture): the breaker's export names no `storage.` at all — which is exactly why the old grep passed it");
+  ok(gatedExportViolations({ ...contractArgs,
+      names: [...Object.keys(fault), "seedFaultRow"], src: seedSrc,
+      ungated: [...fault.HARNESS_UNGATED_EXPORTS, "seedFaultRow"] })
+      .some((m) => /seedFaultRow/.test(m) && /setFaultRow/.test(m)),
+    "F-719 (negative control): an UNGATED export that reaches KVS through a private storage home FAILS the contract, by both names");
 }
 
 /* ═════ 2. A ROW PAST `until` READS AS ABSENT, AND IS DELETED ═════ */

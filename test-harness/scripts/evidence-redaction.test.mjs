@@ -388,7 +388,7 @@ for (const f of permDrivers) {
   ok(/shotMasked|makeShot/.test(src), `${f}: …and it imports the mask helper rather than rolling its own`);
 }
 
-/* ── 4c-ii. F-668 — THE REFUSAL IS ARMED, AND THE ANSWER IS READ ────────────────
+/* ── 4c-ii-a. F-668 — THE REFUSAL IS ARMED, AND THE ANSWER IS READ ──────────────
    `shotMasked` always had the right behaviour: `strict` defaults to true, a readable
    address ABORTS the capture, and the non-strict branch returns `{captured:false, reason}`
    for the caller to record. All nine live call sites disarmed it — `{ strict: false }`
@@ -2073,7 +2073,7 @@ for (const f of armingDrivers) {
     `${f}: arms a fault, so its requireEnvAck call must NAME one — \`faults: []\` on an arming driver silences the refusal it exists for`);
 }
 
-/* ── 4h. F-702 — THE SWEEP DRAIN HAS ONE HOME, AND THE LEDGER STORES A STRING ────
+/* ── 4h-2. F-702 — THE SWEEP DRAIN HAS ONE HOME, AND THE LEDGER STORES A STRING ──
    F-690 moved the drain DECISION into `lib/sweep-drain.mjs` and left the loop to each
    caller. That held for exactly one driver: `plant-sweep-live.mjs` landed in the SAME
    range with a hand-rolled loop that never imported the module, so the contract had two
@@ -2470,7 +2470,7 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
     `${f}: the evidence.json write is redacted too (fields assigned outside PASS/FAIL/NV reach it)`);
 }
 
-/* ── 4i. F-787 — AN EVIDENCE FILE NAMES THE COMMIT THAT PRODUCED IT ─────────────
+/* ── 4k. F-787 — AN EVIDENCE FILE NAMES THE COMMIT THAT PRODUCED IT ─────────────
  *
  * `evidence.json` records what a run SAW. It never recorded what CODE produced it, so an
  * evidence file and the driver that wrote it could drift apart with nothing in either to
@@ -2507,19 +2507,19 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
   const missing = writers.filter((f) => !/runProvenance/.test(readFileSync(path.join(here, f), "utf8")));
 
   ok(writers.length > 20,
-    `4i (F-787): the evidence-writer cohort is found, not assumed — ${writers.length} files write an evidence.json`);
+    `4k (F-787): the evidence-writer cohort is found, not assumed — ${writers.length} files write an evidence.json`);
   ok(missing.length <= PROVENANCE_DEBT.length,
-    `4i (F-787): the provenance debt did not GROW — ${missing.length} writers record no provenance, ledger allows ${PROVENANCE_DEBT.length}`);
+    `4k (F-787): the provenance debt did not GROW — ${missing.length} writers record no provenance, ledger allows ${PROVENANCE_DEBT.length}`);
   const strangers = missing.filter((f) => !PROVENANCE_DEBT.includes(f));
   ok(strangers.length === 0,
-    `4i (F-787): a NEW evidence writer must record provenance — ${strangers.join(", ")} writes an evidence.json without calling runProvenance() from lib/driver-report.mjs`);
+    `4k (F-787): a NEW evidence writer must record provenance — ${strangers.join(", ")} writes an evidence.json without calling runProvenance() from lib/driver-report.mjs`);
   const stale = PROVENANCE_DEBT.filter((f) => !missing.includes(f));
   ok(stale.length === 0,
-    `4i (F-787): the debt list is PRUNED — ${stale.join(", ")} now records provenance (or no longer writes evidence) and must come off PROVENANCE_DEBT, because a warn-list nobody shortens is a permanent exemption`);
+    `4k (F-787): the debt list is PRUNED — ${stale.join(", ")} now records provenance (or no longer writes evidence) and must come off PROVENANCE_DEBT, because a warn-list nobody shortens is a permanent exemption`);
 
   /* And the helper really is in the lib, so this rule points at a home that exists. */
   ok(/export function runProvenance/.test(readFileSync(path.join(libDir, "driver-report.mjs"), "utf8")),
-    "4i (F-787): lib/driver-report.mjs exports runProvenance — ONE home, so `commit`/`dirty`/`at` cannot come to mean different things in different evidence files");
+    "4k (F-787): lib/driver-report.mjs exports runProvenance — ONE home, so `commit`/`dirty`/`at` cannot come to mean different things in different evidence files");
 }
 
 
@@ -2603,6 +2603,83 @@ for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "pe
   const noRecord = wiredFromFinally.filter((f) => !/crashed\s*=\s*e\b/.test(readFileSync(path.join(here, f), "utf8")));
   ok(noRecord.length === 0,
     `4j (F-792): a driver that reads \`crashed\` must also SET it in a catch — ${noRecord.join(", ")} passes crashed to formatResultLine but never assigns it, so the line can only ever print the clean shape`);
+}
+
+
+/* ── 4l. F-795 — EVERY RULE LABEL IN THIS FILE NAMES EXACTLY ONE RULE ───────────
+ *
+ * THE RECURRENCE THIS CLOSES. This file grew to 27 numbered sections, and three numbers had
+ * been handed out twice: `4c-ii` was both F-660 (the PII rule covers pixels) and F-668 (the
+ * refusal is armed), `4h` was both F-741 (no tenant named in a string) and F-702 (the sweep
+ * drain has one home), and `4i` was both F-769 (the credential read ceiling) and F-787 (an
+ * evidence file names its commit).
+ *
+ * WHY THAT IS A DEFECT AND NOT A TIDINESS COMPLAINT. The label is the ONLY handle a failing
+ * line gives a reader: a red `4i (F-787): ...` sends someone to a rule about credentials,
+ * and prose elsewhere in this file says things like "rule 4g grades the file read-only" —
+ * a cross-reference that silently means two different things once the number is reused. The
+ * F-number inside the parentheses is what disambiguates today, which is to say the number
+ * is decoration and the reader has to know that.
+ *
+ * WHY IT IS PARSED FROM THE FILE AND NOT FROM A LIST. A hand-kept roster of labels is the
+ * same class of artefact as the debt lists above — it goes stale the first time someone adds
+ * a section without updating it, and a stale roster is green. The labels are read out of
+ * THIS FILE'S OWN SOURCE, so a duplicate is caught by the act of writing it.
+ *
+ * THE PARSER'S CONTROLS. A regex that stopped matching would make this rule green by finding
+ * nothing, so the real headers it must see are named as literals, a synthetic duplicate is
+ * fed through the SAME function to prove it detects one, and a prose mention of a rule
+ * number is asserted NOT to count as a declaration — otherwise the sentence explaining a
+ * collision would itself be read as one.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+{
+  const selfSrc = readFileSync(path.join(here, "evidence-redaction.test.mjs"), "utf8");
+
+  /** Section headers only: a banner line whose label STARTS WITH A DIGIT and ends in `. `.
+      `── F-730 · ...` and `── POSITIVE CONTROLS · ...` are deliberately not declarations. */
+  const sectionLabels = (src) =>
+    src.split("\n")
+      .map((l) => /^(?:\/\*|\s\*) ── (\d[0-9A-Za-z-]*)\. /.exec(l))
+      .filter(Boolean)
+      .map((m) => m[1]);
+
+  const labels = sectionLabels(selfSrc);
+  const dupes = [...new Set(labels.filter((l, i) => labels.indexOf(l) !== i))];
+
+  ok(labels.length > 20,
+    `4l (F-795): the section cohort is PARSED, not assumed — ${labels.length} numbered sections found in this file`);
+  for (const lit of ["1", "4c-ii", "4c-ii-a", "4c-ii-b", "4h", "4h-2", "4j", "4k", "5"]) {
+    ok(labels.includes(lit),
+      `4l (F-795) POSITIVE CONTROL: the parser sees the real header "${lit}." — a regex that matched nothing would make this rule green`);
+  }
+  ok(dupes.length === 0,
+    `4l (F-795): a rule number names ONE rule — ${dupes.join(", ")} is used by more than one section, so a red line carrying that number sends the reader to the wrong rule`);
+
+  /* The parser detects a collision when there is one, on the same code path. */
+  const synthetic = sectionLabels([
+    "/* ── 9z. F-001 — FIRST ────────────────────────────────────────────────────────",
+    " * ── 9z. F-002 — SECOND ───────────────────────────────────────────────────────",
+  ].join("\n"));
+  ok(synthetic.length === 2 && synthetic[0] === "9z" && synthetic[1] === "9z",
+    "4l (F-795) POSITIVE CONTROL: the SAME parser reads both banner forms (`/* ──` and ` * ──`) and reports the duplicate label twice");
+  ok(sectionLabels(" * is that same single-quoted shape declares `[]`, rule 4g stays green, and it writes").length === 0,
+    "4l (F-795) NEGATIVE CONTROL: a prose cross-reference to `rule 4g` is not a declaration — otherwise the sentences that EXPLAIN a collision would create one");
+
+  /* The other half: the label a FAILING LINE prints must also bind to one rule. Assertion
+     messages here open with `<label> (F-nnn)`, and that pairing is what a reader greps. */
+  const byLabel = new Map();
+  for (const m of selfSrc.matchAll(/(?<![\w-])(\d[0-9A-Za-z-]*) \(F-(\d+)/g)) {
+    if (!byLabel.has(m[1])) byLabel.set(m[1], new Set());
+    byLabel.get(m[1]).add(m[2]);
+  }
+  ok(byLabel.size > 0,
+    `4l (F-795): the message-label cohort is found, not assumed — ${byLabel.size} labels appear in assertion messages`);
+  const split = [...byLabel].filter(([, fs]) => fs.size > 1).map(([l, fs]) => `${l}→F-${[...fs].join("/F-")}`);
+  ok(split.length === 0,
+    `4l (F-795): a label printed in a failing message names ONE finding — ${split.join(", ")} is printed against more than one F-number`);
+  const undeclared = [...byLabel.keys()].filter((l) => !labels.includes(l));
+  ok(undeclared.length === 0,
+    `4l (F-795): a message label has a SECTION — ${undeclared.join(", ")} is printed by an assertion but no numbered section declares it, so the red line points at a rule that does not exist`);
 }
 
 

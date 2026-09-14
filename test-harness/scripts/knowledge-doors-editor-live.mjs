@@ -265,7 +265,24 @@ async function main() {
        nothing is clicked and the run is NOT VERIFIED from here on. */
     const g = await grantRole(EDITOR, "editor", "own", ["Mihai"]);
     info(`roster grant: ${JSON.stringify({ ok: !!g.ok, how: g.how, rowIndex: g.index, alreadyPresent: !!g.alreadyPresent, notFound: !!g.notFound })}`);
-    ev.grant = { ok: !!g.ok, how: g.how, index: g.index, notFound: !!g.notFound, reason: g.reason };
+    /* F-671 — THE CARD READ-BACK IS REPORTED, NOT JUST COMPUTED. `grantRole` learned to
+       tell "the card agrees with the store" apart from "the card could not be read at
+       all" (the null that used to satisfy the assertion outright). That answer had no
+       reader here: `ev.grant` carried only the click's own fields, so a card that went
+       unreadable — the exact regression F-671 is about — left no trace in the evidence
+       and no assertion to fail. Every grant now states `cardAgrees`, `cardUnreadable`
+       and the `cardHow` reason the read gives for itself. */
+    ev.grant = {
+      ok: !!g.ok, how: g.how, index: g.index, notFound: !!g.notFound, reason: g.reason,
+      card: g.card ?? null, cardAgrees: g.cardAgrees ?? null,
+      cardUnreadable: !!g.cardUnreadable, cardHow: g.cardHow ?? null,
+      ...(g.cardMismatch ? { cardMismatch: g.cardMismatch } : {}),
+    };
+    if (g.ok) {
+      if (g.cardAgrees === true) PASS("the roster CARD agrees with the stored row — the UI shows the permission storage actually granted", { card: g.card, how: g.cardHow });
+      else if (g.cardUnreadable) FAIL("the roster card could NOT be read back, so the UI cannot be shown to agree with the stored row (F-671: this used to count as agreement)", { cardHow: String(g.cardHow).slice(0, 220) });
+      else FAIL("the roster card disagrees with the stored row", { card: g.card, mismatch: String(g.cardMismatch).slice(0, 220) });
+    }
     if (g.notFound) {
       NV("the target account's search row could not be identified by its discriminator — NOTHING was clicked, so no namesake was granted a role", { reason: String(g.reason).slice(0, 220) });
       return;

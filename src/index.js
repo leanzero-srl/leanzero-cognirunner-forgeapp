@@ -12445,7 +12445,7 @@ export {
 export const handler = resolver.getDefinitions();
 
 // DEV-ONLY harness test-state web trigger (gated by HARNESS_SECRET; 404 in prod)
-export { testStateTrigger, gitWebhookProbe } from "./test-hook";
+export { testStateTrigger, gitWebhookProbe } from "./test-hook.js";
 
 /* ═══════════════════ GIT WEBHOOK — 1.4 commit 5 ═══════════════════════════
  * Verify the HMAC over the RAW body, normalise the envelope, enqueue, 202.

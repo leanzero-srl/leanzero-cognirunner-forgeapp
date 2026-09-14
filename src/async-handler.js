@@ -1091,7 +1091,7 @@ const executeGitReview = async (params, taskId) => {
       }, JOB_TTL_ACTIVE);
     } catch (e) { console.warn("[gitreview] job row update failed:", e && e.message); }
     try {
-      const { storeLog } = await import("./index");
+      const { storeLog } = await import("./index.js");
       await storeLog({
         type: "listener", source: "async",
         issueKey: `${repoId || "?"}#${prNumber ?? "?"}`,
@@ -2316,7 +2316,7 @@ const refuseQueuedRunWithoutProvider = async (taskType, taskId, params, ruleRow,
       if (ruleRow) receipt = statsReceipt(isListener ? "listener" : "scheduledjob", ruleRow, entry, isListener ? params?.ctx?.issueKey || null : null);
     } catch (e) { console.warn("no-provider receipt build failed:", e && e.message); }
     try {
-      const { storeLog } = await import("./index");
+      const { storeLog } = await import("./index.js");
       await storeLog(entry, { statsReceipt: receipt });
     } catch (e) { console.warn("no-provider log failed:", e && e.message); }
   } else {
@@ -2658,7 +2658,7 @@ export async function handler(event) {
       // Listener / job runs leave a visible SKIP entry — a silent miss is the worst outcome for a rule.
       if (taskType === "listener" || taskType === "scheduledjob") {
         try {
-          const { storeLog } = await import("./index");
+          const { storeLog } = await import("./index.js");
           await storeLog({ type: taskType === "listener" ? "listener" : "scheduledjob", source: "async", issueKey: params?.ctx?.issueKey || "(no issue)", fieldId: params?.eventType || (params?.jobName ? "schedule" : ""), isValid: false, decision: "SKIP", reason: `Skipped: the queued run waited ${Math.round(queuedMs / 1000)}s before the background worker picked it up (past the ${Math.round(STALE_JOB_MS / 60000)}-minute staleness window).`, recommendation: "Atlassian's event queue was backlogged. Nothing ran; re-trigger the action or run the job manually.", executionTimeMs: 0, ruleId: params?.listenerId || params?.jobId || null, ruleName: params?.listenerName || params?.jobName || null, ruleWorkflow: null, eventType: params?.eventType });
         } catch (e) { console.warn("stale-skip log failed:", e && e.message); }
       }
@@ -2730,7 +2730,7 @@ export async function handler(event) {
       // `probe` is excluded for the same class of reason: it is a dev-only self-test with
       // no rule to attach to and no badge in any UI's type map.
       try {
-        const { storeLog } = await import("./index");
+        const { storeLog } = await import("./index.js");
         await storeLog({
           // F-119 — the type MUST be one the UIs' badge maps already know, or the entry
           // renders as a "Validator" run on a rule that has no validator. A queued PF logs

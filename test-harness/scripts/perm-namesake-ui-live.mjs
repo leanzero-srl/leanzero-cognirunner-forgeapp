@@ -18,7 +18,10 @@
  *     F-647 says is missing when an email exists — here both surfaces are id-kind);
  *  4. removing that card restores `app_admins` BYTE-IDENTICALLY to the snapshot.
  *
- * READ-ONLY on src/ and static/. No deploy. No token, URL or secret is ever printed —
+ * READ-ONLY on src/ and static/ — but NOT on the tenant: step 2 GRANTS AN APP ROLE and
+ * step 4 removes it again, which is why the guard call below declares `mutates: ["roster"]`
+ * and why the plain `node scripts/perm-namesake-ui-live.mjs` now refuses (F-734).
+ * No deploy. No token, URL or secret is ever printed —
  * and since F-652, no EMAIL ADDRESS either: every roster row this driver touches goes
  * through `lib/redact.mjs` before it reaches a terminal or a file, because that header
  * sentence was a promise the code did not keep (F-646 is what a promise like it costs).
@@ -39,7 +42,17 @@ import { makeShot } from "../lib/roster-ui.mjs";
    address, and the segment comparison could only ever fail. */
 import { selectByDiscriminator } from "../lib/roster-restore.mjs";
 
-const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: [], defaultEnv: "dev" });
+/* F-734 — THIS DRIVER IS NOT READ-ONLY, AND FOR TWO YEARS OF FINDINGS IT SAID IT WAS.
+   Step 2 above GRANTS AN APP ROLE on the shared dev tenant, and the whole proof rests on
+   that grant being real: the `app_admins` KVS diff at STEP 2 only passes if the write
+   landed. It declared `mutates: []` anyway, and the declaration was believed — `--env`
+   defaults to `dev` here, so `node scripts/perm-namesake-ui-live.mjs` with no flags ran a
+   role grant on a tenant other people are on, with no refusal printed at all. The reason
+   nothing caught it is F-737: the write is a Playwright CLICK, so rule 4g's per-file token
+   scan sees no mutator and its empty-arm cheerfully asserted "this file calls no mutator".
+   That is F-718's own harm class — `roster`, "someone's role on this tenant changes" —
+   reaching the guard through the one door the guard cannot see. `roster` is the word. */
+const { envName: ENV_NAME, hookUrl: HOOK_URL, envId: ENV_ID_DEFAULT } = requireEnvAck(process.argv.slice(2), { faults: [], mutates: ["roster"], defaultEnv: "dev" });
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
 const SECRET = requireEnv("HARNESS_SECRET");
@@ -266,6 +279,39 @@ async function removeRosterBySegment(segment) {
   });
 }
 
+/* ── F-734 — THE RESTORE ALSO HAS TO SURVIVE Ctrl-C ────────────────────────────────
+ * The grant→remove pair is already inside `try { … } finally { … }`, so a THROW anywhere in
+ * the run (a Playwright timeout, a frame that never loads, a failed assertion) still reaches
+ * the recovery removal. A SIGNAL does not: Node's default SIGINT terminates the process and
+ * no `finally` runs, and an operator who watches this driver sit on the roster card for 90 s
+ * and hits Ctrl-C is the likeliest way the grant is ever LEFT IN PLACE. The guard's own
+ * refusal text says exactly that — "the driver restores what it can, but a killed process …
+ * does not come back" — and this is the half of it that can be made to come back.
+ *
+ * It is BEST EFFORT and is written as best effort: the handler gets one removal attempt, it
+ * cannot be awaited to completion against an impatient second Ctrl-C, and a SIGKILL is not
+ * catchable at all. `granted` is what distinguishes "we have something to undo" from "we
+ * never wrote anything" — arming the handler unconditionally would make a Ctrl-C during the
+ * read-only STEP 1 open a browser to remove a card that was never created. */
+let granted = false;
+let unwinding = false;
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, async () => {
+    if (!granted || unwinding) process.exit(130);
+    unwinding = true;
+    console.log(`\n  ${sig} — the role grant is still on the roster; attempting to remove it before exiting (Ctrl-C again to abandon it)`);
+    await removeRosterBySegment(TARGET_SEG).catch(() => {});
+    const end = await roster().catch(() => null);
+    console.log(end && JSON.stringify(end) === beforeJsonRef.value
+      ? "  roster restored on the way out"
+      : "  ROSTER NOT RESTORED — remove the row by hand on Settings -> Permissions");
+    process.exit(130);
+  });
+}
+/* The snapshot is taken inside `main`, so the handler reads it through a box rather than
+   closing over a binding that does not exist yet. */
+const beforeJsonRef = { value: null };
+
 async function main() {
   console.log(`\nF-645 — the Permissions tab names the ACCOUNT, live on ${ENV_NAME.toUpperCase()}\n`);
   const ping = await hook(null, "GET");
@@ -278,6 +324,7 @@ async function main() {
      different addresses equal because they share one mask. The disk copy is redacted. */
   const before = await roster();
   const beforeJson = JSON.stringify(before);
+  beforeJsonRef.value = beforeJson;                 // F-734 — the signal handler's copy
   fs.writeFileSync(`${OUT}/roster-before.json`, JSON.stringify(redactSecrets(before), null, 2));
   ev.rosterBefore = before;   // redacted at the file boundary below
   info(`roster snapshot: ${before.length} row(s) -> ${OUT}/roster-before.json`);
@@ -331,6 +378,7 @@ async function main() {
     const click = await clickRowBySegment(TARGET_SEG);
     ev.click = click;
     if (!click.clicked) { FAIL("the target row could not be clicked", click); throw new Error("no grant"); }
+    granted = true;                                 // F-734 — from here a Ctrl-C has something to undo
     const after = await roster();
     ev.rosterAfter = after;
     fs.writeFileSync(`${OUT}/roster-after-grant.json`, JSON.stringify(redactSecrets(after), null, 2));
@@ -366,7 +414,7 @@ async function main() {
     const end = await roster();
     fs.writeFileSync(`${OUT}/roster-after-restore.json`, JSON.stringify(redactSecrets(end), null, 2));
     ev.rosterEnd = end;
-    if (JSON.stringify(end) === beforeJson) { restored = true; PASS("SECOND READ: `app_admins` is BYTE-IDENTICAL to the snapshot — the roster is restored", { rows: end.length }); }
+    if (JSON.stringify(end) === beforeJson) { restored = true; granted = false; PASS("SECOND READ: `app_admins` is BYTE-IDENTICAL to the snapshot — the roster is restored", { rows: end.length }); }
     else FAIL("the roster did NOT return to its snapshot", { before, end });
   } catch (e) {
     FAIL("the run aborted", { error: String(e && e.message || e) });

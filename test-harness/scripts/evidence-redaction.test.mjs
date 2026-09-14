@@ -1460,7 +1460,13 @@ function callsMutator(code) {
  * refusal turns on. The blindness is then stated in the docblock rather than implied by a
  * green result. */
 function drivesProductUI(code) {
-  return /\bfrom\s+["'][^"']*playwright["']/.test(code) && /\.click\s*\(/.test(code);
+  /* BOTH IMPORT SHAPES. Half this cohort imports Playwright statically at module top
+     (`import { chromium } from "…/playwright/index.mjs"`), and half — including
+     perm-namesake-ui-live.mjs, the driver this exemption exists for — imports it DYNAMICALLY
+     inside the browser helper (`await import("…/playwright/index.mjs")`) so the file can be
+     read offline without the browser package present. A `from`-only match saw the first half
+     and missed the second, which is the half that matters. */
+  return /(?:\bfrom|\bimport\s*\()\s*["'][^"']*playwright[^"']*["']/.test(code) && /\.click\s*\(/.test(code);
 }
 /** The declared array, read out of the `mutates:` literal OR — for a dev-only driver with no
  *  `--env` to resolve — out of `declareMutations([…])`, which is the same declaration with the
@@ -1523,6 +1529,8 @@ ok(callsMutator('import { testState } from "../lib/rules-api.mjs";\nconst r = aw
   "NEGATIVE CONTROL (F-737): importing only `testState` from the same module is the raw hook door and mints nothing — the import clause decides, as it does for lib/jira.mjs");
 
 /* F-737 — the UI detector, on the two shapes that exist and the one that must not trip it. */
+ok(drivesProductUI('const { chromium } = await import("../../static/_screenshot-harness/node_modules/playwright/index.mjs");\nawait frame.locator(".perm-search-item").click();'),
+  "POSITIVE CONTROL (F-737): the DYNAMIC import shape counts — perm-namesake-ui-live.mjs imports Playwright inside its browser helper, and a `from`-only match missed exactly the driver the exemption exists for");
 ok(drivesProductUI('import { chromium } from "playwright";\nawait frame.locator(".perm-search-item").click();'),
   "POSITIVE CONTROL (F-737): a Playwright driver that CLICKS is unauditable — perm-namesake-ui-live.mjs grants an app-admin role with a mouse event and no scannable token (F-734)");
 ok(!drivesProductUI('import { chromium } from "playwright";\nconst n = await frame.locator(".perm-admin-card").count();'),
@@ -1617,6 +1625,11 @@ ok(guardedDrivers.length === liveFiles.length,
   /* F-737 — AND THE EXEMPTION IS BOUNDED. It exists for a handful of Playwright drivers
      whose writes are clicks; if it ever covered most of the directory the rule would be
      asserting almost nothing and this number is where that shows up. */
+  /* F-734 supplies this arm's first and (today) only subject: perm-namesake-ui-live.mjs
+     declares `roster` for a grant made by clicking a row. An exemption with no subject is
+     an exemption nobody is testing, so it is asserted from BOTH sides. */
+  ok(unauditable >= 1,
+    `F-737/F-734: the UI exemption has a real subject (${unauditable}) — a rule arm no file takes is green for the wrong reason`);
   ok(unauditable <= 12,
     `F-737: the UI exemption stays a handful (${unauditable} unauditable driver(s) declare a mutation the scan cannot confirm) — it excuses the cry-wolf arm only, never the one the refusal turns on`);
 }

@@ -214,9 +214,13 @@ test.mjs` §4g keeps the declaration honest in both directions: a driver that ca
 `POST`/`PUT`/`DELETE`, …) may not declare `mutates: []`, and one that declares a mutation it
 never performs fails too, because a refusal nobody believes is one people learn to flag
 through. Six drivers legitimately **default to dev** (`knowledge-doors-editor`,
-`perm-namesake-ui`, `sandbox-confluence`, `va-capability-gate`, `va-rest-doors`, `va-shadow`);
-five of those six mutate and now ask for the flag there, and `perm-namesake-ui` is read-only
-and still does not.
+`perm-namesake-ui`, `sandbox-confluence`, `va-capability-gate`, `va-rest-doors`, `va-shadow`)
+and **all six mutate**, so all six ask for the flag there. `perm-namesake-ui` was listed here
+as the one read-only exception until F-734: it GRANTS AN APP-ADMIN ROLE by clicking a row in
+the Permissions tab, and the `app_admins` KVS diff that is the whole point of the driver only
+passes because the grant is real. §4g never saw it because the write is a mouse event and §4g
+is a token scan (F-737), so an honest-looking `mutates: []` sat on the one driver this
+paragraph pointed at as safe.
 
 **The dev-only drivers declare too (F-733).** §4g used to name its own gap: only a driver that
 calls `requireEnvAck` could declare anything, and the 26 `*-live.mjs` that take no `--env` at

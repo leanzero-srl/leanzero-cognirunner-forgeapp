@@ -124,6 +124,72 @@ export const findPlantedSecret = (value, path = "", depth = 0) => {
   return null;
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-742 — THE KVS DOOR: A MALFORMED BODY IS A 400 HERE, NOT A STACK TRACE THERE.
+ *
+ * `kvSet` forwarded `body.key` and `body.value` straight into `storage.set`. The
+ * allow-list answered the question "may this key be written", and nothing at all
+ * answered "is this a key, and is this a value": a non-string key, a missing value or
+ * an oversized one reached the platform, which threw `ForgeKvsAPIError [BAD_REQUEST]`.
+ * The webtrigger then died on the throw — a raw stack in the Forge log and a 424 at the
+ * caller, with no word about WHICH half of the body was wrong. A harness door that
+ * cannot say "your value is 300 KiB" costs a driver an hour every time it is wrong.
+ *
+ * So the shape is asked HERE, before the platform is touched, and the answer NAMES THE
+ * FIELD and never the value: a key may be echoed (the allow-list already echoes it, and
+ * a key is not a secret), a value never may — this file's whole promise is that a
+ * credential in a body is refused rather than reflected (`findPlantedSecret`). A size
+ * in bytes is a measurement, not a disclosure, so a reason may carry it.
+ *
+ * THE CHARSET CHECK IS DELIBERATELY COARSE. The KEY door also guards the unrestricted
+ * `?what=kvs` READ, which must stay able to look at any row a live tenant holds —
+ * `pf_code:{id}:{hash}`, `log_entry:*`, keys this file has never heard of. So it bounds
+ * what the platform actually rejects (not a string, empty, over 500 characters,
+ * whitespace or control characters) and does not invent a narrower alphabet: a false
+ * refusal here blinds a driver, while everything it does refuse would have thrown.
+ *
+ * Returns `null` when the pair is usable, or the 400 body `{ ok, error, field, reason }`.
+ * ONE HOME — the census of the sibling doors is in the comment at the `kvSet` call site.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+export const KVS_KEY_MAX_CHARS = 500;
+export const KVS_VALUE_MAX_BYTES = 240 * 1024;
+const badRequest = (field, reason) => ({ ok: false, error: "bad-request", field, reason });
+
+/** The key half — shared by the `kvSet` write and the `?what=kvs` read. */
+export const kvsKeyRefusal = (key) => {
+  if (typeof key !== "string") return badRequest("key", `key must be a string (got ${key === null ? "null" : typeof key})`);
+  if (key.length === 0) return badRequest("key", "key must not be empty");
+  if (key.length > KVS_KEY_MAX_CHARS) return badRequest("key", `key must be at most ${KVS_KEY_MAX_CHARS} characters (got ${key.length})`);
+  if (/[\u0000-\u0020\u007f]/.test(key)) return badRequest("key", "key must not contain whitespace or control characters");
+  return null;
+};
+
+/**
+ * The value half. `null` is NOT a bad value here — it is how `kvSet` spells "delete",
+ * and that meaning belongs to the call site, which passes `allowNull` to say so.
+ */
+export const kvsValueRefusal = (value, { allowNull = false } = {}) => {
+  if (value === undefined) return badRequest("value", "value is required (send null to delete)");
+  if (value === null) return allowNull ? null : badRequest("value", "value must not be null");
+  const t = typeof value;
+  if (t === "function" || t === "symbol" || t === "bigint") return badRequest("value", `value must be JSON-serialisable (got ${t})`);
+  let encoded;
+  try {
+    encoded = JSON.stringify(value);
+  } catch (e) {
+    return badRequest("value", `value must be JSON-serialisable (${errorClassOf(e)})`);
+  }
+  if (encoded === undefined) return badRequest("value", `value must be JSON-serialisable (got ${t})`);
+  // Byte length, not character length: the platform's cap is on the encoded bytes, and a
+  // multi-byte string that passes a `.length` check still throws BAD_REQUEST.
+  const bytes = typeof Buffer !== "undefined" ? Buffer.byteLength(encoded, "utf8") : new TextEncoder().encode(encoded).length;
+  if (bytes > KVS_VALUE_MAX_BYTES) {
+    return badRequest("value", `value is ${bytes} bytes, over the ${KVS_VALUE_MAX_BYTES}-byte KVS limit`);
+  }
+  return null;
+};
+
+
 /**
  * The four calls, as real `route` templates. Injected as a unit so the offline suite can
  * drive every branch (including the delete) without a network.
@@ -1248,7 +1314,28 @@ export async function testStateTrigger(req) {
         "COGNIRUNNER_AI_PROVIDER", MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY,
         KNOWLEDGE_SETTINGS_KEY]);
       for (const p of PROVIDER_IDS) for (const slot of providerSlotsFor(p)) KEYS.add(slot);
+      /* F-742 — THE SHAPE IS ASKED BEFORE THE ALLOW-LIST, and before the platform.
+       * Key shape first: a non-string key cannot be looked up in a Set of strings in any
+       * meaningful way, and `key not allowlisted: [object Object]` is a worse answer than
+       * "key must be a string". Then the allow-list, which is the AUTHORISATION question
+       * and is untouched by this door. Then the value.
+       *
+       * THE SIBLING CENSUS (every other door in this file that forwards a body toward
+       * storage, read before this was cut): `pipelineRow` plant and `vaTombstone`
+       * plant/age build their rows FIELD BY FIELD from an allow-list, each field regexed,
+       * clamped or `String(...).slice(...)`-bounded, and their keys are built by
+       * `gitPipelineKey`/`vaPurgedKey` from an id this file has already validated — they
+       * do NOT share the gap, so they do not get this door. `plantHookSecret` likewise
+       * regexes all three inputs before composing its key. There are no `kvGet`/`kvDelete`
+       * actions; the READ is the GET `?what=kvs`, whose key comes straight off the query
+       * string — that one DOES share the key half, and takes `kvsKeyRefusal` below. */
+      const keyBad = kvsKeyRefusal(body.key);
+      if (keyBad) return json(400, keyBad);
       if (!KEYS.has(body.key)) return json(400, { error: `key not allowlisted: ${body.key}` });
+      // `null` is this door's spelling of "delete", so it is allowed — `undefined`
+      // (a body that simply omitted `value`) is the case that used to reach the platform.
+      const valueBad = kvsValueRefusal(body.value, { allowNull: true });
+      if (valueBad) return json(400, valueBad);
       if (body.value === null) await storage.delete(body.key);
       else await storage.set(body.key, body.value);
       return json(200, { key: body.key, set: body.value === null ? "deleted" : true, now: (await storage.get(body.key)) ?? null });
@@ -1596,6 +1683,11 @@ export async function testStateTrigger(req) {
     if (what === "kvs") {
       const key = q(req, "key");
       if (!key) return json(400, { error: "key required" });
+      // F-742 — the KEY half of the same door. Unrestricted stays unrestricted (no
+      // allow-list on a read), but a key the platform would throw on is answered 400
+      // with the field named, rather than 500 with a `ForgeKvsAPIError` message.
+      const keyBad = kvsKeyRefusal(key);
+      if (keyBad) return json(400, keyBad);
       return json(200, { key, value: (await storage.get(key)) ?? null });
     }
     return json(400, { error: `unknown what=${what}` });

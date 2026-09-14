@@ -472,6 +472,51 @@ try {
       assert.equal(response.statusCode, 200, `${key} must be allowlisted for the memory-store proof`);
     }
   });
+  /* F-742 — THE SHAPE DOOR. A malformed body used to reach `storage.set` and throw
+   * `ForgeKvsAPIError [BAD_REQUEST]`: a raw stack in the Forge log, a 424 at the caller
+   * and no word about WHICH half of the body was wrong. Every bad shape is now a 400
+   * that NAMES THE FIELD — and the reason never carries the value back. */
+  await check("kvSet BLOCKS a malformed body with a 400 that names the field (F-742)", async () => {
+    const cases = [
+      { name: "a non-string key", body: { key: { nested: true }, value: "x" }, field: "key" },
+      { name: "an empty key", body: { key: "", value: "x" }, field: "key" },
+      { name: "a 501-character key", body: { key: "a".repeat(501), value: "x" }, field: "key" },
+      { name: "a key with whitespace", body: { key: "COGNIRUNNER_AI PROVIDER", value: "x" }, field: "key" },
+      // The value cases must sit on an ALLOWLISTED key, or the allow-list answers first —
+      // which is the point of the ordering: authorisation is not this door's question.
+      { name: "an omitted value", body: { key: "COGNIRUNNER_AI_PROVIDER" }, field: "value" },
+      { name: "an oversized value", body: { key: "COGNIRUNNER_AI_PROVIDER", value: "z".repeat(240 * 1024 + 64) }, field: "value" },
+    ];
+    for (const c of cases) {
+      const response = await testStateTrigger({
+        method: "POST",
+        headers: { authorization: ["Bearer offline-claim-secret"] },
+        body: JSON.stringify({ action: "kvSet", ...c.body }),
+      });
+      assert.equal(response.statusCode, 400, `${c.name} must be 400, got ${response.statusCode} ${response.body}`);
+      const parsed = JSON.parse(response.body);
+      assert.equal(parsed.ok, false, `${c.name}: ok:false`);
+      assert.equal(parsed.error, "bad-request", `${c.name}: error:"bad-request"`);
+      assert.equal(parsed.field, c.field, `${c.name}: names the field`);
+      assert.equal(typeof parsed.reason === "string" && parsed.reason.length > 0, true, `${c.name}: carries a reason`);
+      // The refusal is a diagnosis, never an echo: the oversized value must not come back.
+      assert.equal(/z{40}/.test(response.body), false, `${c.name}: the reason never reflects the value`);
+    }
+    // …and nothing landed: the slot the value cases aimed at is still absent.
+    assert.equal(storage.__raw("COGNIRUNNER_AI_PROVIDER"), undefined);
+  });
+  await check("kvSet ALLOWS a well-formed body — it still reaches storage (F-742)", async () => {
+    const response = await kvSet("COGNIRUNNER_AI_PROVIDER", "openai");
+    assert.equal(response.statusCode, 200, response.body);
+    const parsed = JSON.parse(response.body);
+    assert.equal(parsed.set, true);
+    assert.equal(parsed.now, "openai", "the door read the row back — the write landed");
+    assert.equal(storage.__raw("COGNIRUNNER_AI_PROVIDER"), "openai");
+    // A multi-byte value just under the cap is NOT refused by a character-length check.
+    const big = await kvSet("COGNIRUNNER_AI_PROVIDER", "é".repeat(100 * 1024));
+    assert.equal(big.statusCode, 200, "a 200 KiB multi-byte value is under the cap and passes");
+    assert.equal(JSON.parse((await kvSet("COGNIRUNNER_AI_PROVIDER", null)).body).set, "deleted");
+  });
   await check("kvSet stays behind HARNESS_SECRET", async () => {
     const response = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "kvSet", key: "COGNIRUNNER_AI_PROVIDER", value: null }) });
     assert.equal(response.statusCode, 404);

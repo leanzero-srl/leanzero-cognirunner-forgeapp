@@ -25,7 +25,7 @@
  * Run: node scripts/roster-ui.test.mjs (auto-discovered by run-offline.mjs)
  */
 
-import { MASK_EMAILS_SRC, RESTORE_EMAILS_SRC, shotMasked, makeShot, makeRosterUI, maskPositiveControl, SETTLE_MS } from "../lib/roster-ui.mjs";
+import { MASK_EMAILS_SRC, RESTORE_EMAILS_SRC, shotMasked, makeShot, makeRosterUI, maskPositiveControl, SETTLE_MS, REGRANT_ATTEMPTS } from "../lib/roster-ui.mjs";
 import { maskEmail } from "../lib/redact.mjs";
 import { idTail } from "../lib/roster-restore.mjs";
 
@@ -452,6 +452,15 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
          renders but `.perm-admin-role` no longer matches anything on it. */
       noRoleClass: opts.noRoleClass === true,
       roleClassReads: 0,
+      /* F-670 — the build whose ROSTER CARD has no in-place role picker (the admin panel
+         before PermissionsTab grew the per-card `CustomSelect`s). It is the ONE answer that
+         licenses the destructive remove/re-grant repair, so it has to be drivable. */
+      noInPlaceControl: opts.noInPlaceControl === true,
+      /* F-670 — the first `grantFails` row-CLICKS land on the row and change nothing, which
+         is what a grant that did not take looks like from outside: `grantRole`'s own second
+         read finds no row and reports ok:false. `Infinity` is the re-grant that never works. */
+      grantFails: opts.grantFails === undefined ? 0 : opts.grantFails,
+      removals: 0, roleChanges: [],
     };
     /* THE PRODUCT FACT THE DEFECT TURNED ON. */
     const dropdownCount = () => (st.forceScopeControl ? 2 : (st.role === "admin" ? 1 : 2));
@@ -476,6 +485,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
       onClick: async () => {
         const eff = st.role === "admin" ? "all" : st.scope;   // PermissionsTab#handleAdd
         st.clicks.push({ accountId: u.accountId, role: st.role, scope: eff });
+        if (st.grantFails > 0) { st.grantFails--; return; }   // F-670 - the grant that did not take
         st.roster.push({ accountId: u.accountId, displayName: u.displayName, role: st.role, scope: eff });
       },
       locator: (sel) => (sel === ".perm-ident-id"
@@ -488,6 +498,18 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
         if (sel === ".perm-ident-id") return node({ count: 1, text: chip(r.accountId), attrs: { title: r.accountId } });
         if (sel === ".perm-admin-role") { st.roleClassReads++; return node({ count: st.noRoleClass ? 0 : 1, text: st.noRoleClass ? "" : scopeLabel(r.role, r.scope) }); }
         if (sel === ".perm-remove-btn") return node({ onClick: async () => { st.pendingRemove = r.accountId; } });
+        /* F-670 — THE IN-PLACE DOOR, AS PermissionsTab RENDERS IT. The card holds its own
+           role `CustomSelect`, and the scope one beside it behind the SAME
+           `{role !== "admin" && (` guard the search row uses — so an ADMIN card carries one
+           dropdown and every other card carries two. `noInPlaceControl` is the older build
+           that carries none. */
+        if (sel === ".dropdown") {
+          const n = st.noInPlaceControl ? 0 : (r.role === "admin" ? 1 : 2);
+          return node({ count: n, nth: (i) => node({ onClick: async () => {
+            if (i >= n) throw new Error("locator.click: Timeout 30000ms exceeded waiting for locator('.dropdown').nth(" + i + ")");
+            st.open = { which: i === 0 ? "role" : "scope", card: r.accountId };
+          } }) });
+        }
         return node({ count: 0 });
       },
     });
@@ -506,13 +528,30 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
                waits and then THROWS a timeout. `nth(1)` when Admin has unmounted the scope
                select is exactly that, and it is the whole of F-666's first half. */
             if (i >= dropdownCount()) throw new Error("locator.click: Timeout 30000ms exceeded waiting for locator('.perm-search-wrap .dropdown').nth(1)");
-            st.open = i === 0 ? "role" : "scope";
+            st.open = { which: i === 0 ? "role" : "scope", card: null };
             if (i === 1) st.scopeDropdownClicks++;
           } }) });
         }
         if (sel === ".dropdown-item-name") {
           return node({ onClick: async () => {
-            if (st.open === "role") { for (const [v, label] of [["viewer", "Viewer"], ["editor", "Editor"], ["admin", "Admin"]]) if (has.test(label)) st.role = v; }
+            const roleOf = () => { let v = null; for (const [val, label] of [["viewer", "Viewer"], ["editor", "Editor"], ["admin", "Admin"]]) if (has.test(label)) v = val; return v; };
+            if (st.open && st.open.card) {
+              /* PermissionsTab#handleRoleChange, faithfully: the card's role select passes
+                 the row's EXISTING scope through for a non-admin role and forces "all" for
+                 Admin, so the role click ALONE cannot set the scope — which is exactly why
+                 `changeRoleInPlace` clicks twice. */
+              const row = st.roster.find((x) => x.accountId === st.open.card);
+              if (!row) return;
+              if (st.open.which === "role") {
+                const v = roleOf();
+                if (v) { row.role = v; if (v === "admin") row.scope = "all"; st.roleChanges.push({ accountId: row.accountId, role: v, scope: row.scope }); }
+              } else {
+                row.scope = has.test("All Rules") ? "all" : "own";
+                st.roleChanges.push({ accountId: row.accountId, role: row.role, scope: row.scope });
+              }
+              return;
+            }
+            if (st.open && st.open.which === "role") { const v = roleOf(); if (v) st.role = v; }
             else st.scope = has.test("All Rules") ? "all" : "own";
           } });
         }
@@ -524,7 +563,7 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
         }
         if (sel === ".perm-search-item") { const rs = searchRows(); return node({ count: rs.length, nth: (i) => rowNode(rs[i]) }); }
         if (sel === ".perm-admin-card") { const rs = st.roster; return node({ count: rs.length, nth: (i) => cardNode(rs[i]) }); }
-        if (sel === ".cr-confirm-actions button") return node({ onClick: async () => { if (!st.stickyRemove) st.roster = st.roster.filter((r) => r.accountId !== st.pendingRemove); st.pendingRemove = null; } });
+        if (sel === ".cr-confirm-actions button") return node({ onClick: async () => { st.removals++; if (!st.stickyRemove) st.roster = st.roster.filter((r) => r.accountId !== st.pendingRemove); st.pendingRemove = null; } });
         return node({ count: 1 });
       },
     };
@@ -634,19 +673,28 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     ok(!ids.includes(DIR[1].accountId), "Bob, whose repair threw, is the one row genuinely missing");
 
     const acts = (res ? res.actions : []).map((a) => a.act + ":" + a.id);
-    ok(acts.some((a) => a.startsWith("readd-changed")), "the actions record the changed repair");
+    /* F-670 — the `changed` row is repaired IN PLACE now, so the act that records it is
+       `change-in-place`; `readd-changed` only appears on a build with no card picker. */
+    ok(acts.some((a) => a.startsWith("change-in-place")), "the actions record the changed repair");
+    ok(st.removals === 0, "F-670: …and NOTHING was removed to do it — the `changed` row never left the roster");
     ok(acts.some((a) => a === "readd-missing:" + idTail(DIR[2].accountId)), "…and the repair that came after the throw");
     ok(Array.isArray(res.failures) && res.failures.length >= 1, "…and every failure is collected, not just the first");
     ok(res.failures.every((f) => f.id === idTail(DIR[1].accountId)),
       "…and ONLY the row that genuinely failed is listed — the repairs that worked are not tarred with it");
   }
 
-  /* 7f. THE EXACT LIVE HARM. The row that throws is the CHANGED one, whose repair has
-     already REMOVED it. Before F-666 that throw left `restoreRosterToSnapshot` entirely,
-     so the removed admin stayed deleted AND the two rows queued behind it were never even
-     attempted. The removal is not recoverable here (the repair throws on every pass) —
-     what must be true is that the damage STOPS THERE and is REPORTED, instead of taking
-     the other two rows down with it. */
+  /* 7f. THE EXACT LIVE HARM, AND THE FACT THAT IT CAN NO LONGER HAPPEN.
+     The row whose GRANT throws is the CHANGED one. Under the remove→re-grant repair, the
+     remove had already landed when the grant threw, so a real site admin stayed DELETED
+     for the rest of the run — F-666 bounded that to one row and made the run name it, and
+     F-670 is the finding that a named, unrecoverable deletion is still a deletion the
+     restore itself performed.
+     `changeRoleInPlace` never opens the search box, so `throwFor:"Ann"` — which throws on
+     `.perm-search-input.fill("Ann")` — cannot reach the repair of Ann's row at all: it is
+     driven through the card's own role picker and `updateUserRole`. What used to be "the
+     damage stopped at one row" is now "there is no damage": Ann is REPAIRED, the roster
+     ends whole, and the run passes. The rows queued behind her are still attempted, which
+     is F-666's guarantee and must not regress. */
   {
     const snapshot = [
       { accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "admin", scope: "all" },
@@ -661,15 +709,199 @@ const run = (src, dom) => new Function("document", "return " + src)(dom);
     ok(threw === null, `a throw in the CHANGED repair does not escape the restore (got: ${threw})`);
 
     const ids = st.roster.map((r) => r.accountId);
-    ok(!ids.includes(DIR[0].accountId), "Ann is genuinely gone — the remove landed and the re-grant could not run, which is real damage");
+    ok(ids.includes(DIR[0].accountId),
+      "F-670: Ann is STILL ON THE ROSTER — the repair that used to delete her first never removes anything");
+    const ann = st.roster.find((r) => r.accountId === DIR[0].accountId);
+    ok(ann && ann.role === "admin" && ann.scope === "all",
+      `F-670: …and she carries the ADMIN row the snapshot held, set in place through the card's own picker (got ${JSON.stringify(ann)})`);
+    ok(st.removals === 0,
+      `F-670: …and the confirm dialog was never driven for her — zero removals in the whole restore (got ${st.removals})`);
     ok(ids.includes(DIR[1].accountId) && ids.includes(DIR[2].accountId),
-      "…but Bob and Cid, queued BEHIND her, were still attempted and are both back — the damage stopped at one row");
-    ok(res.ok === false && Array.isArray(res.failures) && res.failures.some((f) => f.id === idTail(DIR[0].accountId)),
-      "…and the verdict FAILS, naming Ann, so the operator is told exactly which row to restore by hand");
-    ok(res.failures.every((f) => f.id === idTail(DIR[0].accountId)),
-      "…and ONLY Ann is listed: Bob and Cid succeeded and are not tarred with her failure");
-    ok(res.failures.some((f) => /Timeout/.test(String(f.reason))),
-      "…with the reason the repair gave, not a bare 'restore failed'");
+      "F-666 must not regress: Bob and Cid, queued behind her, were still attempted and are both back");
+    ok(res.ok === true, `F-670: …so the restore ends CLEAN, where it used to end one row short (got ${JSON.stringify(res.ok)})`);
+    ok(!Array.isArray(res.failures) || !res.failures.some((f) => f.id === idTail(DIR[0].accountId)),
+      "F-670: …and no failure names Ann, because there is nothing for an operator to repair by hand");
+
+    /* POSITIVE CONTROL — the SAME fixture on a build with no in-place picker, which is the
+       only way the destructive path can still be reached. There the old harm is real and
+       must be reported exactly as F-666 left it: Ann removed, the re-grant throwing on
+       every attempt, the damage stopping at her row, and the two behind her repaired. */
+    const { st: st2, deps: deps2 } = makeFakeUI({ roster: [{ ...live[0] }], throwFor: "Ann", noInPlaceControl: true });
+    const old = await makeRosterUI({ ...deps2, settleMs: FAST_SETTLE }).restoreRosterToSnapshot(snapshot);
+    const ids2 = st2.roster.map((r) => r.accountId);
+    ok(!ids2.includes(DIR[0].accountId),
+      "POSITIVE CONTROL (F-670): with NO card picker the repair must remove first, and a grant that throws leaves Ann deleted — the harm this finding removes");
+    ok(ids2.includes(DIR[1].accountId) && ids2.includes(DIR[2].accountId),
+      "POSITIVE CONTROL: …and F-666 still holds on that path — the rows behind her are attempted and back");
+    ok(old.ok === false && Array.isArray(old.failures) && old.failures.some((f) => f.id === idTail(DIR[0].accountId)),
+      "POSITIVE CONTROL: …and the verdict FAILS naming Ann, which is what an operator got before and still gets on that build");
+    ok(old.failures.some((f) => /Timeout/.test(String(f.reason))),
+      "POSITIVE CONTROL: …with the reason the repair gave, not a bare 'restore failed'");
+  }
+
+  /* ── F-670. A `changed` ROW IS REPAIRED WITHOUT EVER LEAVING THE ROSTER. ──────────
+     THE DEFECT. `restoreRosterToSnapshot` repaired a `changed` row by REMOVE then
+     RE-GRANT. F-666 stopped one failed repair cancelling the rest and made the run NAME the
+     row it lost; it did not stop the loss. A re-grant that fails on every pass leaves a REAL
+     roster row deleted from `app_admins` — a permission the run destroyed on a shared tenant
+     and cannot put back.
+
+     WHY NOT GRANT-BEFORE-REMOVE. The roster keys by ACCOUNT and F-651's discriminator work
+     settled the UI half: the search row for an account already on the roster renders
+     `perm-search-disabled`, so a second row for one account cannot be granted under a
+     temporary discriminator and then swapped. There is no such door. The repair therefore
+     has to be one that never removes — and PermissionsTab has one: the roster CARD's own
+     role/scope `CustomSelect`s, wired to `handleRoleChange` → the `updateUserRole` resolver,
+     which REWRITES the row in place.
+
+     The three cases below are the three worlds: the picker is there and works; the picker is
+     absent, so the destructive path runs WITH RETRIES; and the re-grant fails every retry, so
+     the row is genuinely lost and the run must say so in a sentence an operator can act on. */
+
+  /* 7j. IN PLACE: the role is changed through the card, and NOTHING is removed. */
+  {
+    const snapshot = [
+      { accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own", emailAddress: "ann@tenant.example" },
+      { accountId: DIR[1].accountId, displayName: "Bob Namesake", role: "admin", scope: "all", emailAddress: "bob@tenant.example" },
+    ];
+    /* Ann drifted admin→(the snapshot's editor/own) and Bob drifted the other way: BOTH
+       directions cross the `role !== "admin"` guard that unmounts the card's scope select,
+       which is the F-666 product fact on the card. */
+    const live = [
+      { accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "admin", scope: "all", emailAddress: "ann@tenant.example" },
+      { accountId: DIR[1].accountId, displayName: "Bob Namesake", role: "editor", scope: "all", emailAddress: "bob@tenant.example" },
+    ];
+    const { st, deps } = makeFakeUI({ roster: live });
+    const ui = makeRosterUI({ ...deps, settleMs: FAST_SETTLE });
+    const res = await ui.restoreRosterToSnapshot(snapshot);
+
+    ok(res && res.ok === true, `F-670: the changed rows are repaired and the restore passes (got ${JSON.stringify(res && res.verdict)})`);
+    ok(st.removals === 0, `F-670: …and the confirm dialog was NEVER driven — not one row left the roster to be put back (got ${st.removals} removal(s))`);
+    ok(st.clicks.length === 0, "F-670: …and no GRANT was needed either: the search box was never used for a row that was already there");
+    ok(st.roster.length === 2, "F-670: …the roster never even changed length, which is what makes the repair non-destructive");
+
+    const ann = st.roster.find((r) => r.accountId === DIR[0].accountId);
+    const bob = st.roster.find((r) => r.accountId === DIR[1].accountId);
+    ok(ann && ann.role === "editor" && ann.scope === "own",
+      `F-670: admin→editor/own lands BOTH fields — the role click alone passes the old scope through, so the scope click is not optional (got ${JSON.stringify(ann)})`);
+    ok(bob && bob.role === "admin" && bob.scope === "all",
+      `F-670: editor→admin lands admin with the scope the product forces, without touching a control that unmounted (got ${JSON.stringify(bob)})`);
+
+    const acts = (res.actions || []).filter((a) => a.act === "change-in-place");
+    ok(acts.length === 2 && acts.every((a) => a.ok === true), `F-670: both repairs are recorded as in-place changes (got ${JSON.stringify(acts.map((a) => [a.act, a.ok]))})`);
+    ok(acts.every((a) => a.cardAgrees === true), "F-670: …and each one READ THE CARD BACK and found it agreeing with the stored row (F-666/F-671's guarantee, on this path too)");
+    ok(!res.failures, "F-670: …and nothing is reported as a failure");
+
+    /* A direct call, so the helper's own answer is asserted and not only its effect. */
+    const { st: st2, deps: deps2 } = makeFakeUI({ roster: [{ accountId: DIR[2].accountId, displayName: "Cid Namesake", role: "viewer", scope: "own" }] });
+    const direct = await makeRosterUI({ ...deps2, settleMs: FAST_SETTLE }).changeRoleInPlace(DIR[2].accountId, "editor", "all");
+    ok(direct.ok === true && direct.inPlace === true && direct.card === "All rules",
+      `F-670: changeRoleInPlace reports the card it read back (got ${JSON.stringify({ ok: direct.ok, card: direct.card })})`);
+    ok(st2.removals === 0 && st2.roster[0].role === "editor" && st2.roster[0].scope === "all",
+      "F-670: …and the stored row is the SECOND READ that licenses it, with no removal behind it");
+    /* F-658's rule reaches the new path too: a role the UI cannot express is a refusal. */
+    const refused = await makeRosterUI({ ...deps2, settleMs: FAST_SETTLE }).changeRoleInPlace(DIR[2].accountId, "superuser", "all");
+    ok(refused.ok === false && refused.refused === true,
+      `F-658 on the in-place path: an unexpressible role is REFUSED, never rounded to a label (got ${JSON.stringify(refused.reason)})`);
+    const refusedAdmin = await makeRosterUI({ ...deps2, settleMs: FAST_SETTLE }).changeRoleInPlace(DIR[2].accountId, "admin", "own");
+    ok(refusedAdmin.ok === false && refusedAdmin.refused === true,
+      "F-666 on the in-place path: admin with a scope other than \"all\" cannot be expressed and is refused");
+  }
+
+  /* 7k. NO IN-PLACE PATH ON THIS BUILD → remove/re-grant, AND THE GRANT IS RETRIED.
+     The fallback is the only thing left when the card renders no picker, and it is exactly
+     the destructive repair. What F-670 adds to it is that the re-grant does not get ONE
+     shot: `REGRANT_ATTEMPTS` tries with the retry settle between them, because the row is
+     already off the tenant and a transient people-picker miss must not end the run with a
+     permission deleted. Here the first grant click lands and changes nothing — a grant that
+     did not take — and the second succeeds. */
+  {
+    const snapshot = [{ accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "admin", scope: "all", emailAddress: "ann@tenant.example" }];
+    const live = [{ accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own", emailAddress: "ann@tenant.example" }];
+    const { st, deps } = makeFakeUI({ roster: live, noInPlaceControl: true, grantFails: 1 });
+    const res = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).restoreRosterToSnapshot(snapshot);
+
+    ok(REGRANT_ATTEMPTS >= 2, `F-670: the module names how many re-grants a lost row gets before it is declared lost (got ${REGRANT_ATTEMPTS})`);
+    const probe = (res.actions || []).find((a) => a.act === "change-in-place");
+    ok(probe && probe.noInPlaceControl === true,
+      `F-670: the in-place path was TRIED first and reported that this build has no card picker (got ${JSON.stringify(probe && probe.reason)})`);
+    ok(!(res.failures || []).some((f) => f.act === "change-in-place"),
+      "F-670: …and that answer is NOT counted as a failed repair — it is a probe whose negative answer chose the other door");
+    ok(st.removals === 1, `F-670: …so the destructive path ran: the row was removed once (got ${st.removals})`);
+    ok(st.clicks.length === 2, `F-670: …and the re-grant was attempted TWICE — the first click did not take, the second did (got ${st.clicks.length})`);
+    const ann = st.roster.find((r) => r.accountId === DIR[0].accountId);
+    ok(ann && ann.role === "admin" && ann.scope === "all",
+      `F-670: …and the RETRY is what put the row back, as the admin she was (got ${JSON.stringify(ann)})`);
+    ok(res.ok === true, `F-670: …so the restore ends clean, where one attempt would have ended a row short (got ${JSON.stringify(res.verdict)})`);
+    const readd = (res.actions || []).find((a) => a.act === "readd-changed");
+    ok(readd && readd.ok === true && readd.attempts === 2,
+      `F-670: …and the action says how many attempts it took, so a flaky tenant is visible rather than silent (got ${JSON.stringify(readd && readd.attempts)})`);
+    /* WHAT THE RETRY ACTUALLY BUYS, stated so that lowering `REGRANT_ATTEMPTS` to 1 FAILS
+       here. The four-pass loop would have re-added this row on the NEXT pass as `missing`,
+       so the roster ends right either way — but not before the run told an operator, in the
+       sentence 7l builds, that a real permission had been LOST and had to be redone by
+       hand. The retry is what stops a transient miss becoming that false alarm. */
+    ok(!(res.failures || []).some((f) => f.redo || f.lost),
+      `F-670: …and no row is declared LOST, so nobody is dispatched to redo a grant that the very next attempt made (got ${JSON.stringify((res.failures || []).map((f) => f.act))})`);
+    ok(!(res.actions || []).some((a) => a.lost === true),
+      "F-670: …and no action carries `lost` either — the repair completed inside its own pass");
+    ok(!(res.actions || []).some((a) => a.act === "readd-missing"),
+      "F-670: …and the row was never left for a LATER pass to rescue as a `missing` one, which is recovery by luck, not by design");
+
+    /* NEGATIVE CONTROL — the pre-F-670 fallback, which took the FIRST grant's answer. On
+       this exact fixture it ends with the row deleted and the run red. */
+    const { st: st3, deps: deps3 } = makeFakeUI({ roster: [{ ...live[0] }], noInPlaceControl: true, grantFails: 1 });
+    const ui3 = makeRosterUI({ ...deps3, settleMs: FAST_SETTLE });
+    await ui3.removeAccount(DIR[0].accountId);
+    const onlyTry = await ui3.grantRole(DIR[0].accountId, "admin", "all", ["Ann"]);
+    ok(onlyTry.ok === false && !st3.roster.some((r) => r.accountId === DIR[0].accountId),
+      "NEGATIVE CONTROL (F-670): one attempt at the same grant fails and leaves the row deleted — which is what the retry above absorbs");
+  }
+
+  /* 7l. THE ROW IS GENUINELY LOST → IT IS NAMED, AND THE EXACT GRANT TO REDO IS PRINTED.
+     Retries do not make an impossible grant possible. When every one of them fails the row
+     is off the tenant for good, and F-666's "name the row" is not enough to act on: an id
+     tail does not tell an operator WHAT to put back. The verdict carries role, scope and a
+     MASKED address (F-652 — `lib/redact.mjs#maskEmail`, the same mask the screenshots and
+     the evidence JSON use), plus the id chip to match the namesake by. */
+  {
+    const EMAIL = "ann.namesake@tenant.example";
+    const snapshot = [{ accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "editor", scope: "own", emailAddress: EMAIL }];
+    const live = [{ accountId: DIR[0].accountId, displayName: "Ann Namesake", role: "viewer", scope: "all", emailAddress: EMAIL }];
+    const { st, deps } = makeFakeUI({ roster: live, noInPlaceControl: true, grantFails: Infinity });
+    let threw = null, res = null;
+    try { res = await makeRosterUI({ ...deps, settleMs: FAST_SETTLE }).restoreRosterToSnapshot(snapshot); }
+    catch (e) { threw = String(e.message); }
+
+    ok(threw === null, `F-670: an unrepairable changed row does not crash the restore (got: ${threw})`);
+    ok(!st.roster.some((r) => r.accountId === DIR[0].accountId),
+      "F-670: the row IS gone — on a build with no in-place picker this loss is still possible, and the run must not pretend otherwise");
+    ok(st.clicks.length >= REGRANT_ATTEMPTS,
+      `F-670: …and it was not given up on after one try: at least ${REGRANT_ATTEMPTS} grants were attempted (got ${st.clicks.length})`);
+    ok(res && res.ok === false, "F-670: …the restore FAILS");
+
+    const lost = (res.failures || []).find((f) => f.redo);
+    ok(!!lost, `F-670: …and a failure row carries the REDO instruction (got ${JSON.stringify((res.failures || []).map((f) => f.act))})`);
+    ok(lost && lost.redo.role === "editor" && lost.redo.scope === "own",
+      `F-670: …naming the exact ROLE and SCOPE to grant back (got ${JSON.stringify(lost && lost.redo)})`);
+    ok(lost && lost.redo.email === maskEmail(EMAIL),
+      `F-670: …and the address MASKED by lib/redact.mjs, so the instruction is printable (got ${JSON.stringify(lost && lost.redo.email)})`);
+    ok(lost && !JSON.stringify(lost).includes(EMAIL) && !JSON.stringify(lost).includes("Ann Namesake"),
+      "F-652 on the new sentence: the RAW address never appears, and neither does the display name — the id chip is the discriminator");
+    ok(lost && lost.redo.id === idTail(DIR[0].accountId) && lost.reason.includes(lost.redo.id),
+      "F-670: …the id chip an operator matches the namesake by is in the sentence, which is the F-645 rule");
+    ok(lost && /REDO BY HAND/.test(lost.reason) && /Permissions/.test(lost.reason),
+      `F-670: …and the reason tells them WHERE to do it, not only that something broke (got ${JSON.stringify(lost.reason)})`);
+
+    const act = (res.actions || []).find((a) => a.lost === true);
+    ok(act && act.attempts === REGRANT_ATTEMPTS,
+      `F-670: …and the action records that every attempt was spent before the row was declared lost (got ${JSON.stringify(act && act.attempts)})`);
+
+    /* NEGATIVE CONTROL — the pre-F-670 report for this exact row: an act and an id tail and
+       nothing an operator can act on. */
+    const preFix = { act: "readd-changed", id: idTail(DIR[0].accountId), reason: "the click landed but the roster row is null" };
+    ok(preFix.redo === undefined && !/editor|own|@/.test(preFix.reason),
+      "NEGATIVE CONTROL (F-670): the pre-fix failure row named the account and NOT the grant — the operator could not put it back from it");
   }
 
   /* THE DRIVERS' RUN-LEVEL ARMS, TRANSCRIBED ONCE.

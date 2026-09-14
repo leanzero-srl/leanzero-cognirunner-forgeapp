@@ -1336,11 +1336,21 @@ ok(/STAGING_TESTSTATE_URL/.test(guardSrc) && /TESTSTATE_URL/.test(guardSrc),
    judgement the driver's author makes and this file cannot audit. The rule polices the
    EMPTY/NON-EMPTY boundary, which is the one the refusal actually turns on.
 
-   COHORT LIMIT, also stated: only drivers that CALL `requireEnvAck` can declare anything,
-   which is 31 of the 57 `*-live.mjs`. The other 26 are dev-only scripts with no `--env`
-   at all — routing them through the guard would make them demand a `.env` they have no
-   use for (the F-699 reasoning behind `forgeEnvId`), and several of them DO write. That
-   gap is real and is not closed here. */
+   COHORT LIMIT, ONE OF TWO, AND THE OTHER IS THE LIVE ONE. The cohort gap this docblock
+   used to state — "only drivers that CALL `requireEnvAck` can declare anything, which is
+   31 of the 57" — was CLOSED by F-733: the dev-only 26 declare through `declareMutations`,
+   and the union is asserted below to be every `*-live.mjs`. Saying otherwise here was a
+   docblock outliving its defect, which is F-699's own failure mode.
+
+   THE LIMIT THAT REMAINS IS VISIBILITY (F-737). `callsMutator` is a TOKEN SCAN over one
+   file. It cannot see a write made by CLICKING the product, and it cannot see a write a
+   `lib/` helper makes on the driver's behalf unless the helper's name is itself in the
+   list. Both halves are addressed as far as a scanner can: the shared writers are
+   IMPORT-AWARE (lib/jira.mjs, lib/workflow.mjs, lib/rules-api.mjs), and a driver that
+   drives the product UI is marked UNAUDITABLE and excused from the cry-wolf arm only —
+   never from the arm that matters. What is NOT closed, and cannot be by this file: a UI
+   driver that declares `[]` while clicking a write. That is F-734's shape, it is a human
+   judgement, and the honest thing is to say so rather than to imply the scan covers it. */
 const MUTATOR_CALLS = [
   /* test-hook actions that write the tenant directly */
   /\bkvSet\b/, /\bvaTombstone\b/, /\bplantHarnessFaults\b/, /\bclearPlantedFaults\b/,
@@ -1360,7 +1370,10 @@ const MUTATOR_CALLS = [
      watching this rule call a TRUE declaration a cry of wolf. */
   /\bseedSkill\b/,                                   // the hook's skill writer/restorer
   /\bdeleteIssueFixture\b/,                          // lib/fixture-cleanup.mjs — a real DELETE
-  /\brulesApi\.[A-Za-z]+\.(?:create|update|remove|run)\b/,
+  /* F-737 — the verb list is the WRITERS on `rulesApi`, and `enable`/`disable` change
+     whether real Jira events run rules while `test` EXECUTES one. `preview` and the
+     getters stay out: a dry run and a read are not mutations. */
+  /\brulesApi\.[A-Za-z]+\.(?:create|update|remove|run|enable|disable|test)\b/,
   /\bprobeJsmComment\b/,                            // the hook probe that COMMENTS on a real JSM issue
 ];
 
@@ -1378,6 +1391,14 @@ function writesRepo(code) {
  * `post(` a Jira write rather than `testState.post(`, which is a harness hook call. */
 const JIRA_WRITE_HELPERS = ["post", "put", "del", "doTransition"];
 const WORKFLOW_WRITE_HELPERS = ["updateWorkflow", "attachSelfLoopRules"];
+/* F-737 — REACHING THE RULES REST CLIENT AT ALL IS A WRITE, WHATEVER VERB FOLLOWS.
+ * `ensureRulesApi()` MINTS AN API TOKEN on the tenant (`action: "mintApiToken"`), and every
+ * `rulesApi.*` and `api()` call goes through it — so a driver that only LISTS listeners still
+ * creates a token row, against a live cap of 25, and `closeRulesApi` revoking it is a restore
+ * and not an absence of mutation. The token name is typed ONLY inside `lib/rules-api.mjs`, so
+ * `mintApiToken` being in the list above never fired for any driver: the word is in the
+ * library, the call is in the driver. That is the shape of this whole gap. */
+const RULES_API_HELPERS = ["ensureRulesApi", "rulesApi", "api", "closeRulesApi"];
 function importedWriters(code, moduleRe, wanted) {
   const out = new Set();
   for (const m of code.matchAll(new RegExp(`\\bimport\\s*\\{([^}]*)\\}\\s*from\\s*["'][^"']*${moduleRe}["']`, "g"))) {
@@ -1419,7 +1440,27 @@ function callsMutator(code) {
   for (const n of importedWriters(code, "lib/workflow\\.mjs", WORKFLOW_WRITE_HELPERS)) {
     if (new RegExp(`\\b${n}\\s*\\(`).test(code)) hits.push(`workflow:${n}()`);
   }
+  /* `rulesApi` is an OBJECT, not a function, so it is a hit on any member call — the token is
+     already minted by then. The others are called directly. */
+  for (const n of importedWriters(code, "lib/rules-api\\.mjs", RULES_API_HELPERS)) {
+    if (new RegExp(`\\b${n}\\s*[.(]`).test(code)) hits.push(`rulesApi:${n} (mints a token)`);
+  }
   return hits;
+}
+
+/* F-737 — A DRIVER THAT CLICKS THE PRODUCT CANNOT BE AUDITED BY A TOKEN SCAN.
+ * `perm-namesake-ui-live.mjs` GRANTS AN APP-ADMIN ROLE by clicking a row in the Permissions
+ * tab and proves it landed by diffing `app_admins` in KVS. There is no resolver name, no
+ * `method: "POST"` and no helper import anywhere in the file — the write is a mouse event —
+ * so `callsMutator` returns `[]` and the cry-wolf arm below would call its honest
+ * `mutates: ["roster"]` a declaration it never performs (F-734). The scan is not going to
+ * learn to read Playwright. What it CAN do is know that it cannot see, and stop asserting the
+ * one direction it is blind in: a UI driver is excused from "declares but calls no mutator"
+ * and is NOT excused from "calls a mutator so may not declare []", which is the arm the
+ * refusal turns on. The blindness is then stated in the docblock rather than implied by a
+ * green result. */
+function drivesProductUI(code) {
+  return /\bfrom\s+["'][^"']*playwright["']/.test(code) && /\.click\s*\(/.test(code);
 }
 /** The declared array, read out of the `mutates:` literal OR — for a dev-only driver with no
  *  `--env` to resolve — out of `declareMutations([…])`, which is the same declaration with the
@@ -1465,6 +1506,29 @@ ok(callsMutator('const L = await rulesApi.listeners.create({ name: "x" });').len
   "POSITIVE CONTROL (F-733): the Rules REST client's writers count too");
 ok(callsMutator('const r = await rulesApi.listeners.get(id);').length === 0,
   "NEGATIVE CONTROL: …and its readers do not");
+/* F-737 — the verbs the list did not know, and the helper door that bypasses all of them. */
+ok(callsMutator('await rulesApi.listeners.enable(id);').length === 1,
+  "POSITIVE CONTROL (F-737): `enable` is a write — a listener that starts running real Jira events is a tenant change, and the verb list held only create/update/remove/run");
+ok(callsMutator('await rulesApi.jobs.disable(id);').length === 1,
+  "POSITIVE CONTROL (F-737): …so is `disable`");
+ok(callsMutator('await rulesApi.listeners.test(id, { sample });').length === 1,
+  "POSITIVE CONTROL (F-737): …and `test` EXECUTES the listener, which is why it is not a read");
+ok(callsMutator('await rulesApi.jobs.preview(id, {});').length === 0,
+  "NEGATIVE CONTROL (F-737): `preview` is a dry run and stays out — the boundary is real work, not the shape of the call");
+ok(callsMutator('import { ensureRulesApi } from "../lib/rules-api.mjs";\nconst { url } = await ensureRulesApi();').length === 1,
+  "POSITIVE CONTROL (F-737): `ensureRulesApi()` MINTS AN API TOKEN against a live cap of 25 — `mintApiToken` is in the list above but is typed only inside the library, so the word is in one file and the call is in another");
+ok(callsMutator('import { rulesApi, closeRulesApi } from "../lib/rules-api.mjs";\nconst r = await rulesApi.listeners.list();').length >= 1,
+  "POSITIVE CONTROL (F-737): …and a driver that only LISTS still mints one, so reaching the client at all is the mutation, whatever verb follows");
+ok(callsMutator('import { testState } from "../lib/rules-api.mjs";\nconst r = await testState.get("rulesApiUrl");').length === 0,
+  "NEGATIVE CONTROL (F-737): importing only `testState` from the same module is the raw hook door and mints nothing — the import clause decides, as it does for lib/jira.mjs");
+
+/* F-737 — the UI detector, on the two shapes that exist and the one that must not trip it. */
+ok(drivesProductUI('import { chromium } from "playwright";\nawait frame.locator(".perm-search-item").click();'),
+  "POSITIVE CONTROL (F-737): a Playwright driver that CLICKS is unauditable — perm-namesake-ui-live.mjs grants an app-admin role with a mouse event and no scannable token (F-734)");
+ok(!drivesProductUI('import { chromium } from "playwright";\nconst n = await frame.locator(".perm-admin-card").count();'),
+  "NEGATIVE CONTROL (F-737): a Playwright driver that only READS the DOM is auditable like any other — opening a browser is not the discriminator, clicking is");
+ok(!drivesProductUI('const r = await hook({ action: "kvSet" });\nbtn.click();'),
+  "NEGATIVE CONTROL (F-737): a `.click(` with no Playwright import is not a product UI driver");
 ok(callsMutator('gh(["api", "-X", "POST", `/repos/${REPO}/git/refs`, "--input", "-"], body);').length === 1,
   "POSITIVE CONTROL (F-733): a `gh api -X POST` writes a real repository — pipeline-scaffold-live.mjs makes several and declared `git` honestly");
 ok(callsMutator('gh(["api", `/repos/${REPO}/actions/variables`]);').length === 0,
@@ -1522,17 +1586,25 @@ ok(guardedDrivers.length === liveFiles.length,
   }
 }
 {
-  let declaredSome = 0, declaredNone = 0;
+  let declaredSome = 0, declaredNone = 0, unauditable = 0;
   for (const f of guardedDrivers) {
     const code = stripComments(readFileSync(path.join(here, f), "utf8"));
     const declared = declaredMutations(code);
     ok(declared !== null, `${f}: declares a \`mutates:\` array — an undeclared blast radius is the F-718 defect`);
     if (declared === null) continue;
     const found = callsMutator(code);
+    const ui = drivesProductUI(code);
     if (declared.length) declaredSome++; else declaredNone++;
     if (found.length) {
+      /* THE ARM THAT MATTERS, AND IT APPLIES TO EVERY FILE. A UI driver gets no excuse
+         here: if the scan CAN see a write, `mutates: []` is a lie whoever made it. */
       ok(declared.length > 0,
         `${f}: calls ${found.length} mutator(s) (${found.slice(0, 4).join(", ")}) so it may NOT declare \`mutates: []\` — it would run on shared dev with no refusal`);
+    } else if (ui) {
+      /* F-737 — UNAUDITABLE, AND SAID SO. The write is a mouse event; the scan is blind to
+         it, and a blind rule must not answer. Counted, so the exemption cannot quietly
+         grow to cover the directory. */
+      unauditable++;
     } else {
       ok(declared.length === 0,
         `${f}: declares ${JSON.stringify(declared)} but this file calls no mutator in the maintained list — a refusal nobody believes is one people learn to flag through`);
@@ -1542,6 +1614,11 @@ ok(guardedDrivers.length === liveFiles.length,
      green for the wrong reason, and the empty-declaration arm is the one that rots first. */
   ok(declaredSome >= 15, `F-718: the mutating arm has real subjects (${declaredSome} drivers declare a non-empty mutates)`);
   ok(declaredNone >= 3, `F-718: …and so does the read-only arm (${declaredNone} drivers declare mutates: [])`);
+  /* F-737 — AND THE EXEMPTION IS BOUNDED. It exists for a handful of Playwright drivers
+     whose writes are clicks; if it ever covered most of the directory the rule would be
+     asserting almost nothing and this number is where that shows up. */
+  ok(unauditable <= 12,
+    `F-737: the UI exemption stays a handful (${unauditable} unauditable driver(s) declare a mutation the scan cannot confirm) — it excuses the cry-wolf arm only, never the one the refusal turns on`);
 }
 /* The guard really is the home of the vocabulary, so a green rule above is not green
    because the words mean nothing. Every word any driver declares must exist there. */

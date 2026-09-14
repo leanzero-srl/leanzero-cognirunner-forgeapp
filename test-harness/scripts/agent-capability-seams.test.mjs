@@ -222,15 +222,12 @@ const runF837 = async () => {
   const ag = await asViewer("getAgentModel", { provider: "openai" });
   ok(ag && ag.success === true, "F-837: the viewer's getAgentModel read succeeds");
   eq(writes.length, 0, `F-837: …and writes NOTHING (wrote ${JSON.stringify(writes)})`);
-  // KNOWN AND DELIBERATE, pinned here rather than left to be discovered: a read door
-  // that passes `migrate:false` does not CONSULT the legacy slot either, so on a
-  // pre-per-provider instance that has not dispatched since the container went cold the
-  // panel names the provider DEFAULT while the runtime would still resolve the legacy
-  // model. The window closes on the first AI call (which migrates), and the alternative
-  // — `migrate:true` with a null `onMigrate`, which the shared chain explicitly supports
-  // (read and honour, write nothing) — is a change to the F-826 binding's shape and is
-  // the owner's call, not this cut's.
-  eq(String(ag.model), "gpt-5.4-mini", "F-837: …naming the provider default, NOT the un-migrated legacy slot (the known window)");
+  // F-848 — THE WINDOW IS CLOSED. The read door now passes `migrate:true` with a null
+  // `onMigrate`, the mode the shared chain explicitly supports (read and honour, write
+  // nothing), so on a pre-per-provider instance that is cold and has not dispatched since
+  // the upgrade the panel names the LEGACY model — the one the very next transition would
+  // run — instead of the provider default. Status and first dispatch no longer disagree.
+  eq(String(ag.model), "gpt-5.4-legacy", "F-848: …naming the LEGACY model the runtime would resolve, not the provider default");
 
   writes = [];
   const kvs1 = await asViewer("getOpenAIModelFromKVS", { provider: "openai" });
@@ -283,16 +280,19 @@ const runF837 = async () => {
 const f837Shape = () => {
   const idxSrc3 = readFileSync(path.join(fileURLToPath(new URL("../../src/index.js", import.meta.url))), "utf8");
   const code = idxSrc3.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-  const sites = code.split("\n").filter((l) => /migrate:\s*true/.test(l));
-  eq(sites.length, 1, `F-837.SHAPE: exactly ONE migrate:true call site in src/index.js (got ${sites.length}: ${sites.map((l) => l.trim()).join(" | ")})`);
+  // F-848 — the countable property is no longer `migrate:true` (READ doors carry it too,
+  // so they honour the legacy slot); it is the WRITER. Exactly one call site may leave
+  // `onMigrate` at its default, and every other must pin it to null in so many words.
+  const sites = code.split("\n").filter((l) => /migrate:\s*true/.test(l) && !/onMigrate:\s*null/.test(l));
+  eq(sites.length, 1, `F-848.SHAPE: exactly ONE migrating call site WITH A WRITER in src/index.js (got ${sites.length}: ${sites.map((l) => l.trim()).join(" | ")})`);
   // …and it is inside getOpenAIModel, the ACTIVE-provider dispatch reader — not a
   // resolver door. NOTE, recorded honestly: that site is NOT admin-gated, because the
   // migration is deliberately a first-DISPATCH migration (see its docblock); the floor
   // this finding is about is that no VIEWER-floor RESOLVER reaches it.
   const mod = code.match(/const getOpenAIModel = async \(\) => \{[\s\S]*?\n\};/);
   ok(!!mod && /migrate: true/.test(mod[0]), "F-837.SHAPE: …and it lives in getOpenAIModel, the active-provider dispatch reader");
-  ok(!/resolver\.define[\s\S]{0,4000}?migrate:\s*true/.test(code.slice(code.indexOf('resolver.define("getAgentModel"'), code.indexOf('resolver.define("getAgentModel"') + 1400)),
-    "F-837.SHAPE: …and not in the agent-model door");
+  ok(!/resolver\.define[\s\S]{0,4000}?migrate:\s*true(?![^\n]*onMigrate:\s*null)/.test(code.slice(code.indexOf('resolver.define("getAgentModel"'), code.indexOf('resolver.define("getAgentModel"') + 1400)),
+    "F-837.SHAPE: …and no WRITING migration in the agent-model door");
   // The two repaired read doors name their intent EXPLICITLY rather than relying on the
   // chain's default, so a reader of either one can see the door does not write.
   for (const [door, span] of [['resolver.define("getAgentModel"', 1600], ['resolver.define("getOpenAIModelFromKVS"', 3000]]) {
@@ -301,10 +301,11 @@ const f837Shape = () => {
     const body = code.slice(i, i + span);
     ok(!/getOpenAIModel\(\)/.test(body), `F-837.SHAPE: ${door} no longer rides the migrating reader`);
   }
-  ok(/migrate: false/.test(code.slice(code.indexOf('resolver.define("getOpenAIModelFromKVS"'), code.indexOf('resolver.define("getOpenAIModelFromKVS"') + 3000)),
-    "F-837.SHAPE: getOpenAIModelFromKVS's factory arm asks for migrate:false in so many words");
+  ok(/migrate: true, onMigrate: null/.test(code.slice(code.indexOf('resolver.define("getOpenAIModelFromKVS"'), code.indexOf('resolver.define("getOpenAIModelFromKVS"') + 3000)),
+    "F-848.SHAPE: getOpenAIModelFromKVS's factory arm honours the legacy slot and pins onMigrate:null in so many words");
   const gam2 = code.match(/export const getAgentModelFor = async \(provider\) => [\s\S]*?;\n/);
-  ok(!!gam2 && /migrate: false/.test(gam2[0]), "F-837.SHAPE: getAgentModelFor — which the panel door now rides — pins migrate:false");
+  ok(!!gam2 && /migrate: true, onMigrate: null/.test(gam2[0]),
+    "F-848.SHAPE: getAgentModelFor — which the panel door now rides — reads the legacy slot and pins onMigrate:null");
 };
 
 if (process.env.CR_F837 === "1") {

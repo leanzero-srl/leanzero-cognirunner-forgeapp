@@ -471,8 +471,14 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     const bb = bind ? bind[0] : "";
     ok(!/getProviderConfig\(/.test(bb),
       "…and the binding reads NO provider of its own — the provider is the ARGUMENT (F-811, now structural for all three readers)");
-    ok(/readSlot: \(key\) => storage\.get\(key\)/.test(bb) && /onMigrate: \(key, value\) => migrateLegacyModelSlot\(key, value\)/.test(bb),
+    // F-848 — the writer is an OPTION with the real writer as its DEFAULT, so a READ door
+    // can pass `onMigrate: null` and still ask for `migrate: true` (read and honour the
+    // legacy slot, write nothing). The default must stay the real writer or the dispatch
+    // reader, which omits the option, would silently stop migrating.
+    ok(/readSlot: \(key\) => storage\.get\(key\)/.test(bb) && /onMigrate: onMigrate \? \(key, value\) => onMigrate\(key, value\) : null/.test(bb),
       "…and it supplies THIS process's storage reader and writer (src/shared may not import @forge/kvs)");
+    ok(/onMigrate = migrateLegacyModelSlot/.test(bb),
+      "…and the writer's DEFAULT is the real create-if-absent migrator (F-848: only a door that says onMigrate:null forgoes the write)");
     // F-859 — the migration writer is CREATE-IF-ABSENT, not a bare set. A transition in a
     // warm container whose slot read already answered empty must never overwrite a model
     // an admin saved in the meantime.
@@ -581,7 +587,10 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
         anthropic: { defaultModel: "claude-sonnet-4-5" }, openrouter: { defaultModel: "or/x" },
         lmstudio: { defaultModel: "local-x" }, managed: { defaultModel: "anthropic/claude-sonnet-5" },
         atlassian: { defaultModel: "claude-haiku-4-5-20251001" } };
-      const build = eval("((storage, resolveModelChain, PROVIDERS, console, process) => {"
+      // F-848 - the binding's `onMigrate` default names the real writer, so the eval needs
+      // one in scope. A create-if-absent stand-in over the same store: the parity property
+      // is about what the two readers ANSWER, not about how the write lands.
+      const build = eval("((storage, resolveModelChain, PROVIDERS, console, process, migrateLegacyModelSlot) => {"
         + "let _cachedModel = null, _cachedModelAt = 0; const _cacheFresh = () => Date.now() - _cachedModelAt < 30000;"
         + bb + "\n" + gam[0].replace("export const", "const") + "\n"
         + mb.replace("const getOpenAIModel = async () => {", "const getOpenAIModelFor = async (provider) => { _cachedModel = null;").replace("const { provider } = await getProviderConfig();", "")
@@ -589,7 +598,8 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
       for (const [slotValue, label] of [[null, "empty slots"], ["some-saved-model", "an ordinary saved model"], ["anthropic/claude-opus-5", "a vendor-prefixed id"]]) {
         const store = new Map();
         const storage2 = { get: async (k) => (slotValue && k.startsWith("COGNIRUNNER_MODEL_") ? slotValue : (store.get(k) ?? null)), set: async (k, v) => { store.set(k, v); } };
-        const { getAgentModelFor: agentFn, getOpenAIModelFor: plainFn } = build(storage2, chain, providers, { error() {}, log() {} }, { env: {} });
+        const migrateFn = async (k, v) => { const cur = await storage2.get(k); if (cur) return String(cur); await storage2.set(k, v); return v; };
+        const { getAgentModelFor: agentFn, getOpenAIModelFor: plainFn } = build(storage2, chain, providers, { error() {}, log() {} }, { env: {} }, migrateFn);
         for (const p of Object.keys(providers)) {
           const a = await agentFn(p);
           const b = await plainFn(p);
@@ -621,8 +631,13 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   ok(!!bind && !!cons, "found both bindings of the model chain");
   ok(!/const PROVIDER_DEFAULT_MODELS = \{/.test(asyncSrc),
     "the consumer keeps NO second default-model table (F-826)");
-  const syncBind = eval("((storage, resolveModelChain, PROVIDERS, console, process) => { "
+  // F-848 - the binding's `onMigrate` DEFAULT names the real writer, which the eval must
+  // have in scope even on the calls that never migrate (a default parameter is evaluated
+  // whenever the option is omitted). These parity calls pass `{}` - no migration - so the
+  // stub is never invoked; it exists so the binding can be evaluated at all.
+  const syncBind = eval("((storage, resolveModelChain, PROVIDERS, console, process, migrateLegacyModelSlot) => { "
     + bind[0].replace("const resolveModelForProvider =", "const f =") + " return f; })");
+  const noWrite = async (_k, v) => v;
   const consBind = eval("((storage, resolveModelChain, getProviderConfig, console, process) => { "
     + cons[0].replace("const getOpenAIModel =", "const f =") + " return f; })");
   const providers = { openai: { defaultModel: "gpt-5.4-mini" }, azure: { defaultModel: "gpt-5.4-mini" },
@@ -647,7 +662,7 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
       // The sync binding as the queued path's equivalent: no migration write, ordinary
       // slot. (getOpenAIModel adds migrate:true; the consumer deliberately does not
       // migrate, so the comparable call is migrate:false on both.)
-      const a = await syncBind(storage2, chain, providers, quiet, { env: {} })(p, {});
+      const a = await syncBind(storage2, chain, providers, quiet, { env: {} }, noWrite)(p, {});
       const b = await consBind(storage2, chain, async () => ({ provider: p }), quiet, { env: {} })(p);
       ok(String(a) === String(b), `PROCESS PARITY (${label}): sync and consumer agree for ${p} (${a} vs ${b})`);
     }
@@ -655,7 +670,7 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   // THE TAIL, both directions, pinned explicitly.
   {
     const faulted = { get: async () => { throw new Error("kvs blip"); }, set: async () => {} };
-    const a = await syncBind(faulted, chain, providers, quiet, { env: {} })("anthropic", {});
+    const a = await syncBind(faulted, chain, providers, quiet, { env: {} }, noWrite)("anthropic", {});
     const b = await consBind(faulted, chain, async () => ({ provider: "anthropic" }), quiet, { env: {} })("anthropic");
     ok(a === "claude-haiku-4-5-20251001" && b === a,
       `a FAULTED SLOT read answers the provider's DEFAULT model in BOTH (${a} vs ${b}) — a KVS blip must not take a working instance offline`);

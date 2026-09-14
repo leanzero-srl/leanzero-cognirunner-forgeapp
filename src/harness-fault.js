@@ -1404,13 +1404,44 @@ export const plantStartIndexClamped = (startIndex, ceiling = HARNESS_FAULT_PLANT
  *  · PAST THE POPULATION is F-708's refusal, now judged on the number the caller actually
  *    sent. Exactly AT the population is still the loop's own last answer and is NOT refused.
  *
+ * F-746 — AND "IS IT AN INTEGER" IS NOT THE SAME QUESTION AS `Number(x)`.
+ *
+ * The judgement ran the caller's value through `Number()`, which is JavaScript's most
+ * forgiving coercion and admits four shapes no caller ever meant to send: `""` → 0,
+ * `"  3 "` → 3, `"3.0"` → 3, `"0x2"` → 2. The worst of them is the EMPTY STRING, the exact
+ * value a form post, a shell `--start-index=$UNSET` or a JSON body built from a missing
+ * variable produces: it read as index 0, which is a FRESH plant, which DELETES every row at
+ * or past `n` before writing. A caller who meant to resume at 240 and sent nothing had the
+ * head of its own population re-written and its tail destroyed — under `ok: true`.
+ *
+ * `null` / `undefined` are still ABSENT and still a fresh plant: that is the documented shape
+ * of every first POST in this repo, and "not supplied" is a different fact from "supplied
+ * empty". Everything SUPPLIED must now be one of exactly two shapes:
+ *
+ *   · a JS number that is a NON-NEGATIVE SAFE INTEGER (`Number.isSafeInteger`, so `1e21`,
+ *     `Infinity`, `NaN` and `1.5` are all refused rather than floored into a real index), or
+ *   · a string of DIGITS AND NOTHING ELSE (`/^\d+$/`) — no sign, no space, no decimal point,
+ *     no `0x`, and never empty. A door that speaks JSON over HTTP gets numbers as strings;
+ *     it does not get to spell them four ways.
+ *
  * Pure, and it returns a reason string or `null` so the lever has nothing left to decide.
  */
+/** The two shapes a SUPPLIED `startIndex` may take (F-746). One home, one grammar. */
+const PLANT_START_DIGITS = /^\d+$/;
+
 export const plantStartRefusal = (startIndex, population) => {
   if (startIndex === undefined || startIndex === null) return null;
-  if (typeof startIndex !== "number" && typeof startIndex !== "string") return "bad-start";
-  const parsed = Number(startIndex);
-  if (!Number.isInteger(parsed) || parsed < 0) return "bad-start";
+  let parsed;
+  if (typeof startIndex === "number") {
+    if (!Number.isSafeInteger(startIndex) || startIndex < 0) return "bad-start";
+    parsed = startIndex;
+  } else if (typeof startIndex === "string" && PLANT_START_DIGITS.test(startIndex)) {
+    parsed = Number(startIndex);
+    // A digit string long enough to lose precision is not an index anyone can resume at.
+    if (!Number.isSafeInteger(parsed)) return "bad-start";
+  } else {
+    return "bad-start";
+  }
   return parsed > population ? "bad-start" : null;
 };
 

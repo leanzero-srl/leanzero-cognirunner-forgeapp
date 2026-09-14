@@ -1681,6 +1681,55 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     }
     ok((await countPrefix(PLANT723)) === 0, "F-723: …and none of those refusals touched the keyspace");
 
+    /* ═════ F-746 — `Number()` IS NOT "IS IT AN INTEGER", AND `""` WAS THE EXPENSIVE ONE ═════
+     *
+     * The judge ran the caller's value through JavaScript's most forgiving coercion, which
+     * admits four shapes nobody meant to send: `""` → 0, `"  3 "` → 3, `"3.0"` → 3,
+     * `"0x2"` → 2. `""` is the one that costs: it is what a form post, a shell
+     * `--start-index=$UNSET` or a JSON body built from a missing variable produces, it read
+     * as index 0, and index 0 is a FRESH plant — which DELETES every row at or past `n`
+     * before writing. A caller that meant to resume at 6 and sent nothing had the tail of
+     * its own population destroyed under `ok: true`.
+     *
+     * Driven over a REAL population, so the refusal is measured by what survives. ── */
+    await purge();
+    const seeded746 = await fault.plantHarnessFaults({ n: 9, expired: true, maxMs: 20_000 });
+    ok(seeded746.planted === 9 && (await countPrefix(PLANT723)) === 9,
+      `(fixture) a 9-row population for the coercions to be judged against (planted ${seeded746.planted})`);
+
+    for (const junk of ["", "  3 ", "3.0", "0x2", "+3", "3e0", " ", "\t"]) {
+      const bad = await fault.plantHarnessFaults({ n: 5, startIndex: junk, expired: true, maxMs: 20_000 });
+      ok(bad.ok === false && bad.reason === "bad-start",
+        `F-746: a supplied \`startIndex\` of ${JSON.stringify(junk)} is \`bad-start\`, never a number \`Number()\` was willing to invent (got ${JSON.stringify({ ok: bad.ok, reason: bad.reason })})`);
+    }
+    ok((await countPrefix(PLANT723)) === 9,
+      `F-746: …and NONE of them ran as a fresh plant of 5, which would have deleted rows 5..8 of a population the caller still wanted (rows ${await countPrefix(PLANT723)})`);
+
+    /* The numbers `Number.isInteger` let through that are not indexes either. */
+    for (const junk of [Infinity, -Infinity, 1e21, Number.MAX_SAFE_INTEGER + 2, -0.5]) {
+      ok(fault.plantStartRefusal(junk, 500) === "bad-start",
+        `F-746: …and a NUMBER that is not a non-negative SAFE integer is refused too (${String(junk)})`);
+    }
+    ok(fault.plantStartRefusal("99999999999999999999", 500) === "bad-start",
+      "F-746: …including a digit string long enough to lose precision, which is not an index anyone can resume at");
+
+    /* ── THE NEGATIVE CONTROL: the two shapes that ARE accepted, and they still are. A digit
+     * string is how a JSON door spells a number, and refusing it would break every resumed
+     * POST this repo makes. ── */
+    ok(fault.plantStartRefusal("3", 5) === null && fault.plantStartRefusal("0", 5) === null
+      && fault.plantStartRefusal("5", 5) === null && fault.plantStartRefusal(3, 5) === null,
+      "F-746 (negative control): a plain digit string and a plain non-negative integer are the two accepted shapes");
+    const resumedStr = await fault.plantHarnessFaults({ n: 9, startIndex: "9", expired: true, maxMs: 20_000 });
+    ok(resumedStr.ok === true && resumedStr.noop === true && resumedStr.startIndex === 9,
+      `F-746 (negative control): …and a digit-string start really does drive the lever (got ${JSON.stringify({ ok: resumedStr.ok, startIndex: resumedStr.startIndex })})`);
+    ok((await countPrefix(PLANT723)) === 9, "F-746 (negative control): …without disturbing the population");
+    await purge();
+
+    ok(/const PLANT_START_DIGITS = \/\^\\d\+\$\/;/.test(faultCode),
+      "F-746.SOURCE: the accepted string grammar is a named constant, not a coercion");
+    ok(!/const parsed = Number\(startIndex\);\n  if \(!Number\.isInteger\(parsed\)/.test(faultCode),
+      "F-746.SOURCE: …and the blanket `Number()` judgement is gone");
+
     /* THE NEGATIVE CONTROL: ABSENT is not junk. A first POST carries no `startIndex` at all
      * and must still be the fresh plant every driver in this repo opens with. */
     for (const absent of [undefined, null]) {

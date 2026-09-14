@@ -61,6 +61,14 @@
  * `JSON.stringify(roster).slice(0, 300)` in another; a key-walk alone would mask the
  * first and miss the second. Drivers that slice must redact BEFORE slicing, or a
  * truncated address escapes under the cut.
+ * F-662 / F-663 — ONE EMAIL RULE, AND `key=` IS NOT A CREDENTIAL NAME. Two drifts in the
+ * same file's contract, landed in the same range that created it. A driver kept a SECOND,
+ * NARROWER email regex, so the two disagreed about what a mask IS — and the narrow one ran
+ * first and consumed the input, which means the shared rule could only fail to match what
+ * the local one had already rewritten. And the query rule masked `key=` on ANY url,
+ * including the harness's own `?what=kvs&key=<kvs key>`: the identifier an evidence line
+ * exists to record came out as `key=[REDACTED]`. The local mask is deleted; `key=` is now
+ * decided by the VALUE's shape, never by the parameter's name.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
 export const REDACTED = "[REDACTED]";
@@ -90,15 +98,55 @@ const SECRET_VALUE = /(sk-[A-Za-z0-9_\-]{8,}|ghp_[A-Za-z0-9]{16,}|github_pat_[A-
  * `url` key is masked only for `atlassian-dev.net` hosts. The `[?&]` anchor keeps this
  * off ordinary prose ("the key=value pair"); the parameter NAME is kept and only the
  * VALUE is masked, so the evidence still says which credential was in play.
+ *
+ * F-663 — `key` IS NOT ON THIS LIST ANY MORE. It was, and it clobbered the harness's own
+ * KVS door: every driver reads storage through `?what=kvs&key=<kvs key>`, so the
+ * IDENTIFIER the evidence exists to record — `app_admins`, `job:<id>`,
+ * `COGNIRUNNER_MEMORY_SETTINGS` — came out as `key=[REDACTED]` and a reader could not tell
+ * which rule, job or slot a FAIL was about. Generic `?key=<api key>` parameters are real
+ * too, so `key=` is still masked — but by the VALUE's SHAPE, below, not by its name.
  */
-const SECRET_QUERY = /([?&](?:token|secret|key|api[_-]?key|apikey|password|auth|access_token)=)[^&\s"'<>\\]+/gi;
+const SECRET_QUERY = /([?&](?:token|secret|api[_-]?key|apikey|password|auth|access_token)=)[^&\s"'<>\\]+/gi;
+
+/**
+ * F-663 — `?key=` / `&key=`, masked ONLY when the VALUE looks like a credential.
+ *
+ * The discriminator is the value's shape:
+ *   - a known credential PREFIX (`sk-`, `ghp_`, `github_pat_`, `ATATT`, `xoxb-`, `cgr_`), or
+ *   - >= 20 characters of pure base64/hex alphabet.
+ * ANY `_`, `:`, `-`, `.` or `%` in the value makes it a NAME, not a credential: every KVS
+ * key this harness reads carries one (`app_admins`, `doc_repo:<id>`, `pf_code:<id>:<hash>`,
+ * `COGNIRUNNER_MEMORY_SETTINGS`, and `job:<uuid>` which arrives URL-encoded as `job%3A…`).
+ * Credentials on the base64URL alphabet (`-`/`_`) are not lost by that exclusion: they are
+ * caught by their prefix here, and by `SECRET_VALUE`, which runs BEFORE this rule.
+ */
+const KEY_QUERY = /([?&]key=)([^&\s"'<>\\]+)/gi;
+const CREDENTIAL_PREFIX = /^(?:sk-|ghp_|github_pat_|ATATT|xoxb-|cgr_)/;
+
+export function looksLikeCredentialValue(v) {
+  const s = String(v == null ? "" : v);
+  if (CREDENTIAL_PREFIX.test(s)) return true;
+  if (s.length < 20) return false;
+  if (/[^A-Za-z0-9+/=]/.test(s)) return false;                              // a separator => a NAME
+  if (/[+/=]/.test(s)) return true;                                         // real base64 alphabet/padding
+  if (/^[0-9a-f]{20,}$/.test(s) || /^[0-9A-F]{20,}$/.test(s)) return true;  // hex
+  return /[a-z]/.test(s) && /[A-Z]/.test(s) && /[0-9]/.test(s);             // mixed case + digits
+}
 
 /**
  * F-652 — PII. An email ANYWHERE in a string, and the keys that carry one.
  * `+`-tagged locals (`mihai.perdum+contractor2025@…`) are in scope on purpose: that
  * is the exact namesake shape the Permissions tab renders.
  */
-const EMAIL = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+/*
+ * F-662 — THE LOCAL PART IS RFC-ISH, NOT A GUESS. `perm-discriminator-live.mjs` carried
+ * its OWN `EMAIL_RE` whose local-part class had no `'`, so `o'brien@tenant.com` came out
+ * of the driver's mask as `o'b***@tenant.com` — a partial address this rule could then no
+ * longer match, because `*` is not a legal local-part character. The local mask is gone
+ * and the class below is the RFC 5322 `atext` set, so there is ONE answer to "what is an
+ * address" and it lives here.
+ */
+const EMAIL = /[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 const PII_KEY = /^(email|emailaddress|email_address|mail|useremail|user_email)$/i;
 
 /**
@@ -143,6 +191,7 @@ export function redactString(s) {
     .replace(DEV_URL, REDACTED)
     .replace(SECRET_VALUE, REDACTED)
     .replace(SECRET_QUERY, `$1${REDACTED}`)
+    .replace(KEY_QUERY, (m, pre, val) => (looksLikeCredentialValue(val) ? `${pre}${REDACTED}` : m))
     .replace(EMAIL, maskEmail);
 }
 

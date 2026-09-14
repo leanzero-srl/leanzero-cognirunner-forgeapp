@@ -16,8 +16,9 @@
  * row with a KVS read through the hook.
  *
  * PII. Jira may return `emailAddress`. Every email is masked to `<initial>***@<domain>`
- * before it reaches the console or the evidence file — by hand, here, because
- * `lib/redact.mjs` is a SECRET redactor with no notion of PII (F-652).
+ * before it reaches the console or the evidence file, by `lib/redact.mjs` — which learned
+ * PII in F-652 and is now the ONLY home of that rule (F-662: this file used to carry a
+ * second, narrower one and ran it first).
  *
  * RESTORE. The roster is snapshotted in memory, the grant is removed through the same
  * UI, and the restore is proven by a byte compare of the KVS value.
@@ -39,27 +40,22 @@ const PROFILE = "/Users/mihaiperdum/Projects/forge-live-harness/.auth/profile";
 const OUT = new URL("../results/perm-discriminator", import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 
-/** PII mask: mihai@wolfaenpak.com -> m***@wolfaenpak.com. Applied to strings AND deeply. */
-const EMAIL_RE = /([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
-const maskEmails = (s) => (typeof s === "string" ? s.replace(EMAIL_RE, (_m, a, d) => `${a}***@${d}`) : s);
-function maskDeep(v, d = 0) {
-  if (v === null || v === undefined || d > 12) return v;
-  if (typeof v === "string") return maskEmails(redactString(v));
-  if (typeof v !== "object") return v;
-  if (Array.isArray(v)) return v.map((x) => maskDeep(x, d + 1));
-  const o = {};
-  for (const [k, val] of Object.entries(v)) o[k] = maskDeep(val, d + 1);
-  return o;
-}
-const J = (d) => JSON.stringify(maskDeep(d));
+/* F-662 — THERE IS NO LOCAL EMAIL MASK HERE ANY MORE.
+ * This driver used to carry its own `EMAIL_RE` (no `'` in the local part, a laxer domain)
+ * and ran it BEFORE `lib/redact.mjs`, so the two homes disagreed about what a mask IS and
+ * the narrow one always won: `o'brien@tenant.com` came out as `o'b***@tenant.com`, which
+ * the shared rule could no longer match because `*` is not a legal local-part character.
+ * `redactString` / `redactSecrets` are now the ONLY answer, here and at the file boundary.
+ */
+const J = (d) => JSON.stringify(redactSecrets(d));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
 const ev = { at: new Date().toISOString(), env: "dev", target: TARGET, checks: [] };
-const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s: maskEmails(s), ...(d ? { d: maskDeep(d) } : {}) }); console.log(`  PASS  ${maskEmails(s)}${d ? " " + J(d) : ""}`); };
-const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s: maskEmails(s), ...(d ? { d: maskDeep(d) } : {}) }); console.log(`  FAIL  ${maskEmails(s)}${d ? " " + J(d) : ""}`); };
-const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s: maskEmails(s), ...(d ? { d: maskDeep(d) } : {}) }); console.log(`  N/V   ${maskEmails(s)}${d ? " " + J(d) : ""}`); };
-const info = (s) => console.log(`        ${maskEmails(redactString(String(s)))}`);
+const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  PASS  ${redactString(s)}${d ? " " + J(d) : ""}`); };
+const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  FAIL  ${redactString(s)}${d ? " " + J(d) : ""}`); };
+const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s: redactString(s), ...(d ? { d: redactSecrets(d) } : {}) }); console.log(`  N/V   ${redactString(s)}${d ? " " + J(d) : ""}`); };
+const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 const readRes = async (res) => { let t = ""; try { t = await res.text(); } catch { return { status: 0, json: null, text: "" }; } let j = null; try { j = JSON.parse(t); } catch {} return { status: res.status, json: j, text: t }; };
 async function hook(body, method = "POST", qs = "") {
@@ -206,14 +202,14 @@ async function main() {
   if (pre && pre.role === null) PASS("the probe account holds NO app role - a genuine non-admin principal", { role: pre.role });
   else FAIL("the probe account already holds a role - the non-admin arm is not genuine", { answer: J(pre) });
   const su = await invoke("searchUsers", { query: "Mihai" }, nonAdmin);
-  ev.searchUsersHook = { status: su.status, body: maskEmails(su.text).slice(0, 300) };
-  info(`searchUsers via hook (non-admin) -> ${su.status} ${maskEmails(su.text).slice(0, 200)}`);
+  ev.searchUsersHook = { status: su.status, body: redactString(su.text).slice(0, 300) };
+  info(`searchUsers via hook (non-admin) -> ${su.status} ${redactString(su.text).slice(0, 200)}`);
   if (su.json && su.json.success === false && su.json.reason === "no-permission" && !(su.json.users || []).length) {
     PASS("F-648: the admin gate answers first - success:false, reason:'no-permission', no users", { reason: su.json.reason, needsRole: su.json.needsRole });
   } else if (su.status === 400 && /not allowlisted/.test(su.text)) {
     NV("F-648 admin-gate arm: `searchUsers` is NOT on the dev hook's invokeResolver allow-list, so no live call can choose a non-admin principal. Offline-proven only (scripts/search-users.test.mjs).", { hookAnswer: su.text.slice(0, 120) });
   } else {
-    FAIL("F-648: the non-admin answer is neither the refusal nor the allow-list rejection", { status: su.status, body: maskEmails(su.text).slice(0, 200) });
+    FAIL("F-648: the non-admin answer is neither the refusal nor the allow-list rejection", { status: su.status, body: redactString(su.text).slice(0, 200) });
   }
   NV("F-648 fail-CLOSED (429/5xx) arm: there is no hook lever that makes Jira's /user/search fail, and this run may not deploy one. Offline-proven only (search-users.test.mjs drives 403/429/500 + a thrown fetch through the mock).");
 
@@ -221,7 +217,7 @@ async function main() {
   console.log("\nSTEP B - F-647: what does an admin actually SEE for the three namesakes?");
   const search = await readSearchRows("Mihai", "01-search-rows.png");
   ev.searchRows = search.rows;
-  for (const r of search.rows) info(`row ${r.i}${r.disabled ? " (on roster)" : ""}: name="${r.name}" email=${r.emailShown ? maskEmails(r.emailShown) : "(absent)"} idChip=${r.idShown || "(absent)"} idTitle=${r.idTitle || "(absent)"}`);
+  for (const r of search.rows) info(`row ${r.i}${r.disabled ? " (on roster)" : ""}: name="${r.name}" email=${r.emailShown ? redactString(r.emailShown) : "(absent)"} idChip=${r.idShown || "(absent)"} idTitle=${r.idTitle || "(absent)"}`);
   if (search.err) info(`search error box: "${search.err}"`);
   if (search.rows.length >= 2) PASS(`the picker returned ${search.rows.length} namesake rows for "Mihai" - the F-645 ambiguity is reproducible`, { rows: search.rows.length });
   else FAIL("fewer than two rows came back; the namesake case is not reproduced", { rows: search.rows.length });
@@ -239,10 +235,10 @@ async function main() {
   if (withEmail.length === 0) {
     NV("F-647 EMAIL branch: Jira returned NO emailAddress for any of the namesake rows on this site (GDPR/profile visibility), so the email discriminator cannot be exercised live here. The id-segment fallback is what an admin sees, and it is confirmed above.", { rows: search.rows.length });
   } else {
-    PASS(`Jira DOES return emailAddress: ${withEmail.length}/${search.rows.length} rows render an email`, { rowsWithEmail: withEmail.map((r) => ({ i: r.i, email: maskEmails(r.emailShown) })) });
+    PASS(`Jira DOES return emailAddress: ${withEmail.length}/${search.rows.length} rows render an email`, { rowsWithEmail: withEmail.map((r) => ({ i: r.i, email: redactString(r.emailShown) })) });
     for (const r of withEmail) {
-      if (r.idShown) PASS(`row ${r.i}: email AND id chip are shown together - the F-647 suppression is gone`, { email: maskEmails(r.emailShown), chip: r.idShown });
-      else FAIL(`row ${r.i}: an email row SUPPRESSES the id chip - F-647 is live`, { email: maskEmails(r.emailShown) });
+      if (r.idShown) PASS(`row ${r.i}: email AND id chip are shown together - the F-647 suppression is gone`, { email: redactString(r.emailShown), chip: r.idShown });
+      else FAIL(`row ${r.i}: an email row SUPPRESSES the id chip - F-647 is live`, { email: redactString(r.emailShown) });
     }
   }
 
@@ -258,7 +254,7 @@ async function main() {
     else {
       PASS("the ROW FOR THE TARGET ACCOUNT IS IDENTIFIABLE FROM THE UI ALONE (id chip/title), which is exactly what F-645 said was impossible", { rowIndex: idx, chip: seg(TARGET).slice(0, 8) });
       clicked = await grantRow(idx);
-      info(`clicked row ${idx}: email=${clicked.email ? maskEmails(clicked.email) : "(absent)"} idChip=${clicked.id}`);
+      info(`clicked row ${idx}: email=${clicked.email ? redactString(clicked.email) : "(absent)"} idChip=${clicked.id}`);
       const after = await rosterRaw();
       const added = after.filter((r) => !before.includes(typeof r === "string" ? r : r.accountId));
       ev.added = added;
@@ -269,14 +265,14 @@ async function main() {
       else FAIL("the grant did not land on the intended account", { added: J(added) });
 
       if (row) {
-        if (row.emailAddress) PASS("app_admins stored `emailAddress` on the roster row - the roster can repeat what the admin clicked", { emailAddress: maskEmails(row.emailAddress) });
-        else if (clicked.email) FAIL("the search row showed an email but app_admins stored NONE - the two namespaces are still split", { clickedEmail: maskEmails(clicked.email) });
+        if (row.emailAddress) PASS("app_admins stored `emailAddress` on the roster row - the roster can repeat what the admin clicked", { emailAddress: redactString(row.emailAddress) });
+        else if (clicked.email) FAIL("the search row showed an email but app_admins stored NONE - the two namespaces are still split", { clickedEmail: redactString(clicked.email) });
         else NV("app_admins stored no `emailAddress` because Jira never returned one for this account - nothing to persist", { accountId: seg(TARGET) });
       }
 
       const cards = await readRosterCards("04-roster-card.png");
       ev.rosterCards = cards;
-      for (const c of cards) info(`card ${c.i}: email=${c.emailShown ? maskEmails(c.emailShown) : "(absent)"} idChip=${c.idShown || "(absent)"}`);
+      for (const c of cards) info(`card ${c.i}: email=${c.emailShown ? redactString(c.emailShown) : "(absent)"} idChip=${c.idShown || "(absent)"}`);
       const card = cards.find((c) => c.idTitle === TARGET || (c.idShown && seg(TARGET).startsWith(c.idShown)));
       if (!card) FAIL("no roster card carries the granted account's id - the roster surface has no discriminator", { cards: cards.length });
       else {
@@ -284,8 +280,8 @@ async function main() {
         if (card.idTitle === TARGET) PASS("...and the card's id title is the FULL account id (no KVS read needed to recover it)", { titleTail: card.idTitle.slice(-12) });
         else FAIL("the card's id title is not the full account id", { title: card.idTitle });
         if (clicked.email) {
-          if (card.emailShown && card.emailShown === clicked.email) PASS("the roster card repeats the SAME email the admin clicked", { email: maskEmails(card.emailShown) });
-          else FAIL("the roster card does not repeat the clicked email - F-647 verbatim", { clicked: maskEmails(clicked.email), card: card.emailShown ? maskEmails(card.emailShown) : null });
+          if (card.emailShown && card.emailShown === clicked.email) PASS("the roster card repeats the SAME email the admin clicked", { email: redactString(card.emailShown) });
+          else FAIL("the roster card does not repeat the clicked email - F-647 verbatim", { clicked: redactString(clicked.email), card: card.emailShown ? redactString(card.emailShown) : null });
         } else {
           NV("the email half of the roster card cannot be checked: no email was available on the search row either", {});
         }
@@ -295,7 +291,7 @@ async function main() {
     console.log("\nRESTORE");
     if (granted) {
       const i = (await rosterIds()).indexOf(TARGET);
-      if (i >= 0) { const r = await removeRosterIndex(i); info(`removed roster card #${i} (${maskEmails(r.card)})`); }
+      if (i >= 0) { const r = await removeRosterIndex(i); info(`removed roster card #${i} (${redactString(r.card)})`); }
       else info("the granted row is already gone");
     }
     const end = await rosterRaw();
@@ -306,7 +302,7 @@ async function main() {
     if (endRole && endRole.role === null) PASS("...and checkIsAdmin reports the second account back to NO role (second read through the product)", { role: endRole.role });
     else FAIL("the second account still holds a role", { answer: J(endRole) });
 
-    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(maskDeep(ev)), null, 2)); // F-656: the shared redactor is the gate, the local mask is belt-and-braces
+    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2)); // F-656/F-662: the shared redactor is the ONLY gate
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
     if (fails > 0) process.exitCode = 1;
   }

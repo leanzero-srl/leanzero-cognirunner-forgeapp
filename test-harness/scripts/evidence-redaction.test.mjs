@@ -1697,6 +1697,84 @@ ok(guardedDrivers.length === liveFiles.length,
     `F-739: README.md lists EXACTLY the words in MUTATION_HARMS, in order — guard: [${MUTATION_WORDS.join(", ")}] README: [${(readmeWords || []).join(", ")}]`);
 }
 
+/* ── 4h. F-741 — A DRIVER THAT CAN CHOOSE ITS TENANT MAY NOT NAME ONE IN A STRING ──
+   `va-receipt-copy-live.mjs` printed "on STAGING" and "hook reachable on staging" from three
+   hard-coded literals while `--env=dev` moved the run to dev and `evidence.json` recorded
+   `env: "dev"` beside them. A reader triaging that FAIL looks at the wrong tenant — and it
+   was residue of F-714, which fixed the same split ONE LINE AT A TIME in the same file.
+
+   Fixing the three literals would have scheduled the recurrence, so the directory was
+   searched: FOUR MORE drivers had it. `coder-pin-kept-live.mjs` and `coder-skills-live.mjs`
+   take `--env` and DISCARD `envName` entirely, then say STAGING in a banner and in three
+   assertion sentences; `va-pinned-survival-live.mjs` and `va-compaction-live.mjs` BIND
+   `ENV_NAME` at the guard call and then do not use it — the latter in the sentence that tells
+   an operator which `forge logs -e <env>` to read, which sends them to the other tenant's
+   logs. One rule, six homes.
+
+   THE COHORT IS DRIVERS WITH A CHOICE. A driver pinned by `forceEnv` (F-735) or declaring
+   through the dev-only door (F-733) has exactly one tenant, so the literal cannot lie and
+   naming it is just prose. The discriminator is therefore "calls `requireEnvAck` and is not
+   pinned", which is the same condition under which the guard itself resolves a row.
+
+   PROSE IS EXEMPT, as everywhere else here: a docblock explaining that a flow only exists on
+   one environment is documentation, not output. The scan reads code. */
+{
+  const TENANT_IN_STRING = /["'`][^"'`\n]*(?<![A-Za-z_])(STAGING|staging|DEV)(?![A-Za-z_])[^"'`\n]*["'`]/;
+  /** The legitimate homes, removed before the scan: the guard's own options, the one-off
+   *  env-id/url readers that take an environment BY NAME on purpose, the `.env` variable
+   *  name, and `--env=` in a usage line. Each is the mapping being READ, not retyped. */
+  const stripLegitimate = (l) => l
+    .replace(/\b(?:defaultEnv|forceEnv)\s*:\s*"(?:dev|staging)"/g, "")
+    .replace(/\b(?:forgeEnvId|hookUrlFor|hookUrlVar)\(\s*"(?:dev|staging)"\s*\)/g, "")
+    .replace(/\bSTAGING_TESTSTATE_URL\b/g, "")
+    .replace(/--env=(?:dev|staging)/g, "")
+    /* A FLAG NAME IS NOT A CLAIM ABOUT THIS RUN. `va-shadow-door-live.mjs` reads
+       `arg("staging-envid", …)`, an override F-732 deliberately gave its own name so that
+       `--envid` could keep the single meaning "confirm the settled row". The literal names
+       an OPTION, not the tenant the run is on, and no operator reads it as output. */
+    .replace(/\barg\(\s*["'][^"']*["']/g, "arg(");
+  function tenantLiterals(code) {
+    return code.split("\n").map((l, i) => ({ l, n: i + 1 }))
+      .filter(({ l }) => TENANT_IN_STRING.test(stripLegitimate(l)))
+      .map(({ n }) => n);
+  }
+  /* POSITIVE CONTROLS — verbatim from the five files, before they were fixed. */
+  ok(tenantLiterals('  console.log(`\\nF-577 — THE RECEIPT COPY, on STAGING, agent ${NAME}\\n`);').length === 1,
+    "POSITIVE CONTROL (F-741): the banner va-receipt-copy-live.mjs printed on every run, including --env=dev");
+  ok(tenantLiterals('  PASS("hook reachable on staging");').length === 1,
+    "POSITIVE CONTROL (F-741): …and the PASS line beside it");
+  ok(tenantLiterals('  check("staging starts on the Coder edition with a NON-frontier agent model",').length === 1,
+    "POSITIVE CONTROL (F-741): …and an ASSERTION SENTENCE naming the tenant, which coder-skills-live.mjs had three of");
+  ok(tenantLiterals('  info("asserted from `forge logs -e staging` after this run");').length === 1,
+    "POSITIVE CONTROL (F-741): …and the sentence telling an operator WHICH logs to read — the one that sends them to the other tenant");
+  /* NEGATIVE CONTROLS — the mapping being read, and the fixed form. */
+  ok(tenantLiterals('const r = requireEnvAck(argv, { faults: [], mutates: [], defaultEnv: "staging" });').length === 0,
+    "NEGATIVE CONTROL (F-741): `defaultEnv` is the guard's own option — where a free choice LANDS is not a claim about where this run went");
+  ok(tenantLiterals('const ADMIN = forgeEnvId("staging");').length === 0,
+    "NEGATIVE CONTROL (F-741): reading the table BY NAME is the one home being used, not a second one");
+  ok(tenantLiterals('const u = env.STAGING_TESTSTATE_URL;').length === 0,
+    "NEGATIVE CONTROL (F-741): the .env VARIABLE NAME is not a tenant name in a sentence");
+  ok(tenantLiterals('  console.log(`hook reachable on ${ENV_NAME}`);').length === 0,
+    "NEGATIVE CONTROL (F-741): the fixed form — the name comes from the settled row");
+  ok(tenantLiterals('const STAGING_ENV = arg("staging-envid", forgeEnvId("staging"));').length === 0,
+    "NEGATIVE CONTROL (F-741): a FLAG NAME is an option, not a claim about this run — F-732 gave va-shadow-door-live.mjs's two-environment override its own name on purpose");
+  ok(tenantLiterals('const DEVICE = "development";').length === 0,
+    "NEGATIVE CONTROL (F-741): `dev` inside a longer word is not the environment — the boundary is checked on both sides");
+
+  const offenders = [];
+  let scanned = 0;
+  for (const f of liveFiles) {
+    const code = stripComments(readFileSync(path.join(here, f), "utf8"));
+    if (!/requireEnvAck\s*\(/.test(code)) continue;      // dev-only door: one tenant, cannot lie
+    if (/forceEnv\s*:/.test(code)) continue;              // pinned by the library (F-735): likewise
+    scanned++;
+    for (const n of tenantLiterals(code)) offenders.push(`${f}:${n}`);
+  }
+  ok(scanned >= 20, `F-741: the rule has a real cohort — ${scanned} driver(s) can resolve more than one environment`);
+  ok(offenders.length === 0,
+    `F-741: no driver with a CHOICE of tenant names one in a string — the name comes from the guard's settled row (at: ${offenders.join(", ")})`);
+}
+
 /* ── 4f-2. F-713 — THE SCOPE RULE HAS MOVED OUT OF THIS FILE (F-728) ────────────
    It lived HERE and in `scripts/live-driver-scope.test.mjs` at once — F-713 shipped the
    F-711 rule in two homes in one commit — and the two homes did not read the guard the same

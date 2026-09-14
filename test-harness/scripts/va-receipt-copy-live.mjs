@@ -34,9 +34,11 @@
  *
  * Usage (from test-harness/):  node scripts/va-receipt-copy-live.mjs [--env=dev|staging] [--keep]
  *   `--env` moves BOTH halves together — the web trigger AND the admin page the browser
- *   opens. It defaults to staging; it mutates the tenant, so do not point it at dev
- *   casually (this driver creates a virtual agent and rewrites a model slot).
- * Env: STAGING_TESTSTATE_URL + HARNESS_SECRET + HARNESS_ADMIN_ACCOUNT_ID + the JIRA_* trio.
+ *   opens — AND every tenant name this driver prints (F-741). It defaults to staging; it
+ *   mutates the tenant, so do not point it at dev casually (this driver creates a virtual
+ *   agent and rewrites a model slot), and `--env=dev` asks for `--i-know-dev-is-shared`.
+ * Env: STAGING_TESTSTATE_URL (or TESTSTATE_URL for `--env=dev`) + HARNESS_SECRET
+ *   + HARNESS_ADMIN_ACCOUNT_ID + the JIRA_* trio.
  */
 import { requireEnvAck } from "../lib/shared-env-guard.mjs";
 import fs from "node:fs";
@@ -146,9 +148,14 @@ async function tick(jobId, label, waitS = 180) {
 }
 
 async function main() {
-  console.log(`\nF-577 — THE RECEIPT COPY AN ADMINISTRATOR READS, on STAGING, agent ${NAME}\n`);
-  if ((await hook(null, "GET")).status !== 200) throw new Error("the staging hook is not reachable");
-  PASS("hook reachable on staging");
+  /* F-741 — THE TENANT NAME HAS ONE HOME AND IT IS `ENV_NAME`. These three lines said
+     STAGING/staging outright, so a `--env=dev` run printed "on STAGING" and "hook reachable
+     on staging" while it talked to dev — and `evidence.json` recorded `env: "dev"` beside
+     them. A reader triaging the FAIL looks at the wrong tenant, which is residue of the very
+     split-brain F-714 fixed one line at a time at :46-49. */
+  console.log(`\nF-577 — THE RECEIPT COPY AN ADMINISTRATOR READS, on ${ENV_NAME.toUpperCase()}, agent ${NAME}\n`);
+  if ((await hook(null, "GET")).status !== 200) throw new Error(`the ${ENV_NAME} hook is not reachable`);
+  PASS(`hook reachable on ${ENV_NAME}`);
 
   const slot0 = await kvs(AGENT_MODEL_SLOT);
   restore.agentModelSlot = slot0;

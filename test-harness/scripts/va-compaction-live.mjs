@@ -436,7 +436,9 @@ async function main() {
   else FAIL(`the backoff tick is marked ok:false: ${JSON.stringify(r3 && r3.skipped)}`);
   if (!(r3 && r3.compacted)) PASS("no compacted{} block on the backoff tick — absent means 'no turn was bought', which is exactly what a backoff is");
   else FAIL(`the backoff tick carries a compacted block, so a turn WAS bought: ${JSON.stringify(r3.compacted)}`);
-  info("whether a model call was made is asserted from `forge logs -e staging` after this run, not from here.");
+  /* F-741 — the command this sentence tells an operator to RUN has to name the tenant the
+     run actually used, or they read the logs of the other one. */
+  info(`whether a model call was made is asserted from \`forge logs -e ${ENV_NAME}\` after this run, not from here.`);
 }
 
 main()

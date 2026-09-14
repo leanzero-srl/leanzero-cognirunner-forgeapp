@@ -365,10 +365,18 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     `the row LIST caps at ${fault.HARNESS_FAULT_SWEEP_MAX_ROWS} while the scanned COUNTER counts all ${TOTAL} (got ${JSON.stringify({ scanned: big.scanned, rows: big.rows.length, rowsTruncated: big.rowsTruncated })})`);
   ok(big.deleted === 0 && (await storage.get(keys[0])) !== undefined, "…and a dry run over 400 rows still deletes none of them");
 
-  // INJECTED DELETE LATENCY — the thing the mock has never had. Only the rows past the first
-  // page are slow, so page 0 completes and the budget is spent inside page 1, every run.
+  /* F-674 - THE BREAKER'S FIXTURE: LATENCY ON *ALL* ROWS.
+   *
+   * The F-673 fixture injected delete latency only on rows AFTER page 0, which is exactly
+   * why the suite could not see F-674: page 0 always completed, so the budget only ever
+   * tripped on a page whose `resume` cursor was a real token. Slow down EVERY row and the
+   * break lands on page 0 of a fresh call, where the old code's `resume` was the caller's
+   * own `null` start cursor - and the sweep answered `truncated: true` with `cursor: null`,
+   * which every `while (r.cursor)` caller reads as "finished". Measured by the breaker:
+   * `deleted: 20, truncated: true, cursor: null` with 370 of 400 rows still in the store.
+   */
   const realDelete = kvs.delete;
-  const slow = new Set(keys.slice(fault.HARNESS_FAULT_SWEEP_PAGE_SIZE));
+  const slow = new Set(keys);
   let latencyMs = 30;
   kvs.delete = async function latentDelete(key) {
     if (slow.has(key) && latencyMs > 0) await new Promise((r) => setTimeout(r, latencyMs));
@@ -378,23 +386,88 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   const first = await fault.sweepHarnessFaults({ maxMs: 60 });
   ok(first.ok === true && first.truncated === true && first.reason === "budget",
     `a sweep that runs out of time RETURNS, truncated with reason "budget" (got ${JSON.stringify({ ok: first.ok, truncated: first.truncated, reason: first.reason })})`);
-  ok(first.deleted >= fault.HARNESS_FAULT_SWEEP_PAGE_SIZE && first.deleted < TOTAL,
-    `…and reports the PARTIAL work it really did — not zero, not all of it (deleted ${first.deleted} of ${TOTAL})`);
+  ok(first.deleted > 0,
+    `PROGRESS IS GUARANTEED: the budget is honoured only AFTER at least one delete batch lands, so a break on page 0 still moves (deleted ${first.deleted})`);
+  ok(typeof first.cursor === "string" && first.cursor.length > 0,
+    `…and the cursor is NEVER null while rows remain - the F-674 defect was exactly this answer carrying null (got ${JSON.stringify(first.cursor)})`);
   ok(first.scanned >= first.deleted && Array.isArray(first.rows) && first.rows.length > 0,
     "…with the rows it had already listed, which the old all-or-nothing answer threw away");
-  ok(typeof first.cursor === "string" && first.cursor.length > 0,
-    `…and the CURSOR to carry on from (got ${JSON.stringify(first.cursor)})`);
   ok((await storage.get(keys[TOTAL - 1])) !== undefined, "…the rows it never reached are still there, which is what makes resuming meaningful");
 
-  // THE SECOND CALL FINISHES IT. Same action, the returned cursor, no special resume path.
+  // A RESUMED call must make progress TOO. The old code handed back the very cursor it was
+  // given with nothing deleted whenever its own page 0 ran out of budget - a loop that
+  // never converges. Its page 0 is the page that previously ran out, so this is the case.
+  const second = await fault.sweepHarnessFaults({ maxMs: 60, cursor: first.cursor });
+  ok(second.ok === true && second.deleted > 0,
+    `…and a RESUMED call deletes too - progress per call, not just per sweep (deleted ${second.deleted})`);
+  ok(second.cursor !== null && typeof second.cursor === "string",
+    "…and still hands back a resumable token with hundreds of rows left");
+
+  /* F-677 - THE DELETE RATE IS THE APP'S OWN PUBLISHED ONE, IN ONE PAIR OF CONSTANTS.
+   * The sweep fired ten concurrent deletes with no pause while
+   * src/shared/knowledge-packs/forge-app-builder.js ships the measured rate to this app's
+   * own users: "batches of ~3 with ~200 ms pauses between rounds". A throttled delete is
+   * counted `failed` and the ROW SURVIVES, so the un-paced sweep answered ok:true over a
+   * keyspace it had not cleared. Asserted here against the pack text itself, so the two
+   * cannot drift apart without a suite saying so. */
+  const packText = readFileSync(new URL("../../src/shared/knowledge-packs/forge-app-builder.js", import.meta.url), "utf8");
+  ok(packText.includes("batches of **~3 with ~200 ms pauses**"),
+    "(fixture) the pack really does publish batches of ~3 with ~200 ms pauses - the source this rate is derived from");
+  ok(fault.KVS_DELETE_BATCH === 3 && fault.KVS_DELETE_PAUSE_MS === 200,
+    `deletes are paced at exactly that rate (got ${fault.KVS_DELETE_BATCH}/${fault.KVS_DELETE_PAUSE_MS})`);
+  ok(fault.HARNESS_FAULT_SWEEP_DELETE_CONCURRENCY === fault.KVS_DELETE_BATCH,
+    "…and the historical constant name is the SAME constant, so the rate has exactly one home");
+  ok(first.deleted <= fault.KVS_DELETE_BATCH,
+    `…and a 60 ms budget buys ONE paced batch, not ten unpaced deletes (deleted ${first.deleted})`);
+
+  /* THE PAUSE LIVES INSIDE THE BUDGET. Pacing must make a sweep do LESS per call, never
+   * overrun the trigger - so a caller's maxMs still bounds the wall clock even though every
+   * round now sleeps 200 ms. Measured, not asserted from the source. */
+  const paceT0 = Date.now();
+  const paced = await fault.sweepHarnessFaults({ maxMs: 400 });
+  const paceElapsed = Date.now() - paceT0;
+  ok(paced.budgetMs === 400 && paceElapsed < 400 + fault.KVS_DELETE_PAUSE_MS + 500,
+    `a paced sweep still honours its budget across the pauses (budget 400 ms, elapsed ${paceElapsed} ms)`);
+  ok(paced.deleted > 0 && paced.failed === 0,
+    `…and the paced rounds still land (deleted ${paced.deleted}, failed ${paced.failed})`);
+
+  // THE TOKEN ROUND-TRIPS, including the one value a raw KVS cursor cannot express.
+  ok(fault.decodeSweepCursor(first.cursor) === null,
+    "the resume token for \"the beginning of the keyspace\" decodes to a null KVS cursor - the value that used to be indistinguishable from \"finished\"");
+  ok(fault.decodeSweepCursor("harness_fault:git:x") === "harness_fault:git:x",
+    "…and a legacy RAW cursor from an older caller is still accepted verbatim");
+
   latencyMs = 0;
-  const second = await fault.sweepHarnessFaults({ cursor: first.cursor });
-  ok(second.ok === true && second.truncated === false && second.cursor === null,
-    `the continuation finishes and says so — truncated false, cursor null (got ${JSON.stringify({ truncated: second.truncated, cursor: second.cursor, reason: second.reason })})`);
-  let left = 0;
-  for (const key of keys) if ((await storage.get(key)) !== undefined) left++;
-  ok(left === 0, `…and the whole ${TOTAL}-row keyspace is clean across the two calls (still there: ${left})`);
+  for (const key of keys) await storage.delete(key);
   kvs.delete = realDelete;
+
+  /* F-674 - LOOP UNTIL NULL, AND IT TERMINATES WITH THE KEYSPACE EMPTY.
+   * The contract a caller actually writes. A smaller keyspace than the 400 above because
+   * the F-677 pacing is real wall-clock time (~200 ms per batch of 3) and this loop runs
+   * it for real rather than faking the clock.
+   */
+  const DRAIN = 30;
+  const drainKeys = [];
+  for (let i = 0; i < DRAIN; i++) {
+    const key = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_674", `d-${String(i).padStart(4, "0")}`);
+    drainKeys.push(key);
+    await storage.set(key, { count: 1, armedAt: stale, until: stale });
+  }
+  let token = null, calls = 0, drained = 0, ran = true;
+  while (ran) {
+    const r = await fault.sweepHarnessFaults({ maxMs: 500, cursor: token });
+    drained += r.deleted;
+    token = r.cursor;
+    calls++;
+    ran = token !== null;
+    if (calls > 200) break;
+  }
+  ok(calls <= 200 && token === null,
+    `a \`while (cursor)\` caller TERMINATES - ${calls} calls, and the last answer's cursor is null`);
+  let stillThere = 0;
+  for (const key of drainKeys) if ((await storage.get(key)) !== undefined) stillThere++;
+  ok(stillThere === 0 && drained === DRAIN,
+    `…with the whole ${DRAIN}-row keyspace actually EMPTY when it stops (deleted ${drained}, still there ${stillThere})`);
 
   // THE BUDGET ITSELF: a default, a ceiling no caller may raise past the 25 s trigger, and a
   // floor, so "maxMs: 0" is one check-and-stop rather than a loop that never checks.

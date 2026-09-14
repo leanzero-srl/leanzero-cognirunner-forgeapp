@@ -89,6 +89,9 @@ let pendingSetFaultWhen = null;
 // needs a get() that throws exactly once.
 let pendingGetFault = null;
 let pendingGetFaultWhen = null;
+// F-676 - the cursor value (if any) that `query().cursor(x).getMany()` refuses.
+let pendingCursorReject = null;
+export const KVS_INVALID_CURSOR_CODE = "INVALID_CURSOR";
 
 const storage = {
   async get(key) {
@@ -138,6 +141,25 @@ const storage = {
       limit(value) { cap = value; return query; },
       cursor(value) { after = value; return query; },
       async getMany() {
+        /*
+         * F-676 - A CURSOR KVS REFUSES. The mock's cursor is a plain key string and has
+         * never rejected anything, so no offline suite could answer the question F-676
+         * actually asks: what does a door do when `storage.query().cursor(x).getMany()`
+         * THROWS on a malformed or foreign token? Armed via `__rejectCursor`, this is the
+         * throw - shaped like ForgeKvsAPIError (name inherited from ForgeKvsError, a
+         * body-supplied `code`, `responseDetails`, `context`) exactly like the size and
+         * key-grammar refusals above. The CODE is a stand-in, not an observed one: what is
+         * measured here is that a cursor CAN throw, never which code the platform emits -
+         * so app code must treat any throw from the query as the same refusal.
+         */
+        if (pendingCursorReject !== null && after === pendingCursorReject) {
+          const error = new Error(`Invalid cursor '${after}'`);
+          error.name = "ForgeKvsError";
+          error.code = KVS_INVALID_CURSOR_CODE;
+          error.responseDetails = { status: 400, statusText: "Bad Request", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/query" };
+          error.context = { cursor: after };
+          throw error;
+        }
         const keys = [...store.keys()].filter(key => key.startsWith(prefix) && key > after).sort();
         const page = keys.slice(0, cap);
         return { results: page.map(key => ({ key, value: clone(store.get(key)) })), nextCursor: keys.length > cap ? page.at(-1) : undefined };
@@ -164,7 +186,14 @@ const storage = {
     return transaction;
   },
   // test helpers (not part of the real API)
-  __reset() { store.clear(); pendingSetFault = null; pendingSetFaultWhen = null; pendingGetFault = null; pendingGetFaultWhen = null; },
+  __reset() { store.clear(); pendingSetFault = null; pendingSetFaultWhen = null; pendingGetFault = null; pendingGetFaultWhen = null; pendingCursorReject = null; },
+  /*
+   * Make ONE cursor value poison (F-676): every `getMany()` carrying it throws until the
+   * arming is cleared with `__rejectCursor(null)`. Not one-shot, unlike the set/get faults:
+   * a bad token is bad every time it is presented, which is the property a resume loop has
+   * to survive, and a one-shot version would pass on the retry for the wrong reason.
+   */
+  __rejectCursor(value) { pendingCursorReject = typeof value === "string" && value ? value : null; },
   // Arm ONE throw from the next `set` — a transient fault, not the size ceiling.
   __failNextSet(error) {
     const fault = error instanceof Error ? error : new Error(String(error || "KVS write failed"));

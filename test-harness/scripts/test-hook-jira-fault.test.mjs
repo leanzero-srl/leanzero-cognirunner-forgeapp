@@ -413,8 +413,18 @@ process.env.HARNESS_SECRET = SECRET;
    * reach a time bound — so the ENUMERATION is given latency here, and `maxMs: 1` then makes
    * the stop land deterministically after the first page is fetched and before anything is
    * deleted, rather than racing the machine's clock granularity. */
-  const budgetKey = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_673", "d-door");
-  await storage.set(budgetKey, { count: 1, armedAt: new Date(Date.now() - 3_600_000).toISOString() });
+  /* F-674 — AND THE OUT-OF-BUDGET ANSWER MUST STILL HAVE MOVED. The old door test planted
+   * ONE row and asserted the starved sweep "deleted nothing" — which is the F-674 defect
+   * written down as an expectation: a call that lists a page, deletes nothing and hands back
+   * the cursor it was given (or, on a fresh call, `null`) is a loop that never converges. So
+   * the fixture plants MORE THAN ONE DELETE BATCH and the contract is the opposite one:
+   * progress first, budget second, and a token that is never null while rows remain. */
+  const budgetKeys = [];
+  for (let i = 0; i < 15; i++) {
+    const key = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_673", `d-door-${i}`);
+    budgetKeys.push(key);
+    await storage.set(key, { count: 1, armedAt: new Date(Date.now() - 3_600_000).toISOString() });
+  }
   const realQuery = kvs.query;
   kvs.query = function slowQuery(...args) {
     const q = realQuery.apply(this, args);
@@ -429,12 +439,70 @@ process.env.HARNESS_SECRET = SECRET;
   kvs.query = realQuery;
   ok(starved.status === 200 && starved.body.truncated === true && starved.body.reason === "budget",
     `an out-of-budget sweep still ANSWERS 200, truncated with reason "budget" (got ${JSON.stringify(starved.body && { status: starved.status, truncated: starved.body.truncated, reason: starved.body.reason })})`);
-  ok(starved.body.budgetMs === 1 && "cursor" in starved.body,
-    `…echoing the budget it honoured and carrying the resume cursor (got ${JSON.stringify({ budgetMs: starved.body.budgetMs, cursor: starved.body.cursor })})`);
-  ok((await storage.get(budgetKey)) !== undefined, "…and having stopped before the first page, it deleted nothing");
-  const resumed = await post({ action: "sweepHarnessFaults", cursor: starved.body.cursor });
-  ok(resumed.status === 200 && resumed.body.truncated === false && (await storage.get(budgetKey)) === undefined,
-    "…and POSTing that cursor back to the SAME action finishes the job");
+  ok(starved.body.budgetMs === 1 && typeof starved.body.cursor === "string" && starved.body.cursor.length > 0,
+    `…echoing the budget it honoured and carrying a NON-NULL resume cursor (got ${JSON.stringify({ budgetMs: starved.body.budgetMs, cursor: starved.body.cursor })})`);
+  ok(starved.body.deleted > 0,
+    `…and having honoured the budget only AFTER a delete batch landed, it MOVED (deleted ${starved.body.deleted})`);
+  let leftAfterStarve = 0;
+  for (const key of budgetKeys) if ((await storage.get(key)) !== undefined) leftAfterStarve++;
+  ok(leftAfterStarve > 0, `…with rows still to do, which is what makes the resume cursor meaningful (left ${leftAfterStarve})`);
+
+  let doorToken = starved.body.cursor, doorCalls = 0;
+  while (doorToken && doorCalls < 50) {
+    const r = await post({ action: "sweepHarnessFaults", cursor: doorToken });
+    ok(r.status === 200, "…every resumed POST answers 200");
+    doorToken = r.body.cursor;
+    doorCalls++;
+  }
+  let leftAfterDrain = 0;
+  for (const key of budgetKeys) if ((await storage.get(key)) !== undefined) leftAfterDrain++;
+  ok(doorToken === null && leftAfterDrain === 0,
+    `…and POSTing that cursor back to the SAME action until it answers null finishes the job (${doorCalls} calls, left ${leftAfterDrain})`);
+
+  /* F-676 — THE ONE CALLER-CONTROLLED VALUE THIS DOOR ADDED IS VALIDATED LIKE THE REST.
+   * `cursor` went straight into `storage.query().cursor(...)` behind nothing but a typeof
+   * check — the only input here with no allow-list, beside siblings that check an exact path
+   * and a 400-599 status range. And the POST branch has no try/catch of its own, so a KVS
+   * that REJECTS a malformed or foreign token threw out of the trigger and the caller got a
+   * platform 500 with no JSON body, where every other refusal on this door is a 400 with a
+   * reason — a resume loop cannot tell "bad token" from "the tenant is down". */
+  const badCursors = [
+    ["outside the opaque-token grammar", "../../etc/passwd"],
+    ["outside the grammar by one character", "abc def"],
+    ["over the 2 KB ceiling", "A".repeat(2100)],
+    ["whitespace, which is not a token", "   "],
+    ["not a string at all", 42],
+  ];
+  for (const [why, value] of badCursors) {
+    const r = await post({ action: "sweepHarnessFaults", cursor: value, dryRun: true });
+    ok(r.status === 400 && r.body && r.body.ok === false && r.body.reason === "bad-cursor",
+      `a cursor ${why} is REFUSED 400 bad-cursor, not a 500 with no body (got ${JSON.stringify({ status: r.status, body: r.body })})`);
+  }
+  // …and the refusal is a REFUSAL: the sweep never ran, so nothing was enumerated or deleted.
+  {
+    const victim = fault.harnessFaultKey(fault.HARNESS_FAULT_GIT_DISPATCH, "gc_676", "d-1");
+    await storage.set(victim, { count: 1, armedAt: new Date(Date.now() - 3_600_000).toISOString() });
+    const refused = await post({ action: "sweepHarnessFaults", cursor: "../../etc/passwd" });
+    ok(refused.status === 400 && (await storage.get(victim)) !== undefined,
+      "…and a refused cursor does no work at all — the expired row it would have swept is untouched");
+    await storage.delete(victim);
+  }
+
+  /* THE OTHER HALF: a cursor the GRAMMAR accepts that KVS ITSELF throws on. The offline
+   * mock's cursor was a plain key string that never rejected anything, which is exactly why
+   * no suite could answer this — `__rejectCursor` is the fixture that can. */
+  kvs.__rejectCursor("dGhpcy1pcy1ub3QteW91cnM=");
+  const rejected = await post({ action: "sweepHarnessFaults", cursor: "dGhpcy1pcy1ub3QteW91cnM=" });
+  kvs.__rejectCursor(null);
+  ok(rejected.status === 400 && rejected.body && rejected.body.ok === false && rejected.body.reason === "bad-cursor",
+    `when KVS itself THROWS on the cursor the door answers 400 bad-cursor with a body (got ${JSON.stringify({ status: rejected.status, body: rejected.body })})`);
+  ok(typeof rejected.body.error === "string" && rejected.body.error.length > 0,
+    "…carrying the platform's message, so a resume loop can tell a bad token from a dead tenant");
+  // A NULL or ABSENT cursor is not a bad one — the fresh-sweep case must keep working.
+  ok((await post({ action: "sweepHarnessFaults", cursor: null, dryRun: true })).status === 200
+    && (await post({ action: "sweepHarnessFaults", dryRun: true })).status === 200,
+    "…while an absent or explicitly null cursor is still just a fresh sweep");
+
   // A caller cannot buy more time than the trigger has: the clamp is the module's, not the door's.
   const greedy = await post({ action: "sweepHarnessFaults", maxMs: 600_000, dryRun: true });
   ok(greedy.body.budgetMs === fault.HARNESS_FAULT_SWEEP_MAX_MS,

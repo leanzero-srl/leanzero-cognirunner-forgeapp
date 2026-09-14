@@ -142,7 +142,35 @@ console.log("\n3 · F-735 — A PINNED ENVIRONMENT MAY NOT BE ARGUED WITH IN ITS
      whether the GUARD refused — `passedTheGuard` is "no REFUSING sentence was printed",
      which is exactly the property the finding is about and the only one an unconfigured
      machine can observe. */
-  const passedTheGuard = (r) => !/REFUSING to run/.test(r.err);
+  /* THE PREDICATE READS EVERY REFUSAL THIS GUARD CAN PRINT, NOT ONE OF THEM.
+   *
+   * It used to be `!/REFUSING to run/`, and the guard has TWO openers: the argv refusals say
+   * "REFUSING to run: …", the shared-tenant one says "REFUSING to point this driver at the
+   * SHARED dev tenant …". So a run that was REFUSED by the shared-dev branch was reported as
+   * having PASSED the guard. Measured on the pinned fixture below: exit 2, the body never
+   * ran, and the old predicate answered TRUE — the `acked`/`bareAcked` assertions would have
+   * stayed green with the acknowledgement path completely broken, which is the only thing
+   * they exist to catch. (Same class as F-772 step 6: a check that reads the wrong field
+   * announces a pass without ever looking.)
+   *
+   * `^REFUSING` at a line start covers both openers and any third; the exit code is asserted
+   * WITH it so a future refusal worded differently still cannot read as a pass — `die()`
+   * exits 2 and nothing else in these fixtures does. */
+  const passedTheGuard = (r) => !/^REFUSING/m.test(r.err) && r.code !== 2;
+
+  /* THE PREDICATE'S OWN POSITIVE CONTROL. Every "it passed the guard" assertion below is
+     only as good as this function, so it is shown to answer FALSE on a run that was in fact
+     refused — by the SHARED-TENANT branch specifically, the one the old predicate could not
+     read. Without this, the repair is itself unfalsifiable. */
+  {
+    const refused = run('requireEnvAck(process.argv.slice(2), { forceEnv: "dev", faults: ["dispatchDrop"], mutates: ["git"] });\nconsole.log("ARMED");', []);
+    ok(refused.code === 2 && !/ARMED/.test(refused.out),
+      "the control fixture IS refused — exit 2 and the body never runs");
+    ok(/SHARED dev tenant/.test(refused.err) && !/REFUSING to run/.test(refused.err),
+      "…by the shared-tenant branch, whose opener is 'REFUSING to point …', NOT 'REFUSING to run' — which is exactly why the old predicate could not see it");
+    ok(!passedTheGuard(refused),
+      "…and passedTheGuard answers FALSE on it. The old `!/REFUSING to run/` answered TRUE, so every acked assertion below would have stayed green with the acknowledgement path broken");
+  }
 
   const OLD = 'requireEnvAck([...process.argv.slice(2), "--env=dev"], { faults: ["dispatchDrop"], mutates: ["git"] });\nconsole.log("ARMED");';
   const bypass = run(OLD, ["--env=staging"]);

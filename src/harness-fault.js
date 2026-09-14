@@ -780,10 +780,16 @@ export const decodeSweepCursor = (token) => decodeSweepToken(token).cursor;
  *  · `failedResume` IS ALWAYS REPORTED while a failure is unresolved, however the call ended,
  *    and always as a TOKEN (never a bare cursor, so `null` means "none" and nothing else).
  *    POSTing it back as `cursor` is how a caller goes and finishes the job.
+ *
+ * F-696 — `unresolvedReason` EXISTS SO THE PLANT CAN SHARE THIS TAIL. The plant breaks on the
+ * same budget and owes the same `complete`, but the thing that can fail there is a WRITE, not
+ * a delete, and an answer that says "deletes-failed" over refused writes is a sentence no
+ * reader can act on. It is a parameter with the sweep's own word as its default, so the two
+ * drains are untouched and there is still exactly ONE place `complete` is decided.
  */
-export const sweepAnswerTail = ({ truncated, reason, cursor, unresolved, failedResume }) => {
+export const sweepAnswerTail = ({ truncated, reason, cursor, unresolved, failedResume, unresolvedReason = "deletes-failed" }) => {
   let stopped = truncated === true, why = reason, at = cursor;
-  if (unresolved && !stopped) { stopped = true; why = "deletes-failed"; at = failedResume; }
+  if (unresolved && !stopped) { stopped = true; why = unresolvedReason; at = failedResume; }
   // Resuming AT the failure IS the retry: the cursor already says everything `f` would.
   const carry = unresolved && !(stopped && at === failedResume);
   return {
@@ -999,8 +1005,25 @@ export const sweepHarnessFaults = async ({ dryRun = false, maxMs, cursor: startC
 export const HARNESS_FAULT_PLANT = "plant";
 /** The sub-prefix `clearPlantedFaults` is bound to. Derived, never retyped. */
 export const HARNESS_FAULT_PLANT_PREFIX = `${HARNESS_FAULT_KEY_PREFIX}${HARNESS_FAULT_PLANT}:`;
-/** How many rows one call may plant. Five pages of `HARNESS_FAULT_SWEEP_PAGE_SIZE`. */
+/** How big a planted POPULATION may get. Five pages of `HARNESS_FAULT_SWEEP_PAGE_SIZE`. */
 export const HARNESS_FAULT_PLANT_MAX = 500;
+/*
+ * F-696 — WHAT ONE CALL MAY ATTEMPT IS NOT WHAT THE KEYSPACE MAY HOLD.
+ *
+ * MEASURED LIVE: 200 rows planted in 17–18 s, i.e. ~90 ms a row — the published pace
+ * (`KVS_DELETE_BATCH` per `KVS_DELETE_PAUSE_MS`, 66.7 ms a row) plus real KVS write latency.
+ * Five hundred rows is therefore ~45 s of one web trigger that is killed at 25 s, and the old
+ * plant assembled its answer only after the last write, so a plant that timed out reported
+ * NOTHING — not `planted`, not `failed`, not `keys` — having already written an unknown
+ * number of rows under `i`-derived keys a re-POST silently overwrites.
+ *
+ * So a FRESH call may ask for at most what fits inside the DEFAULT budget at the measured
+ * rate, and the 500-row population is reached the way the sweep's is: by RESUMING. A call
+ * that passes a `startIndex` has proved it implements the loop and may name the full target.
+ */
+export const HARNESS_FAULT_PLANT_MS_PER_ROW = 90;
+/** ≈ `HARNESS_FAULT_SWEEP_DEFAULT_MS / HARNESS_FAULT_PLANT_MS_PER_ROW`, rounded down for headroom. */
+export const HARNESS_FAULT_PLANT_CALL_MAX = 150;
 /** A planted row's own window. Short on purpose — ballast, not a lever. */
 export const HARNESS_FAULT_PLANT_TTL_SECONDS = 60;
 /** How far in the past an `expired: true` row is dated. Past any reader's clock skew. */
@@ -1011,30 +1034,73 @@ export const HARNESS_FAULT_PLANT_BACKDATE_SECONDS = 3_600;
  * that is not a finite number is ONE — a body with a missing or junk `n` plants the smallest
  * possible population rather than the largest.
  */
-export const plantCountClamped = (n) => {
+export const plantCountClamped = (n, startIndex = 0) => {
   const parsed = Math.floor(Number(n));
   if (!Number.isFinite(parsed)) return 1;
-  return Math.max(1, Math.min(HARNESS_FAULT_PLANT_MAX, parsed));
+  return Math.max(1, Math.min(plantMaxForCall(startIndex), parsed));
 };
+
+/**
+ * WHERE THIS CALL STARTS WRITING (F-696). Anything that is not a finite number is ZERO — a
+ * body with a missing or junk `startIndex` is a FRESH plant, never a mystery offset — and the
+ * ceiling is the last index the population may hold.
+ */
+export const plantStartIndexClamped = (startIndex) => {
+  const parsed = Math.floor(Number(startIndex));
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(HARNESS_FAULT_PLANT_MAX - 1, parsed));
+};
+
+/**
+ * THE ceiling on `n` for a given call, in one place, so the lever and the door advertise the
+ * same number: `HARNESS_FAULT_PLANT_CALL_MAX` for a fresh plant (what fits inside the default
+ * budget at the measured rate), `HARNESS_FAULT_PLANT_MAX` for a resumed one.
+ */
+export const plantMaxForCall = (startIndex) =>
+  plantStartIndexClamped(startIndex) > 0 ? HARNESS_FAULT_PLANT_MAX : HARNESS_FAULT_PLANT_CALL_MAX;
+
 
 /** The key of planted row `i`, zero-padded so the keyspace sorts the way it was written. */
 export const plantedFaultKey = (i) =>
   harnessFaultKey(HARNESS_FAULT_PLANT, String(i).padStart(3, "0"));
 
 /**
- * Plant `n` INERT rows under `harness_fault:plant:`, so the sweep's multi-page path can be
- * exercised on a real tenant. Returns `{ ok, planted, failed, n, expired, ttlSeconds, keys }`.
+ * Plant INERT rows under `harness_fault:plant:`, so the sweep's multi-page path can be
+ * exercised on a real tenant. Returns
+ * `{ ok, planted, failed, n, startIndex, nextIndex, expired, ttlSeconds, budgetMs, keys,
+ *    truncated, reason, complete }`.
+ *
+ * `n` IS THE POPULATION, NOT THE BATCH: this call writes rows `startIndex .. n-1`, whose keys
+ * are `i`-derived (`plantedFaultKey`), so resuming is idempotent and two calls over the same
+ * indices produce one population, not two. A caller that is answered `truncated: true,
+ * reason: "budget", nextIndex: k` POSTs the SAME `n` back with `startIndex: k` and keeps going
+ * until `complete: true`.
  *
  * Writes are paced at the app's own published KVS rate (`KVS_DELETE_BATCH` /
  * `KVS_DELETE_PAUSE_MS` — the same pair the sweep's deletes use, because it is the same
- * store and the same guidance), so planting five hundred rows cannot be the thing that
+ * store and the same guidance), so planting a large population cannot be the thing that
  * throttles the tenant the sweep is about to walk. A write that refuses is counted in
- * `failed`, never thrown out of a plant that placed everything else.
+ * `failed`, never thrown out of a plant that placed everything else — and `failed > 0` is
+ * never `complete`, by the same `sweepAnswerTail` the sweep and the clear answer through.
+ *
+ * F-696 — THE BUDGET IS THE SWEEP'S, CHECKED BEFORE EVERY BATCH (`sweepBudgetMs`: default
+ * 15 s, ceiling 20 s, under the trigger's 25 s) and honoured only once the call has actually
+ * written something, so a tiny `maxMs` cannot produce a call that places nothing and asks to
+ * be resumed at the index it was given.
+ *
+ * THERE IS NO CURSOR HERE, DELIBERATELY. The plant's resume point is an INDEX, because its
+ * keys are the index; `nextIndex` is that handle and the answer carries no `cursor` field for
+ * a drain loop to mistake for one.
  */
-export const plantHarnessFaults = async ({ n, expired = false } = {}) => {
+export const plantHarnessFaults = async ({ n, expired = false, maxMs, startIndex } = {}) => {
   if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
-  const count = plantCountClamped(n);
+  const from = plantStartIndexClamped(startIndex);
+  const count = plantCountClamped(n, from);
   const past = expired === true;
+  const budgetMs = sweepBudgetMs(maxMs);
+  const t0 = Date.now();
+  const overBudget = () => Date.now() - t0 >= budgetMs;
+  const ttlSeconds = HARNESS_FAULT_PLANT_TTL_SECONDS;
   const armedAt = new Date(Date.now() - (past ? HARNESS_FAULT_PLANT_BACKDATE_SECONDS * 1000 : 0)).toISOString();
   // An expired row carries a deadline already gone; a live one gets `armedAt + 60 s`, which
   // is what `setFaultRow` stamps on its own when no `keepUntil` is handed to it.
@@ -1042,18 +1108,37 @@ export const plantHarnessFaults = async ({ n, expired = false } = {}) => {
     ? new Date(Date.now() - (HARNESS_FAULT_PLANT_BACKDATE_SECONDS - HARNESS_FAULT_PLANT_TTL_SECONDS) * 1000).toISOString()
     : null;
   const keys = [];
-  let planted = 0, failed = 0;
-  for (let i = 0; i < count; i += KVS_DELETE_BATCH) {
-    if (i > 0) await sweepPause(KVS_DELETE_PAUSE_MS);
+  let planted = 0, failed = 0, truncated = false, reason = null, progressed = false;
+  let i = from;
+  for (; i < count; i += KVS_DELETE_BATCH) {
+    if (i > from) {
+      if (progressed && overBudget()) { truncated = true; reason = "budget"; break; }
+      await sweepPause(KVS_DELETE_PAUSE_MS);
+    }
+    if (progressed && overBudget()) { truncated = true; reason = "budget"; break; }
     const batch = [];
     for (let j = i; j < Math.min(i + KVS_DELETE_BATCH, count); j++) batch.push(plantedFaultKey(j));
     const settled = await Promise.allSettled(batch.map((key) =>
-      setFaultRow(key, { count: 1, armedAt, plantedBy: "harness" }, HARNESS_FAULT_PLANT_TTL_SECONDS, keepUntil)));
+      setFaultRow(key, { count: 1, armedAt, plantedBy: "harness" }, ttlSeconds, keepUntil)));
     for (let k = 0; k < settled.length; k++) {
       if (settled[k].status === "fulfilled") { planted++; keys.push(batch[k]); } else failed++;
     }
+    progressed = true;
   }
-  return { ok: true, planted, failed, n: count, expired: past, ttlSeconds: HARNESS_FAULT_PLANT_TTL_SECONDS, keys };
+  /* The ONE definition of a finished drain, borrowed whole (F-683/F-691/F-696): `complete` is
+   * `!truncated && failed === 0` and it is decided in `sweepAnswerTail` and nowhere else. The
+   * tail's cursor half is not used — this lever resumes by index — so only the three fields
+   * that describe FINISHEDNESS are taken from it. */
+  const tail = sweepAnswerTail({
+    truncated, reason, cursor: null,
+    unresolved: failed > 0, failedResume: null, unresolvedReason: "writes-failed",
+  });
+  return {
+    ok: true, planted, failed, n: count, startIndex: from,
+    nextIndex: truncated ? i : count,
+    expired: past, ttlSeconds, budgetMs, keys,
+    truncated: tail.truncated, reason: tail.reason, complete: tail.complete,
+  };
 };
 
 /**

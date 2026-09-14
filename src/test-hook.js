@@ -532,16 +532,36 @@ export async function testStateTrigger(req) {
      * each ask `harnessEnabled()` as their first statement and answer `harness-off` even if
      * something inside the app calls them directly.
      *
-     * `n` IS CLAMPED IN THE LEVER, 1..500, not here — the clamp lives with the constant it
-     * bounds, like the 400-599 status range and the TTL caps. `expired: true` dates the rows
-     * in the past so the sweep will actually delete them; anything else plants live rows the
-     * sweep must list and leave alone. Every row carries a 60 s platform TTL in the SECONDS
-     * shape, so forgotten ballast leaves on its own even if nobody clears it. */
+     * `n` IS CLAMPED IN THE LEVER, not here — the clamp lives with the constant it bounds,
+     * like the 400-599 status range and the TTL caps. `expired: true` dates the rows in the
+     * past so the sweep will actually delete them; anything else plants live rows the sweep
+     * must list and leave alone. Every row carries a 60 s platform TTL in the SECONDS shape, so
+     * forgotten ballast leaves on its own even if nobody clears it.
+     *
+     * F-696 — THIS DOOR HAS A BUDGET AND A RESUME, LIKE THE SWEEP'S. Measured live: 200 rows
+     * take 17–18 s, so the documented 500 was ~45 s against a trigger killed at 25 s, and a
+     * plant that timed out answered NOTHING while having written an unknown number of rows.
+     * `maxMs` (clamped in the lever to 20 s) bounds the call; a `budget` break answers
+     * `{ planted, failed, truncated, reason: "budget", nextIndex }` and the caller POSTs the
+     * SAME `n` back with `startIndex: nextIndex` until `complete: true`. `maxN` is what THIS
+     * call may ask for — one call's worth for a fresh plant, the full population for a resumed
+     * one — and it is computed by the lever's `plantMaxForCall`, never retyped here.
+ */
     if (body.action === "plantHarnessFaults") {
-      const { plantHarnessFaults, HARNESS_FAULT_PLANT_MAX, HARNESS_FAULT_PLANT_PREFIX } = await import("./harness-fault.js");
-      const r = await plantHarnessFaults({ n: body.n, expired: body.expired === true });
+      const { plantHarnessFaults, plantMaxForCall, HARNESS_FAULT_PLANT_PREFIX } = await import("./harness-fault.js");
+      const r = await plantHarnessFaults({
+        n: body.n,
+        expired: body.expired === true,
+        maxMs: typeof body.maxMs === "number" ? body.maxMs : undefined,
+        startIndex: body.startIndex,
+      });
       // A refusal from the lever overrides the optimistic ok, exactly like the arm actions.
-      return json(r.ok === false ? 400 : 200, { ok: true, maxN: HARNESS_FAULT_PLANT_MAX, prefix: HARNESS_FAULT_PLANT_PREFIX, ...r });
+      // `complete` is named EXPLICITLY (F-692): it is the finished signal, and a field that
+      // only ever arrives by spread is a field a reshape can drop without anyone noticing.
+      return json(r.ok === false ? 400 : 200, {
+        ok: true, maxN: plantMaxForCall(body.startIndex), prefix: HARNESS_FAULT_PLANT_PREFIX,
+        ...r, complete: r.complete === true,
+      });
     }
     /* The other half: delete the ballast, and ONLY the ballast. The prefix is NOT a
      * parameter — no caller gets to name the keyspace an unconditional delete walks — and it

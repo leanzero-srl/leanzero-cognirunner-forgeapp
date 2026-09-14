@@ -42,6 +42,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import storage, { kvs } from "../lib/mock-kvs.mjs";
+/* F-690: the drain loop's decision has ONE home — the pure function the live driver obeys.
+ * This suite must not carry a second, hand-written copy of it. */
+import { decideSweepStep, newDrainState, DELETES_FAILING_BACKOFF_MS } from "../lib/sweep-drain.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -548,19 +551,39 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
     if (failKeys.includes(key)) { const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e; }
     return okDelete.call(this, key);
   };
-  let failToken = null, failCalls = 0, spun = 0, lastFail = null;
+  /* F-690 — THE LOOP UNDER TEST IS THE PRODUCTION ONE. This used to be a hand-written
+   * `if (r.reason === "deletes-failing") break;` that existed in no driver anywhere, so the
+   * suite proved a contract only it implemented — the same "one rule, two homes" defect one
+   * layer up. The decision now comes from `lib/sweep-drain.mjs`'s `decideSweepStep`, the pure
+   * function the live driver obeys, and the loop below is the dumb caller that does what it
+   * says. A `deletes-failing` answer earns a PAUSED resume (back-off), so what is asserted is
+   * that the library ends the CALL that way and that the decision is `resume` with a pause,
+   * never a spin. */
+  let failToken = null, failCalls = 0, spun = 0, lastFail = null, firstFail = null;
+  let drainState = newDrainState(), failDecision = null;
+  const failSleeps = [];
   while (failCalls < 50) {
     const r = await fault.sweepHarnessFaults({ maxMs: 5_000, cursor: failToken });
     lastFail = r; failCalls++;
+    if (failCalls === 1) firstFail = r;
     spun += r.deleted;
-    // The contract a caller writes: keep going while there is a cursor, but STOP when the
-    // answer says the deletes are not landing. Without F-682 this loop never exits.
-    if (r.reason === "deletes-failing") break;
-    failToken = r.cursor;
-    if (failToken === null) break;
+    failDecision = decideSweepStep(r, drainState);
+    drainState = failDecision.state;
+    if (failDecision.action !== "resume") break;
+    failSleeps.push(failDecision.sleepMs);
+    failToken = failDecision.cursor;
   }
-  ok(failCalls === 1 && lastFail.reason === "deletes-failing",
-    `an all-failed batch ENDS the call as "deletes-failing" rather than counting as progress (calls ${failCalls}, reason ${JSON.stringify(lastFail.reason)})`);
+  ok(firstFail.reason === "deletes-failing",
+    `an all-failed batch ENDS the call as "deletes-failing" rather than counting as progress (reason ${JSON.stringify(firstFail.reason)})`);
+  ok(failDecision.action === "stop" && /not-converging/.test(String(failDecision.stopReason)),
+    `…and the PRODUCTION decision (\`decideSweepStep\`) stops the drain as not-converging rather than spinning (action ${failDecision.action}, calls ${failCalls})`);
+  // A store that refuses EVERYTHING answers byte-identically, so the spin detector
+  // (`IDENTICAL_ANSWER_LIMIT`) is what fires first — and every resume it did allow was PACED
+  // with the published back-off, never fired back-to-back.
+  ok(failCalls <= DELETES_FAILING_BACKOFF_MS.length + 1
+    && JSON.stringify(failSleeps) === JSON.stringify(DELETES_FAILING_BACKOFF_MS.slice(0, failSleeps.length))
+    && failSleeps.length === failCalls - 1 && failSleeps.every((ms) => ms > 0),
+    `…after at most the published paced retries, each one actually paused (calls ${failCalls}, sleeps ${JSON.stringify(failSleeps)})`);
   ok(lastFail.truncated === true && lastFail.failed > 0 && spun === 0,
     `…with failed > 0 and nothing deleted, so a caller can see it is NOT converging (got ${JSON.stringify({ truncated: lastFail.truncated, failed: lastFail.failed, deleted: spun })})`);
   ok(lastFail.complete === false && typeof lastFail.cursor === "string" && lastFail.cursor.length > 0,
@@ -714,8 +737,10 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   /* ONE HOME. The tail that decides `truncated`/`reason`/`cursor`/`complete`/`failedResume`
    * is `sweepAnswerTail`, and BOTH levers call it — the clear used to carry a byte-similar
    * copy, which is how F-683 had to be applied twice. */
-  ok((faultCode.match(/complete:/g) || []).length === 1 && /complete: !stopped && !unresolved/.test(faultCode),
-    "F-691.SOURCE: `complete` is computed in exactly ONE place, and it is the drain-wide definition");
+  const completeSites = faultCode.match(/complete: [^,\n]+/g) || [];
+  ok(/complete: !stopped && !unresolved/.test(faultCode)
+    && completeSites.filter((site) => !/tail\.complete/.test(site)).length === 1,
+    `F-691.SOURCE: \`complete\` is COMPUTED in exactly one place — the drain-wide definition — and every other mention is a pass-through of it (sites ${JSON.stringify(completeSites)})`);
   ok((faultCode.match(/\.\.\.sweepAnswerTail\(/g) || []).length === 2,
     "F-691.SOURCE: …and both the sweep and the clear finish their answer through it");
 
@@ -788,6 +813,21 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       for (const row of rows) await storage.delete(String(row.key));
     }
   };
+  /* THE FIXTURE'S OWN DRAIN LOOP FOR THE PLANT (F-696): `n` is the POPULATION and a fresh
+   * call may only attempt one call's worth, so a fixture that wants 250 rows POSTs the same
+   * `n` back with `startIndex: nextIndex` until it is `complete` — which is exactly the
+   * contract a live caller follows. Returns the totals across the whole plant. */
+  const plantAll = async (n, expired, opts = {}) => {
+    let next = 0, planted = 0, failed = 0, calls = 0, last = null;
+    while (next < n && calls < 20) {
+      last = await fault.plantHarnessFaults({ n, expired, startIndex: next || undefined, ...opts });
+      if (last.ok === false) return { ...last, planted, failed, calls };
+      planted += last.planted; failed += last.failed; calls++;
+      if (last.nextIndex <= next && last.planted === 0) break;   // no progress: do not spin
+      next = last.nextIndex;
+    }
+    return { ...last, planted, failed, calls, nextIndex: next };
+  };
   const countPrefix = async (prefix) => {
     let n = 0, cursor = null;
     for (let i = 0; i < 20; i++) {
@@ -816,17 +856,38 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   ok(fault.HARNESS_GATED_EXPORTS.includes("plantHarnessFaults") && fault.HARNESS_GATED_EXPORTS.includes("clearPlantedFaults"),
     "SOURCE: the two levers F-688 added are ON the gated-export list (F-694) — which is what the count above is taken from");
 
-  /* ── 7b. `n` IS CLAMPED, and the clamp lives with the constant it bounds ── */
-  ok(fault.HARNESS_FAULT_PLANT_MAX === 500, "the ceiling is five hundred rows — five pages of the sweep's page size");
+  /* ── 7b. `n` IS CLAMPED, and the clamp lives with the constant it bounds.
+   *
+   * F-696 — THE POPULATION CEILING AND THE PER-CALL CEILING ARE DIFFERENT NUMBERS. The
+   * keyspace may hold five hundred rows; ONE CALL may only ask for what fits inside the
+   * default budget at the measured rate (~90 ms a row), because the old lever advertised
+   * five hundred and needed ~45 s of a trigger killed at 25 s. A caller reaches five hundred
+   * the way it drains the sweep: by resuming. ── */
+  ok(fault.HARNESS_FAULT_PLANT_MAX === 500, "the POPULATION ceiling is five hundred rows — five pages of the sweep's page size");
+  ok(fault.HARNESS_FAULT_PLANT_CALL_MAX === 150
+    && fault.HARNESS_FAULT_PLANT_CALL_MAX * fault.HARNESS_FAULT_PLANT_MS_PER_ROW <= fault.HARNESS_FAULT_SWEEP_DEFAULT_MS,
+    `…while ONE CALL's ceiling (${fault.HARNESS_FAULT_PLANT_CALL_MAX}) fits inside the default ${fault.HARNESS_FAULT_SWEEP_DEFAULT_MS} ms budget at the measured ${fault.HARNESS_FAULT_PLANT_MS_PER_ROW} ms a row`);
   ok(fault.plantCountClamped(0) === 1 && fault.plantCountClamped(-40) === 1, "zero and negative clamp UP to one");
-  ok(fault.plantCountClamped(10_000) === 500 && fault.plantCountClamped(501) === 500, "anything above the ceiling IS the ceiling");
+  ok(fault.plantCountClamped(10_000) === 150 && fault.plantCountClamped(151) === 150,
+    "a FRESH call above the per-call ceiling IS the per-call ceiling");
+  ok(fault.plantCountClamped(10_000, 150) === 500 && fault.plantCountClamped(501, 150) === 500,
+    "…and a RESUMED call may name the whole population, up to five hundred");
+  ok(fault.plantMaxForCall(undefined) === 150 && fault.plantMaxForCall(0) === 150 && fault.plantMaxForCall(1) === 500,
+    "…which is ONE rule (`plantMaxForCall`), so the door advertises exactly what the lever enforces");
+  ok(fault.plantStartIndexClamped(undefined) === 0 && fault.plantStartIndexClamped("banana") === 0 && fault.plantStartIndexClamped(-9) === 0,
+    "a missing or junk `startIndex` is a FRESH plant, never a mystery offset");
+  ok(fault.plantStartIndexClamped(10_000) === 499, "…and it can never point past the last index the population may hold");
   ok(fault.plantCountClamped(undefined) === 1 && fault.plantCountClamped("banana") === 1 && fault.plantCountClamped(NaN) === 1,
     "a missing or junk `n` is ONE — the smallest population, never the largest");
   ok(fault.plantCountClamped(7.9) === 7, "…and a fraction floors rather than rounding up");
   const overCap = await fault.plantHarnessFaults({ n: 10_000, expired: true });
-  ok(overCap.n === 500 && overCap.planted === 500,
-    `…and the clamp is enforced END TO END, not just in the helper (asked 10000, planted ${overCap.planted})`);
-  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 500, "…exactly five hundred rows reached the store");
+  ok(overCap.n === 150 && overCap.planted === 150 && overCap.nextIndex === 150 && overCap.complete === true,
+    `…and the clamp is enforced END TO END, not just in the helper (asked 10000, planted ${overCap.planted}, nextIndex ${overCap.nextIndex})`);
+  const overCapResumed = await fault.plantHarnessFaults({ n: 10_000, expired: true, startIndex: overCap.nextIndex });
+  ok(overCapResumed.n === 500 && overCapResumed.planted === 350 && overCapResumed.nextIndex === 500 && overCapResumed.complete === true,
+    `…and the resumed call finishes the population and no more (planted ${overCapResumed.planted}, nextIndex ${overCapResumed.nextIndex})`);
+  ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 500,
+    "…exactly five hundred rows reached the store — the keys are index-derived, so resuming cannot double-count");
   await purge();
 
   /* ── 7c. THE ROW SHAPE: the SECONDS ttl option, and `until` on both sides of now ── */
@@ -849,12 +910,13 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
   ok(Date.parse(dw.value.until) < Date.now(), `…but its \`until\` is in the PAST (got ${dw.value.until})`);
   ok(fault.faultRowExpired(dw.value) === true && dead.expired === true,
     "…which is the only shape the sweep will actually delete");
+
   await purge();
 
   /* ── 7d. THE ROWS ARE INERT. Not a source claim: 250 of them are in the store while every
    * reader in the module is called. `harnessFaultKey` puts the KIND in the second segment and
    * each consumer exact-matches its own constant, so `plant` matches nothing. ── */
-  const inert = await fault.plantHarnessFaults({ n: 250, expired: true });
+  const inert = await plantAll(250, true);
   ok(inert.planted === 250, `(fixture) 250 planted rows sitting in the fault keyspace (planted ${inert.planted})`);
   ok((await fault.jiraFaultStatus(PATH)) === null,
     "`jiraFaultStatus` sees NO fault — the `jira` kind is exact-matched and `plant` is not it");
@@ -907,8 +969,8 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
    * which is exactly why F-674 had to invent a token that can express "the beginning". Put
    * LIVE rows in front of the expired ones and page 0 has nothing to delete: it ADVANCES, and
    * the next token carries the platform's own cursor string. ── */
-  await fault.plantHarnessFaults({ n: 250, expired: true });
-  await fault.plantHarnessFaults({ n: 120, expired: false });   // overwrites plant:000..119
+  await plantAll(250, true);
+  await plantAll(120, false);   // overwrites plant:000..119
   ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === 250, "(fixture) 120 live rows in front of 130 expired ones");
   const advanced = await fault.sweepHarnessFaults({ maxMs: 1 });
   ok(advanced.truncated === true && typeof advanced.cursor === "string",
@@ -954,7 +1016,7 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
    * that reached the end of the keyspace with failures is `deletes-failed`, never complete. ── */
   const okDelete688 = kvs.delete;
   {
-    await fault.plantHarnessFaults({ n: 20, expired: false });
+    await plantAll(20, false);
     kvs.delete = async function refusingDelete(key) {
       if (String(key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX)) {
         const e = new Error("RATE_LIMIT_EXCEEDED"); e.code = "RATE_LIMIT_EXCEEDED"; throw e;
@@ -988,6 +1050,70 @@ const secondsUntil = (iso) => Math.round((Date.parse(iso) - Date.now()) / 1000);
       `a clear that could not delete what it named is NOT finished (got ${JSON.stringify({ reason: partial.reason, complete: partial.complete })})`);
     ok(typeof partial.cursor === "string" && partial.cursor.length > 0, "…and hands back the page the failures started on");
     kvs.delete = okDelete688;
+    await purge();
+  }
+
+  /* ── 7i. F-696 — THE PLANT HAS THE SWEEP'S SHAPE: A BUDGET, A PARTIAL ANSWER, A RESUME.
+   *
+   * MEASURED LIVE: 200 rows in 17–18 s. The documented 500 was therefore ~45 s of paced
+   * writing against a web trigger killed at 25 s, and because the answer was assembled only
+   * after the LAST write, a plant that timed out reported NOTHING — not `planted`, not
+   * `failed`, not `keys` — having already written an unknown number of rows under keys a
+   * re-POST silently overwrites. The sibling written in the same commit (`clearPlantedFaults`)
+   * had `maxMs`, a budget checked before every batch and a resume cursor; the plant had none.
+   *
+   * The pacing is free in this suite (the `setTimeout` shim above), so the elapsed time that
+   * IS the finding has to come from somewhere real: WRITE LATENCY is injected on the plant
+   * keyspace, awaited on the REAL timer, which makes the budget break deterministic rather
+   * than a race with the machine. ── */
+  await purge();
+  {
+    const spyingSet = kvs.set;
+    let writeLatencyMs = 0;
+    kvs.set = async function latentSet(key, value, options) {
+      if (writeLatencyMs > 0 && String(key).startsWith(fault.HARNESS_FAULT_PLANT_PREFIX)) {
+        await new Promise((r) => realTimeout(r, writeLatencyMs));
+      }
+      return spyingSet.call(this, key, value, options);
+    };
+    writeLatencyMs = 12;
+
+    const N = 60;
+    clear();
+    const cut = await fault.plantHarnessFaults({ n: N, expired: false, maxMs: 60 });
+    ok(cut.ok === true && cut.truncated === true && cut.reason === "budget",
+      `a plant that runs out of time RETURNS, truncated with reason "budget" (got ${JSON.stringify({ ok: cut.ok, truncated: cut.truncated, reason: cut.reason })})`);
+    ok(cut.planted > 0 && cut.planted < N && cut.failed === 0 && cut.complete === false,
+      `…with the REAL counters of what it placed, which the old all-or-nothing answer threw away (planted ${cut.planted}/${N}, complete ${cut.complete})`);
+    ok(cut.nextIndex === cut.planted && cut.nextIndex > 0 && cut.nextIndex < N,
+      `…and a \`nextIndex\` that names exactly where to carry on (got ${cut.nextIndex})`);
+    ok(cut.startIndex === 0 && cut.keys.length === cut.planted,
+      `…naming the keys it actually wrote and the index it actually started at (keys ${cut.keys.length}, startIndex ${cut.startIndex})`);
+    ok((await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === cut.planted,
+      "…and the store holds precisely what the partial answer claims — the count is never unknown again");
+
+    /* PROGRESS PER CALL IS GUARANTEED (the sweep's F-682 rule, same words): a `maxMs` so small
+     * that the first check trips must still place a batch, or a resume loop never converges. */
+    const tiny = await fault.plantHarnessFaults({ n: N, expired: false, startIndex: cut.nextIndex, maxMs: 1 });
+    ok(tiny.planted > 0 && tiny.nextIndex > cut.nextIndex,
+      `a resumed call with an impossible budget still MOVES — the budget may only stop a call that wrote something (planted ${tiny.planted}, ${cut.nextIndex} → ${tiny.nextIndex})`);
+
+    // RESUME TO THE END: the same `n`, the returned `startIndex`, until `complete`.
+    let next = tiny.nextIndex, calls = 2, placed = cut.planted + tiny.planted, last = tiny;
+    while (next < N && calls < 60) {
+      last = await fault.plantHarnessFaults({ n: N, expired: false, startIndex: next, maxMs: 60 });
+      placed += last.planted;
+      next = last.nextIndex;
+      calls++;
+    }
+    ok(last.complete === true && last.truncated === false && next === N,
+      `…and POSTing the same \`n\` back with \`startIndex: nextIndex\` TERMINATES with complete:true (${calls} calls, nextIndex ${next})`);
+    ok(placed === N && (await countPrefix(fault.HARNESS_FAULT_PLANT_PREFIX)) === N,
+      `…having placed EXACTLY ${N} rows — index-derived keys, so a resumed plant is one population and not two (placed ${placed})`);
+    ok(calls > 2, `…across genuinely several calls, which is the path the 25 s trigger forces (${calls})`);
+
+    writeLatencyMs = 0;
+    kvs.set = spyingSet;
     await purge();
   }
 

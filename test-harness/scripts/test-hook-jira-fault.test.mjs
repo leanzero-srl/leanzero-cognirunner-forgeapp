@@ -572,6 +572,22 @@ process.env.HARNESS_SECRET = SECRET;
     return realTimeout(fn, 0, ...rest);
   };
   const plant = (body, opts) => post({ action: "plantHarnessFaults", ...body }, opts);
+  /* F-696 — `n` IS THE POPULATION AND A FRESH CALL MAY ONLY ATTEMPT ONE CALL'S WORTH, so a
+   * fixture that wants 250 rows POSTs the same `n` back with `startIndex: nextIndex` until
+   * the door answers `complete: true`. That is the contract a live caller follows, and it is
+   * the reason the lever can no longer time out with the row count unknown. */
+  const plantAll = async (n, expired) => {
+    let next = 0, planted = 0, failed = 0, calls = 0, keys = [], last = null;
+    while (next < n && calls < 20) {
+      last = await plant({ n, expired, startIndex: next || undefined, maxMs: 20_000 });
+      if (last.status !== 200 || !last.body || last.body.ok === false) break;
+      planted += last.body.planted; failed += last.body.failed; calls++;
+      keys = keys.concat(last.body.keys || []);
+      if (last.body.nextIndex <= next && last.body.planted === 0) break;
+      next = last.body.nextIndex;
+    }
+    return { status: last && last.status, body: last && last.body, planted, failed, calls, keys, nextIndex: next };
+  };
   const clearPlanted = (body, opts) => post({ action: "clearPlantedFaults", ...body }, opts);
   const countPlanted = async () => {
     let n = 0, cursor = null;
@@ -605,11 +621,33 @@ process.env.HARNESS_SECRET = SECRET;
 
   /* ── THE CLAMP, echoed by the door but enforced in the lever, beside the constant. ── */
   const over = await plant({ n: 10_000, expired: true });
-  ok(over.status === 200 && over.body.n === 500 && over.body.planted === 500,
-    `a request for 10000 rows plants exactly the 500-row ceiling (got n=${over.body && over.body.n} planted=${over.body && over.body.planted})`);
-  ok(over.body.maxN === fault.HARNESS_FAULT_PLANT_MAX && over.body.prefix === "harness_fault:plant:",
-    `…and the answer names the ceiling and the sub-prefix it wrote under (got ${JSON.stringify({ maxN: over.body.maxN, prefix: over.body.prefix })})`);
-  ok((await countPlanted()) === 500, "…five hundred rows, not ten thousand");
+  ok(over.status === 200 && over.body.n === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.planted === fault.HARNESS_FAULT_PLANT_CALL_MAX,
+    `a FRESH request for 10000 rows plants exactly one call's worth (got n=${over.body && over.body.n} planted=${over.body && over.body.planted})`);
+  ok(over.body.maxN === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.prefix === "harness_fault:plant:",
+    `…and the answer names the ceiling THIS call had and the sub-prefix it wrote under (got ${JSON.stringify({ maxN: over.body.maxN, prefix: over.body.prefix })})`);
+  ok(over.body.complete === true && over.body.nextIndex === fault.HARNESS_FAULT_PLANT_CALL_MAX && over.body.startIndex === 0,
+    `…and it says where to carry on (nextIndex ${over.body && over.body.nextIndex}, complete ${over.body && over.body.complete})`);
+  /* F-696 — THE FULL POPULATION IS REACHED BY RESUMING, exactly as the sweep is drained: the
+   * 500-row ceiling was ~45 s of paced writing against a trigger killed at 25 s, and the old
+   * answer was assembled only after the LAST write, so a timed-out plant reported nothing at
+   * all while having written an unknown number of rows. */
+  const overResumed = await plant({ n: 10_000, expired: true, startIndex: over.body.nextIndex });
+  ok(overResumed.body.n === fault.HARNESS_FAULT_PLANT_MAX && overResumed.body.maxN === fault.HARNESS_FAULT_PLANT_MAX,
+    `a RESUMED call may name the whole 500-row population (got n=${overResumed.body && overResumed.body.n}, maxN=${overResumed.body && overResumed.body.maxN})`);
+  ok(overResumed.body.startIndex === over.body.nextIndex && overResumed.body.nextIndex === 500 && overResumed.body.complete === true,
+    `…and finishes it (startIndex ${overResumed.body && overResumed.body.startIndex} → nextIndex ${overResumed.body && overResumed.body.nextIndex})`);
+  ok((await countPlanted()) === 500, "…five hundred rows, not ten thousand and not a thousand — the keys are index-derived, so resuming cannot double-count");
+  /* THE BUDGET AT THE DOOR: `maxMs` is the caller's, clamped in the lever, and a break is a
+   * PARTIAL ANSWER with real counters — never a platform timeout with no body. */
+  await clearPlanted({ maxMs: 20_000 });
+  const budgeted = await plant({ n: 150, expired: true, maxMs: 1 });
+  ok(budgeted.status === 200 && budgeted.body.budgetMs === 1 && budgeted.body.planted > 0 && budgeted.body.planted < 150,
+    `a plant given an impossible \`maxMs\` still answers 200 with what it PLACED (planted ${budgeted.body && budgeted.body.planted}, budgetMs ${budgeted.body && budgeted.body.budgetMs})`);
+  ok(budgeted.body.truncated === true && budgeted.body.reason === "budget" && budgeted.body.complete === false
+    && budgeted.body.nextIndex === budgeted.body.planted,
+    `…truncated on budget, never complete, and naming the index to resume from (got ${JSON.stringify({ reason: budgeted.body && budgeted.body.reason, nextIndex: budgeted.body && budgeted.body.nextIndex })})`);
+  ok((await countPlanted()) === budgeted.body.planted,
+    "…and the keyspace holds exactly what the partial answer claims — the count is never unknown again");
   await clearPlanted({ maxMs: 20_000 });
   ok((await countPlanted()) === 0, "(fixture) cleared again");
 
@@ -621,11 +659,11 @@ process.env.HARNESS_SECRET = SECRET;
 
   /* ── THE ROWS ARE INERT, asked of the four read actions on this same door while 250 of
    * them sit in the keyspace. Every consumer exact-matches its own kind; `plant` is none. ── */
-  const planted = await plant({ n: 250, expired: true });
-  ok(planted.status === 200 && planted.body.planted === 250 && planted.body.expired === true,
-    `(fixture) 250 expired rows planted through the door (got ${JSON.stringify({ planted: planted.body && planted.body.planted })})`);
-  ok((planted.body.keys || []).length === 250 && planted.body.keys.every((k) => k.startsWith("harness_fault:plant:")),
-    "…every key under the plant sub-prefix and nowhere else");
+  const planted = await plantAll(250, true);
+  ok(planted.status === 200 && planted.planted === 250 && planted.body.expired === true,
+    `(fixture) 250 expired rows planted through the door in ${planted.calls} call(s) (got ${planted.planted})`);
+  ok(planted.keys.length === 250 && planted.keys.every((k) => k.startsWith("harness_fault:plant:")),
+    "…every key under the plant sub-prefix and nowhere else, across the resume boundary");
   ok(planted.body.ttlSeconds === 60, "…each with its own 60 s platform TTL, so forgotten ballast leaves on its own");
 
   ok((await readLever()).body.value === null, "readJiraFault answers null with 250 planted rows in the keyspace");
@@ -704,8 +742,8 @@ process.env.HARNESS_SECRET = SECRET;
    * moment it was given one. Both actions now NAME it, and the docblock says outright that
    * deriving it is deprecated. */
   const hookSrc = readFileSync(path.join(here, "../../src/test-hook.js"), "utf8");
-  ok((hookSrc.match(/\.\.\.r, complete: r\.complete === true \}\)/g) || []).length === 2,
-    "F-692.SOURCE: both the sweep and the clear actions return `complete` explicitly, so a reshape of the library's answer cannot silently drop it");
+  ok((hookSrc.match(/\.\.\.r, complete: r\.complete === true,?\s*\}\)/g) || []).length === 3,
+    "F-692.SOURCE: the sweep, the clear AND the plant (F-696) return `complete` explicitly, so a reshape of the library's answer cannot silently drop it");
   ok(/DEPRECATED: DERIVING FINISHEDNESS FROM `truncated`/.test(hookSrc),
     "F-692.SOURCE: …and the docblock marks the `truncated`-only derivation deprecated, naming `complete` as the ONE finished signal");
 

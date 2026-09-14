@@ -32,13 +32,20 @@
  *      deleted one) — an unclamped plant would land on `tombstone_newer_than_job` and
  *      prove a different branch. The answer reports the clamp, and it is asserted.
  *   3. A tick INSIDE the window must do NO WORK: no new prepare receipt, and the
- *      tombstone must still stand. That the tick RAN AT ALL is proved separately, by the
- *      job's execution-log count growing — "nothing happened" and "the consumer never
- *      woke up" must never be the same evidence. (The purge-settling arm of
- *      `runPrepareTick` returns before `recordTick`, so a SKIPPED tick deliberately
- *      leaves no receipt; that is the observable, not a bug in this script.)
- *   4. The tombstone is AGED past `VA_PURGE_SETTLE_MS` through the same door, and the
- *      next tick must clear it and produce a NORMAL prepare receipt with no purge gate.
+ *      tombstone must still stand. That the tick RAN AT ALL is proved separately —
+ *      "nothing happened" and "the consumer never woke up" must never be the same
+ *      evidence. (The purge-settling arm of `runPrepareTick` returns before `recordTick`,
+ *      so a SKIPPED tick deliberately leaves no receipt; that is the observable, not a bug
+ *      in this script.) F-797 — the liveness proof is the `async_job:{taskId}` row, NOT
+ *      the execution log: `va-tick` is not a `listener`/`scheduledjob` task, so no
+ *      execution-log entry is written for it and the old probe could only ever answer
+ *      "no evidence" for the very arm it exists to measure. See `tick()`.
+ *   4. Tick 1's fan-out claim is WAITED OUT first (`va_running:{agent}`, F-797: it is the
+ *      THIRD condition `clearPurgeTombstone` weighs, and aging the tombstone satisfies
+ *      only the second), the tombstone is AGED past `VA_PURGE_SETTLE_MS` through the same
+ *      door, and the next tick must clear it and produce a NORMAL prepare receipt with no
+ *      purge gate. A clear that cannot be attributed to the settle window is N/V, never a
+ *      FAIL: the run did not measure what it set out to measure.
  *
  * NOTHING IS POSTED. The agent's only power is `replyInternal`, `shadowUntilTick` is
  * 500, and it is PAUSED for every tick after the first, so the five-minute planner
@@ -167,29 +174,98 @@ const vaRecord = () => ({
 });
 
 /*
- * Fire one prepare tick and wait for EITHER a new prepare receipt (the tick did work)
- * or a new execution-log row (the tick ran and did not). Reporting both is what lets a
- * SKIPPED tick be told apart from a consumer that never woke up.
+ * Fire one prepare tick and wait for EVIDENCE THAT IT RAN. Telling a SKIPPED tick apart
+ * from a consumer that never woke up is the whole job of this helper, and it had two
+ * sources for that where the arm under test touches NEITHER.
+ *
+ * F-797 — THE LIVENESS PROBE WAS BLIND TO THE ARM IT MEASURES.
+ *
+ * A `purge-settling` tick is RECEIPT-FREE BY DESIGN (F-575/F-614: the receipt is a ledger
+ * write and a standing tombstone is exactly what refuses ledger writes — see the arm in
+ * src/virtual-admin.js, which returns before `recordTick`, before `recordTickHealth` and
+ * before any claim take). It writes NOTHING under the tombstone. So:
+ *   · a new PREPARE RECEIPT never appears — that is the observable, not a failure;
+ *   · the EXECUTION LOG does not grow either: `va-tick` is not `listener`/`scheduledjob`,
+ *     and the consumer only writes an execution-log entry for those two types;
+ *   · the reason reaches `deps.log(...)`, i.e. `forge logs`, which no driver can read.
+ * On a flag-less staging run that produced 14/1/2 — an N/V liveness followed by a FAIL on
+ * the tombstone, with the product behaving exactly as specified.
+ *
+ * THE THIRD SOURCE, AND WHY IT IS THE RIGHT ONE. Every queued task, polled or not, has an
+ * `async_job:{taskId}` row: the consumer sets `status:"running"` with `startedAt` the
+ * moment it picks the task up and `status:"done"` with `finishedAt` and `durationMs` when
+ * the handler returns (src/async-handler.js — `updateAsyncJob` on both sides of the
+ * `UNPOLLED_TASKS` branch, because it is OPERATIONAL metadata, not a poll result). It is
+ * outside the ledger, so the tombstone does not refuse it, and it is written for the
+ * refused tick precisely because the refusal is a normal return. `runScheduledJobNow`
+ * hands back the `taskId`, so the driver can read the row it already has the key for.
+ *
+ * The three are reported side by side and the strongest available one decides: a receipt
+ * says the tick DID WORK, an execution log or a finished async job says it RAN. Nothing at
+ * all still means N/V, and now it means the consumer really did not wake up.
  */
 async function tick(jobId, label, waitS = TICK_WAIT_S) {
   const receiptsBefore = await prepareCount(jobId);
   const logsBefore = await execLogCount(jobId);
   const ran = await invoke("runScheduledJobNow", { id: jobId });
   if (!(ran.body && ran.body.success)) { FAIL(`${label}: runScheduledJobNow refused`, { body: JSON.stringify(ran.body).slice(0, 300) }); return null; }
-  info(`${label}: va-tick enqueued, taskId=${ran.body.taskId}`);
+  const taskId = ran.body.taskId || null;
+  info(`${label}: va-tick enqueued, taskId=${taskId}`);
   const deadline = Date.now() + waitS * 1000;
   let logsAfter = logsBefore;
+  let asyncJob = null;
   while (Date.now() < deadline) {
     const st = (await invoke("getVaStatus", { jobId })).body;
     const preps = receiptsOf(st).filter((r) => r.phase === "prepare");
     logsAfter = await execLogCount(jobId);
     const grew = logsBefore != null && logsAfter != null && logsAfter > logsBefore;
-    if (preps.length > receiptsBefore) return { receipt: preps[0], status: st, newReceipt: true, ranAtAll: true, logsBefore, logsAfter };
+    // The consumer's own row for THIS task. `status` is the only field graded; the rest
+    // rides into the evidence file so a later reader can see how long the tick took.
+    asyncJob = taskId ? (await kvs(`async_job:${taskId}`)).value : null;
+    const finished = !!(asyncJob && (asyncJob.status === "done" || asyncJob.status === "error"));
+    const base = { status: st, logsBefore, logsAfter, taskId, asyncJob, liveness: null };
+    if (preps.length > receiptsBefore) return { ...base, receipt: preps[0], newReceipt: true, ranAtAll: true, liveness: "prepare-receipt" };
     // No receipt, but the run is recorded: that IS the skip, and we stop waiting for it.
-    if (grew) return { receipt: null, status: st, newReceipt: false, ranAtAll: true, logsBefore, logsAfter };
+    if (grew) return { ...base, receipt: null, newReceipt: false, ranAtAll: true, liveness: "execution-log" };
+    if (finished) return { ...base, receipt: null, newReceipt: false, ranAtAll: true, liveness: `async_job:${asyncJob.status}` };
     await sleep(8000);
   }
-  return { receipt: null, status: null, newReceipt: false, ranAtAll: false, logsBefore, logsAfter };
+  return { receipt: null, status: null, newReceipt: false, ranAtAll: false, logsBefore, logsAfter, taskId, asyncJob, liveness: null };
+}
+
+/*
+ * F-797 — WAIT OUT THE CLAIM TICK 1 LEFT BEHIND, BEFORE ASKING FOR A CLEAR.
+ *
+ * `clearPurgeTombstone` has THREE conditions, and aging the tombstone only satisfies the
+ * second. The third is the claim check: `va_running:{agent}` carries `newestTakeAt`, and
+ * `liveTakeFor` calls the agent LIVE while that stamp is inside the SAME window the
+ * tombstone is measured against (VA_PURGE_SETTLE_MS). STEP 1 of this script ticks the
+ * agent normally, and every winning claim take in that fan-out stamps the marker — so the
+ * after-window tick used to arrive a couple of minutes later, be refused for
+ * `settling: claim`, and be written up as the product failing to clear. It was right.
+ *
+ * THERE IS NO DRAIN DOOR, AND THERE SHOULD NOT BE: `va_running:*` is a ledger key and the
+ * kvSet allow-list keeps the harness out of the ledger on purpose. The marker ages out on
+ * its own, so this WAITS for it and says how long — an honest slow test beats a fast lie.
+ * The wait is bounded; if the marker is still live at the bound the caller is told, and the
+ * measurement that depends on it becomes N/V rather than a FAIL against the product.
+ */
+async function waitOutClaim(jobId, maxWaitMs) {
+  const key = `va_running:${jobId}`;
+  const started = Date.now();
+  let row = (await kvs(key)).value;
+  const first = row;
+  while (Date.now() - started < maxWaitMs) {
+    row = (await kvs(key)).value;
+    const takeAt = Date.parse((row && row.newestTakeAt) || "");
+    if (!row || !Number.isFinite(takeAt)) return { live: false, waitedMs: Date.now() - started, first, row, why: row ? "marker carries no readable newestTakeAt" : "no marker" };
+    const liveUntil = takeAt + SETTLE_MS;
+    if (Date.now() >= liveUntil) return { live: false, waitedMs: Date.now() - started, first, row, why: "the marker aged out of the settle window" };
+    const leftS = Math.ceil((liveUntil - Date.now()) / 1000);
+    info(`${key}: newestTakeAt=${row.newestTakeAt}, live for another ~${leftS}s — waiting (this is tick 1's fan-out claim, not a product fault)`);
+    await sleep(Math.min(20000, (liveUntil - Date.now()) + 2000));
+  }
+  return { live: true, waitedMs: Date.now() - started, first, row, why: "still live at the wait bound" };
 }
 
 async function pause(jobId, paused) {
@@ -311,9 +387,13 @@ async function main() {
     if (tIn.newReceipt === false) PASS("the tick did NO WORK: it ran (an execution log landed) and produced NO prepare receipt", ev.insideWindow);
     else FAIL("the tick inside the window produced a prepare receipt — it was not gated", { receipt: JSON.stringify(tIn.receipt).slice(0, 400) });
   }
+  /* F-797 — A TOMBSTONE READ IS ONLY EVIDENCE IF A TICK RAN. With no proof the tick ran,
+     "it still stands" is satisfied by a consumer that never woke up, which is the vacuous
+     PASS half of the same defect as the vacuous FAIL below. Both arms hang off liveness. */
   const tombStill = (await kvs(`va_purged:${jobId}`)).value;
-  if (tombStill && tombStill.at) PASS("the tombstone still STANDS after the in-window tick", { at: tombStill.at });
-  else FAIL("the tombstone was cleared inside the settle window", { tombStill });
+  if (!(tIn && tIn.ranAtAll)) NV("the tombstone is not graded for the in-window tick: there is no evidence that tick ran, so neither its standing nor its absence proves anything", { tombStill, liveness: tIn && tIn.liveness });
+  else if (tombStill && tombStill.at) PASS("the tombstone still STANDS after the in-window tick", { at: tombStill.at, liveness: tIn.liveness });
+  else FAIL("the tombstone was cleared inside the settle window", { tombStill, liveness: tIn.liveness });
 
   /* ── STEP 4 — age the tombstone past the window, tick again ──────────────── */
   console.log("\nSTEP 4 - age the tombstone past VA_PURGE_SETTLE_MS through the same door, then tick");
@@ -321,6 +401,13 @@ async function main() {
   ev.age = aged.body;
   if (!(aged.status === 200 && aged.body && aged.body.ok && aged.body.effectiveAgeMs >= SETTLE_MS)) { FAIL("the age op did not move the tombstone past the window", { status: aged.status, body: JSON.stringify(aged.body).slice(0, 300) }); return; }
   PASS("the tombstone is now older than the settle window", { at: aged.body.row.at, effectiveAgeMs: aged.body.effectiveAgeMs });
+
+  /* F-797 — condition 3 before condition 2's tick. See `waitOutClaim`. */
+  const claimWait = await waitOutClaim(jobId, SETTLE_MS + 90000);
+  ev.claimWait = { live: claimWait.live, waitedMs: claimWait.waitedMs, why: claimWait.why, first: claimWait.first, row: claimWait.row };
+  info(`va_running drain: ${JSON.stringify(ev.claimWait).slice(0, 300)}`);
+  if (!claimWait.live) PASS("tick 1's fan-out claim has aged out of the settle window, so the clear is not being refused on condition 3", { waitedS: Math.round(claimWait.waitedMs / 1000), why: claimWait.why });
+  else NV("va_running is STILL live at the wait bound — the after-window clear cannot be attributed to the settle window, so the tombstone is not graded below", ev.claimWait);
 
   const tAfter = await tick(jobId, "tick after the window", 240);
   const rAfter = tAfter && tAfter.receipt;
@@ -332,9 +419,21 @@ async function main() {
   else if (gateAfter) FAIL("the tick after the window is STILL gated", { gate: gateAfter });
   else if (tAfter && tAfter.ranAtAll) FAIL("the tick after the window ran but produced no prepare receipt — it is still doing nothing", ev.afterWindow);
   else NV("no evidence the tick after the window ran at all", ev.afterWindow);
+  /* F-797 — THE FAIL THAT ACCUSED THE PRODUCT. This was unconditional: a run whose
+     liveness was N/V, or whose clear was refused on the claim check rather than on the
+     settle window, still graded a standing tombstone a FAILURE. A measurement that could
+     not be taken is NOT a measurement that came out negative, and the two must never print
+     the same word. A clear is only graded when BOTH preconditions held. */
   const tombGone = (await kvs(`va_purged:${jobId}`)).value;
-  if (tombGone === null) { PASS(`the tombstone va_purged:${jobId} is GONE (the same read saw it twice above)`); restore.tombstoneFor = null; }
-  else FAIL("the tombstone is still standing after the window", { tombGone });
+  const settlingAfter = (tAfter && tAfter.status && tAfter.status.settling) || null;
+  const why = !(tAfter && tAfter.ranAtAll)
+    ? "there is no evidence the after-window tick ran at all"
+    : claimWait.live
+      ? "tick 1's fan-out claim was still live, so `clearPurgeTombstone` refuses on condition 3 (the claim check) and not on the settle window this script measures"
+      : null;
+  if (why) NV(`the clear is NOT GRADED: ${why}`, { tombGone, settling: settlingAfter, liveness: tAfter && tAfter.liveness, claimLive: claimWait.live });
+  else if (tombGone === null) { PASS(`the tombstone va_purged:${jobId} is GONE (the same read saw it twice above)`, { liveness: tAfter.liveness }); restore.tombstoneFor = null; }
+  else FAIL("the tombstone is still standing after the window, with the tick proven to have run and no live claim to refuse on", { tombGone, settling: settlingAfter, liveness: tAfter.liveness });
 
   const cAfter = await commentTotal();
   ev.comments = { before: cBefore, after: cAfter };

@@ -15372,10 +15372,44 @@ let _cachedModelAt = 0;
  * it is now structural for all three readers. A null provider yields null and writes
  * nothing (F-112).
  */
+/**
+ * F-859 — THE LEGACY-MODEL MIGRATION WRITE, create-if-absent, ONE home.
+ *
+ * This ran as a bare `storage.set`, and it runs at TRANSITION time in whatever warm
+ * container the platform hands the rule. Sequence that lost an admin's choice: the admin
+ * saves `gpt-5.4` (slot written, `_cachedModel` cleared in the SAVING container only);
+ * a transition already in flight elsewhere had read the slot as empty, so it wrote
+ * `COGNIRUNNER_OPENAI_MODEL`'s `gpt-4.1` straight over it. The panel then showed the old
+ * model and every rule billed it.
+ *
+ * `@forge/kvs` gives us a real conditional write, so this is NOT a read-then-write with a
+ * narrowed window — `keyPolicy: "FAIL_IF_EXISTS"` makes the set ATOMIC and the race is
+ * CLOSED, the same primitive `claimRuleExecution` uses. On conflict we re-read and return
+ * the value that actually won, which the chain then answers with, so a refused migration
+ * serves the admin's saved model rather than the legacy one.
+ *
+ * Fail-open on an infrastructure fault: migration is a convenience, never a gate, so a
+ * KVS blip answers null and the chain keeps the legacy value it already read.
+ */
+const migrateLegacyModelSlot = async (key, value) => {
+  try {
+    await storage.set(key, value, { keyPolicy: "FAIL_IF_EXISTS" });
+    return value;
+  } catch (e) {
+    if (isKeyConflict(e)) {
+      const current = await storage.get(key).catch(() => null);
+      console.log(`Legacy model migration skipped for ${key}: a value was already present (concurrent admin save wins)`);
+      return current ? String(current) : null;
+    }
+    console.error(`Legacy model migration write failed for ${key}:`, e && e.message);
+    return null;
+  }
+};
+
 const resolveModelForProvider = async (provider, { migrate = false, agentSlot = false } = {}) => resolveModelChain({
   provider,
   readSlot: (key) => storage.get(key),
-  onMigrate: (key, value) => storage.set(key, value),
+  onMigrate: (key, value) => migrateLegacyModelSlot(key, value),
   env: process.env,
   providers: PROVIDERS,
   agentSlot,

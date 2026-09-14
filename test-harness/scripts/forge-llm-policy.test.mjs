@@ -471,8 +471,66 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     const bb = bind ? bind[0] : "";
     ok(!/getProviderConfig\(/.test(bb),
       "…and the binding reads NO provider of its own — the provider is the ARGUMENT (F-811, now structural for all three readers)");
-    ok(/readSlot: \(key\) => storage\.get\(key\)/.test(bb) && /onMigrate: \(key, value\) => storage\.set\(key, value\)/.test(bb),
+    ok(/readSlot: \(key\) => storage\.get\(key\)/.test(bb) && /onMigrate: \(key, value\) => migrateLegacyModelSlot\(key, value\)/.test(bb),
       "…and it supplies THIS process's storage reader and writer (src/shared may not import @forge/kvs)");
+    // F-859 — the migration writer is CREATE-IF-ABSENT, not a bare set. A transition in a
+    // warm container whose slot read already answered empty must never overwrite a model
+    // an admin saved in the meantime.
+    {
+      const mig = codeOnly.match(/const migrateLegacyModelSlot = async \(key, value\) => \{[\s\S]*?\n\};/);
+      ok(!!mig, "src/index.js owns the ONE legacy-model migration writer (F-859)");
+      const mgb = mig ? mig[0] : "";
+      ok(/keyPolicy: "FAIL_IF_EXISTS"/.test(mgb),
+        "…and it writes ATOMICALLY (keyPolicy FAIL_IF_EXISTS), closing the race rather than narrowing it");
+      ok(/isKeyConflict\(e\)/.test(mgb) && /storage\.get\(key\)/.test(mgb),
+        "…and on conflict it re-reads and answers the value that actually won");
+      ok(!/await storage\.set\(key, value\);/.test(codeOnly),
+        "…and no unconditional set of a model slot survives anywhere in index.js");
+      // EXECUTED: the losing writer must not clobber, and the chain must answer the WINNER.
+      const build = (storage) => eval("((storage, isKeyConflict, console) => {"
+        + mgb.replace("const migrateLegacyModelSlot =", "const f =") + " return f; })")(
+        storage, (e) => e && e.code === "KEY_EXISTS", { log() {}, error() {} });
+      {
+        const store = new Map([["COGNIRUNNER_MODEL_openai", "gpt-5.4"]]);
+        const storage = {
+          get: async (k) => store.get(k) ?? null,
+          set: async (k, v, o) => {
+            if (o && o.keyPolicy === "FAIL_IF_EXISTS" && store.has(k)) { const e = new Error("exists"); e.code = "KEY_EXISTS"; throw e; }
+            store.set(k, v);
+          },
+        };
+        const won = await build(storage)("COGNIRUNNER_MODEL_openai", "gpt-4.1");
+        ok(store.get("COGNIRUNNER_MODEL_openai") === "gpt-5.4",
+          "EXECUTED (F-859): a slot populated between the chain's read and the migrate call is NOT overwritten");
+        ok(won === "gpt-5.4", "EXECUTED (F-859): …and the writer reports the admin's saved model back");
+        // …and the CHAIN answers that winner, not the legacy value it had already read.
+        const slots = { COGNIRUNNER_KEY_openai: "sk-x", COGNIRUNNER_OPENAI_MODEL: "gpt-4.1" };
+        let firstRead = true;
+        const m = await chain({
+          provider: "openai",
+          readSlot: async (k) => {
+            if (k === "COGNIRUNNER_MODEL_openai") {
+              // The admin's save lands AFTER this first (empty) read — the exact race.
+              if (firstRead) { firstRead = false; return null; }
+              return store.get(k) ?? null;
+            }
+            return slots[k] ?? null;
+          },
+          migrate: true,
+          onMigrate: (k, v) => build(storage)(k, v),
+          log: { log() {}, error() {} },
+        });
+        ok(m === "gpt-5.4", `EXECUTED (F-859): the chain answers the winning slot value, not the legacy one (${m})`);
+      }
+      {
+        // An empty slot still migrates — the feature must keep working.
+        const store = new Map();
+        const storage = { get: async (k) => store.get(k) ?? null, set: async (k, v) => { store.set(k, v); } };
+        const won = await build(storage)("COGNIRUNNER_MODEL_openai", "legacy-model");
+        ok(won === "legacy-model" && store.get("COGNIRUNNER_MODEL_openai") === "legacy-model",
+          "EXECUTED (F-859): an absent slot is still migrated");
+      }
+    }
     ok(/providers: PROVIDERS/.test(bb), "…and this process's PROVIDERS table");
     // F-448 — the property is "EVERY provider read is followed by a refusal", not "there
     // are exactly two refusals". A third read added without a guard must fail this, and a

@@ -1361,6 +1361,24 @@ export default function OpenAIConfig({ invoke }) {
   // the id comes from the ONE home (src/shared/edition.js), never retyped here —
   // reorder or rename the frontier list and this follows instead of going stale.
   const recommendedModel = isAtlassian && isAdvanced ? FORGE_LLM_FRONTIER[0] : null;
+  /* F-895 — THE AGENT PICKER MUST NEVER RENDER A PLACEHOLDER OVER A RESOLVED MODEL.
+     On Forge LLM the options are FORGE_LLM_FRONTIER, but `getAgentModel` answers with
+     whatever the resolution chain ACTUALLY resolved (src/shared/model-resolution.js) —
+     and on a Standard tenant with no agent slot saved that is FORGE_LLM_DEFAULT (Haiku),
+     which is deliberately NOT in the frontier list. CustomSelect finds no option matching
+     that value and falls back to "Select an agent model...", so the admin reads "nothing
+     is configured" while Coder and the Virtual Administrators refuse by NAME a model the
+     panel never showed them. Measured live, dev, both themes.
+     So the resolved id is added to the list as a LOCKED row carrying the ONE sentence for
+     the reason from src/shared/edition.js (never a wording invented here). The row is
+     non-selectable because that id genuinely cannot drive an agent: this NAMES the state,
+     it does not offer it. */
+  const agentModelId = (agentModel || "").trim();
+  const agentOutOfList = isAtlassian && !!agentModelId && !FORGE_LLM_FRONTIER.includes(agentModelId);
+  /* Which refusal it is, in the gate's own order (agentCapability in edition.js): the
+     EDITION is checked before the MODEL, so a Standard tenant reads the edition sentence
+     even though its Haiku fallback would fail the frontier test too. */
+  const agentFallbackCopy = agentCapabilityCopy(isAdvanced ? "needs-frontier-model" : "needs-coder-edition");
   // F-091: the Forge LLM allowance meter belongs to Forge LLM ONLY. The backend now
   // sends `forgeLlm: null` for Standard and for BYOK tenants, but the provider gate
   // lives here too: a BYOK tenant must never be shown a vendor allowance, whatever
@@ -2232,11 +2250,29 @@ export default function OpenAIConfig({ invoke }) {
                         placeholder="Select an agent model..."
                         searchable={false}
                         ariaLabel="Agent model"
-                        options={FORGE_LLM_FRONTIER.map((m) => (
-                          isAdvanced
-                            ? { value: m, label: m }
-                            : { value: m, label: m, disabled: true, badges: [{ text: "Coder", tone: "edition" }] }
-                        ))}
+                        options={[
+                          // F-895: the resolved-but-unselectable id, first and locked, so
+                          // the trigger shows the model instead of the placeholder.
+                          ...(agentOutOfList ? [{
+                            value: agentModelId,
+                            label: agentModelId,
+                            disabled: true,
+                            /* NO `meta` HERE, on purpose, and it is not an oversight to
+                               "fix" later: `.dropdown-item-meta` is a single-line
+                               ellipsised slot sized for an id or a region, and this panel
+                               is 320px wide, so the reason sentence rendered as "Cod…"
+                               (measured). A truncated sentence is worse than none. The
+                               sentence lives in the note right under the picker, where it
+                               is readable WITHOUT opening the dropdown at all; the row
+                               carries the badge, which is what a row can hold. */
+                            badges: [{ text: isAdvanced ? "Not an agent model" : "Coder", tone: isAdvanced ? "unavailable" : "edition" }],
+                          }] : []),
+                          ...FORGE_LLM_FRONTIER.map((m) => (
+                            isAdvanced
+                              ? { value: m, label: m }
+                              : { value: m, label: m, disabled: true, badges: [{ text: "Coder", tone: "edition" }] }
+                          )),
+                        ]}
                       />
                     </div>
                   ) : (
@@ -2267,6 +2303,13 @@ export default function OpenAIConfig({ invoke }) {
                 <p style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                   Used by Coder and Virtual Administrators. Validators and rules keep using the model above.
                 </p>
+                {/* F-895 — the same sentence the locked row carries, readable WITHOUT
+                    opening the dropdown, and naming the id that is actually resolved. */}
+                {agentOutOfList && (
+                  <p className="agent-model-fallback-note" style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" }}>
+                    {agentFallbackCopy.title}. The resolved agent model is <strong style={{ fontWeight: 700, color: "var(--text-color)" }}>{agentModelId}</strong>.
+                  </p>
+                )}
                 {isAtlassian && !isAdvanced && (
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                     On Forge LLM the agent model is part of CogniRunner Coder, upgrade in Jira&apos;s Manage apps, or point CogniRunner at your own provider key.

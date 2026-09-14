@@ -803,6 +803,86 @@ try {
         await close(env);
       }
     }
+
+    /* ---- E4f F-895: THE AGENT PICKER NAMES THE RESOLVED MODEL, NEVER THE PLACEHOLDER ----
+       Standard + Forge LLM. `getAgentModel` resolves FORGE_LLM_DEFAULT (Haiku) because no
+       agent slot is saved and the chain's Forge LLM tail lands there. Haiku is deliberately
+       absent from FORGE_LLM_FRONTIER, which the picker used as its whole option list - so
+       CustomSelect matched nothing and rendered "Select an agent model...", and the admin
+       concluded nothing was configured while every Coder and VA refusal named Haiku by name.
+       Measured live in dev, light and dark.
+       The fixture that makes this visible is in bridge.js: the mock used to answer "" here,
+       which is an id the real resolver cannot produce. */
+    {
+      const { FORGE_LLM_DEFAULT } = await import("../../src/shared/edition.js");
+      const expectedCopy = agentCapabilityCopy("needs-coder-edition");
+      for (const theme of ["light", "dark"]) {
+        console.log(`E4f Standard + Forge LLM agent model (${theme})`);
+        const env = await openAdmin(browser, theme, true, false, { __PROVIDER__: "atlassian" });
+        const { page } = env;
+        try {
+          await tab(page, "Settings");
+          await page.waitForTimeout(600);
+          const trigger = page.locator('button.dropdown-trigger[aria-label="Agent model"]').first();
+          ok(await trigger.count() === 1, "E4f the agent model picker is a CustomSelect trigger");
+          const label = (await trigger.innerText()).trim();
+          ok(label.includes(FORGE_LLM_DEFAULT),
+            `E4f the trigger shows the RESOLVED agent model (want ${FORGE_LLM_DEFAULT}, got "${label}")`);
+          ok(!/Select an agent model/i.test(label),
+            `E4f the trigger is NOT the placeholder over a resolved model (got "${label}")`);
+
+          // The reason, readable without opening the dropdown.
+          const note = page.locator(".agent-model-fallback-note").first();
+          ok(await note.count() === 1, "E4f the fallback reason note is rendered");
+          const noteTxt = (await note.innerText()).trim();
+          ok(noteTxt.startsWith(expectedCopy.title),
+            `E4f the note opens with the ONE sentence from src/shared/edition.js (got "${noteTxt.slice(0, 70)}")`);
+          ok(noteTxt.includes(FORGE_LLM_DEFAULT),
+            `E4f the note names the resolved model (got "${noteTxt}")`);
+          ok(!noteTxt.includes("—") && !noteTxt.includes("–"),
+            "E4f no em/en dash in the fallback note");
+          ok(await note.evaluate((el) => getComputedStyle(el).opacity) === "1",
+            `E4f the fallback note is solid, not faded (${theme})`);
+          /* The owner's standing refusal, asserted where a "status" note is exactly the
+             shape someone reaches for a left rail to decorate. */
+          const rail = await note.evaluate((el) => {
+            const cs = getComputedStyle(el);
+            return { l: cs.borderLeftWidth, t: cs.borderTopWidth };
+          });
+          ok(rail.l === rail.t, `E4f the fallback note has no left accent rail (l=${rail.l} t=${rail.t})`);
+          await shot(page, `E4f-agent-model-fallback-${theme}`);
+
+          // Open it: the resolved id is a row, and a LOCKED one - named, never offered.
+          await trigger.click();
+          await page.waitForTimeout(250);
+          const row = page.locator(".dropdown-panel .dropdown-item", { hasText: FORGE_LLM_DEFAULT }).first();
+          ok(await row.count() === 1, "E4f the resolved model is a row in the list");
+          const cls = await row.getAttribute("class");
+          ok(/dropdown-item-locked/.test(cls || ""),
+            "E4f the resolved-but-unusable model row is LOCKED, not selectable");
+          /* The sentence is NOT in the row's meta slot: that slot is a single-line
+             ellipsised one and this panel is 320px, so it rendered as "Cod…" (measured).
+             The row must therefore not carry one at all - the readable sentence is the
+             note above, asserted while the dropdown was still shut. */
+          ok(await row.locator(".dropdown-item-meta").count() === 0,
+            "E4f the locked row carries no truncated sentence in the meta slot");
+          const badge = row.locator(".dropdown-item-badge").first();
+          ok(await badge.count() === 1, "E4f the locked row carries a badge");
+          const badgeBg = await badge.evaluate((el) => getComputedStyle(el).backgroundColor);
+          ok(/^rgb\(/.test(badgeBg) && !/rgba/.test(badgeBg),
+            `E4f the badge fill is solid, not a faded tint (${theme}, got ${badgeBg})`);
+          /* The panel is PORTALLED to document.body and fixed-positioned, so a fullPage
+             shot does not contain it. Photograph the element itself. */
+          if (SHOTS) {
+            await page.locator(".dropdown-panel").first()
+              .screenshot({ path: path.join(OUT, `E4f-agent-model-locked-row-${theme}.png`) });
+          }
+          await page.keyboard.press("Escape");
+          ok(env.errors.length === 0, "E4f no page errors: " + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  ✗ E4f threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
+    }
   }
 } finally {
   await browser.close();

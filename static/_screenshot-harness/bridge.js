@@ -2127,8 +2127,15 @@ function invoke(name, payload) {
       if (payload && payload.provider === MANAGED_PROVIDER_ID) {
         return Promise.resolve({ success: true, model: MANAGED_DEFAULT_MODEL, edition: edName(), frontierOnly: true });
       }
+      /* F-895 — THE MOCK ANSWERED "" ON STANDARD AND THE REAL BACKEND NEVER DOES.
+         `getAgentModel` runs the resolution chain (resolveModelForProvider with
+         agentSlot:true), whose Forge LLM tail lands on FORGE_LLM_DEFAULT when no agent
+         slot is saved — so a Standard tenant gets HAIKU, an id outside the frontier
+         options. The empty string made the picker's placeholder look correct to this
+         harness while live it was covering a resolved model. The fixture is the
+         backend's answer now, which is what lets E4f below see the defect at all. */
       if (payload && payload.provider === "atlassian") {
-        return Promise.resolve({ success: true, model: isStandardEd() ? "" : FORGE_FRONTIER[0], edition: edName(), frontierOnly: true });
+        return Promise.resolve({ success: true, model: isStandardEd() ? FORGE_HAIKU : FORGE_FRONTIER[0], edition: edName(), frontierOnly: true });
       }
       return Promise.resolve({ success: true, model: MANAGED_MODELS[1], edition: edName(), frontierOnly: false });
     case "saveAgentModel":

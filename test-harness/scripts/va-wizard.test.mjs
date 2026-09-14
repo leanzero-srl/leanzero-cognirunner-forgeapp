@@ -194,6 +194,19 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
   ok(oneSource.refused.length === 0 && oneSource.stepId === "read_scope", "one source is enough to continue");
   const byMention = stepWizard(at("intake").state, { answer: { serviceDesks: [], jql: "", mentionsOf: ["557058:abc-123"] } });
   ok(byMention.refused.length === 0, "a mention list alone is enough");
+
+  /*
+   * F-953 - THE OTHER HALF OF THE SAME PROMISE. The gate counts DESKS, so a desk with no
+   * queue passes it, and the review card says that means the whole desk. The engine sweeps
+   * every queue of such a desk (virtual-admin.test.mjs section 2 proves that half); what is
+   * asserted HERE is that the gate has not quietly started requiring a queue instead, which
+   * would leave the card promising something no record can express.
+   */
+  const wholeDesk = stepWizard(at("intake").state, { answer: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }], jql: "", mentionsOf: [] } });
+  ok(wholeDesk.refused.length === 0 && wholeDesk.stepId === "read_scope", `a desk with no queue is a source (got ${JSON.stringify(wholeDesk.refused)})`);
+  ok(wholeDesk.state.answers.intake.serviceDesks[0].queueIds.length === 0, "and the record carries the empty queue list, which is what the engine reads as the whole desk");
+  const card = renderReviewSummary(normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }] } }, catalogToCtx(CATALOG)).va).join(" ");
+  ok(/1 service desk/.test(card) && !/0 queue/.test(card), `the card claims the desk, never "0 queues" (got ${card})`);
 }
 
 /* ── 3. every refusal ──────────────────────────────────────────────────────── */

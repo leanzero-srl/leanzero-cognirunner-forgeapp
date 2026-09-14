@@ -1522,13 +1522,44 @@ export async function testStateTrigger(req) {
         return json(200, { errorClass: errorClassOf(e) });
       }
     }
+    /* F-824 — THE ROW'S OWN WINDOW IS WHAT THIS DOOR HONOURS, NOT KVS'S GOODWILL.
+     * A probe row survived its 10-minute TTL by 12.4 minutes, because KVS expiry is lazy,
+     * and this door answered it as a live measurement. The expiry judgement lives at
+     * `harnessProbeExpired` (async-handler.js, next to the TTL and the key builder, so the
+     * writer and the reader cannot drift onto two windows) and an expired row reads ABSENT
+     * with `expired:true` — reported, not swallowed, exactly as `readHarnessFault` does. */
     if (body.action === "readHarnessProbe") {
+      const id = String(body.id || "");
+      if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id)) return json(400, { error: "id required" });
+      const { harnessProbeKey, HARNESS_PROBE_KINDS, harnessProbeExpired } = await import("./async-handler.js");
+      const kind = HARNESS_PROBE_KINDS.includes(body.kind) ? body.kind : "confluence";
+      const key = harnessProbeKey(kind, id);
+      const stored = (await storage.get(key)) || null;
+      const expired = harnessProbeExpired(stored);
+      return json(200, { id, kind, key, expired, ...(await storedFields("value", key, expired ? null : stored)) });
+    }
+    /* F-824 — AND A DOOR THAT CLEARS ONE. `harness_probe:` is not on the `kvSet` write
+     * allow-list (deliberately — a driver must not forge a measurement), so before this a
+     * plant could only be WAITED OUT. This is a targeted delete of ONE key built by the
+     * ONE key builder: no caller ever names the keyspace, which is the rule
+     * `clearPlantedFaults` states for the prefix-bound sweeps. It is not folded into
+     * `clearPlantedFaults` because that lever is bound to `HARNESS_FAULT_PLANT_PREFIX` as a
+     * CONSTANT and widening it to a second keyspace is exactly the drift that rule forbids.
+     * Idempotent: clearing an absent row is a success, since the caller asked for the row
+     * to be gone and it is. */
+    if (body.action === "clearHarnessProbe") {
       const id = String(body.id || "");
       if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id)) return json(400, { error: "id required" });
       const { harnessProbeKey, HARNESS_PROBE_KINDS } = await import("./async-handler.js");
       const kind = HARNESS_PROBE_KINDS.includes(body.kind) ? body.kind : "confluence";
       const key = harnessProbeKey(kind, id);
-      return json(200, { id, kind, key, ...(await storedFields("value", key, (await storage.get(key)) || null)) });
+      const present = (await storage.get(key)) != null;
+      try {
+        await storage.delete(key);
+      } catch (e) {
+        return json(500, { ok: false, key, error: String((e && e.message) || e).slice(0, 300) });
+      }
+      return json(200, { ok: true, id, kind, key, present });
     }
     if (body.action === "commit") {
       try {

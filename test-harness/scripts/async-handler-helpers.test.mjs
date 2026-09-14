@@ -1854,5 +1854,68 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   }
 }
 
+/* ── F-824 · THE PROBE ROW'S OWN DEADLINE, AND THE ONE NUMBER BEHIND IT ──────────────
+ *
+ * A `harness_probe:*` row written with a 10-minute KVS TTL was still readable 12.4 minutes
+ * later: platform expiry is LAZY, so the TTL reclaims the bytes eventually and decides
+ * nothing about what a reader may call fresh. The row now stamps `until` at the WRITE, the
+ * read door (`readHarnessProbe`, src/test-hook.js) enforces it, and the TTL stays as the
+ * second bound. These check the property that makes the two bounds agree: ONE number.
+ * The module is read as SOURCE for the same reason the rest of this file does - it pulls
+ * src/index.js and cannot be imported under this suite's loader. */
+{
+  ok(/export const HARNESS_PROBE_TTL_SECONDS = \d+;/.test(asyncSrc),
+    "F-824: the probe window is a NUMBER OF SECONDS with one home");
+  ok(/export const HARNESS_PROBE_TTL = \{ ttl: \{ value: HARNESS_PROBE_TTL_SECONDS \/ 60, unit: "MINUTES" \} \};/.test(asyncSrc),
+    "F-824: ...and the KVS TTL option is DERIVED from it, never a second literal that could drift under the deadline the reader enforces");
+  const write = asyncSrc.slice(asyncSrc.indexOf("export const executeHarnessProbe"));
+  ok(/storage\.set\(key, \{ \.\.\.row, until: new Date\(Date\.now\(\) \+ HARNESS_PROBE_TTL_SECONDS \* 1000\)\.toISOString\(\) \}, HARNESS_PROBE_TTL\)/.test(write),
+    "F-824: the one probe write stamps the row's own `until` AND keeps the TTL - belt and braces, from the same constant");
+  ok(/export const harnessProbeDeadline = /.test(asyncSrc) && /export const harnessProbeExpired = /.test(asyncSrc),
+    "F-824: the expiry judgement lives beside the TTL and the key builder, so the writer and the reader cannot drift onto two windows");
+  const hookSrc = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+  ok(/harnessProbeExpired/.test(hookSrc.slice(hookSrc.indexOf('body.action === "readHarnessProbe"'), hookSrc.indexOf('body.action === "readHarnessProbe"') + 900)),
+    "F-824: the read door asks THAT predicate rather than keeping a copy of the window");
+  ok(/body\.action === "clearHarnessProbe"/.test(hookSrc),
+    "F-824: and there is a door that clears a probe row - `harness_probe:` is not writable through kvSet, so before this a stale plant could only be waited out");
+}
+
+/* THE PREDICATE ITSELF, RUN. The module is imported here through `lib/index-loader.mjs`
+ * (the same hook probes-1_5.test.mjs uses), which resolves the extensionless `"./index"`
+ * specifier the Forge bundler accepts and node ESM does not. Registered LAST, after every
+ * source-parsing check above, so the rest of this suite is unaffected by the loader. */
+{
+  const { register } = await import("node:module");
+  register("../lib/index-loader.mjs", import.meta.url);
+  const { harnessProbeExpired, harnessProbeDeadline, HARNESS_PROBE_TTL_SECONDS } =
+    await import("../../src/async-handler.js");
+  const now = Date.UTC(2026, 8, 14, 12, 0, 0);
+  const iso = (ms) => new Date(ms).toISOString();
+  const WINDOW = HARNESS_PROBE_TTL_SECONDS * 1000;
+  ok(HARNESS_PROBE_TTL_SECONDS === 600, "F-824: the window is the ten minutes the TTL always claimed");
+  // BLOCK: past its own `until` - the fault that was measured (a row read 12.4 min later).
+  ok(harnessProbeExpired({ at: iso(now - 12.4 * 60000), until: iso(now - 2.4 * 60000) }, now) === true,
+    "F-824: a row past its own `until` is EXPIRED even though KVS is still answering it");
+  // ALLOW: inside the window.
+  ok(harnessProbeExpired({ at: iso(now), until: iso(now + WINDOW) }, now) === false,
+    "F-824: POSITIVE CONTROL - a fresh row is not expired, so this cut costs no live measurement its answer");
+  ok(harnessProbeExpired({ at: iso(now), until: iso(now + 1) }, now) === false,
+    "F-824: the boundary is `until <= now`, so a row one millisecond inside its window still reads live");
+  // A PRE-CUT ROW carries no `until` and is bounded by its own `at` + the window, never by NOW (F-667).
+  ok(harnessProbeDeadline({ at: iso(now - 30 * 60000) }) === now - 30 * 60000 + WINDOW,
+    "F-824: no `until` - the deadline is the row's OWN `at` plus the window");
+  ok(harnessProbeExpired({ at: iso(now - 30 * 60000) }, now) === true,
+    "F-824: ...so a row written before this cut is bounded rather than left immortal");
+  ok(harnessProbeExpired({ at: iso(now - 60000) }, now) === false,
+    "F-824: ...and a recent one is still live, which is what stops the backfill stamping NOW on an ancient row");
+  // UNDATABLE: `I cannot date this` is not `this expired`.
+  ok(harnessProbeDeadline({ status: 200 }) === null && harnessProbeExpired({ status: 200 }, now) === false,
+    "F-824: a row with no timestamp at all reads PRESENT - the door must not invent an expiry");
+  ok(harnessProbeExpired(null, now) === false && harnessProbeDeadline(null) === null,
+    "F-824: an absent row is absent, never `expired`");
+  ok(harnessProbeExpired({ until: "not-a-date", at: iso(now - 30 * 60000) }, now) === true,
+    "F-824: an unparseable `until` falls back to `at` + the window rather than to NaN");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

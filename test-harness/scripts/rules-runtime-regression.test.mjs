@@ -994,11 +994,15 @@ try {
       // ask BOOLEANS of them (`ticket.simulation === true`, `pipelineOutdated(row)`); the
       // rows themselves are never answered, so there is nothing to project.
       "invokeResolver",
+      // F-824 - `clearHarnessProbe` reads the row only to say whether there WAS one
+      // (`present`, a boolean the driver asserts a clear against); the row itself is
+      // deleted, never answered, so there is nothing to project.
+      "clearHarnessProbe",
     ];
     // ("kvStash" is the chunk that carries the kvRestore tail too — the split lands on the
     //  NESTED `if (body.action === "kvStash")`, and both reads live below it.)
     assert.deepEqual(reading.map((r) => r.name).sort(),
-      ["invokeResolver", "kvSet", "kvStash", "pipelineRow", "readHarnessProbe", "readProbe", "vaTombstone"].sort(),
+      ["clearHarnessProbe", "invokeResolver", "kvSet", "kvStash", "pipelineRow", "readHarnessProbe", "readProbe", "vaTombstone"].sort(),
       "the set of POST actions that read storage changed — each one needs a judgement, not a silent pass");
     const bypassing = reading.filter((r) => !r.projects && !ANSWERS_NO_STORED_CONTENT.includes(r.name));
     assert.deepEqual(bypassing.map((r) => r.name), [],
@@ -1018,6 +1022,45 @@ try {
     const post = blocks.filter((b) => namesOf(b) === "readHarnessProbe");
     assert.equal(post.length, 1);
     assert.equal(projects(post[0]), true, "…while the shipped readHarnessProbe projects its answer");
+  });
+  /* F-824 - A PROBE ROW OUTLIVED ITS TTL, AND NOTHING COULD CLEAR IT.
+   *
+   * The consumer wrote `harness_probe:<kind>:<id>` with a 10-minute KVS TTL and the door
+   * answered whatever KVS still held - a row was read back 12.4 minutes after it was
+   * written, because platform expiry is LAZY. `harness_probe:` is not on the `kvSet` write
+   * allow-list either, so a stale plant could only be waited out. The row now stamps its
+   * own `until` (F-664's fault-row shape), the read door treats a past `until` as ABSENT
+   * and says `expired:true`, and `clearHarnessProbe` removes one. */
+  await check("BLOCK: the probe doors honour the row's OWN window, and one of them clears it (F-824)", async () => {
+    /* THE DOORS ARE NOT DRIVABLE HERE, AND THAT IS STATED RATHER THAN PAPERED OVER.
+     * Both `readHarnessProbe` and `clearHarnessProbe` do `await import("./async-handler.js")`
+     * for the key builder, and that module statically imports the EXTENSIONLESS specifier
+     * `"./index"`, which Node's ESM resolver refuses under this suite's loader (the same
+     * reason the `?what=execlogs` check above states; src/index.js belongs to another cut).
+     * So what is asserted is the SHAPE of the two doors, and the expiry rule itself is
+     * driven by its own unit checks in async-handler-helpers.test.mjs. */
+    const src = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+    const arm = (name) => {
+      const at = src.indexOf(`body.action === "${name}"`);
+      assert.ok(at > 0, `${name} must exist`);
+      return src.slice(at, at + 1200);
+    };
+    const read = arm("readHarnessProbe");
+    assert.match(read, /harnessProbeExpired/, "the read door asks the ONE expiry predicate rather than keeping a copy of the window");
+    assert.match(read, /expired \? null : stored/, "…and an expired row is answered ABSENT, not as a live measurement");
+    assert.match(read, /expired,/, "…with `expired` REPORTED, exactly as readHarnessFault does — a driver is entitled to know its row ended on its own window");
+    assert.match(read, /storedFields\(/, "…still through the ONE read ceiling (F-806)");
+    const clear = arm("clearHarnessProbe");
+    assert.match(clear, /harnessProbeKey\(kind, id\)/, "the clear door builds its key with the ONE builder — no caller ever names the keyspace");
+    assert.match(clear, /storage\.delete\(key\)/, "…and deletes exactly that row");
+    assert.match(clear, /id required/, "…refusing a malformed id rather than deleting some other key");
+    // Both doors are behind the HARNESS_SECRET gate, like every other action.
+    const gate = src.indexOf("if (!secret) return notFound();");
+    assert.ok(gate > 0 && src.indexOf('body.action === "clearHarnessProbe"') > gate,
+      "the clear door is inside the gated POST block");
+    // …and the keyspace is still NOT writable through kvSet: a driver may clear a probe, never forge one.
+    const setRes = await POST({ action: "kvSet", key: "harness_probe:confluence:forged", value: { status: 200 } });
+    assert.notEqual(setRes.statusCode, 200, "a probe row must not be writable through the allow-listed write door");
   });
   await check("kvStash/kvRestore move a credential by NAME, never by value (F-769)", async () => {
     // THE DRIVER THIS DOOR EXISTS FOR: va-compaction-live.mjs replaces the BYOK key with a
@@ -1675,6 +1718,7 @@ try {
       // BOUNDED — a normaliser builds the stored object field by field.
       ["job:", "`normalizeJob` (src/scheduled-jobs.js) builds the record field by field and every step through `normalizeStep`, where `endpoint` is a clamped URL STRING with no header map at all; the residual inside that bound is `generationMeta`, which is passed through as the caller sent it"],
       ["git_conn:", "the connection row is built field by field at creation (`hasToken` is a boolean and `tokenSlot` is the NAME of the git_conn_secret:* row — the same judgement already recorded in NOT_A_CREDENTIAL), and the identity spread is `identityFields` (src/git-connections.js), a three-field builder of public account ids"],
+      ["harness_probe:", "`runHarnessProbe` (src/async-handler.js) builds the probe row field by field - status codes, an error CLASS, response KEY NAMES and two booleans, never a body - and the spread adds only `until` (F-824); the write itself refuses unless HARNESS_SECRET is set, so production never reaches it"],
       ["harness-fault.js:key", "`setFaultRow` is NOT exported and is reachable only through the six gated levers in src/harness-fault.js, each of which builds its row field by field; the spread adds `until`"],
       // UNBOUNDED — the source is caller JSON or a row not proved field-built. The field
       // ceiling on `?what=kvs` is what stands between it and a committed evidence file.

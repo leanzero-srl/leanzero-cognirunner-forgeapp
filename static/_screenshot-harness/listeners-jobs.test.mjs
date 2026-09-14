@@ -2042,10 +2042,14 @@ try {
       ok(segFromSearch === "88888888-8888-8888-8888-888888888888",
         `F-647 ${theme} the chip is the id's last segment - got ${JSON.stringify(segFromSearch)}`);
 
-      /* The full id is in the title on BOTH parts, so neither is a dead end. */
-      const rowTitles = await emailRow.locator(".perm-ident").evaluateAll((els) => els.map((e) => e.getAttribute("title") || ""));
-      ok(rowTitles.length === 2 && rowTitles.every((t) => t === "557058:88888888-8888-8888-8888-888888888888"),
-        `F-647 ${theme} the full account id is the title on the email AND on the chip - got ${JSON.stringify(rowTitles)}`);
+      /* Neither part is a dead end - but each one answers for ITSELF. F-651: this arm used
+         to demand the full ACCOUNT ID on both spans, which meant the email (the only part
+         that could ever be cut) had a tooltip repeating the string the chip already prints
+         in full. The chip carries the full id; the email carries the full email. */
+      ok(await emailRow.locator(".perm-ident-id").getAttribute("title") === "557058:88888888-8888-8888-8888-888888888888",
+        `F-647 ${theme} the chip's title is the FULL account id`);
+      ok(await emailRow.locator(".perm-ident-email").getAttribute("title") === emailFromSearch,
+        `F-651 ${theme} the email's title is its OWN full address, not the account id`);
 
       /* A row with no email still carries the segment - the fallback did not become
          conditional on the email branch being absent from the data. */
@@ -2069,6 +2073,8 @@ try {
         `F-647 ${theme} and the SAME id segment, so the two surfaces share one namespace`);
       ok(await grantedCard.locator(".perm-ident-id").getAttribute("title") === "557058:88888888-8888-8888-8888-888888888888",
         `F-647 ${theme} the card's chip carries the full id in its title`);
+      ok(await grantedCard.locator(".perm-ident-email").getAttribute("title") === emailFromSearch,
+        `F-651 ${theme} and the card's email titles itself, so a hover recovers the address`);
 
       /* A STORED row (not the optimistic one this click just pushed) renders its email
          too - the grant persists the email, it is not a render-time nicety. */
@@ -2104,6 +2110,117 @@ try {
       await shot(page, `f647-roster-same-discriminator-${theme}`);
       ok(env.errors.length === 0, `F-647 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  ✗ F-647 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- F-651 - a truncated email is not a discriminator ------------------
+   * `.perm-ident` ellipsised and `.perm-ident-email` was the only shrinkable child of the
+   * row (deliberately, so the id chip never lost characters). So the email was the ONE
+   * part of the discriminator that could be cut, and its tooltip carried the ACCOUNT ID -
+   * the string the chip beside it already prints in full. Two namesakes at
+   * `+contractor2024` and `+contractor2025` therefore rendered identical visible text and
+   * the difference could not be recovered from the UI at all.
+   *
+   * The journey: at 900px, search the pair, and read them apart by VISIBLE text on both
+   * surfaces. Negative control by revert: restore `white-space: nowrap; overflow: hidden;
+   * text-overflow: ellipsis` on `.perm-ident-email` and drop the stacked card row, and the
+   * two innerTexts collapse to the same ellipsised prefix - every check below fails.
+   *
+   * Both themes: the wrap and the stacked row are layout, but the email keeps the slate
+   * treatment that needs its dark override, so the shots are taken in both.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-651 ${theme} two emails differing only in a +tag are readable at 900px`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await page.setViewportSize({ width: 900, height: 1100 });
+      await tab(page, "Permissions");
+      const input = page.locator(".perm-search-input");
+      await input.waitFor({ timeout: 10000 });
+      await input.fill("contractor");
+      const rows = page.locator(".perm-search-item");
+      await rows.first().waitFor({ timeout: 10000 });
+      ok(await rows.count() === 2, `F-651 ${theme} both namesakes are offered`);
+
+      const names = await rows.locator(".perm-search-name").allInnerTexts();
+      ok(names.every((n) => n.trim() === "Mihai Perdum"),
+        `F-651 ${theme} the display names really are identical - got ${JSON.stringify(names)}`);
+
+      /* THE assertion: the rendered TEXT, not a title, not a data attribute. */
+      const emails = (await rows.locator(".perm-ident-email").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
+      ok(emails.length === 2, `F-651 ${theme} both rows render an email - got ${emails.length}`);
+      ok(emails[0] !== emails[1],
+        `F-651 ${theme} the two visible emails differ - got ${JSON.stringify(emails)}`);
+      ok(emails.some((e) => e.includes("+contractor2024")) && emails.some((e) => e.includes("+contractor2025")),
+        `F-651 ${theme} the +tag that tells them apart is VISIBLE - got ${JSON.stringify(emails)}`);
+      ok(emails.every((e) => !/…|\.\.\.$/.test(e)),
+        `F-651 ${theme} and neither is elided - got ${JSON.stringify(emails)}`);
+
+      /* Not merely present in the DOM: not clipped by the box either. The span is allowed
+         to WRAP (it grows taller), never to overflow horizontally. */
+      const fit = await rows.nth(0).locator(".perm-ident-email").evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { over: el.scrollWidth - el.clientWidth, ws: cs.whiteSpace, te: cs.textOverflow, ow: cs.overflowWrap };
+      });
+      ok(fit.over <= 1, `F-651 ${theme} the email is not horizontally clipped - overflow ${fit.over}px`);
+      ok(fit.ws !== "nowrap", `F-651 ${theme} the email is allowed to wrap - white-space ${fit.ws}`);
+      ok(fit.te !== "ellipsis", `F-651 ${theme} and it never ellipsises - text-overflow ${fit.te}`);
+      ok(/anywhere|break-word/.test(fit.ow), `F-651 ${theme} long addresses break instead of pushing - ${fit.ow}`);
+
+      /* The chip is still the thing that never gives way - it shrinks LAST, i.e. not at all. */
+      const chipFit = await rows.nth(0).locator(".perm-ident-id").evaluate((el) => ({
+        over: el.scrollWidth - el.clientWidth, shrink: getComputedStyle(el).flexShrink,
+      }));
+      ok(chipFit.over <= 1 && chipFit.shrink === "0",
+        `F-651 ${theme} the id chip does not shrink - ${JSON.stringify(chipFit)}`);
+
+      /* The email's own title is its own full value, so a hover is never a dead end. */
+      const t0 = await rows.nth(0).locator(".perm-ident-email").getAttribute("title");
+      ok(t0 === emails[0], `F-651 ${theme} the email titles itself - got ${JSON.stringify(t0)}`);
+
+      await shot(page, `f651-search-plus-tags-${theme}`);
+
+      /* the roster surface: the email owns its own line and is never truncated */
+      await rows.nth(1).click();
+      const card = page.locator(".perm-admin-card", { hasText: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" });
+      await card.first().waitFor({ timeout: 10000 });
+      const cardEmail = (await card.locator(".perm-ident-email").innerText()).replace(/\s+/g, " ").trim();
+      ok(cardEmail === "mihai.perdum+contractor2025@wolfaenpak.example",
+        `F-651 ${theme} the card shows the WHOLE address of the row that was clicked - got ${JSON.stringify(cardEmail)}`);
+
+      const stack = await card.locator(".perm-ident-row").first().evaluate((el) => {
+        const cs = getComputedStyle(el);
+        const em = el.querySelector(".perm-ident-email");
+        const chip = el.querySelector(".perm-ident-id");
+        return {
+          dir: cs.flexDirection,
+          bl: cs.borderLeftWidth, bt: cs.borderTopWidth,
+          sameLine: em && chip ? Math.abs(em.getBoundingClientRect().top - chip.getBoundingClientRect().top) < 2 : null,
+          over: em ? em.scrollWidth - em.clientWidth : 0,
+        };
+      });
+      ok(stack.dir === "column", `F-651 ${theme} the roster row stacks - flex-direction ${stack.dir}`);
+      ok(stack.sameLine === false, `F-651 ${theme} the email is on its OWN line, not beside the chip`);
+      ok(stack.over <= 1, `F-651 ${theme} and it is not clipped on the card - overflow ${stack.over}px`);
+      ok(stack.bl === stack.bt, `F-651 ${theme} the stacked row has NO left accent rail`);
+
+      /* Design law survives the stacking: solid slate, 600+, no tint. */
+      const est = await card.locator(".perm-ident-email").evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { color: cs.color, fw: cs.fontWeight };
+      });
+      const want = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      const got = (est.color.match(/\d+/g) || []).map(Number);
+      ok(got.slice(0, 3).every((v, i) => Math.abs(v - want[i]) <= 2),
+        `F-651 ${theme} the email keeps the solid slate ${want.join(",")} - got ${est.color}`);
+      ok(!/rgba/.test(est.color) || !/0\.\d/.test(est.color),
+        `F-651 ${theme} not a faded low-alpha tint - got ${est.color}`);
+      ok(Number(est.fw) >= 600, `F-651 ${theme} 600+ weight - got ${est.fw}`);
+
+      await shot(page, `f651-roster-email-own-line-${theme}`);
+      ok(env.errors.length === 0, `F-651 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x F-651 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 

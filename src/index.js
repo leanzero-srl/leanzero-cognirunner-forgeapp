@@ -6329,7 +6329,19 @@ resolver.define("getOpenAIModelFromKVS", async ({ payload, context }) => {
     if (!byokKey) {
       // No key: the env-var factory model only applies to the ACTIVE provider; for a
       // non-active provider being browsed there is no model to report.
-      const factoryModel = provider === (await activeProviderId()) ? await getOpenAIModel() : null;
+      //
+      // F-837 — `migrate: false`, and the chain is asked DIRECTLY rather than through
+      // `getOpenAIModel()`. This is a VIEWER-floor READ door; `getOpenAIModel()` carries
+      // `migrate: true`, the one-time legacy-slot WRITE, and a read door that writes is
+      // a door whose permission floor no longer describes what it does. It could not
+      // fire from here TODAY — the chain only migrates when a BYOK key exists and this
+      // arm is the `!byokKey` branch — but that is a coincidence of two guards written
+      // at two different times, and it is exactly the kind of coupling a refactor of
+      // either one removes in silence. The migration has ONE call site (getOpenAIModel);
+      // every read path asks for `migrate: false`.
+      const factoryModel = provider === (await activeProviderId())
+        ? await resolveModelForProvider(provider, { migrate: false })
+        : null;
       return { success: true, model: factoryModel, isByok: false };
     }
     const savedModel = await storage.get(providerModelSlot(provider));
@@ -15318,6 +15330,21 @@ const resolveModelForProvider = async (provider, { migrate = false, agentSlot = 
  * The ACTIVE provider's ordinary model — `resolveModelForProvider` for the memoised
  * provider, with the one-time legacy migration. The chain itself lives in ONE home above.
  *
+ * F-837 — THIS IS THE ONLY `migrate: true` IN THE APP, and it must stay that way. The
+ * legacy slot (`COGNIRUNNER_OPENAI_MODEL`, the pre-per-provider global) is copied into
+ * the active provider's own slot on the first read that is about to DISPATCH — the shape
+ * the per-provider migration was written with (eaf7d405, alongside getOpenAIKey's key
+ * migration), and it belongs here rather than on an admin save door because a save WRITES
+ * the slot anyway: migrating there would leave every instance whose admin never re-saves
+ * silently ignoring the model it had.
+ *
+ * What is NOT allowed is a READ door reaching this function for a display value. Two did:
+ * the admin panel's agent-model door (F-835) and `getOpenAIModelFromKVS`'s factory arm.
+ * Both are VIEWER floor, and a viewer read that performs a KVS write is a door whose
+ * permission floor no longer describes what it does. Every read path now passes
+ * `migrate: false` explicitly; `agent-capability-seams.test.mjs` asserts the call-site
+ * count and that a viewer read with a legacy slot present writes NOTHING.
+ *
  * Returns null when there is NO active provider (getProviderConfig faulted, F-103),
  * exactly as getOpenAIKey does — and without memoising that, because a cached default
  * would outlive the fault by up to 30s and send an OpenAI model id to another vendor.
@@ -15373,9 +15400,13 @@ export const getAgentModelFor = async (provider) => resolveModelForProvider(prov
 
 /**
  * The ACTIVE provider's agent model — a thin wrapper on getAgentModelFor for the callers
- * that have no provider of their own (the resolver door, the Virtual Administrator's
- * model pick). Anything that has ALREADY resolved a provider passes it instead, or it
- * reopens F-811.
+ * that have no provider of their own (the Virtual Administrator's model pick). Anything
+ * that has ALREADY resolved a provider passes it instead, or it reopens F-811 — the
+ * admin panel's `getAgentModel` RESOLVER is one of those: it has the browsed provider in
+ * its payload and calls `getAgentModelFor` with it (F-835).
+ *
+ * READ-ONLY, and now true of the whole path: `getAgentModelFor` pins `migrate: false`, so
+ * neither this wrapper nor the panel door can perform the legacy-slot write (F-837).
  */
 export const getAgentModel = async () => {
   let provider = null;

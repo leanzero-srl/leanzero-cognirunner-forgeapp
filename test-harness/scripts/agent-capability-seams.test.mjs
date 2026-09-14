@@ -169,6 +169,151 @@ const runF811Case = async (name) => {
   fail++; console.log("FAIL: unknown F-811 case", name);
 };
 
+/* ═════ F-837 — A VIEWER-FLOOR READ DOOR MUST NOT PERFORM THE LEGACY-SLOT WRITE ═════
+ *
+ * `getOpenAIModel()` carries `migrate: true`: the one-time copy of the pre-per-provider
+ * global slot `COGNIRUNNER_OPENAI_MODEL` into the ACTIVE provider's own slot, on the
+ * first read that is about to dispatch (eaf7d405, the same shape as getOpenAIKey's key
+ * migration). Two VIEWER-floor READ doors reached it for a display value — the admin
+ * panel's agent-model door (F-835) and `getOpenAIModelFromKVS`'s factory arm — so a
+ * viewer opening the Settings tab could perform a KVS write. A permission floor that
+ * says "read" while the door writes is not a floor anyone can audit.
+ *
+ * The property has two halves and BOTH are asserted, because deleting the migration
+ * would pass the first one alone and would silently orphan every legacy instance:
+ *   1. a VIEWER read, with the legacy slot present and a BYOK key in place so the
+ *      migration WOULD fire, writes NOTHING — `storage.set` is called zero times;
+ *   2. the dispatch reader `getOpenAIModel()` STILL migrates, exactly once, and the
+ *      second call writes nothing more.
+ *
+ * A CHILD PROCESS, for the same reason the F-811 cases are: `getOpenAIModel` memoises
+ * for 30 s and the provider memo cannot be flipped once index.js has read it, so the
+ * "migration has not happened yet" state exists only on a cold container.
+ */
+const runF837 = async () => {
+  const VIEWER = "acct-viewer";
+  await storage.set("COGNIRUNNER_EDITION_SNAPSHOT", { active: true, edition: "advanced", at: new Date().toISOString() });
+  await storage.set("COGNIRUNNER_SEAT_SNAPSHOT", { seats: 10, at: new Date().toISOString() });
+  await storage.set("app_admins", [
+    { accountId: ADMIN, role: "admin", scope: "all" },
+    { accountId: VIEWER, role: "viewer", scope: "all" },
+  ]);
+  await storage.set("COGNIRUNNER_AI_PROVIDER", "openai");
+  // The migration's own precondition: it only fires where a BYOK key exists.
+  await storage.set("COGNIRUNNER_KEY_openai", "sk-legacy-instance");
+  await storage.set("COGNIRUNNER_OPENAI_MODEL", "gpt-5.4-legacy");
+
+  const idx = await import("../../src/index.js");
+  const { handler: h, getOpenAIModel } = idx;
+
+  // Count every write THROUGH THE MOCK, which is the same object src/index.js holds.
+  const realSet = storage.set.bind(storage);
+  let writes = [];
+  storage.set = async (...a) => { writes.push(a[0]); return realSet(...a); };
+
+  const asViewer = (fn, payload = {}) => h({ call: { functionKey: fn, payload }, context: {} }, { principal: { accountId: VIEWER } });
+
+  // ORDER MATTERS, and it is the order of the defect: the agent-model door goes FIRST, on
+  // a container whose 30 s model memo is still COLD and whose BYOK key is in place. That
+  // is the exact state in which the old door's `getOpenAIModel()` arm performed the
+  // legacy write, and it is the only state in which it can be caught — once anything has
+  // warmed the memo, the migrating reader never reaches storage again.
+  writes = [];
+  const ag = await asViewer("getAgentModel", { provider: "openai" });
+  ok(ag && ag.success === true, "F-837: the viewer's getAgentModel read succeeds");
+  eq(writes.length, 0, `F-837: …and writes NOTHING (wrote ${JSON.stringify(writes)})`);
+  // KNOWN AND DELIBERATE, pinned here rather than left to be discovered: a read door
+  // that passes `migrate:false` does not CONSULT the legacy slot either, so on a
+  // pre-per-provider instance that has not dispatched since the container went cold the
+  // panel names the provider DEFAULT while the runtime would still resolve the legacy
+  // model. The window closes on the first AI call (which migrates), and the alternative
+  // — `migrate:true` with a null `onMigrate`, which the shared chain explicitly supports
+  // (read and honour, write nothing) — is a change to the F-826 binding's shape and is
+  // the owner's call, not this cut's.
+  eq(String(ag.model), "gpt-5.4-mini", "F-837: …naming the provider default, NOT the un-migrated legacy slot (the known window)");
+
+  writes = [];
+  const kvs1 = await asViewer("getOpenAIModelFromKVS", { provider: "openai" });
+  ok(kvs1 && kvs1.success === true, `F-837: the viewer's getOpenAIModelFromKVS read succeeds (${JSON.stringify(kvs1).slice(0, 120)})`);
+  eq(writes.length, 0, `F-837: …and writes NOTHING (wrote ${JSON.stringify(writes)})`);
+  // What this door REPORTS is unchanged by the cut: with a BYOK key and no per-provider
+  // slot it has always answered `null` ("nothing saved"), because the legacy-honouring
+  // arm is the `!byokKey` factory branch. Asserted so the cut is pinned to the WRITE and
+  // cannot be read as a change to the answer.
+  eq(kvs1.model, null, "F-837: …and its answer is unchanged — no saved per-provider model");
+  eq(kvs1.isByok, true, "F-837: …still reported as BYOK");
+
+  ok((await storage.get("COGNIRUNNER_MODEL_openai")) === null || (await storage.get("COGNIRUNNER_MODEL_openai")) === undefined,
+    "F-837: after BOTH viewer reads the per-provider model slot is still unwritten");
+
+  // THE MIGRATION IS NOT GONE — deleting it would pass every assertion above and would
+  // silently orphan every pre-per-provider instance. The dispatch reader still performs
+  // it, exactly once.
+  writes = [];
+  const m1 = await getOpenAIModel();
+  eq(String(m1), "gpt-5.4-legacy", "F-837: getOpenAIModel resolves the legacy model");
+  eq(writes.filter((k) => k === "COGNIRUNNER_MODEL_openai").length, 1,
+    `F-837: …and MIGRATES it into the per-provider slot exactly once (wrote ${JSON.stringify(writes)})`);
+  eq(String(await storage.get("COGNIRUNNER_MODEL_openai")), "gpt-5.4-legacy", "F-837: …the slot now holds it");
+  writes = [];
+  await getOpenAIModel();
+  eq(writes.length, 0, "F-837: …and a second read migrates nothing more");
+
+  // THE FACTORY ARM, the other door named in the finding: keyless, provider active. It
+  // now asks the chain directly instead of the migrating reader; same answer, no write.
+  // (It could not have migrated from here in any case — the chain only migrates where a
+  // BYOK key exists and this arm is the `!byokKey` branch. That is a coincidence of two
+  // guards, not a design, which is why the option is now explicit at the call site.)
+  await storage.delete("COGNIRUNNER_KEY_openai");
+  writes = [];
+  const kvs2 = await asViewer("getOpenAIModelFromKVS", { provider: "openai" });
+  ok(kvs2 && kvs2.success === true && kvs2.isByok === false, "F-837: the keyless factory arm answers");
+  eq(writes.length, 0, `F-837: …and writes NOTHING (wrote ${JSON.stringify(writes)})`);
+  eq(String(kvs2.model), "gpt-5.4-legacy", "F-837: …naming the model the instance actually runs");
+
+  storage.set = realSet;
+};
+
+/* ═════ F-837 SOURCE SHAPE — `migrate: true` has EXACTLY ONE call site ═════
+ *
+ * The behavioural half above proves today's doors are clean. This is what stops the next
+ * read door reaching the migrating reader: `migrate` is an option on a shared chain, so
+ * the write is invisible at the call site — `await getOpenAIModel()` reads like a getter.
+ */
+const f837Shape = () => {
+  const idxSrc3 = readFileSync(path.join(fileURLToPath(new URL("../../src/index.js", import.meta.url))), "utf8");
+  const code = idxSrc3.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  const sites = code.split("\n").filter((l) => /migrate:\s*true/.test(l));
+  eq(sites.length, 1, `F-837.SHAPE: exactly ONE migrate:true call site in src/index.js (got ${sites.length}: ${sites.map((l) => l.trim()).join(" | ")})`);
+  // …and it is inside getOpenAIModel, the ACTIVE-provider dispatch reader — not a
+  // resolver door. NOTE, recorded honestly: that site is NOT admin-gated, because the
+  // migration is deliberately a first-DISPATCH migration (see its docblock); the floor
+  // this finding is about is that no VIEWER-floor RESOLVER reaches it.
+  const mod = code.match(/const getOpenAIModel = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!mod && /migrate: true/.test(mod[0]), "F-837.SHAPE: …and it lives in getOpenAIModel, the active-provider dispatch reader");
+  ok(!/resolver\.define[\s\S]{0,4000}?migrate:\s*true/.test(code.slice(code.indexOf('resolver.define("getAgentModel"'), code.indexOf('resolver.define("getAgentModel"') + 1400)),
+    "F-837.SHAPE: …and not in the agent-model door");
+  // The two repaired read doors name their intent EXPLICITLY rather than relying on the
+  // chain's default, so a reader of either one can see the door does not write.
+  for (const [door, span] of [['resolver.define("getAgentModel"', 1600], ['resolver.define("getOpenAIModelFromKVS"', 3000]]) {
+    const i = code.indexOf(door);
+    ok(i > 0, `F-837.SHAPE: found ${door}`);
+    const body = code.slice(i, i + span);
+    ok(!/getOpenAIModel\(\)/.test(body), `F-837.SHAPE: ${door} no longer rides the migrating reader`);
+  }
+  ok(/migrate: false/.test(code.slice(code.indexOf('resolver.define("getOpenAIModelFromKVS"'), code.indexOf('resolver.define("getOpenAIModelFromKVS"') + 3000)),
+    "F-837.SHAPE: getOpenAIModelFromKVS's factory arm asks for migrate:false in so many words");
+  const gam2 = code.match(/export const getAgentModelFor = async \(provider\) => [\s\S]*?;\n/);
+  ok(!!gam2 && /migrate: false/.test(gam2[0]), "F-837.SHAPE: getAgentModelFor — which the panel door now rides — pins migrate:false");
+};
+
+if (process.env.CR_F837 === "1") {
+  f837Shape();
+  await runF837();
+  console.log(`agent capability F-837: ${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+}
+
 const F811_CASE = process.env.CR_F811_CASE || "";
 if (F811_CASE) {
   await runF811Case(F811_CASE);
@@ -474,6 +619,18 @@ if (!CAP_OFF && fail === 0) {
     process.stdout.write((r.stdout || "").split("\n").filter((l) => /passed|FAIL/.test(l)).join("\n") + "\n");
     if (r.status !== 0) { process.stderr.write(r.stderr || ""); fail++; console.log(`FAIL: the F-811 case ${c} failed`); }
   }
+}
+
+/* F-837 — a COLD child: the legacy migration exists only before getOpenAIModel has run
+ * once, and its 30 s memo cannot be cleared from outside. */
+if (!CAP_OFF && fail === 0) {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const r = spawnSync(process.execPath, [
+    "--import", path.join(here, "../lib/register-mocks-index.mjs"),
+    path.join(here, "agent-capability-seams.test.mjs"),
+  ], { encoding: "utf8", env: { ...process.env, CR_F837: "1" } });
+  process.stdout.write((r.stdout || "").split("\n").filter((l) => /passed|FAIL/.test(l)).join("\n") + "\n");
+  if (r.status !== 0) { process.stderr.write(r.stderr || ""); fail++; console.log("FAIL: the F-837 case failed"); }
 }
 
 /* The OFF world, as a child process: see the header — the provider memo cannot be

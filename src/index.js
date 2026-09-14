@@ -6238,14 +6238,19 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
  * over, and the pessimistic answer was the one the user could act on.
  *
  * It now asks `getAgentModelFor(provider)` — the SAME binding the gate rides
- * (`resolveModelForProvider(provider, { agentSlot: true, migrate: false })`) — and adds
+ * (`resolveModelForProvider(provider, { agentSlot: true, migrate: true, onMigrate: null })`) — and adds
  * only the display flags that are genuinely this door's business. The managed clamp and
  * the Forge LLM belt are NOT re-applied here: they live in the chain (F-826), so a clamp
  * at this call site could only ever drift from the one the gate gets.
  *
- * `migrate:false` is part of the parity AND part of F-837: a viewer-floor READ door must
+ * `onMigrate: null` is part of the parity AND part of F-837: a viewer-floor READ door must
  * not perform the one-time legacy-slot WRITE, which is exactly what the old
- * `getOpenAIModel()` arm did.
+ * `getOpenAIModel()` arm did. F-848 then split the two halves that flag used to conflate:
+ * the door now passes `migrate: true` as well, so it READS and HONOURS the legacy slot
+ * (`COGNIRUNNER_OPENAI_MODEL`) and still writes nothing. Before that, a pre-per-provider
+ * instance that was cold and had not dispatched since the upgrade showed the provider
+ * DEFAULT here while the first transition would have run the LEGACY model — status and
+ * dispatch disagreeing until the first AI call self-healed the slot.
  */
 resolver.define("getAgentModel", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view the agent model", "viewer");
@@ -6351,17 +6356,21 @@ resolver.define("getOpenAIModelFromKVS", async ({ payload, context }) => {
       // No key: the env-var factory model only applies to the ACTIVE provider; for a
       // non-active provider being browsed there is no model to report.
       //
-      // F-837 — `migrate: false`, and the chain is asked DIRECTLY rather than through
+      // F-837 — `onMigrate: null`, and the chain is asked DIRECTLY rather than through
       // `getOpenAIModel()`. This is a VIEWER-floor READ door; `getOpenAIModel()` carries
-      // `migrate: true`, the one-time legacy-slot WRITE, and a read door that writes is
-      // a door whose permission floor no longer describes what it does. It could not
-      // fire from here TODAY — the chain only migrates when a BYOK key exists and this
-      // arm is the `!byokKey` branch — but that is a coincidence of two guards written
-      // at two different times, and it is exactly the kind of coupling a refactor of
-      // either one removes in silence. The migration has ONE call site (getOpenAIModel);
-      // every read path asks for `migrate: false`.
+      // the one-time legacy-slot WRITE, and a read door that writes is a door whose
+      // permission floor no longer describes what it does. It could not fire from here
+      // TODAY — the chain only migrates when a BYOK key exists and this arm is the
+      // `!byokKey` branch — but that is a coincidence of two guards written at two
+      // different times, and it is exactly the kind of coupling a refactor of either one
+      // removes in silence. The WRITE has ONE call site (getOpenAIModel); every read path
+      // pins `onMigrate: null`.
+      //
+      // F-848 — `migrate: true` here is NOT a write. It makes this door READ and HONOUR
+      // the legacy slot, which is what the runtime resolves, so the reported factory
+      // model matches the one the next transition would actually run.
       const factoryModel = provider === (await activeProviderId())
-        ? await resolveModelForProvider(provider, { migrate: false })
+        ? await resolveModelForProvider(provider, { migrate: true, onMigrate: null })
         : null;
       return { success: true, model: factoryModel, isByok: false };
     }
@@ -15541,10 +15550,19 @@ const migrateLegacyModelSlot = async (key, value) => {
   }
 };
 
-const resolveModelForProvider = async (provider, { migrate = false, agentSlot = false } = {}) => resolveModelChain({
+/**
+ * F-848 — THE BINDING TAKES THE WRITER AS AN OPTION, so a door can say "honour the legacy
+ * slot, write nothing" in so many words. `migrate` and `onMigrate` are two separate
+ * decisions in the shared chain (src/shared/model-resolution.js): `migrate:true` READS and
+ * HONOURS the pre-per-provider slot, and only a non-null `onMigrate` ever WRITES it.
+ * Collapsing them into one flag is what made the READ doors answer the provider default
+ * while the RUNTIME resolved the legacy model on a cold, never-dispatched instance.
+ * Default: the real writer, so the dispatch reader keeps migrating by omission.
+ */
+const resolveModelForProvider = async (provider, { migrate = false, agentSlot = false, onMigrate = migrateLegacyModelSlot } = {}) => resolveModelChain({
   provider,
   readSlot: (key) => storage.get(key),
-  onMigrate: (key, value) => migrateLegacyModelSlot(key, value),
+  onMigrate: onMigrate ? (key, value) => onMigrate(key, value) : null,
   env: process.env,
   providers: PROVIDERS,
   agentSlot,
@@ -15568,8 +15586,10 @@ const resolveModelForProvider = async (provider, { migrate = false, agentSlot = 
  * the admin panel's agent-model door (F-835) and `getOpenAIModelFromKVS`'s factory arm.
  * Both are VIEWER floor, and a viewer read that performs a KVS write is a door whose
  * permission floor no longer describes what it does. Every read path now passes
- * `migrate: false` explicitly; `agent-capability-seams.test.mjs` asserts the call-site
- * count and that a viewer read with a legacy slot present writes NOTHING.
+ * `onMigrate: null` explicitly (F-848: with `migrate: true`, so they still HONOUR the
+ * legacy slot and answer the model the runtime would resolve — they just never write it);
+ * `agent-capability-seams.test.mjs` asserts that exactly ONE call site carries a writer
+ * and that a viewer read with a legacy slot present writes NOTHING.
  *
  * Returns null when there is NO active provider (getProviderConfig faulted, F-103),
  * exactly as getOpenAIKey does — and without memoising that, because a cached default
@@ -15613,16 +15633,18 @@ const getOpenAIModel = async () => {
  *                       one default in the app; on Forge LLM that means Haiku, which
  *                       agentCapability() then refuses — a deliberate, visible refusal
  *                       instead of a silent frontier upgrade.
- *   `migrate:false`   — the legacy-slot migration is a one-time WRITE that belongs on the
+ *   `onMigrate:null`  — the legacy-slot migration is a one-time WRITE that belongs on the
  *                       active-provider path and must not fire for a provider that is not
- *                       even active.
+ *                       even active. `migrate:true` still rides along (F-848): the legacy
+ *                       slot is READ and HONOURED, so this reader and the dispatch reader
+ *                       name the same model on a cold pre-per-provider instance.
  * Every policy (the managed clamp, the Forge LLM belt) is in the resolver, so it can no
  * longer be true of one reader and not the other.
  *
  * Not cached: agent surfaces are rare and low-frequency compared with validators, and the
  * 30 s memo is what this exists to escape.
  */
-export const getAgentModelFor = async (provider) => resolveModelForProvider(provider, { agentSlot: true, migrate: false });
+export const getAgentModelFor = async (provider) => resolveModelForProvider(provider, { agentSlot: true, migrate: true, onMigrate: null });
 
 /**
  * The ACTIVE provider's agent model — a thin wrapper on getAgentModelFor for the callers
@@ -15631,7 +15653,7 @@ export const getAgentModelFor = async (provider) => resolveModelForProvider(prov
  * admin panel's `getAgentModel` RESOLVER is one of those: it has the browsed provider in
  * its payload and calls `getAgentModelFor` with it (F-835).
  *
- * READ-ONLY, and now true of the whole path: `getAgentModelFor` pins `migrate: false`, so
+ * READ-ONLY, and now true of the whole path: `getAgentModelFor` pins `onMigrate: null`, so
  * neither this wrapper nor the panel door can perform the legacy-slot write (F-837).
  */
 export const getAgentModel = async () => {

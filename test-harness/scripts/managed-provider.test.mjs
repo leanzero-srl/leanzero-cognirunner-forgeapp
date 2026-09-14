@@ -584,8 +584,11 @@ ok(/probe \(g\)/.test(readFileSync(path.join(srcDir, "shared/ai-budget.js"), "ut
   // them on the wrapper alone would prove nothing once the body moved.
   const gam = (indexSrc.match(/export const getAgentModelFor = async \(provider\) => [\s\S]*?;\n/) || [, ""])[0] || "";
   ok(gam.length > 0, "found getAgentModelFor");
-  ok(/resolveModelForProvider\(provider, \{ agentSlot: true, migrate: false \}\)/.test(gam),
-    "…and it derives from the ONE model chain, reading the agent slot and doing NO legacy migration write (F-818)");
+  // F-848 — `migrate` (read and honour the legacy slot) and `onMigrate` (write it) are two
+  // decisions. The agent reader takes the first and refuses the second, so it names the
+  // model the runtime would resolve on a cold pre-per-provider instance WITHOUT writing.
+  ok(/resolveModelForProvider\(provider, \{ agentSlot: true, migrate: true, onMigrate: null \}\)/.test(gam),
+    "…and it derives from the ONE model chain, reading the agent slot and doing NO legacy migration write (F-818/F-848)");
   // F-826 — the chain LEFT src/index.js entirely: it is a pure function in
   // src/shared/model-resolution.js, because the async consumer is a different process
   // that cannot import index.js and had drifted to its own copy. index.js keeps only the

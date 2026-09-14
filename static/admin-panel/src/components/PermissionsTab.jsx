@@ -10,6 +10,7 @@ import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
 import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 import { confirmDialog } from "../confirmDialog";
+import { DEFAULT_ROSTER_SCOPE } from "../../../../src/shared/roster-roles.js";
 
 const ROLE_OPTIONS = [
   { value: "viewer", label: "Viewer" },
@@ -129,7 +130,8 @@ export default function PermissionsTab({ invoke }) {
   const [searchError, setSearchError] = useState(null);
   const [adding, setAdding] = useState(null);
   const [addRole, setAddRole] = useState("viewer");
-  const [addScope, setAddScope] = useState("own");
+  // F-843 — the Add form seeds the scope from the one home, not a re-typed literal.
+  const [addScope, setAddScope] = useState(DEFAULT_ROSTER_SCOPE);
   const [removing, setRemoving] = useState(null);
   const [changingRole, setChangingRole] = useState(null);
   // accountId of a just-added user — drives the one-shot .flash-success on its card
@@ -258,7 +260,7 @@ export default function PermissionsTab({ invoke }) {
 
   const handleRoleChange = async (accountId, newRole, newScope) => {
     if (changingRole) return;
-    const effectiveScope = newRole === "admin" ? "all" : (newScope || "own");
+    const effectiveScope = newRole === "admin" ? "all" : (newScope || DEFAULT_ROSTER_SCOPE);
     // Optimistic: the select reflects the choice immediately. On failure revert
     // ONLY this user's role/scope — restoring a whole-list snapshot would wipe
     // users added/removed concurrently.
@@ -483,7 +485,22 @@ export default function PermissionsTab({ invoke }) {
             const name = typeof user === "string" ? user : user.displayName;
             const avatar = typeof user === "object" ? user.avatarUrl : null;
             const role = typeof user === "object" ? (user.role || "admin") : "admin";
-            const scope = typeof user === "object" ? (user.scope || "all") : "all";
+            /* F-843 — the scope-less roster row reads the SAME here as the backend
+               enforces it. This line carried a private `|| "all"` while
+               `getUserPermissions` (post F-840) grants such a row `own`, so the card
+               announced "All rules" over an editor who in fact reached only their own.
+               The default now comes from src/shared/roster-roles.js, the one home.
+
+               The two branches that are NOT the default, and why they stay:
+               - `role === "admin"` is "all" BY CONSTRUCTION (both write paths force it,
+                 and scopeLabel says "always"), so an admin row never consults the
+                 default even when its stored scope is missing; and
+               - a LEGACY row (a bare account-id string) reads as role "admin" above,
+                 and therefore as scope "all" here — F-840 deliberately did not narrow
+                 those, and neither does this. */
+            const scope = typeof user === "object"
+              ? (user.scope || (role === "admin" ? "all" : DEFAULT_ROSTER_SCOPE))
+              : "all";
             const isRemoving = removing === id;
             const isChanging = changingRole === id;
             /* F-645 — the roster is the ONLY place an admin can verify a grant landed

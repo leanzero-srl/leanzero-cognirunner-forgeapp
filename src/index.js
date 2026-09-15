@@ -12095,7 +12095,14 @@ resolver.define("getForgeIdentityStatus", async ({ context }) => {
  * "off", never "on".
  */
 resolver.define("getAgentCapability", async ({ context }) => {
-  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("check the Coder capability", "viewer");
+  /* F-954 - THE ROLE IS READ ONCE AND ANSWERED, because this gate already had to know it.
+     The Coder panel's off card names a remedy that only a Jira admin can apply (the
+     provider, or the edition), and it was printing that remedy to every reader of an ISSUE
+     - who is usually a developer with no way in. So the caller is told whether it is
+     talking to an admin. It is the SAME answer the viewer floor below is decided from, not
+     a second read, and it is advisory copy only: every write still asks its own gate. */
+  const role = await getUserRole(context.accountId);
+  if (!role) return noPerm("check the Coder capability", "viewer");
   return okOr(async () => {
     const facts = await agentGateFacts(context, { fresh: true });
     // No provider read = no capability, the same rule buildAgentGateContext applies
@@ -12111,6 +12118,8 @@ resolver.define("getAgentCapability", async ({ context }) => {
       edition: facts.edition,
       agentModel: facts.agentModel,
       allowanceLevel: facts.allowanceLevel,
+      // F-954 - for COPY only: may this reader be shown the doors, or the sentence?
+      admin: role === "admin",
     };
   });
 });

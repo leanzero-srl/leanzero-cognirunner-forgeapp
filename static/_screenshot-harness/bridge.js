@@ -1122,7 +1122,14 @@ const MEMORY_SETTINGS = () => ({
      window.__CODE_ONE_CONN__  - exactly ONE connection (the sole-connection pre-selection
                                  arm of F-902; the default fixture has two on purpose).
      window.__CODE_IDENTITY__  - a Forge deploy identity is already stored. */
-const CODE_CAP = () => {
+/* F-954 - `getAgentCapability` answers whether it is talking to an ADMIN, because the off
+   card's remedy (change the provider, or the edition) is one only a Jira admin can apply
+   and the Coder panel's reader is a developer on an issue. It is the role the resolver had
+   already read to gate itself, so the fixture derives it from the SAME flags the rest of
+   this mock uses for "not an admin" rather than growing a flag of its own. */
+const CODE_CAP_ADMIN = () => !(typeof window !== "undefined" && (window.__NOT_ADMIN__ || window.__VIEWER__ || window.__NO_ROSTER__));
+const CODE_CAP = () => ({ ...CODE_CAP_VERDICT(), admin: CODE_CAP_ADMIN() });
+const CODE_CAP_VERDICT = () => {
   const raw = (typeof window !== "undefined" && window.__CODE_CAP__) || null;
   if (!raw) return { success: true, enabled: true, reason: CAP_REASON("byok"), provider: "anthropic", edition: EDITION_IDS.STANDARD, agentModel: FORGE_FRONTIER[0], allowanceLevel: null };
   if (raw === CAP_REASON("needs-coder-edition")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.STANDARD, agentModel: FORGE_FRONTIER[0], allowanceLevel: null };

@@ -102,6 +102,22 @@ async function withPanel(flags, body) {
   }
 }
 
+/* F-954 - NAME THE CONNECTION BEFORE SENDING.
+   The default fixture has TWO connections, and the panel now refuses a turn that has not
+   said which one it acts as (Send is disabled and the sentence asks for the pick). Every
+   arm below that just wants to GET a turn started therefore has to make the pick first,
+   the way a developer would. Idempotent and self-skipping: no picker (one connection, or
+   none) and nothing happens, and an already-chosen connection is left alone - so it can
+   stand in front of every send without asserting anything about which arm it is in. */
+async function chooseConnection(page) {
+  if (await page.locator(".coder-picker .dropdown").count() === 0) return;
+  const trigger = page.locator(".coder-picker .dropdown-trigger");
+  if (!/Choose a connection/.test(await trigger.innerText())) return;
+  await trigger.click();
+  await page.waitForSelector(".dropdown-panel .dropdown-item", { timeout: 6000 });
+  await page.locator(".dropdown-panel .dropdown-item").first().click();
+}
+
 /* The owner's UI rules, run over whatever is on screen. Kept as ONE function so a new arm
    cannot be added without inheriting them. */
 async function designRules(page, id, scope = ".glance") {
@@ -323,6 +339,7 @@ try {
       const id = `ticket/${theme}`;
       await page.locator(".coder-composer").waitFor({ timeout: 10000 });
       await page.locator("textarea.coder-input").fill("Open the PR when the branch is green.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
 
       // 6. the running state is the app's OWN treatment, and it is over the composer.
@@ -445,6 +462,7 @@ try {
         const id = `args/${action}/${theme}`;
         await page.locator(".coder-composer").waitFor({ timeout: 10000 });
         await page.locator("textarea.coder-input").fill("Do it.");
+        await chooseConnection(page);
         await page.locator(".coder-composer .coder-btn-go").click();
         await page.locator(".coder-consent").waitFor({ timeout: 20000 });
         /* F-915 - the blast-radius argument reaches the SENTENCE as well as its row:
@@ -478,9 +496,62 @@ try {
       ok(/not kept when the page reloaded/i.test(text) && /Nothing has run/i.test(text),
         `${id} the panel says the details are unavailable (got "${text}")`);
       ok(await page.locator(".coder-consent-btns .coder-btn").count() === 3, `${id} Confirm, Change and Skip are still offered`);
+
+      /* F-954 - ...AND THE CARD RECOMMENDS WHAT ITS OWN SENTENCE RECOMMENDS.
+         The copy above says nothing has run and to skip and ask again, while the row
+         underneath put Confirm first, solid, in the affirmative hue. A reader who trusts
+         the layout over the paragraph authorises a write that nothing on screen can
+         describe. So on THIS card the primary is Skip and Confirm cannot be pressed. */
+      const order = await page.locator(".coder-consent-btns .coder-btn").allInnerTexts();
+      ok(order.join("|") === "Skip|Change|Confirm", `${id} the degraded card leads with Skip (got ${order.join("|")})`);
+      const skipBtn = page.locator(".coder-consent-skip");
+      const confirmBtn = page.locator(".coder-consent-confirm");
+      const skipBg = await skipBtn.evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(skipBg === HUE.agents[theme], `${id} Skip is the solid primary (got ${skipBg})`);
+      ok(await skipBtn.evaluate((el) => getComputedStyle(el).color) === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"),
+        `${id} with legible ink on its fill`);
+      ok(await confirmBtn.isDisabled(), `${id} Confirm cannot be pressed without a preview`);
+      // A control says WHAT IT NEEDS, on screen and on the control itself.
+      ok(await page.locator(".coder-consent-why").innerText() === "Confirm needs the full preview",
+        `${id} the disabled Confirm says what it is waiting for`);
+      ok(await confirmBtn.getAttribute("title") === "Confirm needs the full preview", `${id} the control carries the same sentence`);
+      // Pressed anyway, it must not reach the backend: a disabled button that still
+      // decides is the defect wearing a different coat.
+      await confirmBtn.click({ force: true }).catch(() => { /* disabled: the point */ });
+      ok(!(await page.evaluate(() => (window.__CALLS__ || []).some((c) => c.name === "confirmCoderTicket"))),
+        `${id} a forced click on the disabled Confirm reached no resolver`);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
       await designRules(page, id);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-pending-${theme}.png`) });
+
+      // The way out the sentence names actually works, and travels as a SKIP.
+      await skipBtn.click();
+      await page.locator(".coder-outcome").waitFor({ timeout: 20000 });
+      const sent = await page.evaluate(() => window.__CODER_LAST_DECISION__ || {});
+      ok(sent.decision === "skip", `${id} the recommended answer is the one that travels (got ${sent.decision})`);
+    });
+
+    /* ---------------------------------- 4c-ii. F-954: the FULL card is UNCHANGED.
+       The reordering is a statement about a card that cannot describe its write, and it
+       must not become a statement about every consent. With a preview on screen the
+       affirmative is first, solid, and pressable - and no "needs the full preview"
+       sentence appears anywhere, because nothing is missing. */
+    await withPanel({ __THEME__: theme }, async (page, errors) => {
+      const id = `full-card/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      await chooseConnection(page);
+      await page.locator("textarea.coder-input").fill("Open the PR.");
+      await page.locator(".coder-composer .coder-btn-go").click();
+      await page.locator(".coder-consent").waitFor({ timeout: 20000 });
+      const order = await page.locator(".coder-consent-btns .coder-btn").allInnerTexts();
+      ok(order.join("|") === "Confirm|Change|Skip", `${id} the full card still leads with Confirm (got ${order.join("|")})`);
+      ok(!(await page.locator(".coder-consent-confirm").isDisabled()), `${id} and Confirm is pressable`);
+      ok(await page.locator(".coder-consent-why").count() === 0, `${id} no "needs the full preview" sentence where the preview is present`);
+      const goBg = await page.locator(".coder-consent-confirm").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(goBg === HUE.agents[theme], `${id} Confirm is still the solid primary (got ${goBg})`);
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-full-card-${theme}.png`) });
     });
 
     /* ------------------------------------------- 4d. F-374: the ERROR BOUNDARY is real.
@@ -511,6 +582,7 @@ try {
       const id = `skip/${theme}`;
       await page.locator(".coder-composer").waitFor({ timeout: 10000 });
       await page.locator("textarea.coder-input").fill("Open the PR.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-consent").waitFor({ timeout: 20000 });
       await page.locator(".coder-consent-btns .coder-btn-alt").nth(1).click(); // Skip
@@ -537,6 +609,7 @@ try {
       const id = `no-resume/${theme}`;
       await page.locator(".coder-composer").waitFor({ timeout: 10000 });
       await page.locator("textarea.coder-input").fill("Open the PR.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-consent").waitFor({ timeout: 20000 });
       await page.locator(".coder-consent-btns .coder-btn-go").click();
@@ -557,6 +630,7 @@ try {
       const id = `duplicate/${theme}`;
       await page.locator(".coder-composer").waitFor({ timeout: 10000 });
       await page.locator("textarea.coder-input").fill("Open the PR.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-consent").waitFor({ timeout: 20000 });
       await page.locator(".coder-consent-btns .coder-btn-go").click();
@@ -572,6 +646,7 @@ try {
       const id = `plain/${theme}`;
       await page.locator(".coder-composer").waitFor({ timeout: 10000 });
       await page.locator("textarea.coder-input").fill("Add the retry guard.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-outcome").waitFor({ timeout: 20000 });
       ok(await page.locator(".coder-consent").count() === 0, `${id} no consent row on a plain turn`);
@@ -596,6 +671,7 @@ try {
       ok(await page.locator(".coder-lock-note").count() === 0, `${id} and drops the locked sentence`);
       await page.locator(".coder-toggle").click();
       await page.locator("textarea.coder-input").fill("Again, but do not write anything.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-outcome").waitFor({ timeout: 20000 });
       const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
@@ -650,6 +726,7 @@ try {
 
       // A turn in the new conversation travels on the NEW id.
       await page.locator("textarea.coder-input").fill("Start again, from the issue only.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-consent").waitFor({ timeout: 20000 });
       const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
@@ -690,6 +767,7 @@ try {
       const id = `sim-locked/${theme}`;
       await page.locator(".coder-composer").waitFor({ timeout: 10000 });
       await page.locator("textarea.coder-input").fill("Do it for real this time.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-error").waitFor({ timeout: 20000 });
       const msg = await page.locator(".coder-error").innerText();
@@ -728,6 +806,7 @@ try {
       ok(items.some((t) => /Acme engineering/.test(t)) && items.some((t) => /Acme platform/.test(t)), `${id} both connections are offered (got ${JSON.stringify(items)})`);
       await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme platform" }).first().click();
       await page.locator("textarea.coder-input").fill("Use the platform repo for this one.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-consent").waitFor({ timeout: 20000 });
       const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
@@ -784,6 +863,7 @@ try {
       await chips.nth(4).click();
 
       await page.locator("textarea.coder-input").fill("Use those two skills and plan the change.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-consent").waitFor({ timeout: 20000 });
       const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
@@ -812,6 +892,7 @@ try {
       await page.locator(".coder-skills-toggle").click();
       await page.locator(".coder-skill-list .coder-skill-chip").nth(1).click();
       await page.locator("textarea.coder-input").fill("Plan it with that skill.");
+      await chooseConnection(page);
       await page.locator(".coder-composer .coder-btn-go").click();
       await page.locator(".coder-error").waitFor({ timeout: 20000 });
       const msg = await page.locator(".coder-error").innerText();
@@ -824,6 +905,162 @@ try {
       await designRules(page, id);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-skills-refused-${theme}.png`) });
+    });
+
+    /* ------------------------- 12. F-954: the OFF card's remedy, for BOTH readers.
+       It used to end in "Apps > CogniRunner > Settings" as a paragraph - a breadcrumb,
+       not a link, aimed at a Jira admin, printed on an ISSUE panel whose reader is
+       usually a developer who is not one. Two different people, two different screens:
+       an admin gets the two real doors (the app's own page and Jira's Manage apps), and
+       everybody else gets one sentence naming what to ask for and who to ask. */
+    for (const admin of [true, false]) {
+      await withPanel({ __THEME__: theme, __CODE_CAP__: "needs-frontier-model", ...(admin ? {} : { __NOT_ADMIN__: true }) }, async (page, errors) => {
+        const id = `off-remedy/${admin ? "admin" : "developer"}/${theme}`;
+        await page.locator(".coder-cap-off").waitFor({ timeout: 10000 });
+        const txt = await page.locator(".coder-cap-off").innerText();
+        ok(!/Apps\s*›\s*CogniRunner\s*›\s*Settings/.test(txt), `${id} the dead breadcrumb is gone (got "${txt.replace(/\n/g, " ")}")`);
+        if (admin) {
+          const btn = page.locator(".agent-off-btn");
+          ok(await btn.count() === 1, `${id} the admin is given a way to the Settings tab`);
+          ok((await btn.innerText()).trim() === "Open CogniRunner Settings", `${id} and it is labelled as a destination`);
+          const link = page.locator(".agent-off-link");
+          ok(await link.count() === 1, `${id} and a real link to Jira's own app page`);
+          ok(await link.getAttribute("href") === "https://your-site.atlassian.net/jira/settings/apps/manage",
+            `${id} the Manage apps href is the SITE's page, not the iframe's origin (got ${await link.getAttribute("href")})`);
+          ok((await link.getAttribute("rel") || "").includes("noopener"), `${id} the outbound link carries rel=noopener`);
+          // Solid fills with legible ink, and a dark override for each.
+          const btnBg = await btn.evaluate((el) => getComputedStyle(el).backgroundColor);
+          ok(btnBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(37, 99, 235)"), `${id} the button is the solid docs blue (got ${btnBg})`);
+          const linkBg = await link.evaluate((el) => getComputedStyle(el).backgroundColor);
+          ok(linkBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `${id} the link is the solid burnt orange (got ${linkBg})`);
+          ok(await btn.evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `${id} white text on the button`);
+          ok(!/Ask your Jira admin/.test(txt), `${id} an admin is not told to ask an admin`);
+          // BOTH doors actually navigate: the button hands over a tab intent and moves to
+          // the app's module, the link opens the site page. Nothing dead.
+          await btn.click();
+          await page.waitForFunction(() => (window.__ROUTER_CALLS__ || []).length > 0, { timeout: 8000 });
+          const calls = await page.evaluate(() => window.__ROUTER_CALLS__ || []);
+          ok(calls.some((c) => c.fn === "navigate" && c.arg && c.arg.moduleKey === "cognirunner-global-page"),
+            `${id} the button navigates to the app's own page (got ${JSON.stringify(calls)})`);
+          const intent = await page.evaluate(() => (window.__CALLS__ || []).find((c) => c.name === "setUiIntent"));
+          ok(intent && intent.payload && intent.payload.tab === "settings", `${id} and asks for the Settings tab (got ${JSON.stringify(intent && intent.payload)})`);
+          await link.click();
+          await page.waitForFunction(() => (window.__ROUTER_CALLS__ || []).some((c) => c.fn === "open"), { timeout: 8000 });
+          const opened = await page.evaluate(() => (window.__ROUTER_CALLS__ || []).filter((c) => c.fn === "open").map((c) => c.arg));
+          ok(opened.some((u) => String(u).endsWith("/jira/settings/apps/manage")), `${id} the link opens through the router (got ${JSON.stringify(opened)})`);
+        } else {
+          ok(await page.locator(".agent-off-btn").count() === 0, `${id} no button to a page this reader cannot open`);
+          ok(await page.locator(".agent-off-link").count() === 0, `${id} and no Manage apps link either`);
+          const ask = await page.locator(".coder-cap-ask").innerText();
+          ok(ask === "Ask your Jira admin to change the provider or the edition under Apps, CogniRunner.",
+            `${id} one sentence, naming the ask and the person (got "${ask}")`);
+          ok(!/›/.test(ask), `${id} it is a sentence, not a breadcrumb`);
+        }
+        await designRules(page, id);
+        ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+        if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-off-remedy-${admin ? "admin" : "developer"}-${theme}.png`) });
+      });
+    }
+
+    /* ------------------- 13. F-954: a turn cannot be sent without saying WHO it acts as.
+       `connectionId` started empty, rode the turn as `undefined` and Send was enabled on
+       the draft alone - so on a site with two connections the turn landed on whatever the
+       engine defaults to, in somebody else's repository, with nothing on screen having
+       asked. Three sites, three different right answers. */
+
+    // (a) SEVERAL and none chosen: the turn is blocked, and the sentence asks for the pick.
+    await withPanel({ __THEME__: theme }, async (page, errors) => {
+      const id = `conn-owed/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      await page.locator("textarea.coder-input").fill("Plan the retry guard and push it.");
+      const send = page.locator(".coder-composer .coder-btn-go");
+      ok(await send.isDisabled(), `${id} Send is not offered on the draft alone`);
+      const owed = page.locator(".coder-conn-owed");
+      ok(await owed.count() === 1, `${id} and the composer says what is missing`);
+      ok(await owed.innerText() === "Choose the Git connection this conversation acts as", `${id} in the owner's words (got "${await owed.innerText()}")`);
+      const owedBg = await owed.evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(owedBg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `${id} the refusal is the app's solid red (got ${owedBg})`);
+      ok(await owed.evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `${id} with white text`);
+      ok(Number(await owed.evaluate((el) => getComputedStyle(el).fontWeight)) >= 600, `${id} at 600+ weight`);
+      ok(!(await page.evaluate(() => (window.__CALLS__ || []).some((c) => c.name === "startCoderTurn"))), `${id} nothing reached the backend`);
+      await designRules(page, id);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-conn-owed-${theme}.png`) });
+
+      // Choosing clears the refusal and the SAME draft can be sent, carrying the id.
+      await chooseConnection(page);
+      await page.waitForFunction(() => document.querySelectorAll(".coder-conn-owed").length === 0, { timeout: 6000 });
+      ok(!(await send.isDisabled()), `${id} a named connection unblocks the turn`);
+      await send.click();
+      await page.locator(".coder-consent").waitFor({ timeout: 20000 });
+      const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
+      ok(start.connectionId === "gc_1", `${id} and the turn carries it on the wire (got ${start.connectionId})`);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+    });
+
+    // (b) EXACTLY ONE: pre-selected, so there is nothing to ask and nothing to pick.
+    await withPanel({ __THEME__: theme, __CODE_ONE_CONN__: true }, async (page, errors) => {
+      const id = `conn-one/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      ok(await page.locator(".coder-picker").count() === 0, `${id} no picker where there is nothing to choose between`);
+      ok(await page.locator(".coder-conn-owed").count() === 0, `${id} and nothing is owed`);
+      ok(await page.locator(".coder-conn-note").count() === 0, `${id} the site HAS a connection, so it is not told it has none`);
+      await page.locator("textarea.coder-input").fill("Push the retry guard.");
+      ok(!(await page.locator(".coder-composer .coder-btn-go").isDisabled()), `${id} Send is available`);
+      await page.locator(".coder-composer .coder-btn-go").click();
+      await page.locator(".coder-consent").waitFor({ timeout: 20000 });
+      /* THE POINT: the turn NAMES the connection rather than travelling as undefined and
+         letting the engine pick. Pre-selection is a convenience in the composer; what it
+         buys is a record that says which account the conversation acts as. */
+      const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
+      ok(start.connectionId === "gc_1", `${id} the sole connection rides the turn (got ${JSON.stringify(start.connectionId)})`);
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-conn-one-${theme}.png`) });
+    });
+
+    // (c) NONE: a plan-only turn is legitimate, so Send stays enabled and the composer
+    // says what the Coder cannot do rather than refusing the conversation.
+    await withPanel({ __THEME__: theme, __CODE_NO_CONNS__: true }, async (page, errors) => {
+      const id = `conn-none/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      ok(await page.locator(".coder-picker").count() === 0, `${id} no picker with nothing to pick`);
+      ok(await page.locator(".coder-conn-owed").count() === 0, `${id} nothing is owed: there is nothing to owe`);
+      const note = page.locator(".coder-conn-note");
+      ok(await note.count() === 1, `${id} the composer says what this site can and cannot do`);
+      ok(await note.innerText() === "No Git connection on this site; the Coder can plan but not push",
+        `${id} in the owner's words (got "${await note.innerText()}")`);
+      await page.locator("textarea.coder-input").fill("Just plan it, do not push anything.");
+      ok(!(await page.locator(".coder-composer .coder-btn-go").isDisabled()), `${id} Send stays available for a plan-only turn`);
+      await page.locator(".coder-composer .coder-btn-go").click();
+      await page.locator(".coder-consent").waitFor({ timeout: 20000 });
+      const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
+      ok(start.connectionId === undefined, `${id} and it names no connection, because there is none (got ${JSON.stringify(start.connectionId)})`);
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-conn-none-${theme}.png`) });
+    });
+
+    /* (d) F-954 - ...and the CONTROL for (c): an empty list and an UNREAD one are not the
+       same statement. Both reads drop here, so the panel knows nothing about this site's
+       connections - and "No Git connection on this site" would be a claim made from a
+       request that never came back (the F-436 defect, on a second read). It says nothing,
+       and the composer is exactly where it was before the sentence existed. */
+    await withPanel({ __THEME__: theme, __REFUSE__: ["listGitConnections"], __REFUSE_ROLE__: "admin", __FAIL__: ["getRuleLists"] }, async (page, errors) => {
+      const id = `conn-unread/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      /* The admin list is REFUSED (a settled answer) and the editor-floor fallback it drops
+         to never comes back. POSITIVE CONTROL, because "no sentence" must not be allowed to
+         pass by the mount reads simply never running: the SKILLS picker is read by a
+         sibling effect behind the same `capEnabled` gate, is not interfered with here, and
+         is on screen. (`__CALLS__` cannot serve as the control: the mock short-circuits
+         __FAIL__ and __REFUSE__ before it records, so neither name is ever logged.) */
+      ok(await page.locator(".coder-skills-toggle").count() === 1, `${id} the mount reads DID run (positive control)`);
+      ok(await page.locator(".coder-conn-note").count() === 0, `${id} an unanswered list makes NO claim about this site`);
+      ok(await page.locator(".coder-conn-owed").count() === 0, `${id} and owes nothing either`);
+      ok(await page.locator(".coder-picker").count() === 0, `${id} no picker for a list nobody has`);
+      await page.locator("textarea.coder-input").fill("Plan it.");
+      ok(!(await page.locator(".coder-composer .coder-btn-go").isDisabled()), `${id} the composer is left where it was`);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
     });
 
     /* --------------------------------------- 7b. a FIRST open: no thread, no empty-state lie.

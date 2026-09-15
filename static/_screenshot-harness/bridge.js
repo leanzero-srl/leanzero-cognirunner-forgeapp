@@ -1114,7 +1114,12 @@ const MEMORY_SETTINGS = () => ({
      window.__CODE_IDENTITY__  - a Forge deploy identity is already stored. */
 const CODE_CAP = () => {
   const raw = (typeof window !== "undefined" && window.__CODE_CAP__) || null;
-  if (!raw) return { success: true, enabled: true, reason: CAP_REASON("byok"), provider: "anthropic", edition: EDITION_IDS.STANDARD, agentModel: FORGE_FRONTIER[0], allowanceLevel: null };
+  /* F-955 - the BYOK arm honours __AGENT_MODEL__, the SAME knob getAgentModel reads.
+     getAgentCapability and getAgentModel describe one slot; a fixture that let them
+     disagree could photograph "AGENT MODEL claude-haiku-4-5" on the Code tab while
+     Settings showed something else, which the backend cannot produce. This is what
+     makes the Haiku-on-BYOK caveat reachable on the Code card at all. */
+  if (!raw) return { success: true, enabled: true, reason: CAP_REASON("byok"), provider: "anthropic", edition: EDITION_IDS.STANDARD, agentModel: (typeof window !== "undefined" && window.__AGENT_MODEL__) ? String(window.__AGENT_MODEL__) : FORGE_FRONTIER[0], allowanceLevel: null };
   if (raw === CAP_REASON("needs-coder-edition")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.STANDARD, agentModel: FORGE_FRONTIER[0], allowanceLevel: null };
   if (raw === CAP_REASON("needs-frontier-model")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.ADVANCED, agentModel: FORGE_HAIKU, allowanceLevel: null };
   if (raw === CAP_REASON("allowance-exhausted")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.ADVANCED, agentModel: FORGE_FRONTIER[0], allowanceLevel: "hard" };
@@ -2393,7 +2398,21 @@ function invoke(name, payload) {
       /* F-914 - see CODE_CONNS: a reported-scopes token yields BOOLEANS, never a null, so
          the tri-state "not checked" arm is modelled by the token type that really produces
          it. The scope list goes with it: a fine-grained PAT reports none. */
-      return Promise.resolve({ success: true, whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: [] }, capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "This token does not report its scopes (fine-grained PATs never do). Capability is proven only by the call that needs it." } });
+      /* F-955 - the PROOF the Test now takes: one cheap listRepos beside whoami. Three
+         states are reachable and all three are fixture knobs, because the screen says a
+         different sentence for each: a partial page (a plain count), a FULL page (the
+         adapters page, so "at least"), and a REFUSED read (a narrowly scoped token,
+         which is a configuration and not a fault). */
+      return Promise.resolve({
+        success: true,
+        whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: [] },
+        capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "This token does not report its scopes (fine-grained PATs never do). Capability is proven only by the call that needs it." },
+        repoAccess: (typeof window !== "undefined" && window.__CODE_REPOREAD_DENIED__)
+          ? { ok: false, code: "forbidden" }
+          : (typeof window !== "undefined" && window.__CODE_REPOREAD_CAPPED__)
+            ? { ok: true, count: 25, capped: true }
+            : { ok: true, count: 7, capped: false },
+      });
     case "setGitRepoAllowlist": return Promise.resolve({ success: true, connection: CODE_CONNS()[0] });
     case "deleteGitConnection": return Promise.resolve({ success: true });
     /* F-460 - the webhook half. The response NEVER carries the secret, and neither does

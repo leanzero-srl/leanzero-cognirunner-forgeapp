@@ -3892,6 +3892,31 @@ const injectStyles = () => {
        never a third styling of the same date. */
     .usage-allow-reset { font-weight: 700; color: var(--text-color); }
 
+    /* The Haiku caveat on the Code status card. It sits INSIDE a card that is already
+       green-or-red, so it must not add a third colour competing with that verdict:
+       secondary text at 600, the same weight the rest of this card's prose uses. */
+    .code-status-haiku { margin: 8px 0 0; max-width: 78ch; font-size: 12px; font-weight: 600; line-height: 1.5; color: var(--text-secondary); }
+
+    /* The Code tab's proof line: what the token actually did, one line above the
+       capability chips. TEAL solid (#0d9488 / #14b8a6), white text - it is a
+       measurement that SUCCEEDED, and the grey chips under it are the ones that
+       were never taken. */
+    /* The .code-who row is a WRAPPING FLEX ROW, so a plain inline chip lands beside "Scopes"
+       and reads as a fourth fact rather than as the verdict over them. A flex-basis of 100%
+       is what puts it on its own line; the inner span is what keeps it chip-width
+       instead of a full-bleed bar. */
+    .code-proof-line { flex: 0 0 100%; margin: 2px 0 0; }
+    .code-proof {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 5px 12px; border-radius: var(--r-md, 8px);
+      background: #0d9488; color: #ffffff;
+      font-size: 12px; font-weight: 700; line-height: 1.4;
+    }
+    html[data-color-mode="dark"] .code-proof { background: #14b8a6; color: #04211e; }
+    /* The same line when the read was REFUSED. Slate, not red: the credential is
+       alive (whoami passed) and only the repository read was not permitted. */
+    .code-proof-none { background: #475569; color: #ffffff; }
+    html[data-color-mode="dark"] .code-proof-none { background: #64748b; color: #ffffff; }
 `;
   document.head.appendChild(style);
 };

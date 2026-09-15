@@ -11939,7 +11939,10 @@ resolver.define("testGitConnection", async ({ payload, context }) => {
   return okOr(async () => {
     const r = await testGitConnectionCore(payload?.id);
     if (!r.ok) return { success: false, error: r.error, code: r.code, transient: r.transient === true };
-    return { success: true, whoami: r.whoami, capabilities: r.capabilities };
+    // F-955 — `repoAccess` is the PROOF line: one cheap repository read the core took
+    // alongside whoami, so the panel can say what the token actually did instead of
+    // three grey "not checked" chips. It never changes the verdict (see testConnection).
+    return { success: true, whoami: r.whoami, capabilities: r.capabilities, repoAccess: r.repoAccess || null };
   });
 });
 

@@ -174,6 +174,73 @@ console.log("=== VA engine (1.5 commit 3) ===");
   ok(s.dead.some((d) => /queue_unavailable:404/.test(d.reason)), "sweep: the dead queue is NAMED in the receipt's skipped list");
 }
 {
+  /*
+   * F-953 - A DESK WITH NO QUEUE IS THE WHOLE DESK, and the engine has to mean it.
+   *
+   * The wizard's intake gate counts DESKS, and the review card promises "a desk with no
+   * queue listed is the whole desk". The sweep read `queueIds` only, so that agent ran
+   * forever and found nothing, with nothing in any receipt to say why.
+   */
+  const va = vaJob().va;
+  va.intake.serviceDesks = [{ serviceDeskId: "1", queueIds: [] }];
+  va.intake.jql = "";
+  va.intake.mentionsOf = [];
+  const asked = [];
+  const read = [];
+  const s = await V.sweepIntake(va, {
+    jsmQueues: async (id) => { asked.push(id); return { ok: true, values: [{ id: "10" }, { id: "11" }] }; },
+    jsmQueueIssues: async (deskId, queueId, o) => { read.push({ deskId, queueId, limit: o && o.limit }); return { ok: true, issues: [issue(`SUP-${queueId}`)] }; },
+    searchJql: async () => ({ issues: [] }),
+  }, {});
+  eq(asked.join(","), "1", "sweep: a desk with no queue has its queues LISTED at tick time");
+  eq(read.map((r) => r.queueId).join(","), "10,11", "sweep: every queue of that desk is read");
+  eq(s.candidates.length, 2, "sweep: and its issues become candidates");
+  ok(read.every((r) => r.limit <= 50), "sweep: the 50-candidate bound per call is unchanged");
+
+  // A desk that DOES name its queues never asks, so an operator's narrowing still holds.
+  const narrowed = vaJob().va;
+  narrowed.intake.serviceDesks = [{ serviceDeskId: "1", queueIds: ["10"] }];
+  narrowed.intake.jql = ""; narrowed.intake.mentionsOf = [];
+  const asked2 = [];
+  const picked = [];
+  await V.sweepIntake(narrowed, {
+    jsmQueues: async (id) => { asked2.push(id); return { ok: true, values: [{ id: "10" }, { id: "11" }] }; },
+    jsmQueueIssues: async (d, q) => { picked.push(q); return { ok: true, issues: [] }; },
+    searchJql: async () => ({ issues: [] }),
+  }, {});
+  eq(asked2.length, 0, "sweep.BLOCK_widening — a desk that names its queues is never expanded");
+  eq(picked.join(","), "10", "…only the named queue is read");
+
+  // A desk whose queue list cannot be read is a DEAD SOURCE, never a dead tick.
+  const withJql = vaJob().va;
+  withJql.intake.serviceDesks = [{ serviceDeskId: "1", queueIds: [] }];
+  withJql.intake.jql = "status = Open";
+  withJql.intake.mentionsOf = [];
+  const d1 = await V.sweepIntake(withJql, {
+    jsmQueues: async () => ({ ok: false, status: 403, values: [] }),
+    jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    searchJql: async () => ({ issues: [issue("SUP-9")] }),
+  }, {});
+  ok(d1.dead.some((x) => /desk_queues_unavailable:403/.test(x.reason)), `sweep: an unreadable desk is NAMED (got ${JSON.stringify(d1.dead)})`);
+  eq(d1.candidates.length, 1, "sweep.ALLOW_dead_desk_other_sources_continue");
+  const d2 = await V.sweepIntake(withJql, {
+    jsmQueues: async () => { throw new Error("desk gone"); },
+    jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    searchJql: async () => ({ issues: [issue("SUP-9")] }),
+  }, {});
+  ok(d2.dead.some((x) => /desk_queues_failed/.test(x.reason)), "sweep: a throwing desk read is named too");
+  // An EMPTY desk says so, rather than looking like a desk that was never asked about.
+  const d3 = await V.sweepIntake(withJql, {
+    jsmQueues: async () => ({ ok: true, values: [] }),
+    jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    searchJql: async () => ({ issues: [] }),
+  }, {});
+  ok(d3.dead.some((x) => x.reason === "desk_has_no_queues"), "sweep: a desk with no queues at all is reported, not silent");
+  // A caller with no queue reader must not crash the tick either.
+  const d4 = await V.sweepIntake(withJql, { jsmQueueIssues: async () => ({ ok: true, issues: [] }), searchJql: async () => ({ issues: [] }) }, {});
+  ok(d4.dead.some((x) => /no_reader/.test(x.reason)), "sweep: a missing queue reader is reported rather than thrown");
+}
+{
   // A SCOPE-BOUNDED SEARCH that faults fails CLOSED: no candidates from it, said out loud.
   const va = vaJob().va;
   va.intake.jql = "status = Open";

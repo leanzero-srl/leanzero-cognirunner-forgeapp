@@ -21,13 +21,13 @@
 import {
   createWizard, stepWizard, resumeWizard, serializeWizardState, buildVaRecord,
   catalogToCtx, checkJqlShape, clampSay, renderVoiceSamples, renderReviewSummary,
-  writeSiteRefusalReason, optionsForStep,
+  writeSiteRefusalReason, optionsForStep, wizardResumeInfo, WIZARD_QUESTION_COUNT,
   WIZARD_STEPS, VOICE_SAMPLE_CHIPS, VA_WIZARD_SAY_MAX, VA_WIZARD_STATE_MAX_BYTES,
   VA_WIZARD_VERSION,
 } from "../../src/shared/va-wizard.js";
 import {
-  normalizeVa, VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_COPY,
-  vaSuggestedCadence, resolveDefaultTimeZone, vaPowerPhrase,
+  normalizeVa, VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_DEFAULT_FOOTNOTE, VA_COPY,
+  vaSuggestedCadence, resolveDefaultTimeZone, vaPowerPhrase, vaRegisterLabel, vaLanguageLabel,
 } from "../../src/shared/va-config.js";
 
 let pass = 0, fail = 0;
@@ -131,12 +131,17 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
 /* ── 2b. F-916 — what the card SAYS, and what a new agent STARTS with ────── */
 
 {
-  /* THE STARTING POINT IS ONE HOME, and it is not the record's normalisation fallback.
-     `VA_DEFAULTS.cadence.postWindow` still means "no restriction" for normalizeVa; what a
-     NEW agent is OFFERED is the working week. Two questions, two answers. */
+  /* THE STARTING POINT IS ONE HOME, and since F-953 the record's own fallback is the SAME
+     window: a path that skips the cadence step used to ship Sun-Sat 00:00-23:59 silently.
+     "No restriction" is still expressible, but only by SAYING so (an explicitly empty day
+     list) - that half is asserted in va-config.test.mjs, against normalizeVa itself. */
   ok(VA_SUGGESTED_POST_WINDOW.days.join(",") === "1,2,3,4,5" && VA_SUGGESTED_POST_WINDOW.from === "08:00" && VA_SUGGESTED_POST_WINDOW.to === "18:00",
     "the suggested posting window is the working week, working hours");
-  ok(VA_DEFAULTS.cadence.postWindow.days.length === 7, "the record's own fallback still means no restriction");
+  ok(VA_DEFAULTS.cadence.postWindow.days.join(",") === "1,2,3,4,5" && VA_DEFAULTS.cadence.postWindow.from === "08:00",
+    `the record's own fallback is the working week too (got ${JSON.stringify(VA_DEFAULTS.cadence.postWindow)})`);
+  const skipped = normalizeVa({ persona: { name: "Ada" } }, catalogToCtx(CATALOG)).va;
+  ok(skipped.cadence.postWindow.days.join(",") === "1,2,3,4,5" && skipped.cadence.postWindow.from === "08:00" && skipped.cadence.postWindow.to === "18:00",
+    `an agent whose cadence step was never answered does not post at 3am on a Sunday (got ${JSON.stringify(skipped.cadence.postWindow)})`);
 
   /* the zone: the viewer's when the site offers it, UTC when it does not, and never the
      first entry of an alphabetical zone list (which is how "Africa/Abidjan" happened). */
@@ -163,9 +168,47 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
   ok(marked[0].includes(VA_DEFAULT_MARK.trim()), `an untouched cadence line is marked as a default (got ${marked[0]})`);
   ok(marked[0].includes("weekdays"), "the posting days are words, not a seven-name list");
   const chosen = normalizeVa({ persona: { name: "Ada" }, cadence: { preset: "hourly", timeZone: "Europe/Berlin", postWindow: { days: [0, 6], from: "09:00", to: "17:00" } } }, catalogToCtx(CATALOG)).va;
-  const chosenLine = renderReviewSummary(chosen, { defaultTimeZone: "UTC" })[0];
+  const chosenCard = renderReviewSummary(chosen, { defaultTimeZone: "UTC" });
+  const chosenLine = chosenCard[0];
   ok(!chosenLine.includes(VA_DEFAULT_MARK.trim()), `a chosen cadence line is not marked (got ${chosenLine})`);
   ok(chosenLine.includes("weekends"), "a weekend window says weekends");
+
+  /*
+   * F-953 - THE MARKER IS EXPLAINED ONCE, AT THE BOTTOM. Five inline "(default)" tags read
+   * as five warnings on a card whose job is to describe one agent.
+   */
+  ok(!/\(default\)/.test(marked.join(" ")), "the word (default) is not repeated inline any more");
+  ok(marked[marked.length - 1] === VA_DEFAULT_FOOTNOTE, `a card with defaults carries the footnote, once, at the end (got ${marked[marked.length - 1]})`);
+  ok(marked.filter((s) => s === VA_DEFAULT_FOOTNOTE).length === 1, "the footnote is said once");
+  ok(/\*/.test(VA_DEFAULT_FOOTNOTE) && /defaults/.test(VA_DEFAULT_FOOTNOTE), "the footnote explains the star it is footnoting");
+  const everything = normalizeVa({
+    persona: { name: "Ada", voice: { register: "warm", language: "de", maxSentences: 2 } },
+    cadence: { preset: "hourly", timeZone: "Europe/Berlin", postWindow: { days: [0, 6], from: "09:00", to: "17:00" } },
+    powers: { replyInternal: false, assign: true },
+  }, catalogToCtx(CATALOG)).va;
+  const noDefaults = renderReviewSummary(everything, { defaultTimeZone: "UTC" });
+  ok(!noDefaults.includes(VA_DEFAULT_FOOTNOTE), `a card with nothing marked carries no footnote (got ${noDefaults.join(" | ")})`);
+  ok(!noDefaults.some((s) => s.includes(VA_DEFAULT_MARK)), "…and nothing on it carries the star");
+
+  /*
+   * F-953 - NO MACHINE VALUES, ANYWHERE THE ADMIN READS. The chips registered `terse /
+   * plain / warm` and `auto / en / de`; the card never mentioned the voice at all, so those
+   * chips were the only place those two answers ever appeared.
+   */
+  const voiceLine = noDefaults.find((s) => /register/.test(s));
+  ok(voiceLine && /warm register/.test(voiceLine), `the card says how it will sound (got ${voiceLine})`);
+  ok(voiceLine && /in German/.test(voiceLine) && !/\bde\b/.test(voiceLine), `the language is a word, not a code (got ${voiceLine})`);
+  ok(voiceLine && /at most 2 sentences/.test(voiceLine), "the card says how long a reply may run to");
+  const autoLine = renderReviewSummary(normalizeVa({ persona: { name: "Ada" } }, catalogToCtx(CATALOG)).va).find((s) => /register/.test(s));
+  ok(/language of the ticket/.test(autoLine) && !/auto/.test(autoLine), `"auto" is said in words, not as a value (got ${autoLine})`);
+  ok(vaRegisterLabel("terse") === "Terse" && vaLanguageLabel("en") === "English", "the labels come from the one copy home");
+  ok(vaRegisterLabel("invented") === "invented" && vaLanguageLabel("") === "", "a value with no copy row renders as itself rather than vanishing");
+  const registerOpts = optionsForStep("persona_voice", { catalog: CATALOG });
+  ok(registerOpts.map((o) => o.value).join(",") === "terse,plain,warm", "the register VALUES are untouched");
+  ok(registerOpts.map((o) => o.label).join(",") === "Terse,Plain,Warm", `the register LABELS are the copy home's (got ${registerOpts.map((o) => o.label).join(",")})`);
+  const langs = happy.turns[1].extras.languages;
+  ok(langs.map((l) => l.value).join(",") === "auto,en,de", "the language values ride the turn unchanged");
+  ok(langs[0].label === "Detect from the ticket", `the language turn carries the labels too (got ${JSON.stringify(langs)})`);
 
   /* PROJECTS BY NAME, when the catalogue has one. */
   const scoped = normalizeVa({ persona: { name: "Ada" }, scope: { read: { projects: ["SUP", "OPS"] }, write: { projects: ["SUP"] } } }, catalogToCtx(CATALOG)).va;
@@ -194,6 +237,19 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
   ok(oneSource.refused.length === 0 && oneSource.stepId === "read_scope", "one source is enough to continue");
   const byMention = stepWizard(at("intake").state, { answer: { serviceDesks: [], jql: "", mentionsOf: ["557058:abc-123"] } });
   ok(byMention.refused.length === 0, "a mention list alone is enough");
+
+  /*
+   * F-953 - THE OTHER HALF OF THE SAME PROMISE. The gate counts DESKS, so a desk with no
+   * queue passes it, and the review card says that means the whole desk. The engine sweeps
+   * every queue of such a desk (virtual-admin.test.mjs section 2 proves that half); what is
+   * asserted HERE is that the gate has not quietly started requiring a queue instead, which
+   * would leave the card promising something no record can express.
+   */
+  const wholeDesk = stepWizard(at("intake").state, { answer: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }], jql: "", mentionsOf: [] } });
+  ok(wholeDesk.refused.length === 0 && wholeDesk.stepId === "read_scope", `a desk with no queue is a source (got ${JSON.stringify(wholeDesk.refused)})`);
+  ok(wholeDesk.state.answers.intake.serviceDesks[0].queueIds.length === 0, "and the record carries the empty queue list, which is what the engine reads as the whole desk");
+  const card = renderReviewSummary(normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }] } }, catalogToCtx(CATALOG)).va).join(" ");
+  ok(/1 service desk/.test(card) && !/0 queue/.test(card), `the card claims the desk, never "0 queues" (got ${card})`);
 }
 
 /* ── 3. every refusal ──────────────────────────────────────────────────────── */
@@ -526,6 +582,46 @@ const at = (stepId) => {
   ok(resumeWizard({ ...state, v: 99 }, CATALOG).stepId === "persona_name", "a state from another version restarts the interview");
   ok(resumeWizard({ ...state, stepId: "invented_step" }, CATALOG).stepId === "persona_name", "a state on an unknown step restarts the interview");
   ok(resumeWizard(null, CATALOG).stepId === "persona_name", "a missing state starts a fresh interview");
+}
+
+/* ── 8b. F-953 the stored draft can be DESCRIBED, so it can be offered back ── */
+
+{
+  /*
+   * The wizard resumed `va_wizard:{accountId}` SILENTLY, so "Create your first one" put a
+   * reviewer on the review card of an agent they had never configured. The resume is a
+   * question now, and this is the data the question is asked from.
+   */
+  const fresh = createWizard({ catalog: CATALOG, now: 1_757_000_000_000 }).state;
+  ok(fresh.startedAt === 1_757_000_000_000, "a fresh interview records when it was started");
+  const freshInfo = wizardResumeInfo(fresh);
+  ok(freshInfo.resumable === false, "an interview that has answered nothing is not a draft worth offering");
+  ok(freshInfo.total === WIZARD_QUESTION_COUNT && freshInfo.total === 9, `the promise on the empty tab is nine questions (got ${freshInfo.total})`);
+
+  const named = stepWizard(fresh, { answer: "Nadia" });
+  const one = wizardResumeInfo(named.state);
+  ok(one.resumable === true && one.answered === 1 && one.name === "Nadia", `one answer is a resumable draft (got ${JSON.stringify(one)})`);
+  ok(one.startedAt === 1_757_000_000_000, "the start time survives a turn");
+
+  const atReview = wizardResumeInfo(happy.turns[8].state);
+  ok(atReview.stepId === "review" && atReview.answered === 8, `the eight answered steps are counted (got ${JSON.stringify(atReview)})`);
+  const finished = wizardResumeInfo(happy.turn.state);
+  ok(finished.answered === 9, `a confirmed review is the ninth answer (got ${finished.answered})`);
+
+  /* THROUGH KVS AND BACK: the card has to be able to date a draft a week later. */
+  const stored = serializeWizardState(happy.turns[8].state).state;
+  ok(stored.startedAt === happy.turns[8].state.startedAt, "the start time is persisted");
+  const back = wizardResumeInfo(resumeWizard(stored, CATALOG));
+  ok(back.answered === 8 && back.name === "Nadia" && back.startedAt === stored.startedAt, "a resumed draft describes itself the same way");
+
+  /* A state from an older build carries no start time; it is still resumable, undated. */
+  const legacy = { ...stored }; delete legacy.startedAt;
+  const li = wizardResumeInfo(resumeWizard(legacy, CATALOG));
+  ok(li.resumable === true && li.answered === 8, "a draft stored before this field existed is still offered");
+  ok(wizardResumeInfo(null).resumable === false, "no state is not a draft");
+  /* Going BACK does not un-answer anything: the count is the answers, not the step index. */
+  const wentBack = stepWizard(happy.turns[8].state, { answer: { back: "persona_voice" } });
+  ok(wizardResumeInfo(wentBack.state).answered === 8, "a draft that went back to an earlier step still counts its answers");
 }
 
 /* ── 9. options and the catalogue translation ───────────────────────────────── */

@@ -1624,8 +1624,34 @@ const VA_CATALOG = {
 };
 /* The stored interview, exactly as the resolver keeps it at `va_wizard:{accountId}`:
    SERIALIZED (no catalogue), and re-hydrated with this turn's live catalogue. */
-const VA_WIZ = { state: null };
+const VA_WIZ = { state: null, seeded: false };
+/* F-953 - A DRAFT SOMEBODY ELSE LEFT BEHIND. `window.__VA_RESUME__` seeds the stored
+   interview with the exact shape staging had: eight answers, standing on the review step,
+   started days ago. It is driven through the REAL machine rather than hand-written, so the
+   fixture cannot describe a state the machine would never produce. Seeded ONCE: "Start
+   fresh" deletes the row, and a deleted draft that came back would be the bug, not the test. */
+const vaSeedResumeDraft = () => {
+  let t = stepWizard(createWizard({ catalog: VA_CATALOG }).state, {});
+  const answers = [
+    "Nadia",
+    { register: "warm" },
+    { serviceDesks: [{ serviceDeskId: "10", queueIds: ["21"] }], jql: "", mentionsOf: [], owedFirst: true },
+    { site: false, projects: ["PROJ", "OPS"] },
+    { projects: ["OPS"] },
+    { preset: "every30" },
+    { replyInternal: true },
+    {},
+  ];
+  for (const a of answers) t = stepWizard(t.state, { answer: a });
+  const st = serializeWizardState(t.state).state;
+  st.startedAt = Date.parse("2026-09-10T09:00:00.000Z");
+  return st;
+};
 const vaWizardTurn = (input) => {
+  if (!VA_WIZ.state && !VA_WIZ.seeded && typeof window !== "undefined" && window.__VA_RESUME__) {
+    VA_WIZ.state = vaSeedResumeDraft();
+    VA_WIZ.seeded = true;
+  }
   const state = VA_WIZ.state ? resumeWizard(VA_WIZ.state, VA_CATALOG) : createWizard({ catalog: VA_CATALOG }).state;
   const turn = stepWizard(state, input || {});
   VA_WIZ.state = serializeWizardState(turn.state).state;

@@ -71,7 +71,7 @@ import {
   recordPurgedTurnWrites,
 } from "./va-ledger.js";
 import {
-  VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX,
+  VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX, VA_QUEUES_PER_DESK_MAX,
   renderGuardrailSentences, vaWriteScope, vaConfluenceSpaces, clampShadowUntilTick,
 } from "./shared/va-config.js";
 import { lintVoice } from "./shared/voice-lint.js";
@@ -257,7 +257,49 @@ const sweepQueues = async (va, deps, remaining) => {
   const dead = [];
   const intake = isObj(va.intake) ? va.intake : {};
   for (const desk of asArray(intake.serviceDesks)) {
-    for (const queueId of asArray(desk && desk.queueIds)) {
+    /*
+     * F-953 - A DESK WITH NO QUEUE MEANS THE WHOLE DESK, AND THE ENGINE NOW MEANS IT.
+     *
+     * The intake gate counts DESKS (an intake naming a desk and no queue passes), and the
+     * review card says so in as many words: "A desk with NO queue listed is the whole
+     * desk". The sweep read `desk.queueIds` and nothing else, so that agent ran every
+     * five minutes, swept nothing, and looked healthy doing it - the worst shape a
+     * defect can take, because there is no error anywhere to follow.
+     *
+     * The queues are listed at TICK TIME with the same read the intake step's catalogue
+     * uses (`servicedeskapi/servicedesk/{id}/queue`, bounded by VA_QUEUES_PER_DESK_MAX),
+     * rather than copied onto the record: a queue added to the desk after the agent was
+     * created is part of the desk, and a record that froze the list would silently
+     * disagree with the sentence the admin read.
+     *
+     * SAME FAIL CONTRACT AS THE QUEUE READ below: a desk whose queue list cannot be read
+     * is a DEAD SOURCE and the tick continues. It can only ever narrow the sweep, so it
+     * is not the blast radius the JQL half fails closed for. The per-call bound of 50
+     * candidates is unchanged, and the shared tick budget still stops the whole thing.
+     */
+    let queueIds = asArray(desk && desk.queueIds);
+    if (!queueIds.length) {
+      if (typeof deps.jsmQueues !== "function") {
+        dead.push({ key: `sd:${desk.serviceDeskId}`, reason: "desk_queues_unavailable:no_reader" });
+        continue;
+      }
+      try {
+        const listed = await deps.jsmQueues(desk.serviceDeskId);
+        if (!listed || listed.ok === false) {
+          dead.push({ key: `sd:${desk.serviceDeskId}`, reason: `desk_queues_unavailable:${(listed && listed.status) || "?"}` });
+          continue;
+        }
+        queueIds = asArray(listed.values)
+          .map((q) => String(isObj(q) ? q.id : q))
+          .filter((id) => id && id !== "undefined")
+          .slice(0, VA_QUEUES_PER_DESK_MAX);
+        if (!queueIds.length) dead.push({ key: `sd:${desk.serviceDeskId}`, reason: "desk_has_no_queues" });
+      } catch (e) {
+        dead.push({ key: `sd:${desk.serviceDeskId}`, reason: `desk_queues_failed:${String((e && e.message) || e).slice(0, 80)}` });
+        continue;
+      }
+    }
+    for (const queueId of queueIds) {
       if (out.length >= remaining) return { issues: out, dead, truncated: true };
       try {
         const res = await deps.jsmQueueIssues(desk.serviceDeskId, queueId, { limit: Math.min(50, remaining - out.length) });
@@ -2800,6 +2842,22 @@ export const DEFAULT_DEPS = {
     if (!res.ok) return { ok: false, status: res.status, issues: [] };
     const data = await res.json();
     return { ok: true, issues: asArray(data.values) };
+  },
+
+  /**
+   * THE QUEUES OF ONE DESK (F-953), for an intake that named the desk and no queue.
+   *
+   * It is deliberately the SAME endpoint and the same bound the admin catalogue reads
+   * (`listQueues` in va-admin.js), so the queues the agent sweeps are the queues the
+   * wizard offered. A failure is a dead SOURCE, exactly like a dead queue: it narrows the
+   * sweep and is named in the receipt, it never stops the tick.
+   */
+  jsmQueues: async (serviceDeskId) => {
+    const { default: api, route } = await import("@forge/api");
+    const res = await api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/queue?limit=${VA_QUEUES_PER_DESK_MAX}`);
+    if (!res.ok) return { ok: false, status: res.status, values: [] };
+    const data = await res.json();
+    return { ok: true, values: asArray(data.values) };
   },
 
   pushTask: async (queueKey, body) => {

@@ -308,6 +308,24 @@ const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** The registers, the languages and the powers are CLOSED sets — an unknown value is dropped. */
 export const VA_REGISTERS = Object.freeze(["terse", "plain", "warm"]);
 export const VA_LANGUAGES = Object.freeze(["auto", "en", "de"]);
+
+/*
+ * F-953 — THE CHIPS SAID `terse` AND `auto`, which are the RECORD's words, not a person's.
+ *
+ * The wizard registered chips reading "terse / plain / warm" and "auto / en / de", and a
+ * language chip that says `auto` does not tell an admin that the agent reads the ticket and
+ * answers in the language it finds. The VALUES are unchanged - they are the closed sets
+ * above and what `normalizeVa` validates - and this is the only home for their copy, read
+ * by the wizard's chips, the classic form's chips and the review card alike. A value added
+ * to a set without a row here still renders, by its own id, rather than disappearing (the
+ * VA_POWER_COPY rule).
+ */
+export const VA_REGISTER_LABELS = Object.freeze({ terse: "Terse", plain: "Plain", warm: "Warm" });
+export const VA_LANGUAGE_LABELS = Object.freeze({ auto: "Detect from the ticket", en: "English", de: "German" });
+/** A register value rendered for a person. */
+export const vaRegisterLabel = (value) => VA_REGISTER_LABELS[String(value || "")] || String(value || "");
+/** A language value rendered for a person. */
+export const vaLanguageLabel = (value) => VA_LANGUAGE_LABELS[String(value || "")] || String(value || "");
 export const VA_MAX_SENTENCES_MIN = 1;
 export const VA_MAX_SENTENCES_MAX = 6;
 export const VA_MAX_SENTENCES_DEFAULT = 3;
@@ -331,6 +349,26 @@ export const VA_ITEM_STATES = Object.freeze([
   "seen", "queued", "staged", "posted", "waiting_on_human", "owed", "done", "parked",
 ]);
 
+/**
+ * The posting window a NEW agent starts with, and - since F-953 - the one the RECORD falls
+ * back to as well: the working week, working hours.
+ *
+ * It is declared here, above `VA_DEFAULTS`, because both read it and one home is the point.
+ */
+export const VA_SUGGESTED_POST_WINDOW = Object.freeze({
+  days: Object.freeze([1, 2, 3, 4, 5]), from: "08:00", to: "18:00",
+});
+
+/**
+ * WHAT "NO RESTRICTION" IS SPELLED AS, once.
+ *
+ * An EXPLICITLY empty day list means the agent may post on any day (the F-916 meaning, kept),
+ * and this is the list that meaning expands to. It used to be `VA_DEFAULTS.cadence.postWindow
+ * .days`, which is how the two questions - "what does an admin who said nothing get" and
+ * "what does an admin who said 'every day' get" - ended up with one answer, and the wide one.
+ */
+export const VA_NO_POST_RESTRICTION_DAYS = Object.freeze([0, 1, 2, 3, 4, 5, 6]);
+
 /** The default record: the least-privileged agent that is still a valid one. */
 export const VA_DEFAULTS = Object.freeze({
   persona: Object.freeze({
@@ -341,7 +379,10 @@ export const VA_DEFAULTS = Object.freeze({
   // Read may be site-wide; WRITE never is (see normalizeVa).
   scope: Object.freeze({ read: Object.freeze({ site: false, projects: Object.freeze([]) }), write: Object.freeze({ projects: Object.freeze([]) }) }),
   intake: Object.freeze({ serviceDesks: Object.freeze([]), jql: "", mentionsOf: Object.freeze([]), owedFirst: true }),
-  cadence: Object.freeze({ preset: "every30", cron: "*/30 * * * *", timeZone: "UTC", postWindow: Object.freeze({ days: Object.freeze([0, 1, 2, 3, 4, 5, 6]), from: "00:00", to: "23:59" }) }),
+  // F-953 - the window an agent gets when NOBODY SET ONE is the working week, working
+  // hours. It used to be Sun-Sat 00:00-23:59, so any path that skipped the cadence step
+  // shipped an agent allowed to post at 03:00 on a Sunday and nobody had chosen that.
+  cadence: Object.freeze({ preset: "every30", cron: "*/30 * * * *", timeZone: "UTC", postWindow: VA_SUGGESTED_POST_WINDOW }),
   powers: Object.freeze({
     replyPublic: false, replyInternal: true, assign: false, transition: false, editFields: false,
     confluenceRead: false, confluenceWrite: false, git: false, webSearch: false,
@@ -366,25 +407,22 @@ export const VA_DEFAULTS = Object.freeze({
 /* ── WHAT A NEW AGENT IS OFFERED, as opposed to what the RECORD falls back to ─── */
 
 /*
- * F-916 — TWO DIFFERENT QUESTIONS THAT HAD ONE ANSWER.
+ * F-916 — TWO DIFFERENT QUESTIONS THAT HAD ONE ANSWER, and F-953 — the answer was wrong
+ * on both.
  *
- * `VA_DEFAULTS.cadence` answers "what does normalizeVa use when a field is absent". Its
- * post window is Sun-Sat 00:00-23:59 on purpose: an EMPTY day list means NO RESTRICTION
- * (see the note beside `cadence.postWindow` in normalizeVa), and its zone is UTC because
- * a save path has no viewer to ask. Neither of those is a sensible thing to OFFER an
- * admin who is creating an agent: the wizard read the first entry of the site's zone list
- * ("Africa/Abidjan") and both doors seeded a window that permits posting at 3am on a
- * Sunday, and then the review card stated both back as if they had been chosen.
+ * `VA_DEFAULTS.cadence` answers "what does normalizeVa use when a field is ABSENT", and
+ * what an admin who never reached the cadence step gets. That used to be Sun-Sat
+ * 00:00-23:59, because "an empty day list means no restriction" was implemented by
+ * falling back to the default list - so the two questions shared one answer and it was the
+ * WIDE one. Any path that skipped the cadence step shipped a 24/7 agent silently, and the
+ * review card then stated it back as if it had been chosen.
  *
- * So the STARTING POINT gets its own home, here, and both doors read it. It is a
- * suggestion the admin can change, never a clamp: nothing below is consulted by
- * `normalizeVa`, which still falls back to `VA_DEFAULTS` exactly as before.
+ * Since F-953 they are separate: absent means the working week (`VA_SUGGESTED_POST_WINDOW`,
+ * declared above `VA_DEFAULTS`), and an EXPLICIT empty day list still means no restriction
+ * (`VA_NO_POST_RESTRICTION_DAYS`). The zone stays UTC here, because a save path has no
+ * viewer to ask; the viewer's own zone is resolved by `resolveDefaultTimeZone` below, on
+ * the side that has one.
  */
-
-/** The posting window a NEW agent starts with: the working week, working hours. */
-export const VA_SUGGESTED_POST_WINDOW = Object.freeze({
-  days: Object.freeze([1, 2, 3, 4, 5]), from: "08:00", to: "18:00",
-});
 
 /** The viewer's own IANA zone, or "" when the runtime cannot say. Safe on Node and in an iframe. */
 export const viewerTimeZone = () => {
@@ -481,8 +519,18 @@ export const VA_COPY = Object.freeze({
   cadenceStagingNote: "How often it looks for work. A reply it drafts goes out on a later run, at the earliest 15 minutes after it was drafted.",
 });
 
-/** The marker the review card puts beside a value the admin did not choose. */
-export const VA_DEFAULT_MARK = " (default)";
+/**
+ * The marker the review card puts beside a value the admin did not choose.
+ *
+ * F-953 - IT IS A STAR NOW, EXPLAINED ONCE. It used to be the word "(default)" inline, and
+ * a card with five of them read as a form full of warnings rather than as a summary; the
+ * reader's eye went to the parentheses instead of to the agent. One character beside the
+ * value, one footnote under the card (`VA_DEFAULT_FOOTNOTE`), rendered only when something
+ * actually carries the mark.
+ */
+export const VA_DEFAULT_MARK = " *";
+/** The one line that says what the star means. Rendered once, or not at all. */
+export const VA_DEFAULT_FOOTNOTE = "Items marked * are defaults you did not change.";
 
 /*
  * ONE LABEL PER POWER, and the review card reads the SAME table the powers step renders.
@@ -753,7 +801,19 @@ export const normalizeVa = (raw, ctx = {}) => {
     timeZone = normalizeTimeZone(rawZone);
     if (rawZone && timeZone !== rawZone) report("cadence.timeZone", `"${rawZone.slice(0, 40)}" is not a known time zone, so UTC was used.`);
   }
-  const w = isObj(c.postWindow) ? c.postWindow : {};
+  /*
+   * F-953 - ABSENT AND EMPTY ARE DIFFERENT ANSWERS.
+   *
+   * `windowGiven` is whether the record HAS a posting window at all, and `daysGiven` is
+   * whether that window states its days. A record with neither gets the working week
+   * (`VA_DEFAULTS.cadence.postWindow`); a record whose window states an EXPLICITLY EMPTY
+   * day list keeps the F-916 meaning, no restriction, and gets every day. These used to be
+   * the same code path, which is how "nobody chose a window" and "the admin chose every
+   * day" both produced Sun-Sat 00:00-23:59.
+   */
+  const windowGiven = isObj(c.postWindow);
+  const w = windowGiven ? c.postWindow : {};
+  const daysGiven = Array.isArray(w.days);
   const days = [...new Set(asArray(w.days).map((d) => Number(d)).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort((a, b) => a - b);
   /*
    * F-948 - A TYPO IN A BOUND USED TO WIDEN THE WINDOW TO THE WHOLE DAY.
@@ -792,10 +852,11 @@ export const normalizeVa = (raw, ctx = {}) => {
   const cadence = {
     preset, cron, timeZone,
     postWindow: {
-      // No days listed means NO RESTRICTION, not "never": the caps are the brake, the
-      // post window is an opt-in quiet-hours rule. A window that silently meant "never"
-      // would be an agent that stages forever and nobody can tell why.
-      days: days.length ? days : [...VA_DEFAULTS.cadence.postWindow.days],
+      // An EXPLICITLY empty day list means NO RESTRICTION, not "never": the caps are the
+      // brake, the post window is an opt-in quiet-hours rule. A window that silently meant
+      // "never" would be an agent that stages forever and nobody can tell why. A window
+      // nobody stated at all is a different answer, and it is the working week (F-953).
+      days: days.length ? days : [...(daysGiven ? VA_NO_POST_RESTRICTION_DAYS : VA_DEFAULTS.cadence.postWindow.days)],
       from: hhmm(w.from, VA_DEFAULTS.cadence.postWindow.from, "cadence.postWindow.from"),
       to: hhmm(w.to, VA_DEFAULTS.cadence.postWindow.to, "cadence.postWindow.to"),
     },

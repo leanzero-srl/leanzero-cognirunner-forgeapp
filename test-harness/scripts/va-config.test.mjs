@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import {
   normalizeVa, renderGuardrailSentences, vaWriteScope, clampPersonaName,
   VA_DEFAULTS, VA_LIMITS, VA_CEILINGS, VA_POWERS, VA_REGISTERS, VA_LANGUAGES, VA_PERSONA_NAME_MAX,
+  VA_SUGGESTED_POST_WINDOW, VA_NO_POST_RESTRICTION_DAYS,
   VA_JQL_MAX, VA_PROJECT_KEY_RE, VA_ITEM_STATES, vaConfluenceSpaces, VA_CONFLUENCE_SPACES_MAX,
   mergeVaPatch,
 } from "../../src/shared/va-config.js";
@@ -386,6 +387,32 @@ throws(() => normalizeVa(base({ cadence: { preset: "custom" } }), CTX), /cadence
     "a SECOND normalisation keeps it too — blanking it would come back as the 00:00-23:59 default one pass later");
   ok(norm(badWindow({ from: "  " })).va.cadence.postWindow.from === VA_DEFAULTS.cadence.postWindow.from,
     "an ABSENT bound is still the default: the window is opt-in, only an unreadable one closes it");
+
+  /*
+   * F-953 - ABSENT AND EMPTY ARE DIFFERENT ANSWERS, and they used to share one code path.
+   *
+   * "Nobody set a window" produced Sun-Sat 00:00-23:59, because that was also how "the
+   * admin explicitly said every day" was spelled. So any door that skipped the cadence step
+   * shipped a 24/7 agent and the review card stated it back as a decision.
+   */
+  const noWindow = norm({ cadence: { preset: "hourly", timeZone: "UTC" } }).va.cadence.postWindow;
+  ok(noWindow.days.join(",") === "1,2,3,4,5" && noWindow.from === "08:00" && noWindow.to === "18:00",
+    `a record with NO posting window gets the working week (got ${JSON.stringify(noWindow)})`);
+  ok(noWindow.days.join(",") === VA_SUGGESTED_POST_WINDOW.days.join(","),
+    "…and it is the same window the wizard offers, from the one home");
+
+  const emptyDays = norm({ cadence: { preset: "hourly", timeZone: "UTC", postWindow: { days: [], from: "00:00", to: "23:59" } } }).va.cadence.postWindow;
+  ok(emptyDays.days.length === 7, `an EXPLICITLY empty day list still means no restriction (got ${JSON.stringify(emptyDays.days)})`);
+  ok(emptyDays.days.join(",") === VA_NO_POST_RESTRICTION_DAYS.join(","), "…spelled from the one home that says what no restriction is");
+  const junkDays = norm({ cadence: { preset: "hourly", timeZone: "UTC", postWindow: { days: ["tuesday"], from: "00:00", to: "23:59" } } }).va.cadence.postWindow;
+  ok(junkDays.days.length === 7, "a day list whose entries are all unusable is read as the empty one it amounts to");
+
+  // STABLE UNDER RE-NORMALISATION, both ways: saveJob normalises a second time, and a
+  // window that changed meaning on the second pass is the F-948 class all over again.
+  ok(normalizeVa(norm({ cadence: { preset: "hourly", timeZone: "UTC" } }).va, CTX).va.cadence.postWindow.days.join(",") === "1,2,3,4,5",
+    "a defaulted window survives a second normalisation unchanged");
+  ok(normalizeVa(norm({ cadence: { preset: "hourly", timeZone: "UTC", postWindow: { days: [] } } }).va, CTX).va.cadence.postWindow.days.length === 7,
+    "an unrestricted window survives a second normalisation unchanged");
 }
 
 /* ── 8b. powers.confluenceSpaces (1.5 commit 4c) ──────────────────────────────── */

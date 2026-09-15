@@ -458,9 +458,9 @@ try {
       await page.locator(".va-agent").first().waitFor({ timeout: 8000 });
       ok(await page.locator(".va-health").count() === 1, "A11 the health banner renders in dark");
       const bg = await page.locator(".va-badge-shadow").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(bg === "rgb(245, 158, 11)", `A11 the shadow badge takes its dark override (#f59e0b), got ${bg}`);
+      ok(bg === "rgb(180, 83, 9)", `A11 the shadow badge is the one-shade amber #b45309 (F-966), got ${bg}`);
       const ink = await page.locator(".va-badge-shadow").first().evaluate((el) => getComputedStyle(el).color);
-      ok(ink === "rgb(42, 22, 2)", `A11 dark amber keeps the app's dark ink, got ${ink}`);
+      ok(ink === "rgb(255, 255, 255)", `A11 amber carries white ink (F-966), got ${ink}`);
       await page.locator(".va-new").click();
       await stepIs(page, "persona_name");
       await shot(page, "agents-wizard-dark");
@@ -469,7 +469,7 @@ try {
   }
 
   /* ---------- A12 the capability gate's refusal (F-501) ---------- */
-  for (const [theme, red] of [["light", "rgb(220, 38, 38)"], ["dark", "rgb(239, 68, 68)"]]) {
+  for (const [theme, red] of [["light", "rgb(220, 38, 38)"], ["dark", "rgb(220, 38, 38)"]]) {
     console.log(`A12 capability gate (${theme})`);
     const env = await openAgents(browser, theme);
     const { page } = env;
@@ -498,8 +498,8 @@ try {
   }
   /* ---------- A13 the memory-compaction line (F-511) ---------- */
   for (const [theme, teal, red, slate] of [
-    ["light", "rgb(13, 148, 136)", "rgb(220, 38, 38)", "rgb(71, 85, 105)"],
-    ["dark", "rgb(20, 184, 166)", "rgb(239, 68, 68)", "rgb(100, 116, 139)"],
+    ["light", "rgb(15, 118, 110)", "rgb(220, 38, 38)", "rgb(71, 85, 105)"],
+    ["dark", "rgb(15, 118, 110)", "rgb(220, 38, 38)", "rgb(100, 116, 139)"],
   ]) {
     console.log(`A13 memory compaction (${theme})`);
     const env = await openAgents(browser, theme);
@@ -782,7 +782,7 @@ try {
     ok(sentences.every((t) => !/[—–]/.test(t)), "A14 no em-dash or en-dash in the reason copy");
     ok(sentences.every((t) => ![...engineIds].some((id) => t.includes(id))), "A14 no sentence prints an engine id");
   }
-  for (const [theme, red] of [["light", "rgb(220, 38, 38)"], ["dark", "rgb(239, 68, 68)"]]) {
+  for (const [theme, red] of [["light", "rgb(220, 38, 38)"], ["dark", "rgb(220, 38, 38)"]]) {
     console.log(`A14 unknown and detailed ids (${theme})`);
     const env = await openAgents(browser, theme);
     const { page } = env;
@@ -837,7 +837,7 @@ try {
   /* ---------- A14c the three purge states, rendered, both themes (F-577 / F-575) ---------- */
   for (const [theme, red, slate] of [
     ["light", "rgb(220, 38, 38)", "rgb(71, 85, 105)"],
-    ["dark", "rgb(239, 68, 68)", "rgb(100, 116, 139)"],
+    ["dark", "rgb(220, 38, 38)", "rgb(100, 116, 139)"],
   ]) {
     console.log(`A14c purge states (${theme})`);
     const env = await openAgents(browser, theme);
@@ -954,8 +954,8 @@ try {
     const env = await openAgents(browser, theme, { __VA_SAVE_NOTES__: NOTES });
     const { page } = env;
     try {
-      const amber = theme === "dark" ? "rgb(245, 158, 11)" : "rgb(217, 119, 6)";
-      const ink = theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)";
+      const amber = theme === "dark" ? "rgb(180, 83, 9)" : "rgb(180, 83, 9)";
+      const ink = theme === "dark" ? "rgb(255, 255, 255)" : "rgb(255, 255, 255)";
 
       /* — the classic form — */
       await page.locator(".btn-small", { hasText: "Use the form" }).click();
@@ -1014,7 +1014,7 @@ try {
      staging against an agent that was actually in shadow with 500 ticks left. So both
      non-answers are driven here, on the SAME fixture that later resolves to SHADOW, and
      the assertion is that neither of them is ever allowed to read LIVE. */
-  for (const [theme, slate, red] of [["light", "rgb(71, 85, 105)", "rgb(220, 38, 38)"], ["dark", "rgb(100, 116, 139)", "rgb(239, 68, 68)"]]) {
+  for (const [theme, slate, red] of [["light", "rgb(71, 85, 105)", "rgb(220, 38, 38)"], ["dark", "rgb(100, 116, 139)", "rgb(220, 38, 38)"]]) {
     console.log(`A16 mode badge three states (${theme})`);
     /* The delay is long enough to read the card mid-flight and short enough that the same
        page then shows the flip - one fixture, both halves of the claim. */
@@ -1079,7 +1079,7 @@ try {
   /* ---------- A17 the deleted agents that wrote on their way out (F-608) ---------- */
   for (const [theme, red, slate] of [
     ["light", "rgb(220, 38, 38)", "rgb(71, 85, 105)"],
-    ["dark", "rgb(239, 68, 68)", "rgb(100, 116, 139)"],
+    ["dark", "rgb(220, 38, 38)", "rgb(100, 116, 139)"],
   ]) {
     console.log(`A17 recent purges (${theme})`);
 
@@ -1261,7 +1261,7 @@ try {
     const env = await openAgents(browser, theme, { __VA_SETTLING__: "window" });
     const { page } = env;
     try {
-      const amber = theme === "dark" ? "rgb(245, 158, 11)" : "rgb(217, 119, 6)";
+      const amber = theme === "dark" ? "rgb(180, 83, 9)" : "rgb(180, 83, 9)";
       const card = page.locator(".va-agent").first();
       const banner = card.locator(".va-settling").first();
       await banner.waitFor({ timeout: 8000 });
@@ -1286,7 +1286,7 @@ try {
       ok(css.bl === "0px", `A18 ${theme} no left rail, got ${css.bl}`);
       ok(Number(css.w) >= 700, `A18 ${theme} the title carries the emphasis, got ${css.w}`);
       /* The health banner is RED and means somebody must act; this must not be red too. */
-      ok(css.bg !== "rgb(220, 38, 38)" && css.bg !== "rgb(239, 68, 68)", `A18 ${theme} the wait is not dressed as the failure banner`);
+      ok(css.bg !== "rgb(220, 38, 38)" && css.bg !== "rgb(220, 38, 38)", `A18 ${theme} the wait is not dressed as the failure banner`);
 
       /* — the Ticks pane, where the absence of a receipt is what the admin is staring at — */
       await card.locator(".rule-expand-btn").click();
@@ -1554,7 +1554,7 @@ try {
        * agents surface has one primary); Start fresh is the outline secondary. Neither
        * carries a left rail, and the outline is a BORDER rather than a faded fill.
        */
-      const amber = theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)";
+      const amber = theme === "dark" ? "rgb(180, 83, 9)" : "rgb(180, 83, 9)";
       /* The cross-check against the Agents tab's own create CTA is A22e's: this card has
          replaced the list, so `.va-new` is not on screen to compare with. */
       const cont = await page.locator(".va-resume-continue").evaluate((el) => {
@@ -1665,7 +1665,7 @@ try {
     const env = await openAgents(browser, theme, { __VA_QUEUES_UNREADABLE__: true });
     const { page } = env;
     try {
-      const red = theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)";
+      const red = theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"; // TEXT, not a fill: text keeps the lighter dark variant (F-966)
       await runInterview(page, { stopAt: "intake" });
       const flagged = page.locator(".va-desk", { hasText: "Facilities" }).locator(".va-desk-unreadable").first();
       await flagged.waitFor({ timeout: 8000 });

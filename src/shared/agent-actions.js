@@ -947,6 +947,31 @@ const gateActions = (ids, opts) => {
 // backend can read the managed engine's env var (agentGateFacts, src/index.js). Left
 // undefined it means "not asked", and agentCapability falls through to the edition and
 // allowance arms exactly as before - so every existing caller keeps its answer.
+/**
+ * F-991 — THE MODEL THIS SURFACE WILL RUN, and the one distinction that decides the
+ * answer: "NOT ASKED" IS NOT "READ AND FOUND NOTHING".
+ *
+ *   undefined → the caller does not know about the coder slot (every pre-F-991 call site,
+ *               and `src/rules-api.js`). Answer the AGENT model, which is also what an
+ *               instance with no coder slot actually resolves — the chain falls through
+ *               `["coder","agent"]`. So no existing verdict moves. Same convention
+ *               `managedKeyPresent` already uses in agentCapability.
+ *   null      → the caller ASKED and could not answer. In `agentGateFacts` (src/index.js)
+ *               that means the resolution FAULTED, because a merely unset coder slot
+ *               resolves to the agent model rather than to null. Falling back to the agent
+ *               model there would let a read fault BUY a permissive verdict — the gate
+ *               would approve on a model that is not the one the dispatch will resolve.
+ *               So null is carried through and REFUSES (`needs-frontier-model` on Forge
+ *               LLM). A capability gate is the one place in this app that fails CLOSED;
+ *               the fail-OPEN contract belongs to validators and conditions, and this is
+ *               deliberately not it.
+ *
+ * `??` cannot express that — it collapses both into the fallback — which is exactly why
+ * this is a named function and not an inline operator.
+ */
+const modelForSurface = (surface, agentModel, coderModel) =>
+  (surface === AGENT_SURFACES.CODER && coderModel !== undefined ? coderModel : agentModel);
+
 // F-991 — `coderModel` is the model the CODER SURFACE will run, and it is here for one
 // reason: the gate must judge the model that is actually going to be dispatched. Before
 // the coder slot existed there was only one agent model and the question could not be
@@ -956,6 +981,7 @@ const gateActions = (ids, opts) => {
 // `managedKeyPresent`: left undefined it means "not asked", and the Coder then falls back
 // to `agentModel` — which is precisely what an instance with no coder slot resolves
 // anyway (MODEL_SLOT_FOR_SURFACE: coder → ["coder","agent"]), so no existing verdict moves.
+// An explicit NULL is a different answer and refuses; see `modelForSurface` above.
 export const buildAgentGateContext = ({ edition = null, provider = null, agentModel = null, coderModel = undefined, allowanceLevel = null, managedKeyPresent = undefined, products = ["jira"], triggerSource = null, savedByRole = null, surface = null } = {}) => ({
   // A MAP, not a bare verdict: an absent key is refused rather than assumed (F-281),
   // so adding the `web` namespace later cannot inherit git's answer.
@@ -970,7 +996,7 @@ export const buildAgentGateContext = ({ edition = null, provider = null, agentMo
   // the same fallthrough the dispatch chain performs; for every other surface it is the
   // agent model, unchanged. `agentCapability` keeps ONE frontier rule and is simply told
   // which model to apply it to.
-  capability: { git: provider ? agentCapability({ provider, edition, agentModel: surface === AGENT_SURFACES.CODER ? (coderModel ?? agentModel) : agentModel, allowanceLevel, managedKeyPresent }) : { enabled: false, reason: "capability-off:git" } },
+  capability: { git: provider ? agentCapability({ provider, edition, agentModel: modelForSurface(surface, agentModel, coderModel), allowanceLevel, managedKeyPresent }) : { enabled: false, reason: "capability-off:git" } },
   // `surface` is a PASS-THROUGH too (F-865), and it is normally left null here: the RUN
   // sites that build a context are the listener and job runners, and null is the answer
   // they want. The Virtual Administrator never reaches this builder — its tool list is

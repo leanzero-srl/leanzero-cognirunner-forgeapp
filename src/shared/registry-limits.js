@@ -746,6 +746,22 @@ export const VA_EFFECT_TTL_DAYS = 30;
  */
 export const VA_WIZARD_TTL_DAYS = 7;
 /**
+ * How long an UNFINISHED ADMIN FORM waits in this browser's localStorage (F-990).
+ *
+ * The sibling above is the same idea one storey up: `VA_WIZARD_TTL_DAYS` protects a
+ * closed tab mid-interview SERVER side, and this protects a closed tab mid-FORM on the
+ * CLIENT. They share the number deliberately, because they share the argument — an admin
+ * who was interrupted comes back the same week or starts again, and a draft answered
+ * against a catalogue (projects, repos, fields, models) that has since moved is expensive
+ * to resume wrongly and cheap to lose.
+ *
+ * It lives HERE rather than in `draft-state.js` for the same reason every other number
+ * does: caps have one home, and the file that owns the KEY owns the shape, not the value.
+ * `draft-state.js` re-exports it so a frontend importing the rule never has to know that
+ * the number came from somewhere else.
+ */
+export const DRAFT_TTL_DAYS = 7;
+/**
  * HELD WRITES: how many a shadow-mode turn may stage on one item row, and how many
  * characters of each call's arguments are kept (F-910).
  *

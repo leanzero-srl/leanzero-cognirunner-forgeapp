@@ -605,8 +605,18 @@ const vaRecord = {
   const i = idxSrc2.indexOf('resolver.define("getAgentModel"');
   ok(i > 0, "F-835.SHAPE: found the getAgentModel resolver");
   const body = idxSrc2.slice(i, idxSrc2.indexOf("\n});", i));
-  ok(/getAgentModelFor\(provider\)/.test(body),
-    "F-835.SHAPE: the door asks getAgentModelFor — the same binding the gate rides");
+  // F-991 — the door now serves TWO slots (agent, coder) through one reader, so it asks
+  // `readModelForSlot` rather than naming a binding itself. The PROPERTY is unchanged and
+  // is asserted one hop further in: that reader dispatches to the SAME two bindings the
+  // gate rides, and to nothing else — in particular never to `getOpenAIModel()`, the
+  // ordinary rules model, which is the re-resolution F-835 was cut to end.
+  ok(/readModelForSlot\(payload && payload\.slot, provider\)/.test(body),
+    "F-835.SHAPE: the door asks readModelForSlot — it does not re-resolve a model itself");
+  const slotReader = idxSrc2.match(/const readModelForSlot = [\s\S]*?;\n/);
+  ok(!!slotReader && /getCoderModelFor : getAgentModelFor/.test(slotReader[0]),
+    "F-835.SHAPE: …and readModelForSlot dispatches to getCoderModelFor/getAgentModelFor — the same bindings the gate rides");
+  ok(!!slotReader && !/getOpenAIModel\(/.test(slotReader[0]),
+    "F-991.SHAPE: …and never to the ORDINARY rules model");
   ok(!/getOpenAIModel\(\)/.test(body),
     "F-835.SHAPE: …and no longer falls through the ACTIVE-provider reader (that arm also carried migrate:true — F-837)");
   ok(!/PROVIDERS\[provider\]/.test(body),

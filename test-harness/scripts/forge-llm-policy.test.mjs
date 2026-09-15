@@ -597,7 +597,11 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
       // F-848 - the binding's `onMigrate` default names the real writer, so the eval needs
       // one in scope. A create-if-absent stand-in over the same store: the parity property
       // is about what the two readers ANSWER, not about how the write lands.
-      const build = eval("((storage, resolveModelChain, PROVIDERS, console, process, migrateLegacyModelSlot) => {"
+      // F-991 — the agent reader takes its slot chain from MODEL_SLOT_FOR_SURFACE, so the
+      // eval needs the REAL table in scope. It is imported, never stubbed: a stub here
+      // would let the table and the reader drift apart and this parity would still pass.
+      const { MODEL_SLOT_FOR_SURFACE, AGENT_SURFACES } = await import("../../src/shared/agent-actions.js");
+      const build = eval("((storage, resolveModelChain, PROVIDERS, console, process, migrateLegacyModelSlot, MODEL_SLOT_FOR_SURFACE, AGENT_SURFACES) => {"
         + "let _cachedModel = null, _cachedModelAt = 0; const _cacheFresh = () => Date.now() - _cachedModelAt < 30000;"
         + bb + "\n" + gam[0].replace("export const", "const") + "\n"
         + mb.replace("const getOpenAIModel = async () => {", "const getOpenAIModelFor = async (provider) => { _cachedModel = null;").replace("const { provider } = await getProviderConfig();", "")
@@ -606,7 +610,7 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
         const store = new Map();
         const storage2 = { get: async (k) => (slotValue && k.startsWith("COGNIRUNNER_MODEL_") ? slotValue : (store.get(k) ?? null)), set: async (k, v) => { store.set(k, v); } };
         const migrateFn = async (k, v) => { const cur = await storage2.get(k); if (cur) return String(cur); await storage2.set(k, v); return v; };
-        const { getAgentModelFor: agentFn, getOpenAIModelFor: plainFn } = build(storage2, chain, providers, { error() {}, log() {} }, { env: {} }, migrateFn);
+        const { getAgentModelFor: agentFn, getOpenAIModelFor: plainFn } = build(storage2, chain, providers, { error() {}, log() {} }, { env: {} }, migrateFn, MODEL_SLOT_FOR_SURFACE, AGENT_SURFACES);
         for (const p of Object.keys(providers)) {
           const a = await agentFn(p);
           const b = await plainFn(p);
@@ -726,8 +730,15 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     "providerAgentModelSlot = COGNIRUNNER_AGENT_MODEL_{provider}");
   ok(/export const providerKeySlot = \(provider\) => `COGNIRUNNER_KEY_\$\{provider\}`;/.test(slotsSrc),
     "providerKeySlot = COGNIRUNNER_KEY_{provider}");
+  // F-991 — the CODER slot is a fourth member of the same family and lives in the same
+  // one home, for the same reason: the name is read by the chain, written by the save
+  // door and planted by the fault harness, and a second spelling anywhere is a slot that
+  // is written but never read.
+  ok(/export const providerCoderModelSlot = \(provider\) => `COGNIRUNNER_CODER_MODEL_\$\{provider\}`;/.test(slotsSrc),
+    "providerCoderModelSlot = COGNIRUNNER_CODER_MODEL_{provider}");
   ok(!/const providerAgentModelSlot = /.test(codeOnly), "index.js keeps no second copy of the slot helpers");
-  ok(/import \{ providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot \} from "\.\/shared\/provider-slots\.js";/.test(codeOnly),
+  ok(!/const providerCoderModelSlot = /.test(codeOnly), "…nor of the coder slot helper");
+  ok(/import \{ providerKeySlot, providerModelSlot, providerAgentModelSlot, providerCoderModelSlot, providerBaseUrlSlot \} from "\.\/shared\/provider-slots\.js";/.test(codeOnly),
     "…it imports them from the shared module");
 }
 ok(/export const getAgentModel = async \(\)/.test(codeOnly), "getAgentModel is exported as a backend function");

@@ -587,8 +587,18 @@ ok(/probe \(g\)/.test(readFileSync(path.join(srcDir, "shared/ai-budget.js"), "ut
   // F-848 — `migrate` (read and honour the legacy slot) and `onMigrate` (write it) are two
   // decisions. The agent reader takes the first and refuses the second, so it names the
   // model the runtime would resolve on a cold pre-per-provider instance WITHOUT writing.
-  ok(/resolveModelForProvider\(provider, \{ agentSlot: true, migrate: true, onMigrate: null \}\)/.test(gam),
-    "…and it derives from the ONE model chain, reading the agent slot and doing NO legacy migration write (F-818/F-848)");
+  // F-991 — the agent slot is no longer a boolean: the reader takes its SLOT CHAIN from
+  // MODEL_SLOT_FOR_SURFACE, the one table of which surface runs on which slot. The two
+  // properties asserted are unchanged (it reads the agent slot; it performs no migration
+  // write) plus the new one that matters most — the chain is TAKEN FROM THE TABLE and not
+  // typed here, because a literal chain at a call site is a second copy of that table.
+  ok(/resolveModelForProvider\(provider, \{[\s\S]*?migrate: true, onMigrate: null,?\s*\}\)/.test(gam),
+    "…and it derives from the ONE model chain, honouring the legacy slot and doing NO legacy migration write (F-818/F-848)");
+  ok(/slotChain: MODEL_SLOT_FOR_SURFACE\[AGENT_SURFACES\.VA\]/.test(gam),
+    "…and its slot chain comes from the surface table, not from a literal (F-991)");
+  const gcm = (indexSrc.match(/export const getCoderModelFor = async \(provider\) => [\s\S]*?;\n/) || [, ""])[0] || "";
+  ok(/slotChain: MODEL_SLOT_FOR_SURFACE\[AGENT_SURFACES\.CODER\]/.test(gcm) && /onMigrate: null/.test(gcm),
+    "…and the CODER reader is the same derivation with the CODER row of that table (F-991)");
   // F-826 — the chain LEFT src/index.js entirely: it is a pure function in
   // src/shared/model-resolution.js, because the async consumer is a different process
   // that cannot import index.js and had drifted to its own copy. index.js keeps only the

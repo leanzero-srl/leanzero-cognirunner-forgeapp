@@ -60,7 +60,7 @@ import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js
 // The project-key memo mechanics + the cap live with the leak table they serve (F-419).
 import { createProjectKeysMemo, PROJECT_KEY_CAP } from "./shared/identifier-leak.js";
 import { readHeader } from "./shared/http-headers.js";
-import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
+import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerCoderModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 // F-826 — the model-resolution CHAIN is a pure function in src/shared so the async
 // consumer (a different process, which cannot import this file) binds the SAME one.
 // PROVIDER_DEFAULT_MODELS is its default table and the one home of those literals.
@@ -181,6 +181,10 @@ import {
   // Coder's two paths use the same normalizer a listener's agent block does, so four
   // means four in exactly one place.
   normalizeAgentKnowledge,
+  // F-991 — the ONE table of which SURFACE runs on which model slot chain, and the
+  // vocabulary it is keyed by. Every model reader below takes its chain from here; a
+  // literal chain typed at a call site is the fork this table exists to prevent.
+  MODEL_SLOT_FOR_SURFACE, AGENT_SURFACES,
 } from "./shared/agent-actions.js";
 // The premade CODER post-function's ONE mode table (1.4 commit 12) — labels, instruction
 // templates and the per-mode action subset all come from there, never from here.
@@ -6252,13 +6256,29 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
  * instance that was cold and had not dispatched since the upgrade showed the provider
  * DEFAULT here while the first transition would have run the LEGACY model — status and
  * dispatch disagreeing until the first AI call self-healed the slot.
+ *
+ * F-991 — ONE DOOR, TWO SLOTS. `payload.slot` is "agent" (default) or "coder", and the
+ * RESPONSE SHAPE IS UNCHANGED: `{ model, edition, frontierOnly }` whichever slot was
+ * asked for. Giving the coder slot a door of its own would have meant a second copy of
+ * the permission floor, the provider resolution and the frontierOnly rule — three rules
+ * that must be identical for both slots, duplicated for no reason other than the key.
+ * An unknown slot name falls back to "agent" rather than erroring: this is a display
+ * read, and the honest answer to "I do not know that slot" is the tier below it.
  */
+const normalizeModelSlot = (raw) => (String(raw || "") === "coder" ? "coder" : "agent");
+// Resolved INSIDE the call, not captured in a module-level map: `getAgentModelFor` and
+// `getCoderModelFor` are `const` declarations far below this resolver, so a map built at
+// module-evaluation time would read them in their temporal dead zone and throw on import
+// — taking the whole backend down, not just this door.
+const readModelForSlot = (slot, provider) =>
+  (normalizeModelSlot(slot) === "coder" ? getCoderModelFor : getAgentModelFor)(provider);
+
 resolver.define("getAgentModel", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view the agent model", "viewer");
   try {
     const provider = await resolveTargetProvider(payload);
     const { edition } = await currentEdition(context);
-    const model = await getAgentModelFor(provider);
+    const model = await readModelForSlot(payload && payload.slot, provider);
     // frontierOnly tells the panel to offer ONLY frontier ids here: on Forge LLM Haiku
     // is not an agent model at any edition, and on the managed engine the whole offer is
     // frontier already — so both answer true and the panel needs no third rule.
@@ -6271,6 +6291,15 @@ resolver.define("getAgentModel", async ({ payload, context }) => {
 /**
  * Save the agent model for a provider. Admin only — same reasoning as
  * saveOpenAIModel: it decides what the app bills against.
+ *
+ * F-991 — ONE DOOR, TWO SLOTS, and the FRONTIER/EDITION/MANAGED POLICY BELOW IS WRITTEN
+ * ONCE AND APPLIES TO BOTH. That is the entire reason the coder slot did not get a
+ * resolver of its own: the coder model is billed on exactly the same terms as the agent
+ * model — on Forge LLM it must be a frontier id the edition entitles, on the managed
+ * engine it must be inside the offer — and a second door would have been a second copy of
+ * that policy, free to drift into letting an admin park Haiku in the coder slot on a
+ * Standard tenant. `payload.slot` decides only WHICH KEY IS WRITTEN, after the policy has
+ * already said yes.
  */
 resolver.define("saveAgentModel", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) return noPerm("change the agent model", "admin");
@@ -6299,7 +6328,10 @@ resolver.define("saveAgentModel", async ({ payload, context }) => {
       if (!forgeLlmModelAllowedForEdition(edition, clean)) return upgradeRequired("forge-llm-frontier-models");
     }
     // No separate length check here: normalizeModelId already capped it at 120.
-    await storage.set(providerAgentModelSlot(provider), clean);
+    // The SLOT is the last thing decided, after every policy arm above has passed, so
+    // there is no path on which the coder key is written under a weaker rule (F-991).
+    const slot = normalizeModelSlot(payload && payload.slot);
+    await storage.set(slot === "coder" ? providerCoderModelSlot(provider) : providerAgentModelSlot(provider), clean);
     return { success: true, model: clean };
   } catch (error) {
     console.error("Failed to save agent model:", error);
@@ -11279,7 +11311,7 @@ const agentGateFacts = async (context, { fresh = false } = {}) => {
   // supplied so `agentCapability` can tell "the vendor's engine is missing" apart from
   // "you are not entitled to it". It is a BOOLEAN: the credential itself never leaves
   // readManagedKey.
-  const facts = { edition: null, provider: null, agentModel: null, allowanceLevel: null, managedKeyPresent: managedCloudStatus().available };
+  const facts = { edition: null, provider: null, agentModel: null, coderModel: null, allowanceLevel: null, managedKeyPresent: managedCloudStatus().available };
   try {
     if (fresh) {
       facts.provider = (await readProviderConfigFresh()).provider || null;
@@ -11307,6 +11339,20 @@ const agentGateFacts = async (context, { fresh = false } = {}) => {
     // set that is half one provider and half another is a gate two doors disagree about.
     facts.agentModel = await getAgentModelFor(facts.provider);
   } catch (e) { /* restrictive: a frontier-model check with no model refuses */ }
+  try {
+    // F-991 — the CODER surface's own model, resolved for THIS FACT SET'S provider under
+    // exactly the same rule F-811 states above: never for the memo's provider, never from
+    // a reader that resolves a provider of its own.
+    //
+    // FAILS CLOSED, identically to agentModel, and the reason is the same one: on Forge
+    // LLM `agentCapability` refuses any model that is not on the frontier list, so a
+    // `null` here answers `needs-frontier-model` and the Coder's git actions are REFUSED.
+    // That is the intended direction — a fact set that could not read the model must not
+    // be the way PAST a billing gate. (On BYOK the model is not judged at all, so a fault
+    // here costs nothing there.) Note this is NOT the fail-OPEN contract validators and
+    // conditions carry: a capability gate is the one place in this app that fails closed.
+    facts.coderModel = await getCoderModelFor(facts.provider);
+  } catch (e) { /* restrictive: see above — a frontier-model check with no model refuses */ }
   return facts;
 };
 
@@ -12656,6 +12702,10 @@ resolver.define("triggerGitDeploy", async ({ payload, context }) => {
 // Internals shared with src/listeners.js, src/scheduled-jobs.js, src/agent-runner.js,
 // src/rules-api.js (they import lazily, so nothing here creates a load-time cycle).
 export {
+  // F-991 — `getCoderModel` / `getCoderModelFor` are the CODER surface's model readers and
+  // belong in this shared set, but they are declared `export const` at their definitions
+  // (like `getAgentModel`/`getAgentModelFor`) and must NOT be re-listed here: a name in
+  // both places is a duplicate-export SyntaxError that fails the whole module at import.
   storeLog, callAIChat, getOpenAIKey, getOpenAIModel, getProviderConfig, isTransientAIError, raceDeadline,
   requireRole, requireAdmin, getUserPermissions, hasRole, canActOnConfig, makeTaskId, coerceToAdf,
   // F-471 — the ONE ownership home. src/rules-api.js applies THIS gate to an editor
@@ -15532,9 +15582,12 @@ let _cachedModelAt = 0;
  * the sync binding: this process's storage, this process's env, this process's PROVIDERS
  * table (whose `defaultModel` values themselves come from the shared one home).
  *
- * The two options are all that any reader may vary:
- *   `agentSlot` — read the agent model slot first. Agent surfaces only; the ordinary path
- *                 must never serve the agent's pick to a validator.
+ * The options are all that any reader may vary:
+ *   `slotChain` — the named slots read BEFORE the ordinary model slot, in order (F-991).
+ *                 Surface readers only; the ordinary path must never serve an agent's or
+ *                 a coder's pick to a validator. The chain is taken from
+ *                 MODEL_SLOT_FOR_SURFACE (src/shared/agent-actions.js), never typed here.
+ *   `agentSlot` — the DEPRECATED boolean spelling of `slotChain: ["agent"]`.
  *   `migrate`   — the one-time legacy-slot WRITE. ACTIVE-provider path only: it must not
  *                 fire for a provider that is not even active (that write would plant a
  *                 model in a slot nobody asked about).
@@ -15586,12 +15639,19 @@ const migrateLegacyModelSlot = async (key, value) => {
  * while the RUNTIME resolved the legacy model on a cold, never-dispatched instance.
  * Default: the real writer, so the dispatch reader keeps migrating by omission.
  */
-const resolveModelForProvider = async (provider, { migrate = false, agentSlot = false, onMigrate = migrateLegacyModelSlot } = {}) => resolveModelChain({
+const resolveModelForProvider = async (provider, { migrate = false, slotChain = null, agentSlot = false, onMigrate = migrateLegacyModelSlot } = {}) => resolveModelChain({
   provider,
   readSlot: (key) => storage.get(key),
   onMigrate: onMigrate ? (key, value) => onMigrate(key, value) : null,
   env: process.env,
   providers: PROVIDERS,
+  // F-991 — `slotChain` MUST be forwarded, and this binder is the reason it is spelled
+  // out rather than spread: an option the binder does not name is silently DROPPED, and a
+  // dropped slot chain does not fail loudly — it falls through to the ORDINARY model slot
+  // and resolves the rules model for an agent surface. That is the exact defect this cut
+  // is closing, so the binder must not be able to reintroduce it. Any option added to the
+  // shared chain has to be added here too.
+  slotChain,
   agentSlot,
   migrate,
   log: console,
@@ -15671,7 +15731,43 @@ const getOpenAIModel = async () => {
  * Not cached: agent surfaces are rare and low-frequency compared with validators, and the
  * 30 s memo is what this exists to escape.
  */
-export const getAgentModelFor = async (provider) => resolveModelForProvider(provider, { agentSlot: true, migrate: true, onMigrate: null });
+export const getAgentModelFor = async (provider) => resolveModelForProvider(provider, {
+  // The chain comes from the SURFACE TABLE (src/shared/agent-actions.js), never from a
+  // literal typed here — F-991. `["agent"]` is what the VA, listeners and jobs resolve,
+  // and spelling it out at this call site is how the Coder's chain would eventually get
+  // typed out a second time and drift from the table the gate reads.
+  slotChain: MODEL_SLOT_FOR_SURFACE[AGENT_SURFACES.VA], migrate: true, onMigrate: null,
+});
+
+/**
+ * F-991 — THE CODER MODEL OF A NAMED PROVIDER. Same reader, one rung up the ladder.
+ *
+ * Everything `getAgentModelFor` above says about the provider being an ARGUMENT (F-811),
+ * about `migrate:true, onMigrate:null` (F-848/F-837 — READ and HONOUR the legacy slot,
+ * write nothing), and about not caching, is true here for the same reasons and is not
+ * restated. The ONE difference is the chain, and it is TAKEN FROM THE TABLE: the Coder
+ * reads `["coder","agent"]`, so an instance that has never set a coder model resolves the
+ * agent model exactly as it did before this function existed, and an instance that has
+ * set one runs it on the Coder turn and the pull-request review WITHOUT dragging its
+ * listeners and jobs up to the same rate. That fallthrough is the whole compatibility
+ * story, and it lives in MODEL_SLOT_FOR_SURFACE rather than in an `||` here.
+ */
+export const getCoderModelFor = async (provider) => resolveModelForProvider(provider, {
+  slotChain: MODEL_SLOT_FOR_SURFACE[AGENT_SURFACES.CODER], migrate: true, onMigrate: null,
+});
+
+/**
+ * The ACTIVE provider's coder model — the `getAgentModel` wrapper, one rung up, for the
+ * callers that hold no provider of their own. Anything that has ALREADY resolved a
+ * provider passes it to `getCoderModelFor` instead, or it reopens F-811.
+ */
+export const getCoderModel = async () => {
+  let provider = null;
+  try {
+    provider = (await getProviderConfig()).provider || null;
+  } catch (e) { /* no provider → no model, the restrictive answer */ }
+  return getCoderModelFor(provider);
+};
 
 /**
  * The ACTIVE provider's agent model — a thin wrapper on getAgentModelFor for the callers

@@ -40,9 +40,17 @@ import {
   VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_COPY,
   resolveDefaultTimeZone, viewerTimeZone, vaLanguageLabel,
 } from "../../../../src/shared/va-config.js";
-import { renderReviewSummary, wizardResumeInfo } from "../../../../src/shared/va-wizard.js";
+import { renderReviewSummary, wizardResumeInfo, deskOptionsFromCatalog } from "../../../../src/shared/va-wizard.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
+
+/* F-964 - a desk option, replaced by the same desk from the catalogue this browser holds
+   (the tab's read, or the intake step's Retry). ONLY a desk the turn already offered is
+   rendered: the catalogue refreshes a row, it never adds one. */
+const refreshedDesks = (options, catalog) => {
+  const live = deskOptionsFromCatalog(catalog);
+  return arr(options).map((o) => live.find((l) => String(l.value) === String(o.value)) || o);
+};
 
 export default function VaWizard({ client, catalog = {}, onCreated, onFallback, onCancel }) {
   const [turn, setTurn] = useState(null);
@@ -62,6 +70,24 @@ export default function VaWizard({ client, catalog = {}, onCreated, onFallback, 
    * this; every later turn is an answer the admin just gave.
    */
   const [resume, setResume] = useState(null);
+  /*
+   * F-964 - THE RETRY'S CATALOGUE. The intake step's Retry chip re-reads the catalogue for
+   * a desk whose queue list could not be listed. It is held HERE rather than pushed back up
+   * to the tab, because the only thing that changes is what this wizard renders; the record
+   * is untouched and no turn is spent. A fresh read wins over the one the tab loaded, and a
+   * failed read leaves the old one standing, still saying the queues are unreadable.
+   */
+  const [catalogRetry, setCatalogRetry] = useState(null);
+  const [retrying, setRetrying] = useState(false);
+  const liveCatalog = catalogRetry || catalog;
+  const retryCatalog = useCallback(async () => {
+    setRetrying(true);
+    try {
+      const r = await client.catalog();
+      if (r && r.success && r.catalog) setCatalogRetry(r.catalog);
+    } catch (e) { /* the sentence on screen is already the right one */ }
+    setRetrying(false);
+  }, [client]);
   // Every turn carries a token: a slow answer that lands after a newer one must never
   // overwrite the newer turn (the generation-token pattern this app uses for async AI).
   const token = useRef(0);
@@ -201,7 +227,7 @@ export default function VaWizard({ client, catalog = {}, onCreated, onFallback, 
         <NoteList items={arr(turn.notes)} kind="note" />
 
         <div className="va-step" data-step={turn.stepId}>
-          {renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog })}
+          {renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog: liveCatalog, retryCatalog, retrying })}
         </div>
       </div>
     </div>
@@ -211,7 +237,7 @@ export default function VaWizard({ client, catalog = {}, onCreated, onFallback, 
 /* One arm per step id. The arms read `turn.options` / `turn.extras` and never build a list
    of their own - that is what makes "an option the catalogue does not carry cannot be
    picked" true on this side of the wire too. */
-function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog }) {
+function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog, retryCatalog, retrying }) {
   /* The answers ALREADY ACCEPTED by the machine, used only to pre-fill the controls of the
      step on screen. They are the machine's own state rather than anything this file
      remembers, which is what lets a step the admin came back to (review → "go back to the
@@ -315,7 +341,14 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog }) 
         <>
           <div className="form-group">
             <span className="label">Service desk queues</span>
-            <DeskQueuePicker desks={opts} value={desks} onChange={(v) => set("serviceDesks", v)} maxDesks={ex.maxDesks} maxQueuesPerDesk={ex.maxQueuesPerDesk} disabled={busy} />
+            {/*
+              F-964 - THE TURN'S OPTIONS, REFRESHED BY THE RETRY. The desks still come from
+              `turn.options`, so no option this browser invented can be picked; a desk the
+              Retry re-read is REPLACED by its row from the fresh catalogue, mapped by the
+              same function the machine maps with. Without the replacement the Retry would
+              clear the red sentence while the queues behind it stayed missing.
+            */}
+            <DeskQueuePicker desks={refreshedDesks(opts, catalog)} value={desks} onChange={(v) => set("serviceDesks", v)} maxDesks={ex.maxDesks} maxQueuesPerDesk={ex.maxQueuesPerDesk} disabled={busy} onRetry={retryCatalog} retrying={retrying} />
           </div>
           <div className="form-group">
             <span className="label">JQL filter (optional)</span>
@@ -443,6 +476,10 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog }) 
       const summary = turn.preview
         ? renderReviewSummary(turn.preview, {
           projects: arr(catalog && catalog.projects),
+          // F-964 - the card names a desk whose queues could not be listed, in the intake
+          // picker's own words, because "1 service desk" and nothing more is exactly how
+          // an unreadable list reads as a deliberate whole-desk sweep.
+          serviceDesks: arr(catalog && catalog.serviceDesks),
           defaultTimeZone: defaultZone(ex),
           defaultPostWindow: suggestedWindow(ex),
         })

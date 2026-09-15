@@ -29,6 +29,7 @@
 import React, { useState } from "react";
 import CustomSelect from "./CustomSelect";
 import { VA_POWER_COPY, VA_SUGGESTED_POST_WINDOW, vaFieldLabel } from "../../../../src/shared/va-config.js";
+import { VA_DESK_QUEUES_UNREADABLE } from "../../../../src/shared/va-wizard.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 
@@ -83,7 +84,7 @@ export function ChipRadio({ options = [], value, onChange, ariaLabel, disabled =
  * (`[{serviceDeskId, queueIds}]`) - the queue's own JQL is read at save time by the
  * resolver, so nothing here copies a query string onto the record.
  */
-export function DeskQueuePicker({ desks = [], value = [], onChange, maxDesks = 10, maxQueuesPerDesk = 20, disabled = false }) {
+export function DeskQueuePicker({ desks = [], value = [], onChange, maxDesks = 10, maxQueuesPerDesk = 20, disabled = false, onRetry = null, retrying = false }) {
   const rows = arr(value);
   const rowFor = (id) => rows.find((r) => String(r.serviceDeskId) === String(id)) || null;
   const toggleDesk = (id) => {
@@ -102,13 +103,34 @@ export function DeskQueuePicker({ desks = [], value = [], onChange, maxDesks = 1
               <input type="checkbox" checked={!!row} onChange={() => toggleDesk(d.value)} disabled={disabled} />
               <span className="va-desk-name">{d.label}</span>
             </label>
+            {/*
+              F-964 - A DESK WHOSE QUEUE LIST COULD NOT BE READ SAYS SO, HERE, WHILE THE
+              ANSWER CAN STILL BE CHANGED. A desk offered with no queues means "sweep the
+              whole desk" (F-953), and an unreadable list looked exactly like an empty one.
+              The sentence comes from its ONE home in va-wizard.js so the review card says
+              the same words, and it is rendered whether or not the desk is ticked, because
+              it is what the admin needs BEFORE ticking it. Solid red via --error-color, so
+              it is the same red in both themes and no left rail is involved.
+            */}
+            {d.queuesUnreadable === true && (
+              <p className="va-desk-unreadable" style={{ color: "var(--error-color)", fontWeight: 700, fontSize: "11.5px", lineHeight: 1.45, margin: "8px 0 0" }}>
+                {VA_DESK_QUEUES_UNREADABLE}.
+                {onRetry && (
+                  <button type="button" className="va-chip" disabled={disabled || retrying} onClick={onRetry} style={{ marginLeft: "8px" }}>
+                    {retrying ? "Trying again" : "Retry"}
+                  </button>
+                )}
+              </p>
+            )}
             {row && (
               <div className="va-desk-queues">
                 <span className="label">Queues</span>
                 <ChipPicker
                   options={arr(d.queues)} values={row.queueIds} max={maxQueuesPerDesk} disabled={disabled}
                   ariaLabel={`Queues of ${d.label}`} onChange={(queueIds) => setQueues(d.value, queueIds)}
-                  empty="This desk has no queue this app can see."
+                  /* The empty list must not claim there are no queues when nobody could
+                     read the list - that is the F-964 confusion in its second home. */
+                  empty={d.queuesUnreadable === true ? `${VA_DESK_QUEUES_UNREADABLE}.` : "This desk has no queue this app can see."}
                 />
               </div>
             )}

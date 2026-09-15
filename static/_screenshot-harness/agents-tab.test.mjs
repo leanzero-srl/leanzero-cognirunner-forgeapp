@@ -49,6 +49,10 @@
  *       `refused` and the job row's `vaRefused` both render, the id becomes a sentence, the
  *       door stays open until the notes are dismissed - both themes, computed colours.
  *
+ *   A21 a desk whose QUEUE LIST could not be read (F-964): the intake picker says so in
+ *       solid red in both themes, the Retry chip re-reads the catalogue and the queues
+ *       actually arrive with it, and the review card repeats the same sentence.
+ *
  *   A18 the purge SETTLE WINDOW renders at all (F-614): the engine arm that skips a
  *       re-created agent is receipt-free on purpose, so the wait now arrives as
  *       `status.settling` and renders as a solid amber state on the card AND in the Ticks
@@ -65,7 +69,7 @@ import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 /* The refusal sentence and the banner threshold come from their ONE home, so this suite
    cannot assert words or a number the app does not actually use. */
-import { writeSiteRefusalReason, stepWizard } from "../../src/shared/va-wizard.js";
+import { writeSiteRefusalReason, stepWizard, VA_DESK_QUEUES_UNREADABLE } from "../../src/shared/va-wizard.js";
 import { VA_LIMITS, VA_COPY, VA_DEFAULT_MARK, VA_DEFAULT_FOOTNOTE, VA_SUGGESTED_POST_WINDOW, vaFieldLabel, vaPowerPhrase, resolveDefaultTimeZone } from "../../src/shared/va-config.js";
 /* F-501 - the capability sentence is asserted from its ONE home, so this suite cannot pass
    on words the app does not actually render. */
@@ -1603,6 +1607,94 @@ try {
       await stepIs(page, "persona_name");
       ok(await page.locator(".va-resume").count() === 0, "A20c a fresh interview is never interrupted by a resume card");
       ok(env.errors.length === 0, `A20c no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  /* ---------- A21 a desk whose queues could not be listed (F-964) ----------
+   *
+   * After F-953 a desk offered with NO queues means "sweep the whole desk", and
+   * `buildCatalogue` used to hand an UNREADABLE queue list over in exactly that shape. So
+   * the intake step offered a desk whose scope nobody could see, silently. The picker now
+   * says so in solid red while the answer can still be changed, offers a Retry that
+   * re-reads the catalogue, and the review card repeats the same sentence on the last
+   * screen before the agent is created.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A21 unreadable queue list (${theme})`);
+    const env = await openAgents(browser, theme, { __VA_QUEUES_UNREADABLE__: true });
+    const { page } = env;
+    try {
+      const red = theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)";
+      await runInterview(page, { stopAt: "intake" });
+      const flagged = page.locator(".va-desk", { hasText: "Facilities" }).locator(".va-desk-unreadable").first();
+      await flagged.waitFor({ timeout: 8000 });
+      const text = (await flagged.innerText()).trim();
+      ok(text.includes(VA_DESK_QUEUES_UNREADABLE),
+        `A21 ${theme} the sentence is the one home's words, got ${JSON.stringify(text)}`);
+      ok(/reads the whole desk/.test(text), `A21 ${theme} it says what keeping the desk means`);
+      ok(!/[—–→]/.test(text), `A21 ${theme} no em-dash, en-dash or arrow`);
+      for (const leak of ["http_503", "queuesUnreadable", "undefined", "Error", "fetch failed"]) {
+        ok(!text.includes(leak), `A21 ${theme} the admin never reads the engine word "${leak}"`);
+      }
+      ok(await page.locator(".va-desk", { hasText: "IT Service Desk" }).locator(".va-desk-unreadable").count() === 0,
+        `A21 ${theme} the desk whose queues WERE listed says nothing extra`);
+
+      const css = await flagged.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { fg: c.color, bl: c.borderLeftWidth, w: c.fontWeight };
+      });
+      ok(css.fg === red, `A21 ${theme} solid red, never a washed-out tint, got ${css.fg}`);
+      ok(css.bl === "0px", `A21 ${theme} no left rail, got ${css.bl}`);
+      ok(Number(css.w) >= 700, `A21 ${theme} the sentence carries the emphasis, got ${css.w}`);
+      await page.waitForTimeout(400);
+      await shot(page, `agents-desk-queues-unreadable-${theme}`);
+      ok(env.errors.length === 0, `A21 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  {
+    console.log("A21 the Retry chip re-reads the catalogue");
+    const env = await openAgents(browser, "light", { __VA_QUEUES_UNREADABLE__: true });
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "intake" });
+      const deskRow = page.locator(".va-desk", { hasText: "Facilities" });
+      await deskRow.locator(".va-desk-unreadable").first().waitFor({ timeout: 8000 });
+      await deskRow.locator(".va-desk-unreadable .va-chip").first().click();
+      await deskRow.locator(".va-desk-unreadable").first().waitFor({ state: "detached", timeout: 8000 });
+      /* The retry is worth nothing if the queues do not actually arrive with it: ticking the
+         desk now offers the queue the first read could not list. */
+      await deskRow.locator(".va-desk-head input").check();
+      await deskRow.locator(".va-chip", { hasText: "New requests" }).first().waitFor({ timeout: 8000 });
+      ok(true, "A21 retry: the desk's queues arrive and the red sentence is gone");
+      ok(env.errors.length === 0, `A21 retry: no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  {
+    console.log("A21 the review card names the desk too");
+    const env = await openAgents(browser, "light", { __VA_QUEUES_UNREADABLE__: true });
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "intake" });
+      await page.locator(".va-desk-head", { hasText: "Facilities" }).locator("input").check();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "read_scope");
+      await chip(page, "Payments").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "write_scope");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "cadence");
+      await chip(page, "Every 30 minutes").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "powers");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "guardrails");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "review");
+      const card = (await page.locator('.va-step[data-step="review"] .va-review').first().innerText()).trim();
+      ok(card.includes(`Facilities: ${VA_DESK_QUEUES_UNREADABLE}.`),
+        `A21 review: the last screen names the desk and what keeping it means, got ${JSON.stringify(card.slice(0, 400))}`);
+      await shot(page, "agents-review-queues-unreadable");
+      ok(env.errors.length === 0, `A21 review: no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
   }
 

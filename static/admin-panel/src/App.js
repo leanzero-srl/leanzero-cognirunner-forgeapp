@@ -3904,6 +3904,7 @@ const injectStyles = () => {
     }
     html[data-color-mode="dark"] .kn-pack-pin-warn { background: #ef4444; color: #fff; }
 
+    /* ======================================================================
        F-955 - THE SECOND COLD WALK. Appended at the foot for the same reason
        the F-914 block above is: it only ever grows downward, so parallel
        surgeons cannot collide in it. Solid saturated colour, 600-700 weight,

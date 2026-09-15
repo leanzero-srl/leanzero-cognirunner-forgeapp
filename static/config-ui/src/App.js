@@ -3329,6 +3329,38 @@ const injectStyles = () => {
     .pr-conf-missing-link:hover { color: #fff; opacity: 0.9; }
     html[data-color-mode="dark"] .pr-conf-missing-link { color: #fff; }
 
+    /* F-990 - THE RESUME CARD. One block of unfinished work, offered back.
+       A SOLID #2563eb block with white text, never a tinted callout and never a left
+       rail: this is an offer the admin must see above a form they think is empty, and a
+       10% wash of the docs hue is exactly the thing that gets scrolled past. The dark
+       override is one shade lighter (#3b82f6), as every hue in this app must have.
+       Continue is the filled white button because it is the affirmative act; Discard is
+       an outline on the same block, so neither needs a second colour and neither needs a
+       confirm dialog - the only thing it destroys is a convenience. */
+    .draft-resume {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      flex-wrap: wrap;
+      margin: 0 0 16px 0; padding: 12px 16px;
+      background: #2563eb; color: #ffffff; border-radius: var(--r-md, 8px);
+    }
+    html[data-color-mode="dark"] .draft-resume { background: #3b82f6; color: #ffffff; }
+    .draft-resume-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .draft-resume-title { font-size: 13px; font-weight: 700; color: #ffffff; }
+    .draft-resume-sub { font-size: 12px; font-weight: 600; color: #ffffff; }
+    .draft-resume-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .draft-resume-continue, .draft-resume-discard {
+      font-size: 12px; font-weight: 700; padding: 6px 14px; border-radius: var(--r-sm, 5px);
+      cursor: pointer; font-family: inherit; line-height: 1.4;
+    }
+    .draft-resume-continue { background: #ffffff; color: #1d4ed8; border: 1px solid #ffffff; }
+    html[data-color-mode="dark"] .draft-resume-continue { background: #ffffff; color: #1d4ed8; }
+    .draft-resume-discard { background: transparent; color: #ffffff; border: 1px solid #ffffff; }
+    html[data-color-mode="dark"] .draft-resume-discard { background: transparent; color: #ffffff; }
+    .draft-resume-continue:hover, .draft-resume-discard:hover { opacity: 0.9; }
+    .draft-resume-continue:focus-visible, .draft-resume-discard:focus-visible {
+      outline: 2px solid #ffffff; outline-offset: 2px;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration: 0.01ms !important;

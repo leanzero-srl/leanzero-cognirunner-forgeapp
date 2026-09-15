@@ -308,6 +308,24 @@ const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** The registers, the languages and the powers are CLOSED sets — an unknown value is dropped. */
 export const VA_REGISTERS = Object.freeze(["terse", "plain", "warm"]);
 export const VA_LANGUAGES = Object.freeze(["auto", "en", "de"]);
+
+/*
+ * F-953 — THE CHIPS SAID `terse` AND `auto`, which are the RECORD's words, not a person's.
+ *
+ * The wizard registered chips reading "terse / plain / warm" and "auto / en / de", and a
+ * language chip that says `auto` does not tell an admin that the agent reads the ticket and
+ * answers in the language it finds. The VALUES are unchanged - they are the closed sets
+ * above and what `normalizeVa` validates - and this is the only home for their copy, read
+ * by the wizard's chips, the classic form's chips and the review card alike. A value added
+ * to a set without a row here still renders, by its own id, rather than disappearing (the
+ * VA_POWER_COPY rule).
+ */
+export const VA_REGISTER_LABELS = Object.freeze({ terse: "Terse", plain: "Plain", warm: "Warm" });
+export const VA_LANGUAGE_LABELS = Object.freeze({ auto: "Detect from the ticket", en: "English", de: "German" });
+/** A register value rendered for a person. */
+export const vaRegisterLabel = (value) => VA_REGISTER_LABELS[String(value || "")] || String(value || "");
+/** A language value rendered for a person. */
+export const vaLanguageLabel = (value) => VA_LANGUAGE_LABELS[String(value || "")] || String(value || "");
 export const VA_MAX_SENTENCES_MIN = 1;
 export const VA_MAX_SENTENCES_MAX = 6;
 export const VA_MAX_SENTENCES_DEFAULT = 3;

@@ -127,7 +127,8 @@ async function runInterview(page, { stopAt = null } = {}) {
 
   await stepIs(page, "persona_voice");
   if (stopAt === "persona_voice") return;
-  await chip(page, "warm").click();
+  // F-953 - the chip carries the LABEL now ("Warm"), never the record's own value.
+  await chip(page, "Warm").click();
   await page.locator(".va-actions .btn-solid").click();
 
   await stepIs(page, "intake");
@@ -1556,6 +1557,41 @@ try {
       await page.locator(".va-actions .btn-solid").click();
       await stepIs(page, "persona_voice");
       ok(env.errors.length === 0, `A20b no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  /* ---------- A20d F-953: no machine value is ever a label ---------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A20d F-953 the voice step speaks English (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "persona_voice" });
+      await stepIs(page, "persona_voice");
+      const registers = await page.locator('.va-step[data-step="persona_voice"] .form-group', { hasText: "Register" }).first().locator(".va-chip").allInnerTexts();
+      ok(registers.map((t) => t.trim()).join(",") === "Terse,Plain,Warm", `A20d the registers are words (got ${registers.join("|")})`);
+      const languages = await page.locator('.va-step[data-step="persona_voice"] .form-group', { hasText: "Language" }).first().locator(".va-chip").allInnerTexts();
+      ok(languages.map((t) => t.trim()).join(",") === "Detect from the ticket,English,German", `A20d the languages are words (got ${languages.join("|")})`);
+      ok(![...registers, ...languages].some((t) => /^(terse|plain|warm|auto|en|de)$/.test(t.trim())), "A20d no record value is rendered as a chip label");
+      await page.waitForTimeout(600);   // let anim-rise settle before the PNG
+      await shot(page, `agents-wizard-voice-labels-${theme}`);
+      /* The VALUES are untouched: picking the labelled chip still advances the record. */
+      await chip(page, "Warm").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "intake");
+      ok(env.errors.length === 0, `A20d no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  {
+    console.log("A20e F-953 the review card says how it will sound");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await runInterview(page);
+      const summary = await page.locator(".va-review .va-review-block").first().innerText();
+      ok(/warm register/.test(summary), `A20e the card names the register the admin picked (got ${summary})`);
+      ok(/language of the ticket/.test(summary) && !/\bauto\b/.test(summary), `A20e "auto" is said in words (got ${summary})`);
+      ok(!/\bterse\b|\bplain\b/.test(summary), "A20e no register value reaches the card");
+      ok(env.errors.length === 0, `A20e no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
   }
   {

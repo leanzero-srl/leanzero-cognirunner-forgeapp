@@ -27,7 +27,7 @@ import {
 } from "../../src/shared/va-wizard.js";
 import {
   normalizeVa, VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_DEFAULT_FOOTNOTE, VA_COPY,
-  vaSuggestedCadence, resolveDefaultTimeZone, vaPowerPhrase,
+  vaSuggestedCadence, resolveDefaultTimeZone, vaPowerPhrase, vaRegisterLabel, vaLanguageLabel,
 } from "../../src/shared/va-config.js";
 
 let pass = 0, fail = 0;
@@ -182,13 +182,33 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
   ok(marked.filter((s) => s === VA_DEFAULT_FOOTNOTE).length === 1, "the footnote is said once");
   ok(/\*/.test(VA_DEFAULT_FOOTNOTE) && /defaults/.test(VA_DEFAULT_FOOTNOTE), "the footnote explains the star it is footnoting");
   const everything = normalizeVa({
-    persona: { name: "Ada" },
+    persona: { name: "Ada", voice: { register: "warm", language: "de", maxSentences: 2 } },
     cadence: { preset: "hourly", timeZone: "Europe/Berlin", postWindow: { days: [0, 6], from: "09:00", to: "17:00" } },
     powers: { replyInternal: false, assign: true },
   }, catalogToCtx(CATALOG)).va;
   const noDefaults = renderReviewSummary(everything, { defaultTimeZone: "UTC" });
   ok(!noDefaults.includes(VA_DEFAULT_FOOTNOTE), `a card with nothing marked carries no footnote (got ${noDefaults.join(" | ")})`);
   ok(!noDefaults.some((s) => s.includes(VA_DEFAULT_MARK)), "…and nothing on it carries the star");
+
+  /*
+   * F-953 - NO MACHINE VALUES, ANYWHERE THE ADMIN READS. The chips registered `terse /
+   * plain / warm` and `auto / en / de`; the card never mentioned the voice at all, so those
+   * chips were the only place those two answers ever appeared.
+   */
+  const voiceLine = noDefaults.find((s) => /register/.test(s));
+  ok(voiceLine && /warm register/.test(voiceLine), `the card says how it will sound (got ${voiceLine})`);
+  ok(voiceLine && /in German/.test(voiceLine) && !/\bde\b/.test(voiceLine), `the language is a word, not a code (got ${voiceLine})`);
+  ok(voiceLine && /at most 2 sentences/.test(voiceLine), "the card says how long a reply may run to");
+  const autoLine = renderReviewSummary(normalizeVa({ persona: { name: "Ada" } }, catalogToCtx(CATALOG)).va).find((s) => /register/.test(s));
+  ok(/language of the ticket/.test(autoLine) && !/auto/.test(autoLine), `"auto" is said in words, not as a value (got ${autoLine})`);
+  ok(vaRegisterLabel("terse") === "Terse" && vaLanguageLabel("en") === "English", "the labels come from the one copy home");
+  ok(vaRegisterLabel("invented") === "invented" && vaLanguageLabel("") === "", "a value with no copy row renders as itself rather than vanishing");
+  const registerOpts = optionsForStep("persona_voice", { catalog: CATALOG });
+  ok(registerOpts.map((o) => o.value).join(",") === "terse,plain,warm", "the register VALUES are untouched");
+  ok(registerOpts.map((o) => o.label).join(",") === "Terse,Plain,Warm", `the register LABELS are the copy home's (got ${registerOpts.map((o) => o.label).join(",")})`);
+  const langs = happy.turns[1].extras.languages;
+  ok(langs.map((l) => l.value).join(",") === "auto,en,de", "the language values ride the turn unchanged");
+  ok(langs[0].label === "Detect from the ticket", `the language turn carries the labels too (got ${JSON.stringify(langs)})`);
 
   /* PROJECTS BY NAME, when the catalogue has one. */
   const scoped = normalizeVa({ persona: { name: "Ada" }, scope: { read: { projects: ["SUP", "OPS"] }, write: { projects: ["SUP"] } } }, catalogToCtx(CATALOG)).va;

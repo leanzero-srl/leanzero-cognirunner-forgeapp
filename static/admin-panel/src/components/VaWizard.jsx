@@ -38,7 +38,7 @@ import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, P
 import SaveNotes, { collectSaveNotes } from "./VaSaveNotes";
 import {
   VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_COPY,
-  resolveDefaultTimeZone, viewerTimeZone,
+  resolveDefaultTimeZone, viewerTimeZone, vaLanguageLabel,
 } from "../../../../src/shared/va-config.js";
 import { renderReviewSummary, wizardResumeInfo } from "../../../../src/shared/va-wizard.js";
 
@@ -266,7 +266,9 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog }) 
           {arr(ex.languages).length > 1 && (
             <div className="form-group">
               <span className="label">Language</span>
-              <ChipRadio options={ex.languages.map((l) => ({ value: l, label: l }))} value={voice.language || "auto"} onChange={(language) => patch({ language })} ariaLabel="Language" disabled={busy} />
+              {/* F-953 - the turn carries {value,label} pairs from the one copy home now.
+                  An older turn shape (bare strings) still renders, labelled by hand. */}
+              <ChipRadio options={arr(ex.languages).map((l) => (l && typeof l === "object" ? l : { value: l, label: vaLanguageLabel(l) }))} value={voice.language || "auto"} onChange={(language) => patch({ language })} ariaLabel="Language" disabled={busy} />
             </div>
           )}
 

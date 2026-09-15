@@ -238,6 +238,9 @@ export default function CoderPanel({ issueKey, accountId }) {
   const [messages, setMessages] = useState([]);
   const [connections, setConnections] = useState([]);
   const [connectionId, setConnectionId] = useState("");
+  // F-954 - did the connection list ANSWER? An empty list and an unread one are not the
+  // same statement, and only one of them licenses a sentence about this site.
+  const [connsAnswered, setConnsAnswered] = useState(false);
   const [simulation, setSimulation] = useState(false);
   const [draft, setDraft] = useState("");
   const [running, setRunning] = useState(false);
@@ -398,13 +401,24 @@ export default function CoderPanel({ issueKey, accountId }) {
         try {
           const l = await invoke("getRuleLists");
           if (cancelled || !mountedRef.current) return;
-          const flat = l && l.success && l.lists && Array.isArray(l.lists.gitconnections) ? l.lists.gitconnections : [];
+          /* F-954 - a getRuleLists that did NOT succeed is not an empty instance either.
+             It used to collapse to `[]`, which was harmless while the empty list only
+             meant "no picker"; it is not harmless now that an empty list is also a
+             SENTENCE about this site. No answer, no claim. */
+          if (!(l && l.success && l.lists)) return;
+          const flat = Array.isArray(l.lists.gitconnections) ? l.lists.gitconnections : [];
           rows = flat.map((o) => ({ id: o.id || o.value, label: o.label || o.id || o.value, kind: o.kind || null, repos: Array.isArray(o.repos) ? o.repos : [] }))
             .filter((o) => !!o.id);
         } catch (e) { return; }
       }
       if (cancelled || !mountedRef.current) return;
       setConnections(rows);
+      /* F-954 - THE LIST WAS ANSWERED. Every arm above returns early on an OUTAGE, so
+         reaching this line is the one proof that an empty `connections` means "this site
+         has none" and not "the question never got through". The plan-only sentence below
+         is a claim about the INSTANCE and may only be made from an answer: the F-436 rule,
+         on a second read. An unanswered list leaves the composer exactly where it was. */
+      setConnsAnswered(true);
       /* F-954 - THE SOLE CONNECTION IS PRE-SELECTED (the F-902 rule, on this surface).
          With exactly one there is nothing to choose between, so the panel chooses it and
          the turn CARRIES the name it acts as rather than travelling as `undefined` and
@@ -808,7 +822,7 @@ export default function CoderPanel({ issueKey, accountId }) {
   const connectionOwed = showPicker && !connectionId;
   // ...and the site that simply has none. That is a PLAN-ONLY turn, which is legitimate:
   // the git executors refuse their own actions and say why, so Send stays available.
-  const noConnections = connOptions.length === 0;
+  const noConnections = connsAnswered && connOptions.length === 0;
   const busy = running || !!deciding;
   /* F-954 - IS THIS CONSENT CARD THE DEGRADED ONE? Computed ONCE, from the same two facts
      the preview itself renders from, so the buttons and the sentence above them can never

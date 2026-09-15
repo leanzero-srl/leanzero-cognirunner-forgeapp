@@ -1040,6 +1040,29 @@ try {
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-conn-none-${theme}.png`) });
     });
 
+    /* (d) F-954 - ...and the CONTROL for (c): an empty list and an UNREAD one are not the
+       same statement. Both reads drop here, so the panel knows nothing about this site's
+       connections - and "No Git connection on this site" would be a claim made from a
+       request that never came back (the F-436 defect, on a second read). It says nothing,
+       and the composer is exactly where it was before the sentence existed. */
+    await withPanel({ __THEME__: theme, __REFUSE__: ["listGitConnections"], __REFUSE_ROLE__: "admin", __FAIL__: ["getRuleLists"] }, async (page, errors) => {
+      const id = `conn-unread/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      /* The admin list is REFUSED (a settled answer) and the editor-floor fallback it drops
+         to never comes back. POSITIVE CONTROL, because "no sentence" must not be allowed to
+         pass by the mount reads simply never running: the SKILLS picker is read by a
+         sibling effect behind the same `capEnabled` gate, is not interfered with here, and
+         is on screen. (`__CALLS__` cannot serve as the control: the mock short-circuits
+         __FAIL__ and __REFUSE__ before it records, so neither name is ever logged.) */
+      ok(await page.locator(".coder-skills-toggle").count() === 1, `${id} the mount reads DID run (positive control)`);
+      ok(await page.locator(".coder-conn-note").count() === 0, `${id} an unanswered list makes NO claim about this site`);
+      ok(await page.locator(".coder-conn-owed").count() === 0, `${id} and owes nothing either`);
+      ok(await page.locator(".coder-picker").count() === 0, `${id} no picker for a list nobody has`);
+      await page.locator("textarea.coder-input").fill("Plan it.");
+      ok(!(await page.locator(".coder-composer .coder-btn-go").isDisabled()), `${id} the composer is left where it was`);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+    });
+
     /* --------------------------------------- 7b. a FIRST open: no thread, no empty-state lie.
        "Thread not found" is the normal answer on a first open and must not become an error
        banner — an empty transcript is exactly what a new user should see. */

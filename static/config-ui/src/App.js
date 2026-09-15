@@ -78,10 +78,23 @@ const injectStyles = () => {
       --bg-color: transparent;
       --text-color: #0f172a;
       --text-secondary: #64748b;
-      --text-muted: #94a3b8;
+      /* F-936 - the MUTED ink. It was #94a3b8 light / #71717a dark: 2.56:1 on a white card
+         and 3.83:1 on the dark one, so every .empty-state and .hint in the app was under
+         AA in BOTH themes. Raised to the palest values that clear 4.5:1 on the palest and
+         darkest surfaces each theme actually uses (#666d7a -> 5.21 on #ffffff,
+         4.98 on #f8fafc, 4.75 on #f1f5f9; #909099 -> 5.84 on #13131A, 5.13 on #1f1f2e). It stays muted by staying
+         a neutral grey against slate secondary text, not by staying faint. */
+      --text-muted: #666d7a;
       --primary-color: #2563eb;
       --error-color: #dc2626;
       --success-color: #16a34a;
+      /* INK ON A WHITE PILL (F-966). Deliberately NOT theme-aware: .test-badge-*,
+         .btn-retry, .btn-fix-ai and the issue-picker status sit on a hard-coded white pill
+         in BOTH themes, so reading --success-color / --error-color took their text to
+         2.28:1 and 3.76:1 the moment the dark theme lightened those two. One value each,
+         dark enough for AA on white, in every theme. */
+      --on-white-success: #15803d;
+      --on-white-danger: #dc2626;
       --border-color: #cbd5e1;
       --card-bg: #ffffff;
       --input-bg: #f8fafc;
@@ -117,7 +130,7 @@ const injectStyles = () => {
       --glow: 0 8px 22px -6px rgba(59,130,246,0.5);
       --text-color: #F5F5F7;
       --text-secondary: #A0A0B0;
-      --text-muted: #71717a;
+      --text-muted: #909099;
       --primary-color: #3b82f6;
       --error-color: #ef4444;
       --success-color: #22c55e;
@@ -199,7 +212,7 @@ const injectStyles = () => {
     }
     .edition-chip.edition-advanced { background: #c2410c; }
     .edition-chip.edition-standard { background: #475569; }
-    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
 
     .card {
@@ -706,15 +719,15 @@ const injectStyles = () => {
       width: 20px;
       height: 20px;
       border-radius: 5px;
-      background: #d97706;
-      color: #2a1602;
+      background: #b45309;
+      color: #fff;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       font-weight: 800;
       font-size: 14px;
     }
-    html[data-color-mode="dark"] .condition-hide-note .chn-glyph { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .condition-hide-note .chn-glyph { background: #b45309; color: #fff; }
     .condition-hide-note strong { color: var(--text-color); }
     .legacy-cond-prompt {
       margin-top: 8px;
@@ -848,11 +861,11 @@ const injectStyles = () => {
       white-space: nowrap;
       flex-shrink: 0;
     }
-    .pf-test-pass { background: #16a34a; }
-    .pf-test-stale { background: #d97706; color: #2a1602; }
+    .pf-test-pass { background: #15803d; }
+    .pf-test-stale { background: #b45309; color: #fff; }
     .pf-test-untested { background: #475569; }
-    html[data-color-mode="dark"] .pf-test-pass { background: #22c55e; }
-    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .pf-test-pass { background: #15803d; }
+    html[data-color-mode="dark"] .pf-test-stale { background: #b45309; color: #fff; }
     html[data-color-mode="dark"] .pf-test-untested { background: #64748b; }
 
     .btn-remove {
@@ -1117,14 +1130,14 @@ const injectStyles = () => {
        role is fine, nothing is broken, and the site's plan does not include the feature.
        It used to have no voice at all and fell through to .load-error, so the app told a
        paying Standard tenant it had failed and offered a Retry that cannot ever succeed.
-       Owner design law: SOLID saturated orange (#b45309 light, #d97706 dark),
+       Owner design law: SOLID saturated amber, #b45309 in BOTH themes.
        F-298 — the dark fill was #f59e0b (amber-500) under WHITE text: ~2.1:1, a hue that
        reads as a highlighter wash rather than a statement and is unreadable for anyone who
-       needs contrast. The rest of the app pairs #f59e0b with DARK text (#2a1602) for
-       exactly that reason; this note must keep white text, because white-on-solid is the
-       owner's grammar for a chip/badge/note fill. So the FILL moves down one step to
-       #d97706 (amber-600, ~3.2:1 on white) instead of the text moving to dark, which would
-       have made it the only orange note in the app with a dark label.
+       needs contrast. The answer was to move the FILL down, never the text: white-on-solid
+       is the owner's grammar for a chip/badge/note fill.
+       F-298 stopped one step short at #d97706 (~3.2:1 with white, still under AA); F-966
+       finished the move to #b45309 (5.02:1) and applied it to every amber fill in the four
+       apps, so the dark theme is no longer "one shade lighter" for this hue.
        WHITE text, 700 title / 500 body, NO left accent rail, NO tinted or low-alpha wash.
        Orange is deliberately not the red hard-stop (nothing is wrong) and not the slate
        refusal (nobody can grant you this) — it is the app's one commercial statement. */
@@ -1138,7 +1151,7 @@ const injectStyles = () => {
       border-radius: 4px;
       padding: 9px 12px;
     }
-    html[data-color-mode="dark"] .upgrade-note { background: #d97706; color: #ffffff; }
+    html[data-color-mode="dark"] .upgrade-note { background: #b45309; color: #ffffff; }
     .upgrade-note-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
     .upgrade-note-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
 
@@ -1346,7 +1359,7 @@ const injectStyles = () => {
     }
     .knowledge-tab-docs.active { background: #2563eb; border-color: #2563eb; color: #ffffff; }
     .knowledge-tab-skills.active { background: #7c3aed; border-color: #7c3aed; color: #ffffff; }
-    .knowledge-tab-memories.active { background: #0d9488; border-color: #0d9488; color: #ffffff; }
+    .knowledge-tab-memories.active { background: #0f766e; border-color: #0f766e; color: #ffffff; }
 
     .doc-repo-embedded { padding-bottom: 4px; }
 
@@ -1392,9 +1405,9 @@ const injectStyles = () => {
     }
     .skill-cat-jira { background: #2563eb; }
     .skill-cat-external { background: #7c3aed; }
-    .skill-cat-fields { background: #0d9488; }
-    .skill-cat-adf { background: #d97706; color: #2a1602; }
-    .skill-cat-workflow { background: #16a34a; }
+    .skill-cat-fields { background: #0f766e; }
+    .skill-cat-adf { background: #b45309; color: #fff; }
+    .skill-cat-workflow { background: #15803d; }
     .skill-cat-other { background: #475569; }
 
     .skill-auto-chip {
@@ -1452,8 +1465,8 @@ const injectStyles = () => {
       flex-shrink: 0;
     }
     .memory-src-user { background: #2563eb; }
-    .memory-src-test { background: #d97706; color: #2a1602; }
-    .memory-src-fix { background: #16a34a; }
+    .memory-src-test { background: #b45309; color: #fff; }
+    .memory-src-fix { background: #15803d; }
 
     .memory-quick-add {
       display: flex;
@@ -1498,7 +1511,7 @@ const injectStyles = () => {
       border-radius: 4px;
       padding: 9px 12px;
     }
-    html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
+    html[data-color-mode="dark"] .hard-stop { background: #dc2626; color: #ffffff; }
     .hard-stop-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
     .hard-stop-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
 
@@ -1518,7 +1531,7 @@ const injectStyles = () => {
       font-weight: 700;
       border: none;
       border-radius: 6px;
-      background: #0d9488;
+      background: #0f766e;
       color: #ffffff;
       cursor: pointer;
       white-space: nowrap;
@@ -1551,7 +1564,7 @@ const injectStyles = () => {
       border-radius: 10px;
       font-size: 11px;
       font-weight: 700;
-      background: #0d9488;
+      background: #0f766e;
       color: #ffffff;
     }
 
@@ -1572,24 +1585,24 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .kc-mem { color: #14b8a6; }
 
     html[data-color-mode="dark"] .kc-mem-full { color: #ef4444 !important; }
-    html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #3b82f6; border-color: #3b82f6; }
-    html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #8b5cf6; border-color: #8b5cf6; }
-    html[data-color-mode="dark"] .knowledge-tab-memories.active { background: #14b8a6; border-color: #14b8a6; }
+    html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #2563eb; border-color: #2563eb; }
+    html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #7c3aed; border-color: #7c3aed; }
+    html[data-color-mode="dark"] .knowledge-tab-memories.active { background: #0f766e; border-color: #0f766e; }
     html[data-color-mode="dark"] .skill-selected { box-shadow: inset 0 0 0 2px #8b5cf6; }
-    html[data-color-mode="dark"] .skill-cat-jira { background: #3b82f6; }
-    html[data-color-mode="dark"] .skill-cat-external { background: #8b5cf6; }
-    html[data-color-mode="dark"] .skill-cat-fields { background: #14b8a6; }
-    html[data-color-mode="dark"] .skill-cat-adf { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .skill-cat-workflow { background: #22c55e; }
+    html[data-color-mode="dark"] .skill-cat-jira { background: #2563eb; }
+    html[data-color-mode="dark"] .skill-cat-external { background: #7c3aed; }
+    html[data-color-mode="dark"] .skill-cat-fields { background: #0f766e; }
+    html[data-color-mode="dark"] .skill-cat-adf { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .skill-cat-workflow { background: #15803d; }
     html[data-color-mode="dark"] .skill-cat-other { background: #64748b; }
-    html[data-color-mode="dark"] .skill-auto-chip { background: #8b5cf6; }
-    html[data-color-mode="dark"] .btn-save-skill { background: #8b5cf6; }
+    html[data-color-mode="dark"] .skill-auto-chip { background: #7c3aed; }
+    html[data-color-mode="dark"] .btn-save-skill { background: #7c3aed; }
     html[data-color-mode="dark"] .builtin-badge { background: #64748b; }
-    html[data-color-mode="dark"] .memory-src-user { background: #3b82f6; }
-    html[data-color-mode="dark"] .memory-src-test { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .memory-src-fix { background: #22c55e; }
-    html[data-color-mode="dark"] .btn-remember { background: #14b8a6; }
-    html[data-color-mode="dark"] .memory-saved-badge { background: #14b8a6; }
+    html[data-color-mode="dark"] .memory-src-user { background: #2563eb; }
+    html[data-color-mode="dark"] .memory-src-test { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .memory-src-fix { background: #15803d; }
+    html[data-color-mode="dark"] .btn-remember { background: #0f766e; }
+    html[data-color-mode="dark"] .memory-saved-badge { background: #0f766e; }
     html[data-color-mode="dark"] .memory-not-kept { color: #64748b; }
 
     /* Prior step variables indicator */
@@ -1919,7 +1932,7 @@ const injectStyles = () => {
 
     .api-ref-ns-members { padding-left: 10px; }
 
-    html[data-color-mode="dark"] .api-ref-ns-chip { background: #3b82f6; color: #ffffff; }
+    html[data-color-mode="dark"] .api-ref-ns-chip { background: #2563eb; color: #ffffff; }
 
     /* Test panel */
     .test-panel {
@@ -2063,11 +2076,11 @@ const injectStyles = () => {
     }
     .issue-picker-validated-ok .issue-picker-validated-status {
       background: #ffffff;
-      color: var(--success-color);
+      color: var(--on-white-success);
     }
     .issue-picker-validated-err .issue-picker-validated-status {
       background: #ffffff;
-      color: var(--error-color);
+      color: var(--on-white-danger);
     }
 
     .issue-picker-dropdown {
@@ -2185,8 +2198,8 @@ const injectStyles = () => {
       font-weight: 700;
       text-transform: uppercase;
     }
-    .test-badge-pass { background: #ffffff; color: var(--success-color); }
-    .test-badge-fail { background: #ffffff; color: var(--error-color); }
+    .test-badge-pass { background: #ffffff; color: var(--on-white-success); }
+    .test-badge-fail { background: #ffffff; color: var(--on-white-danger); }
 
     .test-result-meta { color: var(--text-muted); font-size: 11px; }
     .test-dismiss {
@@ -2250,7 +2263,7 @@ const injectStyles = () => {
     }
     .gmc-docs { background: #2563eb; }
     .gmc-skill { background: #7c3aed; }
-    .gmc-mem { background: #0d9488; }
+    .gmc-mem { background: #0f766e; }
     /* 1.4 commit 14b - the BAKED field guide. Amber (the agents hue), because the guide is
        what the agents read; docs/skills/memories keep their own colours. It is a BUTTON, so
        it carries the button reset the other three chips do not need. Dark theme takes dark
@@ -2266,8 +2279,8 @@ const injectStyles = () => {
       cursor: pointer;
     }
     .gmc-fieldguide:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
-    html[data-color-mode="dark"] .gmc-fieldguide { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #f59e0b; }
+    html[data-color-mode="dark"] .gmc-fieldguide { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #b45309; }
     .fg-chip-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
     .fg-chip-caret { font-size: 8px; }
     .fg-chip-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
@@ -2286,8 +2299,8 @@ const injectStyles = () => {
       margin: 6px 0;
       padding: 8px 10px;
       border-radius: 6px;
-      background: #d97706;
-      color: #2a1602;
+      background: #b45309;
+      color: #fff;
       font-size: 12px;
       font-weight: 600;
     }
@@ -2300,7 +2313,7 @@ const injectStyles = () => {
       border: none;
       border-radius: 6px;
       background: #ffffff;
-      color: var(--error-color);
+      color: var(--on-white-danger);
       cursor: pointer;
       white-space: nowrap;
     }
@@ -2433,10 +2446,10 @@ const injectStyles = () => {
       color: var(--text-color);
     }
 
-    html[data-color-mode="dark"] .gmc-docs { background: #3b82f6; }
-    html[data-color-mode="dark"] .gmc-skill { background: #8b5cf6; }
-    html[data-color-mode="dark"] .gmc-mem { background: #14b8a6; }
-    html[data-color-mode="dark"] .truncation-warning { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .gmc-docs { background: #2563eb; }
+    html[data-color-mode="dark"] .gmc-skill { background: #7c3aed; }
+    html[data-color-mode="dark"] .gmc-mem { background: #0f766e; }
+    html[data-color-mode="dark"] .truncation-warning { background: #b45309; color: #fff; }
 
     /* BYOK cost notice */
     .byok-cost-notice {
@@ -2458,13 +2471,13 @@ const injectStyles = () => {
       padding: 10px 14px;
       margin: 0 0 14px;
       border-radius: 8px;
-      background: #d97706;
-      color: #2a1602;
+      background: #b45309;
+      color: #fff;
       font-size: 12.5px;
       font-weight: 600;
       line-height: 1.45;
     }
-    html[data-color-mode="dark"] .provider-warning { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .provider-warning { background: #b45309; color: #fff; }
 
     /* Skeleton loading — hardcoded colors to avoid CSS variable timing issues */
     .sk {
@@ -2674,8 +2687,7 @@ const injectStyles = () => {
       line-height: 1;
       padding: 0;
     }
-    html[data-color-mode="dark"] .async-error-note { background: #ef4444; }
-    html[data-color-mode="dark"] .async-error-note .aen-retry { color: #ef4444; }
+    html[data-color-mode="dark"] .async-error-note { background: #dc2626; }
 
 
 
@@ -2699,8 +2711,8 @@ const injectStyles = () => {
     .review-item-icon { flex-shrink: 0; }
 
     .review-item-success { background: var(--success-color); color: #ffffff; }
-    .review-item-warning { background: #d97706; color: #2a1602; }
-    html[data-color-mode="dark"] .review-item-warning { background: #f59e0b; color: #2a1602; }
+    .review-item-warning { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .review-item-warning { background: #b45309; color: #fff; }
     .review-item-error { background: var(--error-color); color: #ffffff; }
     .review-item-tip { background: var(--primary-color); color: #ffffff; }
 
@@ -2949,7 +2961,7 @@ const injectStyles = () => {
     }
     .load-error span { flex: 1; }
     .btn-retry {
-      background: #ffffff; color: var(--error-color);
+      background: #ffffff; color: var(--on-white-danger);
       border: none; border-radius: 6px;
       font-weight: 700; font-size: 12px;
       padding: 4px 12px; cursor: pointer;
@@ -3106,10 +3118,10 @@ const injectStyles = () => {
     .pr-opt { font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .pr-mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; }
     .pr-note {
-      background: #d97706; color: #2a1602; font-weight: 600; font-size: 12.5px;
+      background: #b45309; color: #fff; font-weight: 600; font-size: 12.5px;
       padding: 9px 12px; border-radius: 8px; margin-bottom: 16px; line-height: 1.45;
     }
-    html[data-color-mode="dark"] .pr-note { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .pr-note { background: #b45309; color: #fff; }
     .pr-foot { font-style: italic; }
 
     /* GIT param group (F-350) — solid chips, a solid segmented control, and a solid red
@@ -3132,8 +3144,8 @@ const injectStyles = () => {
     .pr-git-toggle-label { font-size: 13px; font-weight: 700; color: var(--text-primary); }
     html[data-color-mode="dark"] .pr-git-kind { background: #64748b; }
     html[data-color-mode="dark"] .pr-git-kind-github { background: #334155; }
-    html[data-color-mode="dark"] .pr-git-kind-bitbucket { background: #2684ff; }
-    html[data-color-mode="dark"] .pr-git-dead { background: #ef4444; }
+    html[data-color-mode="dark"] .pr-git-kind-bitbucket { background: #0052cc; }
+    html[data-color-mode="dark"] .pr-git-dead { background: #dc2626; }
     html[data-color-mode="dark"] .pr-git-toggle-row input[type="checkbox"] { accent-color: #3b82f6; }
 
     /* The app's own segmented radio group — the prMatch choice is three named options,
@@ -3143,7 +3155,7 @@ const injectStyles = () => {
     .pr-seg-btn:last-child { border-right: none; }
     .pr-seg-btn:hover { color: var(--text-primary); }
     .pr-seg-btn.active { background: #2563eb; color: #fff; font-weight: 700; }
-    html[data-color-mode="dark"] .pr-seg-btn.active { background: #3b82f6; }
+    html[data-color-mode="dark"] .pr-seg-btn.active { background: #2563eb; }
 
     /* The Coder's mode picker (F-388) — the SAME segmented control as prMatch, wrapped
        because five named modes do not fit one editor-width line, and carrying the AGENTS
@@ -3154,7 +3166,7 @@ const injectStyles = () => {
     .pr-coder-notes { min-height: 84px; resize: vertical; font-family: inherit; line-height: 1.5; }
     .pr-coder-count { display: flex; justify-content: flex-end; margin-top: 4px; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
     .pr-coder-count-full { color: #b45309; font-weight: 700; }
-    html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #f59e0b; color: #1c1207; }
+    html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #b45309; color: #fff; }
     html[data-color-mode="dark"] .pr-coder-count-full { color: #f59e0b; }
 
     /* The Coder's SKILLS picker (F-463) - a hand-rolled multi-select, one chip per skill.
@@ -3168,14 +3180,18 @@ const injectStyles = () => {
     .pr-skill-chip.is-on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
     .pr-skill-chip:disabled { cursor: default; background: var(--code-bg); color: var(--text-muted); }
     .pr-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
-    html[data-color-mode="dark"] .pr-skill-chip.is-on { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
-    html[data-color-mode="dark"] .pr-skill-chip.is-on:disabled { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    html[data-color-mode="dark"] .pr-skill-chip.is-on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+    html[data-color-mode="dark"] .pr-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
 
     /* CONFLUENCE param group (F-447) - the same visual language as the git group above:
        solid fills, white text on the chip, no rail and no tint. The hue is CONFLUENCE
        (#1d4ed8; #3b82f6 in dark), which is also the hue config-view gives the
        the confluence_unavailable execution-log banner, so one feature reads as one colour.
-       FOUR HOMES, kept equal by css-parity.test.mjs on the .pr-conf token. */
+       TWO HOMES, kept equal by css-parity.test.mjs on the .pr-conf token: config-ui's
+       injectStyles() and admin-panel's injectCopiedComponentStyles(). F-943 - this used to
+       say FOUR; there were four only while src/styles.css carried convention mirrors, and
+       F-509 deleted those and retargeted the test. A comment that names more homes than
+       exist sends the next reader looking for two files that are not there. */
     .pr-conf-tpl { min-height: 72px; resize: vertical; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; line-height: 1.5; }
     .pr-conf-ph { display: inline-block; margin-right: 6px; padding: 2px 7px; border-radius: 4px; background: #1d4ed8; color: #fff; font-size: 11px; font-weight: 700; }
     .pr-conf-example { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; padding: 9px 12px; border-radius: var(--r-md, 8px); background: #1d4ed8; color: #fff; }
@@ -3191,9 +3207,9 @@ const injectStyles = () => {
     .pr-conf-missing-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
     html[data-color-mode="dark"] .pr-conf-missing { background: #64748b; color: #fff; }
     .pr-seg-conf .pr-seg-btn.active { background: #1d4ed8; }
-    html[data-color-mode="dark"] .pr-conf-ph { background: #3b82f6; }
-    html[data-color-mode="dark"] .pr-conf-example { background: #3b82f6; }
-    html[data-color-mode="dark"] .pr-seg-conf .pr-seg-btn.active { background: #3b82f6; }
+    html[data-color-mode="dark"] .pr-conf-ph { background: #2563eb; }
+    html[data-color-mode="dark"] .pr-conf-example { background: #2563eb; }
+    html[data-color-mode="dark"] .pr-seg-conf .pr-seg-btn.active { background: #2563eb; }
 
     /* ── F-398 — THE PREMADE POST-FUNCTION (Coder) ARMS ──────────────────────────────
        Two blocks, both SOLID: the capability verdict and the save gate. No left rail, no
@@ -3204,7 +3220,7 @@ const injectStyles = () => {
        pairs it with the dark ink this app already uses for that hue (F-298). Do not
        "fix" it back to white. */
     .cpf-cap { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; padding: 11px 13px; border-radius: var(--r-md, 8px); color: #fff; }
-    .cpf-cap-on { background: #16a34a; }
+    .cpf-cap-on { background: #15803d; }
     .cpf-cap-off { background: #b45309; }
     .cpf-cap-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
     .cpf-cap-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
@@ -3228,9 +3244,9 @@ const injectStyles = () => {
     .cpf-gate { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
     .cpf-gate strong { font-size: 12.5px; font-weight: 800; }
     .cpf-gate span { font-size: 12px; font-weight: 500; line-height: 1.45; }
-    html[data-color-mode="dark"] .cpf-cap-on { background: #22c55e; color: #0a2a12; }
-    html[data-color-mode="dark"] .cpf-cap-off { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .cpf-gate { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .cpf-cap-on { background: #15803d; color: #fff; }
+    html[data-color-mode="dark"] .cpf-cap-off { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .cpf-gate { background: #b45309; color: #fff; }
 
     /* NL-to-rule builder ("Build from a description") — solid accent button, inset
        result card. Existing tokens only (dark variants present); no left rail/tint. */
@@ -3285,10 +3301,10 @@ const injectStyles = () => {
     .recipe-bar-sub { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .recipe-bar-body { padding: 12px; border-top: 1px solid var(--border-color); }
     .recipe-desc { margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary); }
-    .recipe-note { background: #d97706; color: #2a1602; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
-    html[data-color-mode="dark"] .recipe-note { background: #f59e0b; color: #2a1602; }
+    .recipe-note { background: #b45309; color: #fff; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
+    html[data-color-mode="dark"] .recipe-note { background: #b45309; color: #fff; }
     .gen-meta-chip.gmc-recipe { background: #4f46e5; color: #fff; }
-    html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #6366f1; }
+    html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #4f46e5; }
 
     /* ── F-958 — THE ROUTE OUT OF CQL, AND THE LINK THE BANNER OWED ─────────────────
        "Describe the page instead" sits on the required CQL field's own label row and
@@ -3305,7 +3321,7 @@ const injectStyles = () => {
       border: none; border-radius: var(--r-sm, 6px); cursor: pointer;
     }
     .pr-describe-btn:hover { opacity: 0.9; }
-    html[data-color-mode="dark"] .pr-describe-btn { background: #6366f1; }
+    html[data-color-mode="dark"] .pr-describe-btn { background: #4f46e5; }
     .pr-conf-missing-link {
       align-self: flex-start; margin-top: 5px; font-size: 12px; font-weight: 700;
       color: #fff; text-decoration: underline; cursor: pointer;

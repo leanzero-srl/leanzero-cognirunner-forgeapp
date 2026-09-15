@@ -61,7 +61,13 @@ const injectStyles = () => {
       /* ink ladder (content floor deepened slate-500 -> slate-600) */
       --ink: #0f172a;
       --ink-secondary: #475569;
-      --ink-muted: #94a3b8;
+      /* F-936 - the MUTED ink. It was #94a3b8 light / #71717a dark: 2.56:1 on a white card
+         and 3.83:1 on the dark one, so every .empty-state and .hint in the app was under
+         AA in BOTH themes. Raised to the palest values that clear 4.5:1 on the palest and
+         darkest surfaces each theme actually uses (#666d7a -> 5.21 on #ffffff,
+         4.98 on #f8fafc, 4.75 on #f1f5f9; #909099 -> 5.84 on #13131A, 5.13 on #1f1f2e). It stays muted by staying
+         a neutral grey against slate secondary text, not by staying faint. */
+      --ink-muted: #666d7a;
       /* lines */
       --line: #cbd5e1;
       --line-strong: #94a3b8;
@@ -110,6 +116,13 @@ const injectStyles = () => {
       --code-bg: #f1f5f9;
       --success-color: var(--success);
       --error-color: var(--danger);
+      /* INK ON A WHITE PILL (F-966). Deliberately NOT theme-aware: .test-badge-*,
+         .btn-retry, .btn-fix-ai and the issue-picker status sit on a hard-coded white pill
+         in BOTH themes, so reading --success-color / --error-color took their text to
+         2.28:1 and 3.76:1 the moment the dark theme lightened those two. One value each,
+         dark enough for AA on white, in every theme. */
+      --on-white-success: #15803d;
+      --on-white-danger: #dc2626;
       --border-color: var(--line);
     }
 
@@ -120,7 +133,7 @@ const injectStyles = () => {
       --frost: rgba(8, 8, 14, 0.55);
       --ink: #F5F5F7;
       --ink-secondary: #A0A0B0;
-      --ink-muted: #71717a;
+      --ink-muted: #909099;
       --line: #334155;
       --line-strong: #475569;
       --accent: #3b82f6;
@@ -549,16 +562,16 @@ const injectStyles = () => {
     .log-src-runtime { background: #475569; }
     .log-src-async   { background: #4f46e5; }
     /* amber/orange/cyan need dark ink for WCAG AA — white fails on these hues at 9px. */
-    .log-src-test    { background: #d97706; color: #2a1602; }
-    .log-flag-simulated      { background: #0891b2; color: #04141d; }
+    .log-src-test    { background: #b45309; color: #fff; }
+    .log-flag-simulated      { background: #0e7490; color: #fff; }
     .log-flag-transientError { background: #dc2626; }
-    .log-flag-capped         { background: #ea580c; color: #2a1602; }
+    .log-flag-capped         { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
-    html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
-    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; color: #04141d; }
-    html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
-    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; color: #2a1602; }
+    html[data-color-mode="dark"] .log-src-async   { background: #4f46e5; }
+    html[data-color-mode="dark"] .log-src-test    { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .log-flag-simulated      { background: #0e7490; color: #fff; }
+    html[data-color-mode="dark"] .log-flag-transientError { background: #dc2626; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #c2410c; color: #fff; }
 
     /* Execution-log banners (F-447) - solid saturated fills, white text, no rail and no
        tint. The git family keeps the red the dead-credential block already uses; the
@@ -572,11 +585,11 @@ const injectStyles = () => {
     .log-banner-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
     .log-banner-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
     .log-banner-auth_dead { background: #dc2626; }
-    .log-banner-git_unavailable { background: #ea580c; }
+    .log-banner-git_unavailable { background: #c2410c; }
     .log-banner-confluence_unavailable { background: #1d4ed8; }
-    html[data-color-mode="dark"] .log-banner-auth_dead { background: #ef4444; }
-    html[data-color-mode="dark"] .log-banner-git_unavailable { background: #fb923c; color: #2a1602; }
-    html[data-color-mode="dark"] .log-banner-confluence_unavailable { background: #3b82f6; }
+    html[data-color-mode="dark"] .log-banner-auth_dead { background: #dc2626; }
+    html[data-color-mode="dark"] .log-banner-git_unavailable { background: #c2410c; color: #fff; }
+    html[data-color-mode="dark"] .log-banner-confluence_unavailable { background: #2563eb; }
 
     .log-tools-badge {
       display: inline-block;
@@ -759,7 +772,7 @@ const injectStyles = () => {
     }
     .edition-chip.edition-advanced { background: #c2410c; }
     .edition-chip.edition-standard { background: #475569; }
-    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
 
     .rule-status-banner {
@@ -911,10 +924,10 @@ const injectStyles = () => {
       color: #ffffff;
       white-space: nowrap;
     }
-    .pf-test-pass { background: #16a34a; }
-    .pf-test-stale { background: #d97706; color: #2a1602; }
-    html[data-color-mode="dark"] .pf-test-pass { background: #22c55e; }
-    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; color: #2a1602; }
+    .pf-test-pass { background: #15803d; }
+    .pf-test-stale { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .pf-test-pass { background: #15803d; }
+    html[data-color-mode="dark"] .pf-test-stale { background: #b45309; color: #fff; }
     .cv-gen-docs { background: var(--accent-docs); }
     .cv-gen-skill { background: var(--accent-skills); }
     .cv-gen-mem { background: var(--accent-memories); }
@@ -951,7 +964,7 @@ const injectStyles = () => {
       cursor: pointer;
     }
     .gmc-fieldguide:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
-    html[data-color-mode="dark"] .gmc-fieldguide { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .gmc-fieldguide { background: #b45309; color: #fff; }
     html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #f59e0b; }
     .fg-chip-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
     .fg-chip-caret { font-size: 8px; }
@@ -1114,7 +1127,7 @@ const injectStyles = () => {
     }
     .load-error span { flex: 1; }
     .btn-retry {
-      background: #ffffff; color: var(--error-color);
+      background: #ffffff; color: var(--on-white-danger);
       border: none; border-radius: 6px;
       font-weight: 700; font-size: 12px;
       padding: 4px 12px; cursor: pointer;

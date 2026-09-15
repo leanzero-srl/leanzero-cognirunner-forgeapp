@@ -42,9 +42,9 @@ const injectStyles = () => {
     .glance-item-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .glance-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; color: #fff; white-space: nowrap; }
     .glance-badge .g-glyph { font-size: 11px; line-height: 1; }
-    .g-ok { background: #16a34a; } .g-block { background: #dc2626; } .g-skip { background: #475569; } .g-hide { background: #64748b; }
-    html[data-color-mode="dark"] .g-ok { background: #22c55e; } html[data-color-mode="dark"] .g-block { background: #ef4444; }
-    html[data-color-mode="dark"] .g-skip { background: #64748b; } html[data-color-mode="dark"] .g-hide { background: #94a3b8; color: #0b1220; }
+    .g-ok { background: #15803d; } .g-block { background: #dc2626; } .g-skip { background: #475569; } .g-hide { background: #64748b; }
+    html[data-color-mode="dark"] .g-ok { background: #15803d; } html[data-color-mode="dark"] .g-block { background: #dc2626; }
+    html[data-color-mode="dark"] .g-skip { background: #64748b; } html[data-color-mode="dark"] .g-hide { background: #64748b; color: #fff; }
     .glance-kind { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-muted); }
     .glance-label { font-weight: 600; color: var(--text-color); margin-left: auto; font-size: 12px; text-align: right; }
     .glance-reason { margin-top: 5px; color: var(--text-secondary); font-size: 12px; word-break: break-word; }
@@ -57,7 +57,7 @@ const injectStyles = () => {
     .edition-chip { display: inline-flex; align-items: center; margin-left: auto; padding: 2px 7px; border-radius: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #fff; white-space: nowrap; }
     .edition-chip.edition-advanced { background: #c2410c; }
     .edition-chip.edition-standard { background: #475569; }
-    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
     /* =====================================================================
        THE CODER PANEL (1.4 commit 9b) - jira:issuePanel "coder-panel".
@@ -96,7 +96,7 @@ const injectStyles = () => {
        verdict, and the card below it carries a Retry using the app's own button. */
     .coder-chip-unknown { background: #475569; }
     .coder-cap-actions { margin: 9px 0 0; display: flex; gap: 8px; }
-    html[data-color-mode="dark"] .coder-chip-on, html[data-color-mode="dark"] .coder-chip-consent { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .coder-chip-on, html[data-color-mode="dark"] .coder-chip-consent { background: #b45309; color: #fff; }
     html[data-color-mode="dark"] .coder-chip-off, html[data-color-mode="dark"] .coder-chip-unknown { background: #64748b; }
 
     /* -- the transcript. Model text is PLAIN paragraphs (CoderPanel rule 2) -- */
@@ -119,10 +119,10 @@ const injectStyles = () => {
     .coder-thread-chip { font: inherit; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-secondary); }
     .coder-thread-chip:hover:not(:disabled) { border-color: var(--text-secondary); }
     .coder-thread-chip.is-current { background: #b45309; border-color: #b45309; color: #fff; }
-    html[data-color-mode="dark"] .coder-thread-chip.is-current { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .coder-thread-chip.is-current { background: #b45309; border-color: #b45309; color: #fff; }
     .coder-thread-chip:disabled { cursor: default; color: var(--text-muted); }
     .coder-thread-chip.is-current:disabled { color: #fff; }
-    html[data-color-mode="dark"] .coder-thread-chip.is-current:disabled { color: #2a1602; }
+    html[data-color-mode="dark"] .coder-thread-chip.is-current:disabled { color: #fff; }
     .coder-newconv { margin-left: auto; font: inherit; font-size: 11.5px; font-weight: 700; padding: 5px 11px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); }
     .coder-newconv:hover:not(:disabled) { border-color: var(--text-secondary); }
     .coder-newconv:disabled { cursor: default; color: var(--text-muted); }
@@ -159,7 +159,7 @@ const injectStyles = () => {
     .coder-btn-go:disabled { background: #475569; border-color: #475569; color: #fff; }
     html[data-color-mode="dark"] .coder-btn-go:disabled { background: #64748b; border-color: #64748b; color: #fff; }
     .coder-btn-go { background: #b45309; border-color: #b45309; color: #fff; }
-    html[data-color-mode="dark"] .coder-btn-go { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .coder-btn-go { background: #b45309; border-color: #b45309; color: #fff; }
     .coder-btn-alt:hover:not(:disabled) { border-color: var(--text-secondary); }
 
     /* -- the finished turn: the reply, then what it actually did -- */
@@ -167,10 +167,10 @@ const injectStyles = () => {
     .coder-actions { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
     .coder-action { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
     .coder-action-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
-    .coder-action-ok { background: #16a34a; }
+    .coder-action-ok { background: #15803d; }
     .coder-action-bad { background: #dc2626; }
-    html[data-color-mode="dark"] .coder-action-ok { background: #22c55e; }
-    html[data-color-mode="dark"] .coder-action-bad { background: #ef4444; }
+    html[data-color-mode="dark"] .coder-action-ok { background: #15803d; }
+    html[data-color-mode="dark"] .coder-action-bad { background: #dc2626; }
     .coder-action-name { font-weight: 700; color: var(--text-color); word-break: break-all; }
     .coder-action-verdict { font-weight: 700; color: var(--text-secondary); text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
     .coder-action-ms { margin-left: auto; color: var(--text-muted); font-size: 11px; }
@@ -181,7 +181,7 @@ const injectStyles = () => {
     .coder-links { list-style: none; margin: 9px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
     .coder-link-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
     .coder-link-kind { flex: 0 0 auto; background: #7c3aed; color: #fff; font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 4px; padding: 2px 6px; }
-    html[data-color-mode="dark"] .coder-link-kind { background: #8b5cf6; color: #150429; }
+    html[data-color-mode="dark"] .coder-link-kind { background: #7c3aed; color: #fff; }
     .coder-link { font-weight: 600; color: var(--link-color, #2563eb); text-decoration: none; word-break: break-word; }
     .coder-link:hover { text-decoration: underline; }
     html[data-color-mode="dark"] .coder-link { color: #3b82f6; }
@@ -190,11 +190,11 @@ const injectStyles = () => {
        same device every other named failure in this app uses, because a turn that answered
        and left nothing on the issue must not read as a clean turn. No tint, no rail. */
     .coder-workspace-bad { margin: 9px 0 0; border-radius: 6px; background: #dc2626; color: #fff; font-size: 11.5px; font-weight: 700; padding: 7px 10px; word-break: break-word; }
-    html[data-color-mode="dark"] .coder-workspace-bad { background: #ef4444; color: #2a0404; }
+    html[data-color-mode="dark"] .coder-workspace-bad { background: #dc2626; color: #fff; }
 
     /* -- a failure is NAMED, in solid red with white text; never a tint -- */
     .coder-error { border-radius: 8px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 600; padding: 9px 11px; word-break: break-word; }
-    html[data-color-mode="dark"] .coder-error { background: #ef4444; color: #2a0404; }
+    html[data-color-mode="dark"] .coder-error { background: #dc2626; color: #fff; }
     /* F-374 - the render-fault banner. Same solid red as any other named failure, plus a
        way out. The button is white-on-red so it reads as an action inside the banner. */
     .cr-boundary { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
@@ -223,10 +223,10 @@ const injectStyles = () => {
     .coder-skill-chip { font: inherit; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-secondary); }
     .coder-skill-chip:hover:not(:disabled) { border-color: var(--text-secondary); }
     .coder-skill-chip.is-on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
-    html[data-color-mode="dark"] .coder-skill-chip.is-on { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    html[data-color-mode="dark"] .coder-skill-chip.is-on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
     .coder-skill-chip:disabled { cursor: default; background: var(--code-bg); color: var(--text-muted); }
     .coder-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
-    html[data-color-mode="dark"] .coder-skill-chip.is-on:disabled { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    html[data-color-mode="dark"] .coder-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
     span.coder-skill-chip { cursor: default; }
     /* 1.4 commit 14b - the field-guide provenance chip. The .gen-meta-chip base is carried
        here as well as in config-ui/admin-panel because FieldGuideChip.jsx is byte-identical
@@ -239,8 +239,8 @@ const injectStyles = () => {
     .gen-meta-chip { padding: 2px 10px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #ffffff; white-space: nowrap; }
     .gmc-fieldguide { display: inline-flex; align-items: center; gap: 4px; border: none; background: #b45309; font-family: inherit; cursor: pointer; }
     .gmc-fieldguide:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
-    html[data-color-mode="dark"] .gmc-fieldguide { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #f59e0b; }
+    html[data-color-mode="dark"] .gmc-fieldguide { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #b45309; }
     .fg-chip-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
     .fg-chip-caret { font-size: 8px; }
     .fg-chip-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
@@ -257,7 +257,7 @@ const injectStyles = () => {
     .coder-toggle-on .coder-toggle-box::after { transform: translateX(13px); }
     .coder-toggle-on { color: var(--text-color); }
     html[data-color-mode="dark"] .coder-toggle-box { background: #64748b; }
-    html[data-color-mode="dark"] .coder-toggle-on .coder-toggle-box { background: #f59e0b; }
+    html[data-color-mode="dark"] .coder-toggle-on .coder-toggle-box { background: #b45309; }
     .coder-toggle:disabled { cursor: default; color: var(--text-muted); }
     .coder-toggle:disabled .coder-toggle-box { background: var(--border-color); }
 
@@ -455,19 +455,19 @@ const injectStyles = () => {
       white-space: nowrap;
     }
     .dropdown-item-badge:first-of-type ~ .dropdown-item-badge { margin-left: 4px; }
-    .dib-loaded { background: #16a34a; }
+    .dib-loaded { background: #15803d; }
     .dib-cold { background: #475569; }
-    .dib-info { background: #0d9488; }
+    .dib-info { background: #0f766e; }
     .dib-device { background: #334155; }
-    html[data-color-mode="dark"] .dib-loaded { background: #22c55e; color: #052e16; }
+    html[data-color-mode="dark"] .dib-loaded { background: #15803d; color: #fff; }
     html[data-color-mode="dark"] .dib-cold { background: #64748b; }
-    html[data-color-mode="dark"] .dib-info { background: #14b8a6; color: #042f2a; }
+    html[data-color-mode="dark"] .dib-info { background: #0f766e; color: #fff; }
     html[data-color-mode="dark"] .dib-device { background: #475569; }
     /* Edition-locked model rows + their "Coder" badge. Solid burnt orange, white
        text; the locked row keeps a SOLID secondary text colour (never opacity /
        a faded wash) so it stays legible while reading as unavailable. */
     .dib-edition { background: #c2410c; }
-    html[data-color-mode="dark"] .dib-edition { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .dib-edition { background: #c2410c; color: #fff; }
     .dropdown-item.dropdown-item-locked {
       cursor: not-allowed;
       color: var(--text-secondary);
@@ -501,10 +501,10 @@ const injectStyles = () => {
     .agent-off-btn:hover, .agent-off-link:hover { background: #1d4ed8; color: #ffffff; text-decoration: none; }
     .agent-off-link { background: #c2410c; }
     .agent-off-link:hover { background: #9a3412; }
-    html[data-color-mode="dark"] .agent-off-btn { background: #3b82f6; }
-    html[data-color-mode="dark"] .agent-off-btn:hover { background: #60a5fa; }
-    html[data-color-mode="dark"] .agent-off-link { background: #f97316; color: #2a1602; }
-    html[data-color-mode="dark"] .agent-off-link:hover { background: #fb923c; color: #2a1602; }
+    html[data-color-mode="dark"] .agent-off-btn { background: #2563eb; }
+    html[data-color-mode="dark"] .agent-off-btn:hover { background: #1d4ed8; }
+    html[data-color-mode="dark"] .agent-off-link { background: #c2410c; color: #fff; }
+    html[data-color-mode="dark"] .agent-off-link:hover { background: #9a3412; color: #fff; }
     /* The sentence a non-admin gets instead. Plain secondary text: it is a
        request to make of a person, not a control, and dressing it as one
        would be the dead end this finding is about. */
@@ -520,7 +520,7 @@ const injectStyles = () => {
        app's solid red with white text at 700; the plan-only line is a fact, so
        it stays secondary text. */
     .coder-conn-owed { margin: 0; padding: 6px 10px; border-radius: 6px; background: #dc2626; color: #ffffff; font-size: 11.5px; font-weight: 700; }
-    html[data-color-mode="dark"] .coder-conn-owed { background: #ef4444; color: #ffffff; }
+    html[data-color-mode="dark"] .coder-conn-owed { background: #dc2626; color: #ffffff; }
     .coder-conn-note { margin: 0; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
 
   `;

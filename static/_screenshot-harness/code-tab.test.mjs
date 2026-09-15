@@ -203,7 +203,7 @@ try {
       ok(/dead/i.test(text) && /not running/i.test(text), `C5 ${theme} the banner says what stopped, not only that something is wrong`);
       const fill = await bg(page, ".code-dead");
       // Solid, saturated, and DIFFERENT per theme - which is what proves the dark override exists.
-      ok(fill === (theme === "light" ? "rgb(220, 38, 38)" : "rgb(239, 68, 68)"), `C5 ${theme} solid red fill (got ${fill})`);
+      ok(fill === "rgb(220, 38, 38)", `C5 ${theme} solid red fill (got ${fill})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       ok(await page.locator(".code-dead").first().evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `C5 ${theme} white text on the banner`);
       ok(await page.locator(".code-dead").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `C5 ${theme} no left accent rail`);
       await shot(page, `C5-dead-credential-${theme}`);
@@ -364,7 +364,7 @@ try {
         ok(note.includes(agentCapabilityCopy(capReason).remedy.slice(0, 30)), `C8 ${capReason} and the remedy`);
         ok(await page.locator(".agc-col-code input:disabled").count() === GIT_ACTIONS.length, "C8 every git checkbox is disabled when the capability is off");
         const lockedBg = await bg(page, ".agc-locked");
-        ok(lockedBg === (theme === "light" ? "rgb(217, 119, 6)" : "rgb(245, 158, 11)"), `C8 ${theme} the locked note has a per-theme solid fill (got ${lockedBg})`);
+        ok(lockedBg === "rgb(180, 83, 9)", `C8 ${theme} the locked note has a solid fill (got ${lockedBg})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       } else {
         ok(await page.locator(".agc-locked").count() === 0, "C8 no locked note when Coder is on");
         ok(await page.locator(".agc-col-code input:disabled").count() === 0, "C8 the git checkboxes are usable when Coder is on");
@@ -400,7 +400,7 @@ try {
       ok(/WEBHOOK SET/.test(setChip), `C9 ${theme} the chip flips to SET after the write`);
       ok(/\d/.test(setChip), `C9 ${theme} and it carries the date the hook was made`);
       const setFill = await row.locator(".code-hook.set").evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(setFill === (theme === "light" ? "rgb(22, 163, 74)" : "rgb(34, 197, 94)"), `C9 ${theme} solid green with a dark override (got ${setFill})`);
+      ok(setFill === "rgb(21, 128, 61)", `C9 ${theme} solid green (got ${setFill})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       ok(await row.locator(".code-hook.set").evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `C9 ${theme} white text on the chip`);
       // THE RULE THIS SCREEN EXISTS UNDER: the secret has no render path.
       const shown = await page.locator(".code-tab").first().innerText();
@@ -457,7 +457,7 @@ try {
       ok(/admin/i.test(note), "C11 the refusal names the role the gate asked for");
       ok(await row.locator(".code-hook.set").count() === 0, "C11 a refused write does not flip the chip");
       const fill = await row.locator(".code-hook-note").evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(fill === "rgb(217, 119, 6)", `C11 the note is a solid fill, not a tint (got ${fill})`);
+      ok(fill === "rgb(180, 83, 9)", `C11 the note is a solid fill, not a tint (got ${fill})`);   // F-966: amber darkened so white ink clears AA
       ok(await row.locator(".code-hook-note").evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", "C11 no left accent rail");
       await shot(page, "C11-webhook-refusal");
       ok(env.errors.length === 0, "C11 no page errors: " + env.errors.join(" | "));
@@ -483,7 +483,7 @@ try {
       ok(await row.locator(".code-hook-broken-action", { hasText: "Set up webhook" }).count() === 1, `C11b ${theme} the banner carries the Set up webhook button`);
       // Solid red with a dark override, white text, and no left rail.
       const fill = await row.locator(".code-hook-broken").evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(fill === (theme === "light" ? "rgb(220, 38, 38)" : "rgb(239, 68, 68)"), `C11b ${theme} solid red with a dark override (got ${fill})`);
+      ok(fill === "rgb(220, 38, 38)", `C11b ${theme} solid red (got ${fill})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       ok(await row.locator(".code-hook-broken").evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `C11b ${theme} white text on the banner`);
       ok(await row.locator(".code-hook-broken").evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `C11b ${theme} no left accent rail`);
       ok(await row.locator(".code-hook-broken-title").evaluate((el) => Number(getComputedStyle(el).fontWeight)) >= 600, `C11b ${theme} the headline carries the weight`);
@@ -555,7 +555,7 @@ try {
       ok(await row.locator(".code-pipe-status", { hasText: "INSTALLED" }).count() === 1, `C12 ${theme} polling carries it to INSTALLED`);
       ok(await row.locator(".code-step-done").count() === 6, `C12 ${theme} every step is reported done`);
       const doneFill = await row.locator(".code-step-done .code-step-state").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(doneFill === (theme === "light" ? "rgb(22, 163, 74)" : "rgb(34, 197, 94)"), `C12 ${theme} done steps are solid green with a dark override (got ${doneFill})`);
+      ok(doneFill === "rgb(21, 128, 61)", `C12 ${theme} done steps are solid green (got ${doneFill})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       ok(await row.locator("button", { hasText: "Trigger deploy" }).count() === 1, `C12 ${theme} an installed pipeline offers the deploy`);
       ok(await row.locator("button", { hasText: "Set up pipeline" }).count() === 0, `C12 ${theme} and stops offering the setup form`);
       await shot(page, `C12-pipeline-installed-${theme}`);
@@ -602,6 +602,11 @@ try {
       ok(/\.\./.test(await row.locator(".code-field-err").innerText()), `C12b ${theme} the refusal names what is wrong with it`);
       ok(await setupBtn.isDisabled(), `C12b ${theme} and the setup cannot be started while it is wrong`);
       const errColor = await row.locator(".code-field-err").evaluate((el) => getComputedStyle(el).color);
+      /* NOT one shade: this fill comes from --error-color, a token read 60 times as TEXT on a
+         dark surface and 22 times as a fill under white. F-966 darkened the LITERAL chip fills
+         and deliberately left the four dual-use tokens alone, because one value cannot serve
+         both readings - splitting them is its own finding. So this one still lightens in dark,
+         and white on #ef4444 is 3.76:1, which chip-contrast.test.mjs excludes and says why. */
       ok(errColor === (theme === "light" ? "rgb(220, 38, 38)" : "rgb(239, 68, 68)"), `C12b ${theme} the refusal is solid red with a dark override (got ${errColor})`);
       await dirInput.fill("a".repeat(81));
       ok(/80 characters/.test(await row.locator(".code-field-err").innerText()), `C12b ${theme} an over-long folder is refused by length`);
@@ -827,7 +832,7 @@ try {
       ok(await row.locator("button", { hasText: "Set up again" }).count() === 1, `C14 ${theme} a partial setup can be retried`);
       ok(await row.locator("button", { hasText: "Trigger deploy" }).count() === 0, `C14 ${theme} a partial setup offers no deploy`);
       const warnFill = await row.locator(".code-pipe-warn").evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(warnFill === (theme === "light" ? "rgb(217, 119, 6)" : "rgb(245, 158, 11)"), `C14 ${theme} solid amber with a dark override (got ${warnFill})`);
+      ok(warnFill === "rgb(180, 83, 9)", `C14 ${theme} solid amber (got ${warnFill})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       await shot(page, `C14-pipeline-partial-${theme}`);
       ok(env.errors.length === 0, `C14 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C14 threw: " + e.message.split("\n")[0]); }
@@ -946,8 +951,8 @@ try {
         ok(/^rgb\(\d+, \d+, \d+\)$/.test(st.bg), `C16 ${theme} ${name} fill is SOLID, not an alpha tint (got ${st.bg})`);
         ok(st.color === "rgb(255, 255, 255)", `C16 ${theme} ${name} has white ink (got ${st.color})`);
         ok(Number(st.weight) >= 600, `C16 ${theme} ${name} carries the 600-700 emphasis weight (got ${st.weight})`);
-        ok(st.bg === (theme === "light" ? "rgb(217, 119, 6)" : "rgb(245, 158, 11)"),
-          `C16 ${theme} ${name} amber has a dark-mode override (got ${st.bg})`);
+        ok(st.bg === "rgb(180, 83, 9)",
+          `C16 ${theme} ${name} amber, one shade both themes (got ${st.bg})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       }
 
       await shot(page, `C16-pipeline-outdated-${theme}`);
@@ -1089,8 +1094,8 @@ try {
       ok(/^rgb\(\d+, \d+, \d+\)$/.test(st.bg), `C16e ${theme} the fill is SOLID, not an alpha tint (got ${st.bg})`);
       ok(st.color === "rgb(255, 255, 255)", `C16e ${theme} white ink (got ${st.color})`);
       ok(Number(st.weight) >= 600, `C16e ${theme} the 600-700 emphasis weight (got ${st.weight})`);
-      ok(st.bg === (theme === "light" ? "rgb(217, 119, 6)" : "rgb(245, 158, 11)"),
-        `C16e ${theme} amber with a dark-mode override (got ${st.bg})`);
+      ok(st.bg === "rgb(180, 83, 9)",
+        `C16e ${theme} amber, one shade both themes (got ${st.bg})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
 
       await shot(page, `C16e-pipeline-stuck-first-${theme}`);
       ok(env.errors.length === 0, `C16e ${theme} no page errors: ` + env.errors.join(" | "));
@@ -1185,9 +1190,9 @@ try {
       // 4. Solid saturated chips, white text, and a DIFFERENT fill in dark (the override).
       const linkBg = await off.locator("a.agent-off-link").first().evaluate((el) => getComputedStyle(el).backgroundColor);
       const linkFg = await off.locator("a.agent-off-link").first().evaluate((el) => getComputedStyle(el).color);
-      ok(linkBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `C17 ${theme} the upgrade link is the solid Coder orange, got ${linkBg}`);
+      ok(linkBg === "rgb(194, 65, 12)", `C17 ${theme} the upgrade link is the solid Coder orange, got ${linkBg}`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       ok(!/rgba\(.*0(\.\d+)?\)/.test(linkBg), `C17 ${theme} it is not a faded tint`);
-      ok(linkFg === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"), `C17 ${theme} its text is the readable pair for this theme, got ${linkFg}`);
+      ok(linkFg === "rgb(255, 255, 255)", `C17 ${theme} its text is WHITE on the fill, got ${linkFg}`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       // 5. No em dash in the copy this component renders.
       ok(!/[\u2013\u2014]/.test(await off.innerText()), `C17 ${theme} no em dash or en dash in the off state copy`);
       // 6. The setup below is DISABLED, not merely unhelpful (plan 2.2).
@@ -1283,6 +1288,7 @@ try {
       ok(await save.count() === 1, `C18 ${theme} the form has its own Save connection button`);
       const saveBg = await save.first().evaluate((el) => getComputedStyle(el).backgroundColor);
       const saveFg = await save.first().evaluate((el) => getComputedStyle(el).color);
+      // --primary-color, a dual-use token F-966 left alone on purpose (see C12b).
       ok(saveBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(37, 99, 235)"), `C18 ${theme} it is a solid primary fill (got ${saveBg})`);
       ok(saveFg === "rgb(255, 255, 255)", `C18 ${theme} with white text (got ${saveFg})`);
       ok(await page.locator(".code-form-actions button", { hasText: /^Cancel$/ }).count() === 1, `C18 ${theme} Cancel sits beside it`);
@@ -1406,8 +1412,8 @@ try {
         const c = getComputedStyle(el);
         return { bg: c.backgroundColor, weight: Number(c.fontWeight), opacity: c.opacity };
       });
-      ok(style.bg === (theme === "dark" ? "rgb(20, 184, 166)" : "rgb(13, 148, 136)"),
-        `C19 solid teal for this theme (${theme}, got ${style.bg})`);
+      ok(style.bg === "rgb(15, 118, 110)",
+        `C19 solid teal, one shade both themes (${theme}, got ${style.bg})`);   // F-966: ONE shade per hue in BOTH themes - the fill moved down so white ink could stay
       ok(style.weight >= 600, `C19 ...at 600+ weight (got ${style.weight})`);
       ok(style.opacity === "1", "C19 ...and never a faded tint");
       /* The chips it sits over are still honest about what was NOT measured. */

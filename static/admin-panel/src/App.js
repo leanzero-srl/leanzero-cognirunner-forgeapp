@@ -56,10 +56,23 @@ const injectStyles = () => {
       --bg-color: transparent;
       --text-color: #0f172a;
       --text-secondary: #64748b;
-      --text-muted: #94a3b8;
+      /* F-936 - the MUTED ink. It was #94a3b8 light / #71717a dark: 2.56:1 on a white card
+         and 3.83:1 on the dark one, so every .empty-state and .hint in the app was under
+         AA in BOTH themes. Raised to the palest values that clear 4.5:1 on the palest and
+         darkest surfaces each theme actually uses (#666d7a -> 5.21 on #ffffff,
+         4.98 on #f8fafc, 4.75 on #f1f5f9; #909099 -> 5.84 on #13131A, 5.13 on #1f1f2e). It stays muted by staying
+         a neutral grey against slate secondary text, not by staying faint. */
+      --text-muted: #666d7a;
       --primary-color: #2563eb;
       --error-color: #dc2626;
       --success-color: #16a34a;
+      /* INK ON A WHITE PILL (F-966). Deliberately NOT theme-aware: .test-badge-*,
+         .btn-retry, .btn-fix-ai and the issue-picker status sit on a hard-coded white pill
+         in BOTH themes, so reading --success-color / --error-color took their text to
+         2.28:1 and 3.76:1 the moment the dark theme lightened those two. One value each,
+         dark enough for AA on white, in every theme. */
+      --on-white-success: #15803d;
+      --on-white-danger: #dc2626;
       --border-color: #cbd5e1;
       --card-bg: #ffffff;
       --input-bg: #f8fafc;
@@ -91,7 +104,7 @@ const injectStyles = () => {
       --glow: 0 8px 22px -6px rgba(59,130,246,0.5);
       --text-color: #F5F5F7;
       --text-secondary: #A0A0B0;
-      --text-muted: #71717a;
+      --text-muted: #909099;
       --primary-color: #3b82f6;
       --error-color: #ef4444;
       --success-color: #22c55e;
@@ -408,19 +421,19 @@ const injectStyles = () => {
     .usage-prov-row { display: grid; grid-template-columns: 92px 1fr auto; align-items: center; gap: 10px; font-size: 11px; }
     .usage-prov-name { font-weight: 600; color: var(--text-color); text-transform: capitalize; }
     .usage-prov-bar { height: 8px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
-    .usage-prov-fill { display: block; height: 100%; background: #0891b2; border-radius: 999px; }
-    html[data-color-mode="dark"] .usage-prov-fill { background: #22d3ee; }
+    .usage-prov-fill { display: block; height: 100%; background: #0e7490; border-radius: 999px; }
+    html[data-color-mode="dark"] .usage-prov-fill { background: #0e7490; }
     .usage-prov-val { color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .usage-foot { font-size: 11px; color: var(--text-muted); font-style: italic; }
     /* Forge LLM monthly allowance meter (1.3). Same solid bar idiom as the
        per-provider rows; the level recolours the FILL and the level line. */
     .usage-allowance { margin: 2px 0 10px; padding-top: 10px; border-top: 1px solid var(--border-color); }
-    .usage-allow-fill.lvl-ok { background: #0d9488; }
-    .usage-allow-fill.lvl-soft { background: #d97706; }
+    .usage-allow-fill.lvl-ok { background: #0f766e; }
+    .usage-allow-fill.lvl-soft { background: #b45309; }
     .usage-allow-fill.lvl-hard { background: #dc2626; }
-    html[data-color-mode="dark"] .usage-allow-fill.lvl-ok { background: #14b8a6; }
-    html[data-color-mode="dark"] .usage-allow-fill.lvl-soft { background: #f59e0b; }
-    html[data-color-mode="dark"] .usage-allow-fill.lvl-hard { background: #ef4444; }
+    html[data-color-mode="dark"] .usage-allow-fill.lvl-ok { background: #0f766e; }
+    html[data-color-mode="dark"] .usage-allow-fill.lvl-soft { background: #b45309; }
+    html[data-color-mode="dark"] .usage-allow-fill.lvl-hard { background: #dc2626; }
 
     /* === CogniRunner Cloud AI (the managed engine) ==========================
        Solid saturated colour, white text on the chip, 700 weight for emphasis.
@@ -441,19 +454,19 @@ const injectStyles = () => {
     .mg-note.mg-off { border: 2px solid #dc2626; box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35); }
     .mg-note.mg-off .mg-chip { background: #dc2626; }
     html[data-color-mode="dark"] .mg-note.mg-ok { border-color: #8b5cf6; box-shadow: 0 4px 12px -4px rgba(139, 92, 246, 0.4); }
-    html[data-color-mode="dark"] .mg-note.mg-ok .mg-chip { background: #8b5cf6; color: #1e1035; }
+    html[data-color-mode="dark"] .mg-note.mg-ok .mg-chip { background: #7c3aed; color: #fff; }
     html[data-color-mode="dark"] .mg-note.mg-off { border-color: #ef4444; box-shadow: 0 4px 12px -4px rgba(239, 68, 68, 0.4); }
-    html[data-color-mode="dark"] .mg-note.mg-off .mg-chip { background: #ef4444; color: #2a0707; }
+    html[data-color-mode="dark"] .mg-note.mg-off .mg-chip { background: #dc2626; color: #fff; }
     /* The "Unavailable" badge on the non-selectable managed picker row. */
     .dib-unavailable { background: #dc2626; }
-    html[data-color-mode="dark"] .dib-unavailable { background: #ef4444; color: #2a0707; }
+    html[data-color-mode="dark"] .dib-unavailable { background: #dc2626; color: #fff; }
     /* Per-engine split of the ONE vendor allowance. Solid fills, distinct hues:
        Forge LLM = Atlassian blue, CogniRunner Cloud AI = the managed violet. */
     .usage-byengine { margin-top: 8px; }
     .usage-engine-fill.eng-forge { background: #2563eb; }
     .usage-engine-fill.eng-managed { background: #7c3aed; }
-    html[data-color-mode="dark"] .usage-engine-fill.eng-forge { background: #3b82f6; }
-    html[data-color-mode="dark"] .usage-engine-fill.eng-managed { background: #8b5cf6; }
+    html[data-color-mode="dark"] .usage-engine-fill.eng-forge { background: #2563eb; }
+    html[data-color-mode="dark"] .usage-engine-fill.eng-managed { background: #7c3aed; }
     .usage-allow-note { margin: 6px 0 0; font-size: 11px; font-weight: 700; }
     .usage-allow-note.lvl-soft { color: #b45309; }
     .usage-allow-note.lvl-hard { color: #dc2626; }
@@ -502,19 +515,19 @@ const injectStyles = () => {
     .port-plan-note { flex-basis: 100%; font-size: 11px; color: #d97706; }
     html[data-color-mode="dark"] .port-plan-note { color: #f59e0b; }
     .port-status { display: inline-flex; padding: 2px 8px; border-radius: var(--r-sm, 6px); font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #fff; white-space: nowrap; }
-    .port-status-ready { background: #16a34a; }
-    .port-status-committed { background: #16a34a; }
+    .port-status-ready { background: #15803d; }
+    .port-status-committed { background: #15803d; }
     .port-status-needs-rebind { background: #b45309; color: #fff; }
     .port-status-conflict { background: #4f46e5; }
     .port-status-invalid { background: #dc2626; }
     .port-status-error { background: #dc2626; }
     html[data-color-mode="dark"] .port-status-ready,
-    html[data-color-mode="dark"] .port-status-committed { background: #22c55e; }
+    html[data-color-mode="dark"] .port-status-committed { background: #15803d; }
     /* F-957 - white ink; amber darkened one step (white on #f59e0b is 2.15:1, on #bf5309 4.71:1). */
-    html[data-color-mode="dark"] .port-status-needs-rebind { background: #bf5309; color: #fff; }
-    html[data-color-mode="dark"] .port-status-conflict { background: #6366f1; }
+    html[data-color-mode="dark"] .port-status-needs-rebind { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .port-status-conflict { background: #4f46e5; }
     html[data-color-mode="dark"] .port-status-invalid,
-    html[data-color-mode="dark"] .port-status-error { background: #ef4444; }
+    html[data-color-mode="dark"] .port-status-error { background: #dc2626; }
     .port-target { margin: 4px 0 14px; }
     .port-target-lbl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 6px; }
     .port-target-picks { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
@@ -606,18 +619,18 @@ const injectStyles = () => {
     .api-info-warn strong { color: var(--text-color); font-weight: 700; }
     html[data-color-mode="dark"] .api-info-warn { border-color: #f59e0b; }
     .reg-meter-hint strong { color: var(--text-color); font-weight: 700; }
-    .reg-meter-fill { height: 100%; background: #16a34a; border-radius: 999px; transition: width 0.3s ease; }
-    .reg-warn .reg-meter-fill { background: #d97706; }
+    .reg-meter-fill { height: 100%; background: #15803d; border-radius: 999px; transition: width 0.3s ease; }
+    .reg-warn .reg-meter-fill { background: #b45309; }
     .reg-full .reg-meter-fill { background: #dc2626; }
     html[data-color-mode="dark"] .del-warn,
     html[data-color-mode="dark"] .del-flag { color: #f59e0b; }
     html[data-color-mode="dark"] .del-option.is-active { border-color: #ef4444; box-shadow: inset 0 0 0 1px #ef4444; }
     html[data-color-mode="dark"] .del-radio { color: #ef4444; }
     html[data-color-mode="dark"] .owner-chip { background: #64748b; }
-    html[data-color-mode="dark"] .reg-meter-fill { background: #22c55e; }
-    html[data-color-mode="dark"] .reg-warn .reg-meter-fill { background: #f59e0b; }
+    html[data-color-mode="dark"] .reg-meter-fill { background: #15803d; }
+    html[data-color-mode="dark"] .reg-warn .reg-meter-fill { background: #b45309; }
     html[data-color-mode="dark"] .reg-full .reg-meter-fill,
-    html[data-color-mode="dark"] .reg-meter-flag { background: #ef4444; }
+    html[data-color-mode="dark"] .reg-meter-flag { background: #dc2626; }
 
     .row-disabled td {
       opacity: 0.55;
@@ -668,11 +681,11 @@ const injectStyles = () => {
        slate. One shade lighter in dark mode. */
     .type-validator { background: #2563eb; color: #ffffff; }
     .type-condition { background: #7c3aed; color: #ffffff; }
-    .type-postfunction { background: #0d9488; color: #ffffff; }
+    .type-postfunction { background: #0f766e; color: #ffffff; }
     .type-pf-static { background: #475569; color: #ffffff; }
-    html[data-color-mode="dark"] .type-validator { background: #3b82f6; }
-    html[data-color-mode="dark"] .type-condition { background: #8b5cf6; }
-    html[data-color-mode="dark"] .type-postfunction { background: #14b8a6; }
+    html[data-color-mode="dark"] .type-validator { background: #2563eb; }
+    html[data-color-mode="dark"] .type-condition { background: #7c3aed; }
+    html[data-color-mode="dark"] .type-postfunction { background: #0f766e; }
     html[data-color-mode="dark"] .type-pf-static { background: #64748b; }
 
     .field-id {
@@ -748,11 +761,11 @@ const injectStyles = () => {
       flex-shrink: 0;
     }
 
-    .log-status.valid { background: #16a34a; }
+    .log-status.valid { background: #15803d; }
     .log-status.invalid { background: #dc2626; }
     .log-status.skip { background: #475569; }
-    html[data-color-mode="dark"] .log-status.valid { background: #22c55e; }
-    html[data-color-mode="dark"] .log-status.invalid { background: #ef4444; }
+    html[data-color-mode="dark"] .log-status.valid { background: #15803d; }
+    html[data-color-mode="dark"] .log-status.invalid { background: #dc2626; }
     html[data-color-mode="dark"] .log-status.skip { background: #64748b; }
 
     /* Hue-coded solid type badges — logs context only
@@ -784,22 +797,22 @@ const injectStyles = () => {
        FILL, not darker text: #b45309 and #c2410c carry white at 5.02:1 and 5.18:1. The
        cyan pair below still uses dark ink and is left for its own owner. */
     .log-src-test    { background: #b45309; color: #fff; }
-    .log-flag-simulated      { background: #0891b2; color: #04141d; }
+    .log-flag-simulated      { background: #0e7490; color: #fff; }
     .log-flag-transientError { background: #dc2626; }
     .log-flag-capped         { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
-    html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
-    html[data-color-mode="dark"] .log-src-test    { background: #bf5309; color: #fff; }
-    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; color: #04141d; }
-    html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
+    html[data-color-mode="dark"] .log-src-async   { background: #4f46e5; }
+    html[data-color-mode="dark"] .log-src-test    { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .log-flag-simulated      { background: #0e7490; color: #fff; }
+    html[data-color-mode="dark"] .log-flag-transientError { background: #dc2626; }
     html[data-color-mode="dark"] .log-flag-capped         { background: #c2410c; color: #fff; }
     .lt-validator { background: #2563eb; }
     .lt-condition { background: #7c3aed; }
-    .lt-pf, .lt-pf-semantic { background: #0d9488; }
+    .lt-pf, .lt-pf-semantic { background: #0f766e; }
     .lt-pf-static { background: #475569; }
-    html[data-color-mode="dark"] .lt-validator { background: #3b82f6; }
-    html[data-color-mode="dark"] .lt-condition { background: #8b5cf6; }
-    html[data-color-mode="dark"] .lt-pf, html[data-color-mode="dark"] .lt-pf-semantic { background: #14b8a6; }
+    html[data-color-mode="dark"] .lt-validator { background: #2563eb; }
+    html[data-color-mode="dark"] .lt-condition { background: #7c3aed; }
+    html[data-color-mode="dark"] .lt-pf, html[data-color-mode="dark"] .lt-pf-semantic { background: #0f766e; }
     html[data-color-mode="dark"] .lt-pf-static { background: #64748b; }
 
     .log-issue {
@@ -958,33 +971,33 @@ const injectStyles = () => {
       border-radius: 5px;
       white-space: nowrap;
     }
-    .job-status.queued { background: #0891b2; color: #04141d; }
-    .job-status.running { background: #06b6d4; color: #04141d; }
-    .job-status.done { background: #16a34a; }
+    .job-status.queued { background: #0e7490; color: #fff; }
+    .job-status.running { background: #155e75; color: #fff; }
+    .job-status.done { background: #15803d; }
     .job-status.error { background: #dc2626; }
     .job-status.cancelled { background: #475569; }
     /* F-957 - white ink on a darkened amber (see .log-src-test). */
     .job-status.stalled { background: #b45309; color: #fff; }
     .job-status.budgetwait { background: #7c3aed; color: #fff; }
     .ai-budget-meter { font-size: 12px; font-weight: 600; color: #7c3aed; white-space: nowrap; }
-    html[data-color-mode="dark"] .job-status.queued { background: #22d3ee; color: #06283d; }
-    html[data-color-mode="dark"] .job-status.running { background: #22d3ee; color: #06283d; }
-    html[data-color-mode="dark"] .job-status.done { background: #22c55e; }
-    html[data-color-mode="dark"] .job-status.error { background: #ef4444; }
+    html[data-color-mode="dark"] .job-status.queued { background: #0e7490; color: #fff; }
+    html[data-color-mode="dark"] .job-status.running { background: #155e75; color: #fff; }
+    html[data-color-mode="dark"] .job-status.done { background: #15803d; }
+    html[data-color-mode="dark"] .job-status.error { background: #dc2626; }
     html[data-color-mode="dark"] .job-status.cancelled { background: #64748b; }
-    html[data-color-mode="dark"] .job-status.stalled { background: #bf5309; color: #fff; }
-    html[data-color-mode="dark"] .job-status.budgetwait { background: #8b5cf6; color: #fff; }
+    html[data-color-mode="dark"] .job-status.stalled { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .job-status.budgetwait { background: #7c3aed; color: #fff; }
     html[data-color-mode="dark"] .ai-budget-meter { color: #a78bfa; }
     .job-type-badge {
       font-size: 10px;
       font-weight: 700;
       color: #fff;
-      background: #0d9488;
+      background: #0f766e;
       padding: 2px 8px;
       border-radius: 5px;
       white-space: nowrap;
     }
-    html[data-color-mode="dark"] .job-type-badge { background: #14b8a6; }
+    html[data-color-mode="dark"] .job-type-badge { background: #0f766e; }
     .job-rule {
       font-size: 12px;
       font-weight: 600;
@@ -1029,13 +1042,13 @@ const injectStyles = () => {
       text-align: center;
       font-size: 11px;
       font-weight: 700;
-      color: #04141d;
-      background: #06b6d4;
+      color: #fff;
+      background: #0e7490;
       padding: 1px 7px;
       border-radius: 10px;
       vertical-align: middle;
     }
-    html[data-color-mode="dark"] .job-count-chip { background: #22d3ee; color: #06283d; }
+    html[data-color-mode="dark"] .job-count-chip { background: #0e7490; color: #fff; }
 
     /* Per-rule job chips on a rule row */
     .rule-job-chip {
@@ -1048,10 +1061,10 @@ const injectStyles = () => {
       border-radius: 9px;
       white-space: nowrap;
     }
-    .rule-job-chip.running { background: #06b6d4; color: #04141d; }
-    .rule-job-chip.queued { background: #0891b2; color: #04141d; }
-    html[data-color-mode="dark"] .rule-job-chip.running { background: #22d3ee; color: #06283d; }
-    html[data-color-mode="dark"] .rule-job-chip.queued { background: #22d3ee; color: #06283d; }
+    .rule-job-chip.running { background: #155e75; color: #fff; }
+    .rule-job-chip.queued { background: #0e7490; color: #fff; }
+    html[data-color-mode="dark"] .rule-job-chip.running { background: #155e75; color: #fff; }
+    html[data-color-mode="dark"] .rule-job-chip.queued { background: #0e7490; color: #fff; }
 
     /* Per-rule expand caret + accordion panel */
     .rule-expand-btn {
@@ -1097,7 +1110,7 @@ const injectStyles = () => {
       justify-content: center;
       margin-bottom: 6px;
     }
-    html[data-color-mode="dark"] .logs-empty-icon { background: #3b82f6; }
+    html[data-color-mode="dark"] .logs-empty-icon { background: #2563eb; }
     .logs-empty-title {
       font-size: 14px;
       font-weight: 700;
@@ -1725,13 +1738,13 @@ const injectStyles = () => {
       white-space: nowrap;
     }
     .dropdown-item-badge:first-of-type ~ .dropdown-item-badge { margin-left: 4px; }
-    .dib-loaded { background: #16a34a; }
+    .dib-loaded { background: #15803d; }
     .dib-cold { background: #475569; }
-    .dib-info { background: #0d9488; }
+    .dib-info { background: #0f766e; }
     .dib-device { background: #334155; }
-    html[data-color-mode="dark"] .dib-loaded { background: #22c55e; color: #052e16; }
+    html[data-color-mode="dark"] .dib-loaded { background: #15803d; color: #fff; }
     html[data-color-mode="dark"] .dib-cold { background: #64748b; }
-    html[data-color-mode="dark"] .dib-info { background: #14b8a6; color: #042f2a; }
+    html[data-color-mode="dark"] .dib-info { background: #0f766e; color: #fff; }
     html[data-color-mode="dark"] .dib-device { background: #475569; }
     /* Edition-locked model rows + their "Coder" badge. Solid burnt orange, white
        text; the locked row keeps a SOLID secondary text colour (never opacity /
@@ -1861,7 +1874,7 @@ const injectStyles = () => {
        pairs it with the dark ink this app already uses for that hue (F-298). Do not
        "fix" it back to white. */
     .cpf-cap { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; padding: 11px 13px; border-radius: var(--r-md, 8px); color: #fff; }
-    .cpf-cap-on { background: #16a34a; }
+    .cpf-cap-on { background: #15803d; }
     .cpf-cap-off { background: #b45309; }
     .cpf-cap-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
     .cpf-cap-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
@@ -1885,9 +1898,9 @@ const injectStyles = () => {
     .cpf-gate { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
     .cpf-gate strong { font-size: 12.5px; font-weight: 800; }
     .cpf-gate span { font-size: 12px; font-weight: 500; line-height: 1.45; }
-    html[data-color-mode="dark"] .cpf-cap-on { background: #22c55e; color: #0a2a12; }
-    html[data-color-mode="dark"] .cpf-cap-off { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .cpf-gate { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .cpf-cap-on { background: #15803d; color: #fff; }
+    html[data-color-mode="dark"] .cpf-cap-off { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .cpf-gate { background: #b45309; color: #fff; }
     .wizard-breadcrumb {
       display: flex; gap: 12px; margin-bottom: 16px; font-size: 12px; color: var(--text-secondary);
       padding: 8px 0; border-bottom: 1px solid var(--border-color);
@@ -2314,7 +2327,7 @@ const injectStyles = () => {
       font-weight: 700;
       border: none;
       border-radius: 6px;
-      background: #0d9488;
+      background: #0f766e;
       color: #ffffff;
       cursor: pointer;
       white-space: nowrap;
@@ -2361,8 +2374,8 @@ const injectStyles = () => {
       white-space: nowrap;
     }
     .memories-admin-src-user { background: #2563eb; }
-    .memories-admin-src-test { background: #d97706; color: #2a1602; }
-    .memories-admin-src-fix { background: #16a34a; }
+    .memories-admin-src-test { background: #b45309; color: #fff; }
+    .memories-admin-src-fix { background: #15803d; }
 
     .memories-admin-divider td {
       padding: 8px 14px;
@@ -2476,7 +2489,7 @@ const injectStyles = () => {
       cursor: pointer;
       white-space: nowrap;
     }
-    html[data-color-mode="dark"] .memories-admin-bulkdelete { background: #ef4444; color: #ffffff; }
+    html[data-color-mode="dark"] .memories-admin-bulkdelete { background: #dc2626; color: #ffffff; }
     .memories-admin-bulkdelete:hover:not(:disabled) { opacity: 0.85; }
     .memories-admin-bulkdelete:disabled { opacity: 0.5; cursor: default; }
 
@@ -2499,24 +2512,28 @@ const injectStyles = () => {
     }
 
     html[data-color-mode="dark"] .memories-admin-toggle-row input[type="checkbox"] { accent-color: #14b8a6; }
-    html[data-color-mode="dark"] .btn-add-memory { background: #14b8a6; }
-    html[data-color-mode="dark"] .memories-admin-src-user { background: #3b82f6; }
-    html[data-color-mode="dark"] .memories-admin-src-test { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .memories-admin-src-fix { background: #22c55e; }
+    html[data-color-mode="dark"] .btn-add-memory { background: #0f766e; }
+    html[data-color-mode="dark"] .memories-admin-src-user { background: #2563eb; }
+    html[data-color-mode="dark"] .memories-admin-src-test { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .memories-admin-src-fix { background: #15803d; }
     html[data-color-mode="dark"] .memories-admin-archived-badge { background: #64748b; }
     html[data-color-mode="dark"] .memories-admin-reinforced { color: #14b8a6; }
     html[data-color-mode="dark"] .memories-admin-edit-input { border-color: #14b8a6; }
 
     /* === Knowledge tab (1.4 commit 14b) — the baked field-guide packs ===
-       HUE: amber, the agents colour from the project map (#b45309 light / #f59e0b dark).
-       The field guide is what the agents read, so it borrows their hue rather than minting
-       a sixth knowledge colour with no relationship to anything.
-       Every solid amber fill carries DARK text on the dark-theme shade (#2a1602), exactly
-       as .memories-admin-src-test does: white on #f59e0b is the one combination in the map
-       that fails contrast, and it is not worth a special case elsewhere.
+       HUE: amber, the agents colour from the project map. ONE shade, #b45309, in BOTH
+       themes. The field guide is what the agents read, so it borrows their hue rather than
+       minting a sixth knowledge colour with no relationship to anything.
+       F-966 - this block used to say "every solid amber fill carries DARK text on the
+       dark-theme shade (#2a1602)", and roughly forty rules across four stylesheets had been
+       written to that sentence. It is retired: the owner's rule is WHITE ink on a solid
+       fill, and the answer to "white fails on #f59e0b" is a darker FILL, not darker text.
+       White on #b45309 is 5.02:1. The dark theme stops being one shade lighter here on
+       purpose - no amber light enough to read that way clears AA with white.
+       chip-contrast.test.mjs measures every one of them, in both themes, in all four apps.
        No left rail anywhere here: state is carried by a FULL 2px border plus a solid pill. */
     .kn-tab { animation: tabContentFade 0.2s ease both; --kn-hue: #b45309; --kn-ink: #ffffff; }
-    html[data-color-mode="dark"] .kn-tab { --kn-hue: #f59e0b; --kn-ink: #2a1602; }
+    html[data-color-mode="dark"] .kn-tab { --kn-hue: #b45309; --kn-ink: #ffffff; }
 
     .kn-loading {
       display: flex;
@@ -2762,7 +2779,7 @@ const injectStyles = () => {
       margin-bottom: 6px;
     }
 
-    html[data-color-mode="dark"] .btn-add-skill { background: #8b5cf6; }
+    html[data-color-mode="dark"] .btn-add-skill { background: #7c3aed; }
     html[data-color-mode="dark"] .skills-admin-disabled-badge { background: #64748b; }
 
     /* ============================================================
@@ -2876,7 +2893,7 @@ const injectStyles = () => {
     }
     .load-error span { flex: 1; }
     .btn-retry {
-      background: #ffffff; color: var(--error-color);
+      background: #ffffff; color: var(--on-white-danger);
       border: none; border-radius: 6px;
       font-weight: 700; font-size: 12px;
       padding: 4px 12px; cursor: pointer;
@@ -3040,7 +3057,7 @@ const injectStyles = () => {
     .btn-solid { background: var(--primary-color); color: #fff; border-color: var(--primary-color); font-weight: 600; }
     .btn-solid:hover { filter: brightness(1.08); color: #fff; }
     .btn-solid:disabled { opacity: 0.6; }
-    .lst-count { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: #ea580c; color: #fff; font-size: 11px; font-weight: 700; vertical-align: middle; }
+    .lst-count { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: #c2410c; color: #fff; font-size: 11px; font-weight: 700; vertical-align: middle; }
     .lst-editor .card.lst-card { padding: 20px; margin-bottom: 16px; }
     .lst-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     @media (max-width: 900px) { .lst-grid { grid-template-columns: 1fr; } }
@@ -3065,7 +3082,7 @@ const injectStyles = () => {
     .lst-row-off .lst-name { color: var(--text-muted); }
     .lst-name { font-weight: 600; margin-right: 8px; }
     .lst-sim, .lst-aic { display: inline-block; margin-left: 6px; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; color: #fff; letter-spacing: 0.04em; }
-    .lst-sim { background: #d97706; }
+    .lst-sim { background: #b45309; }
     .lst-aic { background: #7c3aed; }
     .lst-evs { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
     .lst-more { font-size: 11px; font-weight: 700; color: var(--text-secondary); }
@@ -3079,8 +3096,8 @@ const injectStyles = () => {
     .job-sched-desc { font-weight: 600; }
     .job-sched-zone { font-size: 11px; color: var(--text-secondary); }
     /* log badges */
-    .log-type-badge.lt-listener { background: #ea580c; color: #fff; }
-    .log-type-badge.lt-job { background: #0891b2; color: #fff; }
+    .log-type-badge.lt-listener { background: #c2410c; color: #fff; }
+    .log-type-badge.lt-job { background: #0e7490; color: #fff; }
     .log-lines { margin-top: 8px; font-size: 12px; }
     .log-lines summary { cursor: pointer; font-weight: 600; color: var(--text-secondary); }
     .log-lines-pre { margin: 6px 0 0; padding: 10px; border-radius: var(--r-md, 8px); background: #0f172a; color: #e2e8f0; font-size: 11px; line-height: 1.45; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
@@ -3096,7 +3113,7 @@ const injectStyles = () => {
     /* chips */
     .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; min-height: 38px; box-sizing: border-box; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); }
     .chips-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; background: #475569; color: #fff; font-size: 12px; font-weight: 600; }
-    .chips-chip-project { background: #16a34a; }
+    .chips-chip-project { background: #15803d; }
     .chips-x { border: none; background: transparent; color: inherit; font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px; }
     .chips-input { flex: 1; min-width: 140px; border: none; background: transparent; color: var(--text-color); font-size: 13px; outline: none; }
     .chips-none { font-size: 12px; color: var(--text-muted); }
@@ -3106,14 +3123,14 @@ const injectStyles = () => {
     .runstat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
     .runstat-never { color: var(--text-muted); }
     .runstat-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
-    .runstat-ok .runstat-dot { background: #16a34a; }
+    .runstat-ok .runstat-dot { background: #15803d; }
     .runstat-err .runstat-dot { background: #dc2626; }
-    .runstat-skip .runstat-dot { background: #d97706; }
+    .runstat-skip .runstat-dot { background: #b45309; }
     .runres { margin-top: 14px; padding: 14px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--card-bg); }
     .runres-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
     .runres-badge { padding: 3px 9px; border-radius: 4px; font-size: 11px; font-weight: 800; letter-spacing: 0.05em; color: #fff; }
-    .runres-badge.ok { background: #16a34a; }
-    .runres-badge.skip { background: #d97706; }
+    .runres-badge.ok { background: #15803d; }
+    .runres-badge.skip { background: #b45309; }
     .runres-badge.err { background: #dc2626; }
     .runres-badge.pending { background: #475569; }
     .runres-title { font-weight: 600; font-size: 13px; }
@@ -3121,7 +3138,7 @@ const injectStyles = () => {
     .runres-reason { margin-top: 8px; font-size: 13px; line-height: 1.5; }
     .runres-gate, .runres-rec { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
     .runres-issues, .runres-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-    .runres-issue, .runres-tool { padding: 2px 7px; border-radius: 3px; font-size: 11px; font-weight: 700; color: #fff; background: #16a34a; }
+    .runres-issue, .runres-tool { padding: 2px 7px; border-radius: 3px; font-size: 11px; font-weight: 700; color: #fff; background: #15803d; }
     .runres-issue.err, .runres-tool.err { background: #dc2626; }
     .runres-tool { background: #7c3aed; }
     .runres-details { margin-top: 8px; font-size: 12px; }
@@ -3176,11 +3193,11 @@ const injectStyles = () => {
     .schp-colon { font-weight: 700; }
     .schp-days { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .schp-day { padding: 6px 12px; border: 2px solid var(--border-color); border-radius: 999px; background: var(--card-bg); color: var(--text-color); font-size: 12px; font-weight: 700; cursor: pointer; }
-    .schp-day.on { background: #0891b2; border-color: #0891b2; color: #fff; }
+    .schp-day.on { background: #0e7490; border-color: #0e7490; color: #fff; }
     .schp-custom { margin-top: 10px; }
     .schp-cron { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-family: SFMono-Regular, Consolas, monospace; font-size: 13px; }
     .schp-cron.invalid { border-color: #dc2626; }
-    .schp-preview { margin-top: 12px; padding: 12px 14px; border-radius: var(--r-md, 8px); background: #0891b2; color: #fff; }
+    .schp-preview { margin-top: 12px; padding: 12px 14px; border-radius: var(--r-md, 8px); background: #0e7490; color: #fff; }
     .schp-preview-error { background: #dc2626; }
     .schp-preview-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-weight: 700; font-size: 14px; }
     .schp-preview-cron { padding: 2px 6px; border-radius: 3px; background: rgba(0, 0, 0, 0.25); font-size: 12px; }
@@ -3194,8 +3211,8 @@ const injectStyles = () => {
     .agc-col { border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); overflow: hidden; }
     .agc-col-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--card-bg); font-size: 12px; color: var(--text-secondary); font-weight: 600; }
     .agc-kind { padding: 2px 7px; border-radius: 3px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
-    .agc-kind-read { background: #16a34a; }
-    .agc-kind-write { background: #ea580c; }
+    .agc-kind-read { background: #15803d; }
+    .agc-kind-write { background: #c2410c; }
     .agc-action { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: flex-start; padding: 8px 12px; border-top: 1px solid var(--border-color); cursor: pointer; }
     .agc-action.on { background: #7c3aed; color: #fff; }
     .agc-action.on .agc-action-label { color: #fff; font-weight: 700; }
@@ -3228,7 +3245,7 @@ const injectStyles = () => {
     .agc-kr-drop { border: 0; background: #991b1b; color: #fff; border-radius: 999px; width: 16px; height: 16px; line-height: 1; font-size: 12px; font-weight: 800; cursor: pointer; }
     .job-writes { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .job-writes .label { margin: 0; }
-    .runres-brake { padding: 3px 9px; border-radius: 4px; background: #d97706; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; }
+    .runres-brake { padding: 3px 9px; border-radius: 4px; background: #b45309; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; }
     .lst-premade { margin: 10px 0 14px; }
     .lst-premade-label { display: block; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 8px; }
     .lst-premade-rows { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -3248,15 +3265,15 @@ const injectStyles = () => {
     .lst-premade-cap { margin-top: 8px; margin-bottom: 0; }
     html[data-color-mode="dark"] .lst-premade-btn-blocked { border-color: #f59e0b; }
     html[data-color-mode="dark"] .lst-premade-btn-blocked:hover { border-color: #f59e0b; }
-    html[data-color-mode="dark"] .runres-brake { background: #f59e0b; }
-    html[data-color-mode="dark"] .agc-knowledge-refusal { background: #ef4444; }
-    html[data-color-mode="dark"] .agc-git-refusal { background: #ef4444; }
+    html[data-color-mode="dark"] .runres-brake { background: #b45309; }
+    html[data-color-mode="dark"] .agc-knowledge-refusal { background: #dc2626; }
+    html[data-color-mode="dark"] .agc-git-refusal { background: #dc2626; }
     html[data-color-mode="dark"] .agc-kr-chip { background: #1e293b; }
     html[data-color-mode="dark"] .agc-kr-chip.missing { background: #fff; color: #b91c1c; }
     html[data-color-mode="dark"] .agc-kr-flag { color: #b91c1c; }
     html[data-color-mode="dark"] .agc-kr-drop { background: #b91c1c; }
     html[data-color-mode="dark"] .lst-premade-btn:hover { border-color: #8b5cf6; }
-    html[data-color-mode="dark"] .agc-knowledge .va-chip.on { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    html[data-color-mode="dark"] .agc-knowledge .va-chip.on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
     /* API access */
     .apx { padding: 20px; margin-top: 20px; }
     .apx-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
@@ -3280,13 +3297,13 @@ const injectStyles = () => {
     .apx-role-btn.on .apx-role-desc { color: rgba(255, 255, 255, 0.88); }
     .apx-role-btn.apx-role-admin.on { border-color: #475569; background: #475569; color: #fff; }
     .apx-role-btn.apx-role-editor.on { border-color: #2563eb; background: #2563eb; color: #fff; }
-    .apx-role-btn.apx-role-viewer.on { border-color: #0d9488; background: #0d9488; color: #fff; }
+    .apx-role-btn.apx-role-viewer.on { border-color: #0f766e; background: #0f766e; color: #fff; }
     .apx-roles-note { display: block; margin-top: 6px; }
     .apx-role-chip { display: inline-block; padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
     .apx-role-chip.apx-role-admin { background: #475569; }
     .apx-role-chip.apx-role-editor { background: #2563eb; }
-    .apx-role-chip.apx-role-viewer { background: #0d9488; }
-    .apx-fresh { padding: 12px 14px; border-radius: var(--r-md, 8px); background: #16a34a; color: #fff; margin-bottom: 12px; }
+    .apx-role-chip.apx-role-viewer { background: #0f766e; }
+    .apx-fresh { padding: 12px 14px; border-radius: var(--r-md, 8px); background: #15803d; color: #fff; margin-bottom: 12px; }
     .apx-fresh-title { font-weight: 700; margin-bottom: 8px; }
     .apx-fresh .btn-small { background: #fff; color: #0f172a; border-color: #fff; }
     .apx-table { margin-top: 8px; }
@@ -3294,21 +3311,21 @@ const injectStyles = () => {
     .apx-examples summary { cursor: pointer; font-weight: 700; color: var(--text-secondary); }
     .apx-pre { margin: 8px 0 0; padding: 12px; border-radius: var(--r-md, 8px); background: #0f172a; color: #e2e8f0; font-size: 11px; line-height: 1.5; overflow: auto; white-space: pre; }
     /* dark mode — one shade lighter per hue */
-    html[data-color-mode="dark"] .lst-count { background: #f97316; }
-    html[data-color-mode="dark"] .lst-sim { background: #f59e0b; }
-    html[data-color-mode="dark"] .lst-aic, html[data-color-mode="dark"] .type-badge.lst-mode-agent, html[data-color-mode="dark"] .mode-btn.mode-agent.on, html[data-color-mode="dark"] .runres-tool, html[data-color-mode="dark"] .apx-secret { background: #8b5cf6; border-color: #8b5cf6; }
+    html[data-color-mode="dark"] .lst-count { background: #c2410c; }
+    html[data-color-mode="dark"] .lst-sim { background: #b45309; }
+    html[data-color-mode="dark"] .lst-aic, html[data-color-mode="dark"] .type-badge.lst-mode-agent, html[data-color-mode="dark"] .mode-btn.mode-agent.on, html[data-color-mode="dark"] .runres-tool, html[data-color-mode="dark"] .apx-secret { background: #7c3aed; border-color: #7c3aed; }
     html[data-color-mode="dark"] .type-badge.lst-mode-script, html[data-color-mode="dark"] .mode-btn.mode-script.on, html[data-color-mode="dark"] .chips-chip, html[data-color-mode="dark"] .runres-badge.pending { background: #64748b; border-color: #64748b; }
-    html[data-color-mode="dark"] .chips-chip-project, html[data-color-mode="dark"] .runstat-ok .runstat-dot, html[data-color-mode="dark"] .runres-badge.ok, html[data-color-mode="dark"] .runres-issue, html[data-color-mode="dark"] .agc-kind-read, html[data-color-mode="dark"] .apx-fresh { background: #22c55e; }
-    html[data-color-mode="dark"] .runstat-err .runstat-dot, html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview.schp-preview-error { background: #ef4444; }
-    html[data-color-mode="dark"] .runres-badge.skip, html[data-color-mode="dark"] .runstat-skip .runstat-dot { background: #f59e0b; }
-    html[data-color-mode="dark"] .log-type-badge.lt-listener, html[data-color-mode="dark"] .agc-kind-write { background: #f97316; }
-    html[data-color-mode="dark"] .log-type-badge.lt-job, html[data-color-mode="dark"] .schp-day.on, html[data-color-mode="dark"] .schp-preview { background: #06b6d4; border-color: #06b6d4; }
+    html[data-color-mode="dark"] .chips-chip-project, html[data-color-mode="dark"] .runstat-ok .runstat-dot, html[data-color-mode="dark"] .runres-badge.ok, html[data-color-mode="dark"] .runres-issue, html[data-color-mode="dark"] .agc-kind-read, html[data-color-mode="dark"] .apx-fresh { background: #15803d; }
+    html[data-color-mode="dark"] .runstat-err .runstat-dot, html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview.schp-preview-error { background: #dc2626; }
+    html[data-color-mode="dark"] .runres-badge.skip, html[data-color-mode="dark"] .runstat-skip .runstat-dot { background: #b45309; }
+    html[data-color-mode="dark"] .log-type-badge.lt-listener, html[data-color-mode="dark"] .agc-kind-write { background: #c2410c; }
+    html[data-color-mode="dark"] .log-type-badge.lt-job, html[data-color-mode="dark"] .schp-day.on, html[data-color-mode="dark"] .schp-preview { background: #0e7490; border-color: #0e7490; }
     html[data-color-mode="dark"] .apx-badge { background: #e11d48; }
     html[data-color-mode="dark"] .apx-role-chip.apx-role-admin, html[data-color-mode="dark"] .apx-role-btn.apx-role-admin.on { background: #64748b; border-color: #64748b; }
-    html[data-color-mode="dark"] .apx-role-chip.apx-role-editor, html[data-color-mode="dark"] .apx-role-btn.apx-role-editor.on { background: #3b82f6; border-color: #3b82f6; }
-    html[data-color-mode="dark"] .apx-role-chip.apx-role-viewer, html[data-color-mode="dark"] .apx-role-btn.apx-role-viewer.on { background: #14b8a6; border-color: #14b8a6; }
-    html[data-color-mode="dark"] .evp-row.on { background: #3b82f6; }
-    html[data-color-mode="dark"] .agc-action.on { background: #8b5cf6; }
+    html[data-color-mode="dark"] .apx-role-chip.apx-role-editor, html[data-color-mode="dark"] .apx-role-btn.apx-role-editor.on { background: #2563eb; border-color: #2563eb; }
+    html[data-color-mode="dark"] .apx-role-chip.apx-role-viewer, html[data-color-mode="dark"] .apx-role-btn.apx-role-viewer.on { background: #0f766e; border-color: #0f766e; }
+    html[data-color-mode="dark"] .evp-row.on { background: #2563eb; }
+    html[data-color-mode="dark"] .agc-action.on { background: #7c3aed; }
     /* ── CODE TAB (1.4 commit 6) ─────────────────────────────────────────────
        GIT NAMESPACE HUE: #a21caf light / #c026d3 dark (one shade lighter), matching the
        the git row in EVENT_CATEGORIES. Provider brands: GitHub #0f172a / #334155,
@@ -3319,8 +3336,8 @@ const injectStyles = () => {
     .code-status { padding: 18px; }
     .code-status-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
     .code-status-badge { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; background: #475569; }
-    .code-status-on .code-status-badge { background: #16a34a; }
-    .code-status-off .code-status-badge { background: #d97706; }
+    .code-status-on .code-status-badge { background: #15803d; }
+    .code-status-off .code-status-badge { background: #b45309; }
     .code-status-title { font-size: 15px; font-weight: 700; }
     .code-status-text { margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
     .code-status-link { margin: 8px 0 0; font-size: 12px; color: var(--text-secondary); }
@@ -3338,7 +3355,7 @@ const injectStyles = () => {
     .code-conn-label { font-size: 14px; font-weight: 700; }
     .code-conn-login { font-size: 12px; color: var(--text-secondary); }
     .code-conn-token { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; background: #475569; }
-    .code-conn-token.set { background: #16a34a; }
+    .code-conn-token.set { background: #15803d; }
     .code-conn-token.missing { background: #dc2626; }
     .code-conn-actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
     .code-kind { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }
@@ -3351,27 +3368,27 @@ const injectStyles = () => {
     .code-repo { padding: 2px 8px; border-radius: 999px; background: #a21caf; color: #fff; font-size: 11px; font-weight: 700; }
     .code-repo-none { font-size: 12px; color: #d97706; font-weight: 700; }
     .code-who { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px; border-radius: var(--r-md, 8px); border: 1px solid var(--border-color); font-size: 12px; }
-    .code-who-err { background: #d97706; color: #fff; border-color: #d97706; font-weight: 600; }
+    .code-who-err { background: #b45309; color: #fff; border-color: #b45309; font-weight: 600; }
     .code-who-row { display: inline-flex; align-items: center; gap: 6px; }
     .code-who-caps { display: inline-flex; flex-wrap: wrap; gap: 6px; }
     .code-who-note { flex-basis: 100%; color: var(--text-secondary); line-height: 1.45; }
     .code-cap { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; }
-    .code-cap-yes { background: #16a34a; }
+    .code-cap-yes { background: #15803d; }
     .code-cap-no { background: #dc2626; }
     .code-cap-unknown { background: #475569; }
     .code-rotate { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 12px; border-radius: var(--r-md, 8px); border: 1px solid var(--border-color); }
     .code-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
-    .code-identity-set { padding: 3px 9px; border-radius: 4px; background: #16a34a; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
+    .code-identity-set { padding: 3px 9px; border-radius: 4px; background: #15803d; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
     .code-consent { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: flex-start; padding: 12px; border-radius: var(--r-md, 8px); background: #a21caf; color: #fff; font-size: 12px; font-weight: 600; line-height: 1.5; cursor: pointer; }
     .code-consent input { margin-top: 2px; accent-color: #0f172a; }
-    html[data-color-mode="dark"] .code-status-on .code-status-badge, html[data-color-mode="dark"] .code-conn-token.set, html[data-color-mode="dark"] .code-cap-yes, html[data-color-mode="dark"] .code-identity-set { background: #22c55e; }
-    html[data-color-mode="dark"] .code-status-off .code-status-badge, html[data-color-mode="dark"] .code-who-err { background: #f59e0b; border-color: #f59e0b; }
+    html[data-color-mode="dark"] .code-status-on .code-status-badge, html[data-color-mode="dark"] .code-conn-token.set, html[data-color-mode="dark"] .code-cap-yes, html[data-color-mode="dark"] .code-identity-set { background: #15803d; }
+    html[data-color-mode="dark"] .code-status-off .code-status-badge, html[data-color-mode="dark"] .code-who-err { background: #b45309; border-color: #b45309; }
     html[data-color-mode="dark"] .code-status-badge, html[data-color-mode="dark"] .code-conn-token, html[data-color-mode="dark"] .code-cap-unknown, html[data-color-mode="dark"] .code-kind { background: #64748b; }
-    html[data-color-mode="dark"] .code-conn-token.missing, html[data-color-mode="dark"] .code-form-error, html[data-color-mode="dark"] .code-dead, html[data-color-mode="dark"] .code-cap-no { background: #ef4444; }
+    html[data-color-mode="dark"] .code-conn-token.missing, html[data-color-mode="dark"] .code-form-error, html[data-color-mode="dark"] .code-dead, html[data-color-mode="dark"] .code-cap-no { background: #dc2626; }
     html[data-color-mode="dark"] .code-repo, html[data-color-mode="dark"] .code-consent { background: #c026d3; }
     html[data-color-mode="dark"] .code-repo-none { color: #f59e0b; }
     html[data-color-mode="dark"] .code-kind-github { background: #334155; }
-    html[data-color-mode="dark"] .code-kind-bitbucket { background: #2684ff; }
+    html[data-color-mode="dark"] .code-kind-bitbucket { background: #0052cc; }
     /* F-460 / F-461 - per-repo webhook + deploy pipeline. Solid fills, white text on
        every chip, no rails and no tints, and a dark override for every hue below. */
     .code-conn-repos { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -3379,10 +3396,10 @@ const injectStyles = () => {
     .code-repo-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
     .code-repo-actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
     .code-hook { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; }
-    .code-hook.set { background: #16a34a; }
+    .code-hook.set { background: #15803d; }
     .code-hook.unset { background: #475569; }
     .code-hook-hint { margin: 0; }
-    .code-hook-note { padding: 10px 12px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; font-size: 12px; font-weight: 600; line-height: 1.45; }
+    .code-hook-note { padding: 10px 12px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; font-size: 12px; font-weight: 600; line-height: 1.45; }
     /* F-481 - a rotation that did not finish. Solid red, white text, no rail, no tint. */
     .code-hook-broken { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
     .code-hook-broken-title { font-size: 11px; font-weight: 800; letter-spacing: 0.05em; }
@@ -3396,25 +3413,25 @@ const injectStyles = () => {
     .code-pipe-status { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; background: #475569; }
     .code-pipe-queued { background: #475569; }
     .code-pipe-running { background: #2563eb; }
-    .code-pipe-installed { background: #16a34a; }
-    .code-pipe-partial { background: #d97706; }
+    .code-pipe-installed { background: #15803d; }
+    .code-pipe-partial { background: #b45309; }
     /* F-583 - the OUTDATED pipeline state. Solid #d97706 amber with white ink and the 700
        weight the other pipe states carry, matching .code-pipe-partial and .code-pipe-warn
        because it is the same class of fact: the pipeline is not usable as it stands. NO left
        rail and NO low-alpha tint - a fault that contradicts a green INSTALLED badge has to
        read as loudly as the badge it replaces. Dark override below with the rest of them. */
-    .code-pipe-outdated { background: #d97706; }
+    .code-pipe-outdated { background: #b45309; }
     /* F-605: the derived "the run never finished" badge. Same solid amber as the other
        two states that ask the admin to act, with the same dark override below. */
-    .code-pipe-stuck { background: #d97706; }
-    .code-pipe-outdated-box { display: flex; flex-direction: column; gap: 4px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; font-weight: 600; }
+    .code-pipe-stuck { background: #b45309; }
+    .code-pipe-outdated-box { display: flex; flex-direction: column; gap: 4px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; font-weight: 600; }
     .code-pipe-outdated-ver { font-family: SFMono-Regular, Consolas, monospace; font-size: 11px; font-weight: 700; color: #fff; }
     .code-pipe-live { margin: 0; }
     .code-steps { display: flex; flex-direction: column; gap: 4px; }
     .code-step { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
     .code-step-state { min-width: 62px; padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-align: center; background: #475569; }
     .code-step-running .code-step-state { background: #2563eb; }
-    .code-step-done .code-step-state { background: #16a34a; }
+    .code-step-done .code-step-state { background: #15803d; }
     .code-step-failed .code-step-state { background: #dc2626; }
     .code-step-name { font-weight: 700; }
     .code-step-err { flex-basis: 100%; color: #dc2626; font-weight: 600; line-height: 1.45; }
@@ -3422,11 +3439,11 @@ const injectStyles = () => {
     .code-lock-title { font-size: 10px; font-weight: 800; letter-spacing: 0.05em; color: var(--text-muted); text-transform: uppercase; }
     .code-lock-diff { display: inline-flex; flex-wrap: wrap; gap: 6px; }
     .code-diff { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }
-    .code-diff-add { background: #16a34a; }
+    .code-diff-add { background: #15803d; }
     .code-diff-rem { background: #dc2626; }
     .code-diff-lock { background: #a21caf; }
     .code-pipe-err { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
-    .code-pipe-warn { display: flex; flex-direction: column; gap: 4px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; }
+    .code-pipe-warn { display: flex; flex-direction: column; gap: 4px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
     .code-pipe-err-title { flex-basis: 100%; font-size: 12px; font-weight: 800; }
     .code-pipe-err-text { flex-basis: 100%; font-size: 12px; font-weight: 500; line-height: 1.45; }
     .code-pipe-goto { padding: 6px 12px; border: 0; border-radius: var(--r-md, 8px); background: #fff; color: #0f172a; font-size: 12px; font-weight: 700; cursor: pointer; }
@@ -3434,7 +3451,7 @@ const injectStyles = () => {
     .code-run-title { font-size: 10px; font-weight: 800; letter-spacing: 0.05em; color: var(--text-muted); text-transform: uppercase; }
     .code-run-state { padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }
     .code-run-running, .code-run-pending { background: #2563eb; }
-    .code-run-success { background: #16a34a; }
+    .code-run-success { background: #15803d; }
     .code-run-failed { background: #dc2626; }
     .code-run-link { color: #2563eb; font-weight: 700; text-decoration: none; }
     .code-run-link:hover { text-decoration: underline; }
@@ -3449,11 +3466,11 @@ const injectStyles = () => {
     .code-pipe-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
     .code-pipe-fields .form-group { flex: 1 1 220px; }
     .code-textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; line-height: 1.5; resize: vertical; }
-    html[data-color-mode="dark"] .code-hook.set, html[data-color-mode="dark"] .code-pipe-installed, html[data-color-mode="dark"] .code-step-done .code-step-state, html[data-color-mode="dark"] .code-diff-add, html[data-color-mode="dark"] .code-run-success { background: #22c55e; }
+    html[data-color-mode="dark"] .code-hook.set, html[data-color-mode="dark"] .code-pipe-installed, html[data-color-mode="dark"] .code-step-done .code-step-state, html[data-color-mode="dark"] .code-diff-add, html[data-color-mode="dark"] .code-run-success { background: #15803d; }
     html[data-color-mode="dark"] .code-hook.unset, html[data-color-mode="dark"] .code-pipe-status, html[data-color-mode="dark"] .code-pipe-queued, html[data-color-mode="dark"] .code-step-state, html[data-color-mode="dark"] .code-diff, html[data-color-mode="dark"] .code-run-state { background: #64748b; }
-    html[data-color-mode="dark"] .code-hook-note, html[data-color-mode="dark"] .code-pipe-partial, html[data-color-mode="dark"] .code-pipe-warn, html[data-color-mode="dark"] .code-pipe-outdated, html[data-color-mode="dark"] .code-pipe-outdated-box, html[data-color-mode="dark"] .code-pipe-stuck { background: #f59e0b; }
-    html[data-color-mode="dark"] .code-pipe-running, html[data-color-mode="dark"] .code-step-running .code-step-state, html[data-color-mode="dark"] .code-run-running, html[data-color-mode="dark"] .code-run-pending { background: #3b82f6; }
-    html[data-color-mode="dark"] .code-pipe-err, html[data-color-mode="dark"] .code-step-failed .code-step-state, html[data-color-mode="dark"] .code-diff-rem, html[data-color-mode="dark"] .code-run-failed, html[data-color-mode="dark"] .code-hook-broken { background: #ef4444; }
+    html[data-color-mode="dark"] .code-hook-note, html[data-color-mode="dark"] .code-pipe-partial, html[data-color-mode="dark"] .code-pipe-warn, html[data-color-mode="dark"] .code-pipe-outdated, html[data-color-mode="dark"] .code-pipe-outdated-box, html[data-color-mode="dark"] .code-pipe-stuck { background: #b45309; }
+    html[data-color-mode="dark"] .code-pipe-running, html[data-color-mode="dark"] .code-step-running .code-step-state, html[data-color-mode="dark"] .code-run-running, html[data-color-mode="dark"] .code-run-pending { background: #2563eb; }
+    html[data-color-mode="dark"] .code-pipe-err, html[data-color-mode="dark"] .code-step-failed .code-step-state, html[data-color-mode="dark"] .code-diff-rem, html[data-color-mode="dark"] .code-run-failed, html[data-color-mode="dark"] .code-hook-broken { background: #dc2626; }
     html[data-color-mode="dark"] .code-diff-lock { background: #c026d3; }
     html[data-color-mode="dark"] .code-step-err, html[data-color-mode="dark"] .code-field-err { color: #ef4444; }
     html[data-color-mode="dark"] .code-run-link { color: #3b82f6; }
@@ -3462,16 +3479,16 @@ const injectStyles = () => {
     .agc-kind-code { background: #a21caf; }
     .agc-col-locked .agc-action { opacity: 0.55; }
     .agc-action-off { cursor: not-allowed; }
-    .agc-locked { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; background: #d97706; color: #fff; }
+    .agc-locked { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; background: #b45309; color: #fff; }
     .agc-locked-title { font-size: 12px; font-weight: 800; }
     .agc-locked-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
     .agc-mark { margin-left: 6px; padding: 1px 6px; border-radius: 3px; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 0.04em; vertical-align: middle; }
     .agc-mark-confirm { background: #475569; }
     .agc-mark-danger { background: #dc2626; }
     html[data-color-mode="dark"] .agc-kind-code { background: #c026d3; }
-    html[data-color-mode="dark"] .agc-locked { background: #f59e0b; }
+    html[data-color-mode="dark"] .agc-locked { background: #b45309; }
     html[data-color-mode="dark"] .agc-mark-confirm { background: #64748b; }
-    html[data-color-mode="dark"] .agc-mark-danger { background: #ef4444; }
+    html[data-color-mode="dark"] .agc-mark-danger { background: #dc2626; }
     /* EventPicker git repos filter */
     .evp-repos { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; padding: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
     .evp-repos-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--text-color); }
@@ -3480,14 +3497,14 @@ const injectStyles = () => {
     .evp-repos-input.invalid { border-color: #dc2626; }
     .evp-repos-hint { margin: 0; font-size: 11px; color: var(--text-secondary); line-height: 1.45; }
     .evp-repos-bad { margin: 0; padding: 6px 10px; border-radius: 4px; background: #dc2626; color: #fff; font-size: 11px; font-weight: 700; }
-    html[data-color-mode="dark"] .evp-repos-bad { background: #ef4444; }
+    html[data-color-mode="dark"] .evp-repos-bad { background: #dc2626; }
 
     /* ── AGENTS (1.5) — the Virtual Administrator tab, its wizard and its form. ──
        The hue is #b45309 light / #f59e0b dark, and the dark amber keeps the app's DARK ink
        (F-298) rather than white. Solid fills only: no left rails, no low-alpha tints, and
        every new hue has its dark override in this same block so the two cannot drift. */
     .va-new { background: #b45309; border-color: #b45309; }
-    html[data-color-mode="dark"] .va-new { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-new { background: #b45309; border-color: #b45309; color: #fff; }
     .va-card { padding: 18px 20px; }
     .va-list { display: flex; flex-direction: column; gap: 14px; }
 
@@ -3499,7 +3516,7 @@ const injectStyles = () => {
     .va-chip-act { border-color: #475569; }
     .va-chip:disabled { cursor: not-allowed; opacity: 0.6; }
     .va-chip-cap { font-size: 11px; font-weight: 700; color: var(--text-secondary); }
-    html[data-color-mode="dark"] .va-chip.on { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-chip.on { background: #b45309; border-color: #b45309; color: #fff; }
     html[data-color-mode="dark"] .va-chip:hover:not(:disabled) { border-color: #f59e0b; }
 
     /* the chat surface */
@@ -3520,7 +3537,7 @@ const injectStyles = () => {
     .va-notes-note .va-note { background: #475569; }
     .va-note-field { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.92; }
     .va-note-text { font-weight: 600; }
-    html[data-color-mode="dark"] .va-notes-refusal .va-note { background: #ef4444; }
+    html[data-color-mode="dark"] .va-notes-refusal .va-note { background: #dc2626; }
     html[data-color-mode="dark"] .va-notes-note .va-note { background: #64748b; }
 
     /* F-538 save notes: what the SAVE narrowed, amber and solid, and it stays on screen
@@ -3529,7 +3546,7 @@ const injectStyles = () => {
        DARK: amber-500 (#f59e0b) under WHITE measures ~2.1:1, so the dark override pairs it
        with the dark ink this app already uses for that hue (F-298, .cpf-cap-off above).
        Do not "fix" it back to white. */
-    .va-save-notes { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; margin-bottom: 12px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; }
+    .va-save-notes { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; margin-bottom: 12px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
     .va-save-notes-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
     .va-save-notes-title { font-size: 12.5px; font-weight: 700; letter-spacing: 0.01em; }
     .va-save-notes-dismiss { padding: 5px 12px; border: 0; border-radius: 6px; background: #fff; color: #b45309; font-size: 11.5px; font-weight: 700; cursor: pointer; }
@@ -3537,7 +3554,7 @@ const injectStyles = () => {
     .va-save-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 12.5px; line-height: 1.5; }
     .va-save-note-field { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
     .va-save-note-text { font-weight: 600; }
-    html[data-color-mode="dark"] .va-save-notes { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-save-notes { background: #b45309; color: #fff; }
     html[data-color-mode="dark"] .va-save-notes-dismiss { background: #2a1602; color: #fcd34d; }
     html[data-color-mode="dark"] .va-save-notes-dismiss:hover { background: #3d2103; }
 
@@ -3545,7 +3562,7 @@ const injectStyles = () => {
     .va-sample { display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
     .va-sample-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .va-sample-flag { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
-    .va-sample-ok { background: #16a34a; }
+    .va-sample-ok { background: #15803d; }
     .va-sample-bad { background: #dc2626; }
     .va-sample-unchecked { background: #475569; }
     .va-reply { display: flex; flex-direction: column; gap: 4px; padding: 11px 13px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); }
@@ -3554,13 +3571,13 @@ const injectStyles = () => {
     .va-reply-bad { border-color: #dc2626; }
     .va-sample-block { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 8px 11px; border-radius: 6px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 600; }
     .va-sample-rule { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
-    .va-sample-warn { padding: 8px 11px; border-radius: 6px; background: #d97706; color: #fff; font-size: 12px; font-weight: 600; }
+    .va-sample-warn { padding: 8px 11px; border-radius: 6px; background: #b45309; color: #fff; font-size: 12px; font-weight: 600; }
     .va-sample-chips { margin-top: 2px; }
-    html[data-color-mode="dark"] .va-sample-ok { background: #22c55e; color: #0a2a12; }
-    html[data-color-mode="dark"] .va-sample-bad { background: #ef4444; }
+    html[data-color-mode="dark"] .va-sample-ok { background: #15803d; color: #fff; }
+    html[data-color-mode="dark"] .va-sample-bad { background: #dc2626; }
     html[data-color-mode="dark"] .va-sample-unchecked { background: #64748b; }
-    html[data-color-mode="dark"] .va-sample-block { background: #ef4444; }
-    html[data-color-mode="dark"] .va-sample-warn { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-sample-block { background: #dc2626; }
+    html[data-color-mode="dark"] .va-sample-warn { background: #b45309; color: #fff; }
     html[data-color-mode="dark"] .va-reply-bad { border-color: #ef4444; }
 
     /* desks, powers, brakes */
@@ -3604,7 +3621,7 @@ const injectStyles = () => {
     .va-agent-spacer { flex: 1; }
     .va-badge { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
     .va-badge-shadow { background: #b45309; }
-    .va-badge-live { background: #16a34a; }
+    .va-badge-live { background: #15803d; }
     .va-badge-paused { background: #475569; }
     /* F-554 - the READ's own two states, kept apart from the two verdicts. LOADING is
        neutral slate (never green, which would read LIVE); UNKNOWN is the app's solid red,
@@ -3614,37 +3631,37 @@ const injectStyles = () => {
     .va-badge-unknown { background: #dc2626; }
     .va-badge-public { background: #2563eb; }
     .va-badge-internal { background: #475569; }
-    .va-badge-ok { background: #16a34a; }
+    .va-badge-ok { background: #15803d; }
     .va-badge-bad { background: #dc2626; }
     .va-state-staged { background: #b45309; }
-    .va-state-posted { background: #16a34a; }
+    .va-state-posted { background: #15803d; }
     .va-state-owed { background: #dc2626; }
     .va-state-parked { background: #475569; }
     .va-state-seen, .va-state-queued, .va-state-done, .va-state-waiting_on_human { background: #475569; }
-    html[data-color-mode="dark"] .va-badge-shadow, html[data-color-mode="dark"] .va-state-staged { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .va-badge-live, html[data-color-mode="dark"] .va-badge-ok, html[data-color-mode="dark"] .va-state-posted { background: #22c55e; color: #0a2a12; }
+    html[data-color-mode="dark"] .va-badge-shadow, html[data-color-mode="dark"] .va-state-staged { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .va-badge-live, html[data-color-mode="dark"] .va-badge-ok, html[data-color-mode="dark"] .va-state-posted { background: #15803d; color: #fff; }
     html[data-color-mode="dark"] .va-badge-paused, html[data-color-mode="dark"] .va-badge-internal, html[data-color-mode="dark"] .va-state-parked,
     html[data-color-mode="dark"] .va-state-seen, html[data-color-mode="dark"] .va-state-queued, html[data-color-mode="dark"] .va-state-done, html[data-color-mode="dark"] .va-state-waiting_on_human { background: #64748b; }
-    html[data-color-mode="dark"] .va-badge-public { background: #3b82f6; }
-    html[data-color-mode="dark"] .va-badge-bad, html[data-color-mode="dark"] .va-state-owed { background: #ef4444; }
+    html[data-color-mode="dark"] .va-badge-public { background: #2563eb; }
+    html[data-color-mode="dark"] .va-badge-bad, html[data-color-mode="dark"] .va-state-owed { background: #dc2626; }
     html[data-color-mode="dark"] .va-badge-loading { background: #64748b; }
-    html[data-color-mode="dark"] .va-badge-unknown { background: #ef4444; }
+    html[data-color-mode="dark"] .va-badge-unknown { background: #dc2626; }
 
     /* the health banner: SOLID red, because a dead agent is not a hint */
     .va-health { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
     .va-health-title { font-size: 12.5px; font-weight: 800; }
     .va-health-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
-    html[data-color-mode="dark"] .va-health { background: #ef4444; }
+    html[data-color-mode="dark"] .va-health { background: #dc2626; }
 
     /* F-614 - the purge settle window: SOLID amber, because this is a WAIT and not a
        failure. Red is reserved for "somebody must act"; nobody need act on this, it
        clears itself. Same block shape as the health banner so the two read as one family,
        never a tint and never a left rail. */
-    .va-settling { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; }
+    .va-settling { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
     .va-settling-title { font-size: 12.5px; font-weight: 800; }
     .va-settling-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
     .va-settling-pane { margin-bottom: 4px; }
-    html[data-color-mode="dark"] .va-settling { background: #f59e0b; }
+    html[data-color-mode="dark"] .va-settling { background: #b45309; }
 
     .va-stats { display: flex; flex-wrap: wrap; gap: 10px 22px; }
     .va-stat { display: flex; flex-direction: column; gap: 2px; }
@@ -3655,7 +3672,7 @@ const injectStyles = () => {
     .va-panes { display: flex; flex-wrap: wrap; gap: 7px; }
     .va-pane-btn { padding: 6px 12px; border: 1px solid var(--border-color); border-radius: 999px; background: var(--input-bg); color: var(--text-color); font-size: 12.5px; font-weight: 600; cursor: pointer; }
     .va-pane-btn.on { background: #b45309; border-color: #b45309; color: #fff; font-weight: 700; }
-    html[data-color-mode="dark"] .va-pane-btn.on { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-pane-btn.on { background: #b45309; border-color: #b45309; color: #fff; }
     .va-table { width: 100%; }
     .va-td-key { font-weight: 700; white-space: nowrap; }
     .va-td-body { font-size: 12.5px; line-height: 1.55; }
@@ -3682,18 +3699,18 @@ const injectStyles = () => {
     /* F-511 - the memory-compaction line. Teal is the memories hue; the failed state is
        the same solid red the capability gate uses, the paused state neutral slate. Solid
        fills with white ink, no left rail, no tint. */
-    .va-receipt-compact { display: flex; flex-direction: column; gap: 3px; align-self: flex-start; padding: 6px 11px; border-radius: 6px; background: #0d9488; color: #fff; }
+    .va-receipt-compact { display: flex; flex-direction: column; gap: 3px; align-self: flex-start; padding: 6px 11px; border-radius: 6px; background: #0f766e; color: #fff; }
     .va-receipt-compact-title { font-size: 12.5px; font-weight: 700; color: #fff; }
     .va-receipt-compact-text { font-size: 12.5px; font-weight: 600; line-height: 1.5; color: #fff; }
     .va-receipt-compact-bad { background: #dc2626; }
     .va-receipt-compact-muted { background: #475569; }
     html[data-color-mode="dark"] .va-receipt-kind { background: #64748b; }
-    html[data-color-mode="dark"] .va-receipt-gate { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .va-receipt-error { background: #ef4444; }
-    html[data-color-mode="dark"] .va-receipt-failed { background: #ef4444; }
-    html[data-color-mode="dark"] .va-receipt-cap { background: #ef4444; }
-    html[data-color-mode="dark"] .va-receipt-compact { background: #14b8a6; }
-    html[data-color-mode="dark"] .va-receipt-compact-bad { background: #ef4444; }
+    html[data-color-mode="dark"] .va-receipt-gate { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .va-receipt-error { background: #dc2626; }
+    html[data-color-mode="dark"] .va-receipt-failed { background: #dc2626; }
+    html[data-color-mode="dark"] .va-receipt-cap { background: #dc2626; }
+    html[data-color-mode="dark"] .va-receipt-compact { background: #0f766e; }
+    html[data-color-mode="dark"] .va-receipt-compact-bad { background: #dc2626; }
     html[data-color-mode="dark"] .va-receipt-compact-muted { background: #64748b; }
     html[data-color-mode="dark"] .va-receipt-bad { border-color: #ef4444; }
 
@@ -3717,14 +3734,14 @@ const injectStyles = () => {
     .va-purge-fault { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
     .va-purge-fault-title { font-size: 12.5px; font-weight: 800; }
     .va-purge-fault-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
-    html[data-color-mode="dark"] .va-purge-fault { background: #ef4444; }
+    html[data-color-mode="dark"] .va-purge-fault { background: #dc2626; }
     .va-purge { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
     .va-purge-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; width: 100%; padding: 0; border: 0; background: none; color: var(--text-color); font: inherit; text-align: left; cursor: pointer; }
     .va-purge-caret { font-size: 11px; font-weight: 800; color: var(--text-secondary); }
     .va-purge-name { font-size: 13px; font-weight: 700; color: var(--text-color); }
     .va-purge-at { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
     .va-purge-count { margin-left: auto; padding: 2px 9px; border-radius: 999px; background: #dc2626; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: 0.02em; }
-    html[data-color-mode="dark"] .va-purge-count { background: #ef4444; }
+    html[data-color-mode="dark"] .va-purge-count { background: #dc2626; }
     .va-purge-turns { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border-color); }
     .va-purge-turn { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
     .va-purge-key { font-size: 12.5px; font-weight: 700; color: var(--text-color); }
@@ -3805,7 +3822,7 @@ const injectStyles = () => {
     /* A repository no connection allows can never be read: the rule looks configured and
        never fires. Same solid red the refusal grammar uses, never a faded warning tint. */
     .evp-repo-chip.is-unallowed { background: #dc2626; }
-    html[data-color-mode="dark"] .evp-repo-chip.is-unallowed { background: #ef4444; }
+    html[data-color-mode="dark"] .evp-repo-chip.is-unallowed { background: #dc2626; }
     .evp-repo-chip-flag { padding: 0 5px; border-radius: 3px; background: #0f172a; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 0.04em; }
     .evp-repo-chip-x { border: none; background: transparent; color: #fff; font-size: 14px; line-height: 1; cursor: pointer; padding: 0; }
     .evp-repopick-add { max-width: 460px; }
@@ -3848,10 +3865,10 @@ const injectStyles = () => {
     .agent-off-btn:hover, .agent-off-link:hover { background: #1d4ed8; color: #ffffff; text-decoration: none; }
     .agent-off-link { background: #c2410c; }
     .agent-off-link:hover { background: #9a3412; }
-    html[data-color-mode="dark"] .agent-off-btn { background: #3b82f6; }
-    html[data-color-mode="dark"] .agent-off-btn:hover { background: #60a5fa; }
-    html[data-color-mode="dark"] .agent-off-link { background: #f97316; color: #2a1602; }
-    html[data-color-mode="dark"] .agent-off-link:hover { background: #fb923c; color: #2a1602; }
+    html[data-color-mode="dark"] .agent-off-btn { background: #2563eb; }
+    html[data-color-mode="dark"] .agent-off-btn:hover { background: #1d4ed8; }
+    html[data-color-mode="dark"] .agent-off-link { background: #c2410c; color: #fff; }
+    html[data-color-mode="dark"] .agent-off-link:hover { background: #9a3412; color: #fff; }
 
     /* The Code tab's setup cards while Coder is off. A fieldset carries the real
        disabling; this only strips the element's default chrome. */
@@ -3902,7 +3919,7 @@ const injectStyles = () => {
       padding: 7px 10px;
       border-radius: 6px;
     }
-    html[data-color-mode="dark"] .kn-pack-pin-warn { background: #ef4444; color: #fff; }
+    html[data-color-mode="dark"] .kn-pack-pin-warn { background: #dc2626; color: #fff; }
 
     /* ======================================================================
        F-955 - THE SECOND COLD WALK. Appended at the foot for the same reason
@@ -3946,10 +3963,10 @@ const injectStyles = () => {
     .code-proof {
       display: inline-flex; align-items: center; gap: 8px;
       padding: 5px 12px; border-radius: var(--r-md, 8px);
-      background: #0d9488; color: #ffffff;
+      background: #0f766e; color: #ffffff;
       font-size: 12px; font-weight: 700; line-height: 1.4;
     }
-    html[data-color-mode="dark"] .code-proof { background: #14b8a6; color: #04211e; }
+    html[data-color-mode="dark"] .code-proof { background: #0f766e; color: #fff; }
     /* The same line when the read was REFUSED. Slate, not red: the credential is
        alive (whoami passed) and only the repository read was not permitted. */
     .code-proof-none { background: #475569; color: #ffffff; }
@@ -3973,10 +3990,23 @@ const injectCopiedComponentStyles = () => {
       --bg-color: transparent;
       --text-color: #0f172a;
       --text-secondary: #64748b;
-      --text-muted: #94a3b8;
+      /* F-936 - the MUTED ink. It was #94a3b8 light / #71717a dark: 2.56:1 on a white card
+         and 3.83:1 on the dark one, so every .empty-state and .hint in the app was under
+         AA in BOTH themes. Raised to the palest values that clear 4.5:1 on the palest and
+         darkest surfaces each theme actually uses (#666d7a -> 5.21 on #ffffff,
+         4.98 on #f8fafc, 4.75 on #f1f5f9; #909099 -> 5.84 on #13131A, 5.13 on #1f1f2e). It stays muted by staying
+         a neutral grey against slate secondary text, not by staying faint. */
+      --text-muted: #666d7a;
       --primary-color: #2563eb;
       --error-color: #dc2626;
       --success-color: #16a34a;
+      /* INK ON A WHITE PILL (F-966). Deliberately NOT theme-aware: .test-badge-*,
+         .btn-retry, .btn-fix-ai and the issue-picker status sit on a hard-coded white pill
+         in BOTH themes, so reading --success-color / --error-color took their text to
+         2.28:1 and 3.76:1 the moment the dark theme lightened those two. One value each,
+         dark enough for AA on white, in every theme. */
+      --on-white-success: #15803d;
+      --on-white-danger: #dc2626;
       --border-color: #cbd5e1;
       --card-bg: #ffffff;
       --input-bg: #f8fafc;
@@ -3993,7 +4023,7 @@ const injectCopiedComponentStyles = () => {
       --bg-color: transparent;
       --text-color: #F5F5F7;
       --text-secondary: #A0A0B0;
-      --text-muted: #71717a;
+      --text-muted: #909099;
       --primary-color: #3b82f6;
       --error-color: #ef4444;
       --success-color: #22c55e;
@@ -4662,11 +4692,11 @@ const injectCopiedComponentStyles = () => {
       white-space: nowrap;
       flex-shrink: 0;
     }
-    .pf-test-pass { background: #16a34a; }
-    .pf-test-stale { background: #d97706; color: #2a1602; }
+    .pf-test-pass { background: #15803d; }
+    .pf-test-stale { background: #b45309; color: #fff; }
     .pf-test-untested { background: #475569; }
-    html[data-color-mode="dark"] .pf-test-pass { background: #22c55e; }
-    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .pf-test-pass { background: #15803d; }
+    html[data-color-mode="dark"] .pf-test-stale { background: #b45309; color: #fff; }
     html[data-color-mode="dark"] .pf-test-untested { background: #64748b; }
 
     .btn-remove {
@@ -4931,14 +4961,14 @@ const injectCopiedComponentStyles = () => {
        role is fine, nothing is broken, and the site's plan does not include the feature.
        It used to have no voice at all and fell through to .load-error, so the app told a
        paying Standard tenant it had failed and offered a Retry that cannot ever succeed.
-       Owner design law: SOLID saturated orange (#b45309 light, #d97706 dark),
+       Owner design law: SOLID saturated amber, #b45309 in BOTH themes.
        F-298 — the dark fill was #f59e0b (amber-500) under WHITE text: ~2.1:1, a hue that
        reads as a highlighter wash rather than a statement and is unreadable for anyone who
-       needs contrast. The rest of the app pairs #f59e0b with DARK text (#2a1602) for
-       exactly that reason; this note must keep white text, because white-on-solid is the
-       owner's grammar for a chip/badge/note fill. So the FILL moves down one step to
-       #d97706 (amber-600, ~3.2:1 on white) instead of the text moving to dark, which would
-       have made it the only orange note in the app with a dark label.
+       needs contrast. The answer was to move the FILL down, never the text: white-on-solid
+       is the owner's grammar for a chip/badge/note fill.
+       F-298 stopped one step short at #d97706 (~3.2:1 with white, still under AA); F-966
+       finished the move to #b45309 (5.02:1) and applied it to every amber fill in the four
+       apps, so the dark theme is no longer "one shade lighter" for this hue.
        WHITE text, 700 title / 500 body, NO left accent rail, NO tinted or low-alpha wash.
        Orange is deliberately not the red hard-stop (nothing is wrong) and not the slate
        refusal (nobody can grant you this) — it is the app's one commercial statement. */
@@ -4952,7 +4982,7 @@ const injectCopiedComponentStyles = () => {
       border-radius: 4px;
       padding: 9px 12px;
     }
-    html[data-color-mode="dark"] .upgrade-note { background: #d97706; color: #ffffff; }
+    html[data-color-mode="dark"] .upgrade-note { background: #b45309; color: #ffffff; }
     .upgrade-note-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
     .upgrade-note-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
 
@@ -5420,7 +5450,7 @@ const injectCopiedComponentStyles = () => {
 
     .api-ref-ns-members { padding-left: 10px; }
 
-    html[data-color-mode="dark"] .api-ref-ns-chip { background: #3b82f6; color: #ffffff; }
+    html[data-color-mode="dark"] .api-ref-ns-chip { background: #2563eb; color: #ffffff; }
 
     /* Test panel */
     .test-panel {
@@ -5564,11 +5594,11 @@ const injectCopiedComponentStyles = () => {
     }
     .issue-picker-validated-ok .issue-picker-validated-status {
       background: #ffffff;
-      color: var(--success-color);
+      color: var(--on-white-success);
     }
     .issue-picker-validated-err .issue-picker-validated-status {
       background: #ffffff;
-      color: var(--error-color);
+      color: var(--on-white-danger);
     }
 
     .issue-picker-dropdown {
@@ -5686,8 +5716,8 @@ const injectCopiedComponentStyles = () => {
       font-weight: 700;
       text-transform: uppercase;
     }
-    .test-badge-pass { background: #ffffff; color: var(--success-color); }
-    .test-badge-fail { background: #ffffff; color: var(--error-color); }
+    .test-badge-pass { background: #ffffff; color: var(--on-white-success); }
+    .test-badge-fail { background: #ffffff; color: var(--on-white-danger); }
 
     .test-result-meta { color: var(--text-muted); font-size: 11px; }
     .test-dismiss {
@@ -5946,8 +5976,7 @@ const injectCopiedComponentStyles = () => {
       line-height: 1;
       padding: 0;
     }
-    html[data-color-mode="dark"] .async-error-note { background: #ef4444; }
-    html[data-color-mode="dark"] .async-error-note .aen-retry { color: #ef4444; }
+    html[data-color-mode="dark"] .async-error-note { background: #dc2626; }
 
 
 
@@ -5971,8 +6000,8 @@ const injectCopiedComponentStyles = () => {
     .review-item-icon { flex-shrink: 0; }
 
     .review-item-success { background: var(--success-color); color: #ffffff; }
-    .review-item-warning { background: #d97706; color: #2a1602; }
-    html[data-color-mode="dark"] .review-item-warning { background: #f59e0b; color: #2a1602; }
+    .review-item-warning { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .review-item-warning { background: #b45309; color: #fff; }
     .review-item-error { background: var(--error-color); color: #ffffff; }
     .review-item-tip { background: var(--primary-color); color: #ffffff; }
 
@@ -6177,7 +6206,7 @@ const injectCopiedComponentStyles = () => {
     }
     .knowledge-tab-docs.active { background: #2563eb; border-color: #2563eb; color: #ffffff; }
     .knowledge-tab-skills.active { background: #7c3aed; border-color: #7c3aed; color: #ffffff; }
-    .knowledge-tab-memories.active { background: #0d9488; border-color: #0d9488; color: #ffffff; }
+    .knowledge-tab-memories.active { background: #0f766e; border-color: #0f766e; color: #ffffff; }
 
     .doc-repo-embedded { padding-bottom: 4px; }
 
@@ -6223,9 +6252,9 @@ const injectCopiedComponentStyles = () => {
     }
     .skill-cat-jira { background: #2563eb; }
     .skill-cat-external { background: #7c3aed; }
-    .skill-cat-fields { background: #0d9488; }
-    .skill-cat-adf { background: #d97706; color: #2a1602; }
-    .skill-cat-workflow { background: #16a34a; }
+    .skill-cat-fields { background: #0f766e; }
+    .skill-cat-adf { background: #b45309; color: #fff; }
+    .skill-cat-workflow { background: #15803d; }
     .skill-cat-other { background: #475569; }
 
     .skill-auto-chip {
@@ -6283,8 +6312,8 @@ const injectCopiedComponentStyles = () => {
       flex-shrink: 0;
     }
     .memory-src-user { background: #2563eb; }
-    .memory-src-test { background: #d97706; color: #2a1602; }
-    .memory-src-fix { background: #16a34a; }
+    .memory-src-test { background: #b45309; color: #fff; }
+    .memory-src-fix { background: #15803d; }
 
     .memory-quick-add {
       display: flex;
@@ -6346,7 +6375,7 @@ const injectCopiedComponentStyles = () => {
       border-radius: 4px;
       padding: 9px 12px;
     }
-    html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
+    html[data-color-mode="dark"] .hard-stop { background: #dc2626; color: #ffffff; }
     .hard-stop-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
     .hard-stop-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
 
@@ -6366,7 +6395,7 @@ const injectCopiedComponentStyles = () => {
       font-weight: 700;
       border: none;
       border-radius: 6px;
-      background: #0d9488;
+      background: #0f766e;
       color: #ffffff;
       cursor: pointer;
       white-space: nowrap;
@@ -6399,7 +6428,7 @@ const injectCopiedComponentStyles = () => {
       border-radius: 10px;
       font-size: 11px;
       font-weight: 700;
-      background: #0d9488;
+      background: #0f766e;
       color: #ffffff;
     }
 
@@ -6420,24 +6449,24 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .kc-mem { color: #14b8a6; }
 
     html[data-color-mode="dark"] .kc-mem-full { color: #ef4444 !important; }
-    html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #3b82f6; border-color: #3b82f6; }
-    html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #8b5cf6; border-color: #8b5cf6; }
-    html[data-color-mode="dark"] .knowledge-tab-memories.active { background: #14b8a6; border-color: #14b8a6; }
+    html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #2563eb; border-color: #2563eb; }
+    html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #7c3aed; border-color: #7c3aed; }
+    html[data-color-mode="dark"] .knowledge-tab-memories.active { background: #0f766e; border-color: #0f766e; }
     html[data-color-mode="dark"] .skill-selected { box-shadow: inset 0 0 0 2px #8b5cf6; }
-    html[data-color-mode="dark"] .skill-cat-jira { background: #3b82f6; }
-    html[data-color-mode="dark"] .skill-cat-external { background: #8b5cf6; }
-    html[data-color-mode="dark"] .skill-cat-fields { background: #14b8a6; }
-    html[data-color-mode="dark"] .skill-cat-adf { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .skill-cat-workflow { background: #22c55e; }
+    html[data-color-mode="dark"] .skill-cat-jira { background: #2563eb; }
+    html[data-color-mode="dark"] .skill-cat-external { background: #7c3aed; }
+    html[data-color-mode="dark"] .skill-cat-fields { background: #0f766e; }
+    html[data-color-mode="dark"] .skill-cat-adf { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .skill-cat-workflow { background: #15803d; }
     html[data-color-mode="dark"] .skill-cat-other { background: #64748b; }
-    html[data-color-mode="dark"] .skill-auto-chip { background: #8b5cf6; }
-    html[data-color-mode="dark"] .btn-save-skill { background: #8b5cf6; }
+    html[data-color-mode="dark"] .skill-auto-chip { background: #7c3aed; }
+    html[data-color-mode="dark"] .btn-save-skill { background: #7c3aed; }
     html[data-color-mode="dark"] .builtin-badge { background: #64748b; }
-    html[data-color-mode="dark"] .memory-src-user { background: #3b82f6; }
-    html[data-color-mode="dark"] .memory-src-test { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .memory-src-fix { background: #22c55e; }
-    html[data-color-mode="dark"] .btn-remember { background: #14b8a6; }
-    html[data-color-mode="dark"] .memory-saved-badge { background: #14b8a6; }
+    html[data-color-mode="dark"] .memory-src-user { background: #2563eb; }
+    html[data-color-mode="dark"] .memory-src-test { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .memory-src-fix { background: #15803d; }
+    html[data-color-mode="dark"] .btn-remember { background: #0f766e; }
+    html[data-color-mode="dark"] .memory-saved-badge { background: #0f766e; }
     html[data-color-mode="dark"] .memory-not-kept { color: #64748b; }
 
     /* === AI provenance, fix loop, and editor lint/hover === */
@@ -6466,7 +6495,7 @@ const injectCopiedComponentStyles = () => {
     }
     .gmc-docs { background: #2563eb; }
     .gmc-skill { background: #7c3aed; }
-    .gmc-mem { background: #0d9488; }
+    .gmc-mem { background: #0f766e; }
     /* 1.4 commit 14b - the BAKED field guide. Amber (the agents hue), because the guide is
        what the agents read; docs/skills/memories keep their own colours. It is a BUTTON, so
        it carries the button reset the other three chips do not need. Dark theme takes dark
@@ -6482,8 +6511,8 @@ const injectCopiedComponentStyles = () => {
       cursor: pointer;
     }
     .gmc-fieldguide:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
-    html[data-color-mode="dark"] .gmc-fieldguide { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #f59e0b; }
+    html[data-color-mode="dark"] .gmc-fieldguide { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #b45309; }
     .fg-chip-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
     .fg-chip-caret { font-size: 8px; }
     .fg-chip-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
@@ -6502,8 +6531,8 @@ const injectCopiedComponentStyles = () => {
       margin: 6px 0;
       padding: 8px 10px;
       border-radius: 6px;
-      background: #d97706;
-      color: #2a1602;
+      background: #b45309;
+      color: #fff;
       font-size: 12px;
       font-weight: 600;
     }
@@ -6516,7 +6545,7 @@ const injectCopiedComponentStyles = () => {
       border: none;
       border-radius: 6px;
       background: #ffffff;
-      color: var(--error-color);
+      color: var(--on-white-danger);
       cursor: pointer;
       white-space: nowrap;
     }
@@ -6649,10 +6678,10 @@ const injectCopiedComponentStyles = () => {
       color: var(--text-color);
     }
 
-    html[data-color-mode="dark"] .gmc-docs { background: #3b82f6; }
-    html[data-color-mode="dark"] .gmc-skill { background: #8b5cf6; }
-    html[data-color-mode="dark"] .gmc-mem { background: #14b8a6; }
-    html[data-color-mode="dark"] .truncation-warning { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .gmc-docs { background: #2563eb; }
+    html[data-color-mode="dark"] .gmc-skill { background: #7c3aed; }
+    html[data-color-mode="dark"] .gmc-mem { background: #0f766e; }
+    html[data-color-mode="dark"] .truncation-warning { background: #b45309; color: #fff; }
 
     /* F19 — AI provider unreachable banner (solid red, white text, no left rail) */
     .provider-down-banner {
@@ -6672,7 +6701,7 @@ const injectCopiedComponentStyles = () => {
     }
     .provider-down-recheck:hover { background: #f3f4f6; }
     .provider-down-recheck:disabled { opacity: 0.6; cursor: default; }
-    html[data-color-mode="dark"] .provider-down-banner { background: #ef4444; }
+    html[data-color-mode="dark"] .provider-down-banner { background: #dc2626; }
     html[data-color-mode="dark"] .provider-down-recheck { color: #dc2626; }
     /* Active-provider connection HealthChip verdicts — solid hue, white text, no rail/tint. */
     .hc-chip {
@@ -6683,12 +6712,12 @@ const injectCopiedComponentStyles = () => {
       color: #ffffff;
       white-space: nowrap;
     }
-    .hc-ok { background: #16a34a; }
-    .hc-warn { background: #d97706; color: #2a1602; }
+    .hc-ok { background: #15803d; }
+    .hc-warn { background: #b45309; color: #fff; }
     .hc-err { background: #dc2626; }
-    html[data-color-mode="dark"] .hc-ok { background: #22c55e; }
-    html[data-color-mode="dark"] .hc-warn { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .hc-err { background: #ef4444; }
+    html[data-color-mode="dark"] .hc-ok { background: #15803d; }
+    html[data-color-mode="dark"] .hc-warn { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .hc-err { background: #dc2626; }
     .hc-hint { font-size: 11px; color: var(--text-secondary); }
 
     /* Live MCP tool chips (solid blue, white text — what an enabled MCP can actually use) */
@@ -6697,7 +6726,7 @@ const injectCopiedComponentStyles = () => {
       padding: 2px 8px; border-radius: 10px; background: #2563eb; color: #fff;
       letter-spacing: 0.1px;
     }
-    html[data-color-mode="dark"] .mcp-tool-chip { background: #3b82f6; }
+    html[data-color-mode="dark"] .mcp-tool-chip { background: #2563eb; }
 
     /* Premade (non-AI) rule editor — mirrors config-ui injectStyles() */
     .rulekind-toggle { display: flex; gap: 10px; }
@@ -6719,10 +6748,10 @@ const injectCopiedComponentStyles = () => {
     .pr-opt { font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .pr-mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; }
     .pr-note {
-      background: #d97706; color: #2a1602; font-weight: 600; font-size: 12.5px;
+      background: #b45309; color: #fff; font-weight: 600; font-size: 12.5px;
       padding: 9px 12px; border-radius: 8px; margin-bottom: 16px; line-height: 1.45;
     }
-    html[data-color-mode="dark"] .pr-note { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .pr-note { background: #b45309; color: #fff; }
     .pr-foot { font-style: italic; }
 
     /* GIT param group (F-350) — solid chips, a solid segmented control, and a solid red
@@ -6745,8 +6774,8 @@ const injectCopiedComponentStyles = () => {
     .pr-git-toggle-label { font-size: 13px; font-weight: 700; color: var(--text-primary); }
     html[data-color-mode="dark"] .pr-git-kind { background: #64748b; }
     html[data-color-mode="dark"] .pr-git-kind-github { background: #334155; }
-    html[data-color-mode="dark"] .pr-git-kind-bitbucket { background: #2684ff; }
-    html[data-color-mode="dark"] .pr-git-dead { background: #ef4444; }
+    html[data-color-mode="dark"] .pr-git-kind-bitbucket { background: #0052cc; }
+    html[data-color-mode="dark"] .pr-git-dead { background: #dc2626; }
     html[data-color-mode="dark"] .pr-git-toggle-row input[type="checkbox"] { accent-color: #3b82f6; }
 
     /* The app's own segmented radio group — the prMatch choice is three named options,
@@ -6756,7 +6785,7 @@ const injectCopiedComponentStyles = () => {
     .pr-seg-btn:last-child { border-right: none; }
     .pr-seg-btn:hover { color: var(--text-primary); }
     .pr-seg-btn.active { background: #2563eb; color: #fff; font-weight: 700; }
-    html[data-color-mode="dark"] .pr-seg-btn.active { background: #3b82f6; }
+    html[data-color-mode="dark"] .pr-seg-btn.active { background: #2563eb; }
 
     /* The Coder's mode picker (F-388) — the SAME segmented control as prMatch, wrapped
        because five named modes do not fit one editor-width line, and carrying the AGENTS
@@ -6767,7 +6796,7 @@ const injectCopiedComponentStyles = () => {
     .pr-coder-notes { min-height: 84px; resize: vertical; font-family: inherit; line-height: 1.5; }
     .pr-coder-count { display: flex; justify-content: flex-end; margin-top: 4px; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
     .pr-coder-count-full { color: #b45309; font-weight: 700; }
-    html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #f59e0b; color: #1c1207; }
+    html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #b45309; color: #fff; }
     html[data-color-mode="dark"] .pr-coder-count-full { color: #f59e0b; }
 
     /* The Coder's SKILLS picker (F-463) - a hand-rolled multi-select, one chip per skill.
@@ -6781,14 +6810,18 @@ const injectCopiedComponentStyles = () => {
     .pr-skill-chip.is-on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
     .pr-skill-chip:disabled { cursor: default; background: var(--code-bg); color: var(--text-muted); }
     .pr-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
-    html[data-color-mode="dark"] .pr-skill-chip.is-on { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
-    html[data-color-mode="dark"] .pr-skill-chip.is-on:disabled { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    html[data-color-mode="dark"] .pr-skill-chip.is-on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+    html[data-color-mode="dark"] .pr-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
 
     /* CONFLUENCE param group (F-447) - the same visual language as the git group above:
        solid fills, white text on the chip, no rail and no tint. The hue is CONFLUENCE
        (#1d4ed8; #3b82f6 in dark), which is also the hue config-view gives the
        the confluence_unavailable execution-log banner, so one feature reads as one colour.
-       FOUR HOMES, kept equal by css-parity.test.mjs on the .pr-conf token. */
+       TWO HOMES, kept equal by css-parity.test.mjs on the .pr-conf token: config-ui's
+       injectStyles() and admin-panel's injectCopiedComponentStyles(). F-943 - this used to
+       say FOUR; there were four only while src/styles.css carried convention mirrors, and
+       F-509 deleted those and retargeted the test. A comment that names more homes than
+       exist sends the next reader looking for two files that are not there. */
     .pr-conf-tpl { min-height: 72px; resize: vertical; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; line-height: 1.5; }
     .pr-conf-ph { display: inline-block; margin-right: 6px; padding: 2px 7px; border-radius: 4px; background: #1d4ed8; color: #fff; font-size: 11px; font-weight: 700; }
     .pr-conf-example { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; padding: 9px 12px; border-radius: var(--r-md, 8px); background: #1d4ed8; color: #fff; }
@@ -6804,9 +6837,9 @@ const injectCopiedComponentStyles = () => {
     .pr-conf-missing-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
     html[data-color-mode="dark"] .pr-conf-missing { background: #64748b; color: #fff; }
     .pr-seg-conf .pr-seg-btn.active { background: #1d4ed8; }
-    html[data-color-mode="dark"] .pr-conf-ph { background: #3b82f6; }
-    html[data-color-mode="dark"] .pr-conf-example { background: #3b82f6; }
-    html[data-color-mode="dark"] .pr-seg-conf .pr-seg-btn.active { background: #3b82f6; }
+    html[data-color-mode="dark"] .pr-conf-ph { background: #2563eb; }
+    html[data-color-mode="dark"] .pr-conf-example { background: #2563eb; }
+    html[data-color-mode="dark"] .pr-seg-conf .pr-seg-btn.active { background: #2563eb; }
 
     /* NL-to-rule builder ("Build from a description") — solid accent button, inset
        result card. Existing tokens only (dark variants present); no left rail/tint. */
@@ -6861,10 +6894,10 @@ const injectCopiedComponentStyles = () => {
     .recipe-bar-sub { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .recipe-bar-body { padding: 12px; border-top: 1px solid var(--border-color); }
     .recipe-desc { margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary); }
-    .recipe-note { background: #d97706; color: #2a1602; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
-    html[data-color-mode="dark"] .recipe-note { background: #f59e0b; color: #2a1602; }
+    .recipe-note { background: #b45309; color: #fff; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
+    html[data-color-mode="dark"] .recipe-note { background: #b45309; color: #fff; }
     .gen-meta-chip.gmc-recipe { background: #4f46e5; color: #fff; }
-    html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #6366f1; }
+    html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #4f46e5; }
 
     /* ── F-958 — THE ROUTE OUT OF CQL, AND THE LINK THE BANNER OWED ─────────────────
        "Describe the page instead" sits on the required CQL field's own label row and
@@ -6881,7 +6914,7 @@ const injectCopiedComponentStyles = () => {
       border: none; border-radius: var(--r-sm, 6px); cursor: pointer;
     }
     .pr-describe-btn:hover { opacity: 0.9; }
-    html[data-color-mode="dark"] .pr-describe-btn { background: #6366f1; }
+    html[data-color-mode="dark"] .pr-describe-btn { background: #4f46e5; }
     .pr-conf-missing-link {
       align-self: flex-start; margin-top: 5px; font-size: 12px; font-weight: 700;
       color: #fff; text-decoration: underline; cursor: pointer;

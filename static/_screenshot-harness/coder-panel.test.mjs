@@ -57,14 +57,19 @@ function serve(root) {
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
 
-/* The panel's hues, per theme. Agents #b45309 / #f59e0b is the Coder itself; slate is the
-   neutral "off" statement; red is a named failure. Asserting the COMPUTED value is what
-   makes "every new hue needs a dark-mode override" a gate rather than a hope. */
+/* The panel's hues. Agents #b45309 is the Coder itself; slate is the neutral "off"
+   statement; red is a named failure. Asserting the COMPUTED value is what makes "every new
+   hue needs a dark-mode override" a gate rather than a hope.
+   F-966 - most of these are now ONE shade in BOTH themes. The dark theme used to lighten
+   every fill and pay for it with near-black ink; white ink is the rule, so the fill moved
+   down instead and the lighter dark-theme shade went with it. Slate is the exception that
+   proves it is not a blanket rule: #64748b carries white at 4.76:1, so it still lightens.
+   chip-contrast.test.mjs measures every fill in all four apps rather than these few. */
 const HUE = {
-  agents: { light: "rgb(180, 83, 9)", dark: "rgb(245, 158, 11)" },
+  agents: { light: "rgb(180, 83, 9)", dark: "rgb(180, 83, 9)" },
   slate: { light: "rgb(71, 85, 105)", dark: "rgb(100, 116, 139)" },
   // F-463 - the SKILLS hue, the one the knowledge panel and the rule form already use.
-  skills: { light: "rgb(124, 58, 237)", dark: "rgb(139, 92, 246)" },
+  skills: { light: "rgb(124, 58, 237)", dark: "rgb(124, 58, 237)" },
 };
 
 const browser = await chromium.launch();
@@ -297,14 +302,15 @@ try {
       await page.locator(".fg-chip-list").first().waitFor({ timeout: 5000 });
       const fgItems = await page.locator(".fg-chip-item").allInnerTexts();
       for (const t of FG_TITLES) ok(fgItems.includes(t), `${id} the expanded list names "${t}"`);
-      /* SOLID amber in both themes, with legible ink on each - no faded tint, and the
-         dark shade takes dark ink because white on #f59e0b fails contrast. */
+      /* SOLID amber in both themes, with WHITE ink on both. F-966 - the dark shade used
+         to take near-black ink because white on #f59e0b fails contrast; the fill moved
+         down to #b45309 (5.02:1 with white) instead, and the ink rule won. */
       const fgBg = await fgUser.evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(fgBg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"),
+      ok(fgBg === "rgb(180, 83, 9)",   // F-966: one amber, both themes
         `${id} the chip is solid amber for ${theme}, got ${fgBg}`);
       const fgInk = await fgUser.evaluate((el) => getComputedStyle(el).color);
-      ok(fgInk === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"),
-        `${id} the chip ink is legible on its fill, got ${fgInk}`);
+      ok(fgInk === "rgb(255, 255, 255)",
+        `${id} the chip ink is WHITE on its fill, got ${fgInk}`);
       await fgUser.click();
       ok(await page.locator(".fg-chip-list").count() === 0, `${id} it collapses again`);
       // The composer: a real text box, a Dry run switch that is a button with role=switch
@@ -414,7 +420,7 @@ try {
       ok(/^https:\/\//.test(await link.getAttribute("href")), `${id} the link is an http(s) URL`);
       ok((await link.getAttribute("rel") || "").includes("noreferrer"), `${id} the outbound link carries rel=noreferrer`);
       const okDot = await page.locator(".coder-action-ok").evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(okDot === (theme === "dark" ? "rgb(34, 197, 94)" : "rgb(22, 163, 74)"), `${id} the ok dot is the solid green (got ${okDot})`);
+      ok(okDot === "rgb(21, 128, 61)", `${id} the ok dot is the solid green (got ${okDot})`);   // F-966: one green, both themes
       const foot = await page.locator(".coder-outcome-foot").innerText();
       /* F-915 - "ended by final" was the engine's field printed raw, and `final` was not
          even one of `runAgentLoop`'s endings: the mock had invented it and nothing could
@@ -508,8 +514,8 @@ try {
       const confirmBtn = page.locator(".coder-consent-confirm");
       const skipBg = await skipBtn.evaluate((el) => getComputedStyle(el).backgroundColor);
       ok(skipBg === HUE.agents[theme], `${id} Skip is the solid primary (got ${skipBg})`);
-      ok(await skipBtn.evaluate((el) => getComputedStyle(el).color) === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"),
-        `${id} with legible ink on its fill`);
+      ok(await skipBtn.evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)",
+        `${id} with WHITE ink on its fill (F-966)`);
       ok(await confirmBtn.isDisabled(), `${id} Confirm cannot be pressed without a preview`);
       // A control says WHAT IT NEEDS, on screen and on the control itself.
       ok(await page.locator(".coder-consent-why").innerText() === "Confirm needs the full preview",
@@ -567,7 +573,7 @@ try {
       const btn = page.locator(".cr-boundary-btn");
       ok(await btn.count() === 1 && (await btn.innerText()).trim() === "Reload", `${id} there is one way out, and it reloads`);
       const bg = await page.locator(".cr-boundary").evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(bg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `${id} the banner is the app's solid red (got ${bg})`);
+      ok(bg === "rgb(220, 38, 38)", `${id} the banner is the app's solid red (got ${bg})`);   // F-966: one red, both themes
       // The rail is not blank: the app's own header survived the fault.
       ok(await page.locator(".glance-head").count() === 1, `${id} the panel header is still on screen`);
       await designRules(page, id);
@@ -617,7 +623,7 @@ try {
       const msg = await page.locator(".coder-error").innerText();
       ok(/could not be resumed/.test(msg), `${id} the banner names what actually failed (got "${msg}")`);
       const bg = await page.locator(".coder-error").evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(bg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `${id} the banner is solid red (got ${bg})`);
+      ok(bg === "rgb(220, 38, 38)", `${id} the banner is solid red (got ${bg})`);   // F-966
       ok(await page.locator(".veil").count() === 0, `${id} the panel is not left spinning`);
       await designRules(page, id);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-noresume-${theme}.png`) });
@@ -653,7 +659,7 @@ try {
       ok(await page.locator(".coder-action").count() === 3, `${id} every action is listed`);
       ok(await page.locator(".coder-action-bad").count() === 1, `${id} the failed action is marked failed`);
       const badDot = await page.locator(".coder-action-bad").evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(badDot === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `${id} the failed dot is solid red (got ${badDot})`);
+      ok(badDot === "rgb(220, 38, 38)", `${id} the failed dot is solid red (got ${badDot})`);   // F-966
       ok(/3 rounds/.test(await page.locator(".coder-outcome-foot").innerText()), `${id} the rounds are counted`);
       /* F-371: the thread has turns, so the Dry run switch is NOT a choice any more -
          the engine refuses a mid-thread flip, and a control that still looks live would be
@@ -930,9 +936,9 @@ try {
           ok((await link.getAttribute("rel") || "").includes("noopener"), `${id} the outbound link carries rel=noopener`);
           // Solid fills with legible ink, and a dark override for each.
           const btnBg = await btn.evaluate((el) => getComputedStyle(el).backgroundColor);
-          ok(btnBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(37, 99, 235)"), `${id} the button is the solid docs blue (got ${btnBg})`);
+          ok(btnBg === "rgb(37, 99, 235)", `${id} the button is the solid docs blue (got ${btnBg})`);   // F-966
           const linkBg = await link.evaluate((el) => getComputedStyle(el).backgroundColor);
-          ok(linkBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `${id} the link is the solid burnt orange (got ${linkBg})`);
+          ok(linkBg === "rgb(194, 65, 12)", `${id} the link is the solid burnt orange (got ${linkBg})`);   // F-966
           ok(await btn.evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `${id} white text on the button`);
           ok(!/Ask your Jira admin/.test(txt), `${id} an admin is not told to ask an admin`);
           // BOTH doors actually navigate: the button hands over a tab intent and moves to
@@ -979,7 +985,7 @@ try {
       ok(await owed.count() === 1, `${id} and the composer says what is missing`);
       ok(await owed.innerText() === "Choose the Git connection this conversation acts as", `${id} in the owner's words (got "${await owed.innerText()}")`);
       const owedBg = await owed.evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(owedBg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `${id} the refusal is the app's solid red (got ${owedBg})`);
+      ok(owedBg === "rgb(220, 38, 38)", `${id} the refusal is the app's solid red (got ${owedBg})`);   // F-966
       ok(await owed.evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `${id} with white text`);
       ok(Number(await owed.evaluate((el) => getComputedStyle(el).fontWeight)) >= 600, `${id} at 600+ weight`);
       ok(!(await page.evaluate(() => (window.__CALLS__ || []).some((c) => c.name === "startCoderTurn"))), `${id} nothing reached the backend`);

@@ -384,7 +384,10 @@ try {
       ok(await page.locator(".openai-status .agent-off .agent-off-btn").count() === 0,
         "E2 no Open the Settings tab button on the Settings tab itself");
       const offLinkBg = await upgradeLinks.first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(offLinkBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"),
+      /* F-966 - ONE shade per hue, in BOTH themes. The dark theme used to lighten every
+         chip fill and pay for it with near-black ink; white is the rule, so the fills
+         stopped moving instead. chip-contrast.test.mjs measures all of them. */
+      ok(offLinkBg === "rgb(194, 65, 12)",
         `E2 the upgrade link is the solid Coder orange per theme (got ${offLinkBg})`);
       ok(body.includes("is not available on this edition, using Claude Haiku"), "E2 clamped-model line");
 
@@ -602,7 +605,7 @@ try {
         const chip = page.locator(".mg-note.mg-ok .mg-chip").first();
         ok(await chip.count() === 1, "E4b the available managed note carries a solid chip");
         const chipBg = await chip.evaluate((el) => getComputedStyle(el).backgroundColor);
-        ok(chipBg === (theme === "dark" ? "rgb(139, 92, 246)" : "rgb(124, 58, 237)"),
+        ok(chipBg === "rgb(124, 58, 237)",   // F-966: one violet, both themes
           `E4b managed chip violet per theme (got ${chipBg})`);
         ok(await chip.evaluate((el) => getComputedStyle(el).opacity) === "1",
           "E4b managed chip is solid, not faded");
@@ -756,7 +759,7 @@ try {
           // Solid red "Unavailable" badge, computed, per theme.
           const badge = row.locator(".dropdown-item-badge").first();
           const bBg = await badge.evaluate((el) => getComputedStyle(el).backgroundColor);
-          ok(bBg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"),
+          ok(bBg === "rgb(220, 38, 38)",   // F-966: one red, both themes
             `E4c the unavailable badge is solid red per theme (got ${bBg})`);
           // Clicking it changes nothing.
           const before = await page.locator(".dropdown-trigger").first().innerText();
@@ -803,8 +806,8 @@ try {
 
         const fBg = await split.locator(".eng-forge").evaluate((el) => getComputedStyle(el).backgroundColor);
         const mBg = await split.locator(".eng-managed").evaluate((el) => getComputedStyle(el).backgroundColor);
-        ok(fBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(37, 99, 235)"), `E4d Forge LLM bar hue per theme (got ${fBg})`);
-        ok(mBg === (theme === "dark" ? "rgb(139, 92, 246)" : "rgb(124, 58, 237)"), `E4d managed bar hue per theme (got ${mBg})`);
+        ok(fBg === "rgb(37, 99, 235)", `E4d Forge LLM bar hue, one shade both themes (got ${fBg})`);   // F-966
+        ok(mBg === "rgb(124, 58, 237)", `E4d managed bar hue, one shade both themes (got ${mBg})`);   // F-966
         for (const [nm, sel] of [["forge", ".eng-forge"], ["managed", ".eng-managed"]]) {
           ok(await split.locator(sel).evaluate((el) => getComputedStyle(el).opacity) === "1",
             `E4d the ${nm} bar is solid, not faded`);
@@ -1034,7 +1037,7 @@ try {
       ok((await first.innerText()).includes("claude-sonnet-5-20261101"), `E6 ${theme} the in-use model is the FIRST row`);
       ok((await first.getAttribute("aria-disabled")) === "true", `E6 ${theme} and it is locked, not offered`);
       const badgeBg = await page.locator(".dropdown-panel .dib-info").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(badgeBg === (theme === "dark" ? "rgb(20, 184, 166)" : "rgb(13, 148, 136)"), `E6 ${theme} its badge is the solid memories teal per theme (got ${badgeBg})`);
+      ok(badgeBg === "rgb(15, 118, 110)", `E6 ${theme} its badge is the solid memories teal (one shade, both themes; got ${badgeBg})`);   // F-966
       await shot(page, `E6-model-out-of-list-${theme}`);
       await page.keyboard.press("Escape");
       ok(env.errors.length === 0, `E6 ${theme} no page errors: ` + env.errors.join(" | "));

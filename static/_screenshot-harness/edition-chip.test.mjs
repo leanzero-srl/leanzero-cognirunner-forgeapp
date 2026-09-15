@@ -54,8 +54,12 @@ const APPS = [
   { app: "issue-glance", shot: "issue-glance", ready: ".glance-list", head: ".glance-head" },
 ];
 
+/* F-966 - the advanced chip is ONE shade in both themes. The dark theme used to lighten
+   it to #f97316 and darken the ink to near-black to stay legible; white on #f97316 is
+   2.80:1 and white is the rule, so the FILL stopped moving instead. Slate still lightens,
+   because #64748b carries white at 4.76:1 and does not have to. */
 const HUE = {
-  advanced: { light: "rgb(194, 65, 12)", dark: "rgb(249, 115, 22)" },
+  advanced: { light: "rgb(194, 65, 12)", dark: "rgb(194, 65, 12)" },
   standard: { light: "rgb(71, 85, 105)", dark: "rgb(100, 116, 139)" },
 };
 

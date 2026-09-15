@@ -54,6 +54,33 @@ export const PROVIDER_DEFAULT_MODELS = {
   managed: MANAGED_DEFAULT_MODEL,
 };
 
+/**
+ * F-971 - THE FALLBACK IN EFFECT, as a PURE SYNCHRONOUS answer, for a surface that has
+ * to NAME it rather than run it.
+ *
+ * The admin panel's Model control renders BLANK when no model has been saved for the
+ * active BYOK provider - and calls are being booked the whole time, because the chain
+ * above resolves a default and runs it. The admin therefore cannot find out, anywhere on
+ * the screen, which model their rules are actually on. Naming it needs the same table
+ * the chain uses, and a renderer cannot await `resolveModelForProvider` (no KVS reader,
+ * and there is nothing saved to read anyway).
+ *
+ * This is the TAIL of that chain and nothing else: the two steps that need no I/O. It
+ * deliberately does NOT model the saved slot, the legacy slot or the `OPENAI_MODEL` env
+ * var - a frontend can see none of those, and pretending to would let this answer differ
+ * from the one the backend serves. It is only correct for the case it is used in, which
+ * is "nothing is saved", and that is the case the Model control is blank in.
+ *
+ * NO LITERAL IS TYPED AT THE CALL SITE. CLAUDE.md pins the fallback and forbids
+ * "gpt-4o-mini"; a model id spelled in a renderer is exactly how that pin gets missed.
+ */
+export const defaultModelForProvider = (provider, providers = PROVIDER_DEFAULT_MODELS) => {
+  if (!provider || typeof provider !== "string") return null;
+  const entry = providers && providers[provider];
+  const fromTable = entry && typeof entry === "object" ? entry.defaultModel : entry;
+  return fromTable || FALLBACK_DEFAULT_MODEL;
+};
+
 /** The providers for which the `OPENAI_MODEL` env var names a model that exists. */
 const OPENAI_SHAPED = ["openai", "azure"];
 
@@ -175,11 +202,9 @@ export const resolveModelForProvider = async ({
   // The OPENAI_MODEL env var names an OpenAI model — applying it to Anthropic, LM
   // Studio or Forge LLM would 404 at inference time.
   if (!model && env.OPENAI_MODEL && OPENAI_SHAPED.includes(provider)) model = env.OPENAI_MODEL;
-  if (!model) {
-    const entry = providers && providers[provider];
-    const fromTable = entry && typeof entry === "object" ? entry.defaultModel : entry;
-    model = fromTable || FALLBACK_DEFAULT_MODEL;
-  }
+  // F-971 - the same two steps the panel names, through the same function, so the model
+  // the admin is TOLD they are running is the model this chain actually picks.
+  if (!model) model = defaultModelForProvider(provider, providers);
   // THE ATLASSIAN BELT — last, so it also covers a saved slot, the env var and a default.
   if (provider === "atlassian" && !FORGE_LLM_MODELS.advanced.includes(String(model))) return FORGE_LLM_DEFAULT;
   return model;

@@ -2236,6 +2236,17 @@ function invoke(name, payload) {
          the models array below stays exactly what it was. */
       return Promise.resolve({ success: true, isByok: true, edition: edName(), locked: [], models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6-20260101", "claude-opus-4-1-20250805", "claude-3-7-sonnet-20250219"] });
     case "getOpenAIModelFromKVS":
+      /* F-971 - THE TENANT THAT HAS NEVER PICKED A MODEL. `window.__NO_SAVED_MODEL__`
+         answers an EMPTY model for a BYOK provider, which is what the backend genuinely
+         returns before the admin has ever touched the Model control - and the state the
+         panel used to render as a blank picker with no model named anywhere, while the
+         resolution chain quietly ran and billed the provider default. The knob is
+         scoped to BYOK for the same reason the panel's note is: the vendor-billed
+         engines always resolve and report a model server-side. */
+      if (payload && payload.provider !== MANAGED_PROVIDER_ID && payload.provider !== "atlassian"
+          && typeof window !== "undefined" && window.__NO_SAVED_MODEL__) {
+        return Promise.resolve({ success: true, model: "", isByok: true, edition: edName(), clamped: false });
+      }
       if (payload && payload.provider !== MANAGED_PROVIDER_ID && payload.provider !== "atlassian"
           && typeof window !== "undefined" && window.__SAVED_MODEL__) {
         return Promise.resolve({ success: true, model: String(window.__SAVED_MODEL__), isByok: true, edition: edName(), clamped: false });

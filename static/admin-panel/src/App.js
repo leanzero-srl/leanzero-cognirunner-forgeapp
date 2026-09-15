@@ -459,7 +459,12 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .mg-note.mg-off .mg-chip { background: #dc2626; color: #fff; }
     /* The "Unavailable" badge on the non-selectable managed picker row. */
     .dib-unavailable { background: #dc2626; }
-    html[data-color-mode="dark"] .dib-unavailable { background: #dc2626; color: #fff; }
+    /* F-971 - ONE SHADE, WHITE INK, exactly as F-966 did for .dib-edition two lines of
+       this file away. This override still lightened the fill to #ef4444 and then had to
+       darken the ink to #2a0707 to stay legible on it - the precise pattern F-966
+       removed, missed here because nothing rendered this badge in dark mode until the
+       Haiku agent-model row started using it. Measured: rgb(42, 7, 7) is not white text. */
+    html[data-color-mode="dark"] .dib-unavailable { background: #dc2626; color: #ffffff; }
     /* Per-engine split of the ONE vendor allowance. Solid fills, distinct hues:
        Forge LLM = Atlassian blue, CogniRunner Cloud AI = the managed violet. */
     .usage-byengine { margin-top: 8px; }
@@ -3972,8 +3977,7 @@ const injectStyles = () => {
     .code-proof-none { background: #475569; color: #ffffff; }
     html[data-color-mode="dark"] .code-proof-none { background: #64748b; color: #ffffff; }
 
-    /* ======================================================================
-       F-969 BLOCK START - the agents wizard's third cold walk. Appended LAST,
+    /* ===============================================================       F-969 BLOCK START - the agents wizard's third cold walk. Appended LAST,
        delimited, and touching nothing above it: another surgeon is editing this
        same string. Everything here is a solid fill or solid ink with a dark
        override; no rails, no low-alpha tints.
@@ -4016,6 +4020,37 @@ const injectStyles = () => {
     .va-people-row:hover:not(:disabled) .va-people-already { color: inherit; }
     .va-people-note { margin: 0; }
     /* ====================== F-969 BLOCK END ============================== */
+=======
+    /* F-971 - THE MODEL RUNNING WHILE NOTHING IS CHOSEN.
+       This note appears in exactly the state where the Model control is blank and the
+       "Currently active" line is absent, so it is the ONLY thing on the card naming the
+       model that is spending the tenant's money. That makes it a fact to read, not a
+       warning to dismiss: AMBER SOLID (#b45309) with white text, the F-966 one-shade
+       amber, at 600 so it carries the same weight as the labels around it. Not a tint,
+       not a rail, and not red - nothing here is broken, the admin simply has not chosen
+       yet. The strong inside is the model id and goes one step heavier still. */
+    .model-fallback-note {
+      margin: 8px 0 0; padding: 7px 12px; border-radius: var(--r-md, 8px);
+      background: #b45309; color: #ffffff;
+      font-size: 12px; font-weight: 600; line-height: 1.45;
+    }
+    .model-fallback-note strong { font-weight: 700; color: #ffffff; }
+    /* One shade in both themes (F-966), so the dark override restates the colour rather
+       than lightening it; it is here because every new hue owes an explicit dark rule and
+       an absent one is indistinguishable from a forgotten one. */
+    html[data-color-mode="dark"] .model-fallback-note { background: #b45309; color: #ffffff; }
+    html[data-color-mode="dark"] .model-fallback-note strong { color: #ffffff; }
+
+    /* F-971 - THE OVERAGE, in the allowance row. It replaces the percentage (which
+       clamps at 100 and so cannot say this), and it is the one figure in that row that
+       is not merely informational, so it is the one that gets colour: solid RED
+       (#dc2626) with white text, 700. Inline, sized to the words - a full-width band
+       here would outweigh the meter it annotates. */
+    .usage-allow-over {
+      display: inline-block; padding: 1px 8px; border-radius: var(--r-sm, 5px);
+      background: #dc2626; color: #ffffff; font-weight: 700;
+    }
+    html[data-color-mode="dark"] .usage-allow-over { background: #dc2626; color: #ffffff; }
 `;
   document.head.appendChild(style);
 };

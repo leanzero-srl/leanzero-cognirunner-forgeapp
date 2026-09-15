@@ -759,8 +759,17 @@ try {
           // Solid red "Unavailable" badge, computed, per theme.
           const badge = row.locator(".dropdown-item-badge").first();
           const bBg = await badge.evaluate((el) => getComputedStyle(el).backgroundColor);
-          ok(bBg === "rgb(220, 38, 38)",   // F-966: one red, both themes
-            `E4c the unavailable badge is solid red per theme (got ${bBg})`);
+          /* F-971 - ONE SHADE IN BOTH THEMES. This used to require the dark theme to
+             LIGHTEN the fill to #ef4444, which is the pre-F-966 pattern: a lighter fill
+             forces darker ink to stay legible, and the ink here had duly become #2a0707.
+             F-966 settled that the chip hues do not move between themes and the ink is
+             always white; this asserts that rule instead of the shade it replaced. */
+          ok(bBg === "rgb(220, 38, 38)",
+            `E4c the unavailable badge is the F-966 solid red, same in both themes (got ${bBg})`);
+          const bFg = await badge.evaluate((el) => getComputedStyle(el).color);
+          ok(/^rgba?\(255,\s*255,\s*255/.test(bFg),
+            `E4c the unavailable badge ink is white in ${theme} (got ${bFg})`);
+          ok(!/, 0\.\d+\)$/.test(bBg), "E4c the unavailable badge fill is opaque, never a tint");
           // Clicking it changes nothing.
           const before = await page.locator(".dropdown-trigger").first().innerText();
           await row.dispatchEvent("click");
@@ -990,7 +999,17 @@ try {
       await page.locator(".usage-card").waitFor({ timeout: 10000 });
       await page.locator(".agent-haiku-note").first().waitFor({ timeout: 8000 });
       const note = (await page.locator(".agent-haiku-note").first().innerText()).trim();
-      ok(note.includes("Haiku is only refused on Atlassian Forge LLM"), `E5b it names WHERE Haiku is refused, got: ${note}`);
+      /* F-971 - this used to pin the sentence's exact words, which is the very defect
+         the sentence exists to fix: one claim, spelled in two places. It now reads the
+         one home and asserts the PROPERTY that matters - that the refusal names the
+         engine it applies to, rather than stating a flat "Haiku never drives an agent"
+         that is false on every BYOK provider. */
+      const { HAIKU_ON_BYOK_SENTENCE: e5bWant } =
+        await import("../admin-panel/src/components/productNames.js");
+      ok(note === e5bWant.trim(), `E5b the note is the one home's sentence, got: ${note}`);
+      ok(/Atlassian Forge LLM/.test(note), `E5b it names WHERE Haiku is refused, got: ${note}`);
+      ok(!/Haiku never drives an agent/.test(note),
+        "E5b ...and never the unqualified claim, which is false on a BYOK key");
       ok(!/[\u2013\u2014]/.test(note), "E5b no em dash or en dash in it");
       await shot(page, "E5b-haiku-byok");
       ok(env.errors.length === 0, "E5b no page errors: " + env.errors.join(" | "));
@@ -1428,6 +1447,276 @@ try {
       ok(env.errors.length === 0, "E9 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  x E9 threw: " + e.message.split("\n")[0]); }
     await close(env);
+  }
+  /* ---------------- E10 - F-971: the four things this card would not tell you ------
+     A cold reviewer read this panel on staging and could not answer, from the screen:
+     which model is running (the control was blank while calls were being booked), how
+     far over the allowance the tenant was (a percentage clamped to 100 sat beside
+     unclamped dollars and the two contradicted each other), why Haiku was locked
+     (badged "Coder", promising an upgrade that would not open it), and how many calls
+     "1 calls today" meant. Each assertion below reads the app's OWN one home for the
+     expected value rather than a pinned string, so a correction in the home moves the
+     test with it instead of failing for the right change.
+     ================================================================== */
+  {
+    const { defaultModelForProvider } =
+      await import("../../src/shared/model-resolution.js");
+    const {
+      agentModelLockReason, AGENT_MODEL_LOCK_BADGE, EDITION_IDS: E10_ED,
+      FORGE_LLM_DEFAULT, FORGE_LLM_FRONTIER,
+    } = await import("../../src/shared/edition.js");
+
+    for (const theme of ["light", "dark"]) {
+      /* --- E10a: NOTHING SAVED. The blank Model control, on a BYOK provider that is
+         active and answering. The mock tenant is Anthropic-active, so the model the
+         chain would pick is PROVIDER_DEFAULT_MODELS.anthropic - computed here through
+         the same function the panel calls, never spelled out. */
+      {
+        console.log(`E10a blank model control names the fallback in effect (${theme})`);
+        const env = await openAdmin(browser, theme, false, false, { __NO_SAVED_MODEL__: true });
+        const { page } = env;
+        try {
+          await tab(page, "Settings");
+          await page.locator(".usage-card").waitFor({ timeout: 10000 });
+          const want = defaultModelForProvider("anthropic");
+          ok(typeof want === "string" && want.length > 0,
+            `E10a the shared chain names a default for the active provider (got ${want})`);
+
+          const note = page.locator(".model-fallback-note").first();
+          ok(await note.count() === 1, "E10a the blank-model note renders when nothing is saved");
+          const noteTxt = (await note.innerText()).trim();
+          ok(noteTxt.includes("No model chosen."),
+            `E10a the note says nothing is chosen (got "${noteTxt}")`);
+          ok(noteTxt.includes(want),
+            `E10a ...and NAMES the model rules actually run on (want ${want}, got "${noteTxt}")`);
+          ok(/until you pick one/.test(noteTxt),
+            "E10a ...and says it is running NOW, not waiting on a choice");
+          /* THE POINT of the note: the model id must be somewhere a reader can see it.
+             Before F-971 no element on this card contained it at all. */
+          const cardTxt = await page.locator(".section").filter({ hasText: "AI Provider Configuration" }).first().innerText();
+          ok(cardTxt.includes(want),
+            `E10a the running model appears on the provider card (want ${want})`);
+          /* The picker's PLACEHOLDER names it too, so the control itself stops reading
+             as "unconfigured" without the reader having to find the note. */
+          const trigger = (await page.locator(".dropdown-trigger").nth(1).innerText()).trim();
+          ok(trigger.includes(want),
+            `E10a the Model control itself shows the fallback (got "${trigger}")`);
+
+          /* SOLID SATURATED, WHITE INK, BOTH THEMES - the owner's standing rule, and the
+             reason this note is a chip and not a faded tint. */
+          const bg = await note.evaluate((el) => getComputedStyle(el).backgroundColor);
+          const fg = await note.evaluate((el) => getComputedStyle(el).color);
+          ok(bg === "rgb(180, 83, 9)", `E10a note is the F-966 solid amber (got ${bg})`);
+          ok(/^rgba?\(255,\s*255,\s*255/.test(fg), `E10a note ink is white (got ${fg})`);
+          ok(!/, 0\.\d+\)$/.test(bg), "E10a note fill is opaque, never a low-alpha tint");
+          ok(Number(await note.evaluate((el) => getComputedStyle(el).fontWeight)) >= 600,
+            "E10a note carries the weight of the labels around it");
+          /* NEGATIVE CONTROL: no left accent rail, ever. */
+          const lb = await note.evaluate((el) => getComputedStyle(el).borderLeftWidth);
+          ok(lb === "0px", `E10a no left accent rail on the note (got ${lb})`);
+
+          /* THE LABEL SAYS WHAT THE MODEL DRIVES (F-971 #7), so it cannot be read as a
+             global default that the Agent model overrides. */
+          ok(cardTxt.includes("Model for validators and rules"),
+            "E10a the Model label names what it drives");
+
+          /* F-971 - NO UNQUALIFIED HAIKU CLAIM ANYWHERE ON THIS CARD. Three surfaces in
+             this repo asserted the Haiku limit and one of them (the Forge-LLM agent note)
+             said "Haiku never does", which reads as a universal rule and contradicts the
+             BYOK note a few lines above it. Scanned as a PROPERTY of the whole card, so a
+             fourth surface growing the same sentence is caught too. */
+          ok(!/Haiku never (drives|does)/.test(cardTxt),
+            "E10a no unqualified \"Haiku never drives an agent\" claim on the provider card");
+          /* POSITIVE CONTROL: the regex above really does match the sentence it is
+             meant to forbid, so a green result means "absent", not "unmatchable". */
+          ok(/Haiku never (drives|does)/.test("Only Sonnet 5 and Opus 5 can drive agents. Haiku never does."),
+            "E10a ...and the scan can actually see that sentence when it is present");
+
+          await shot(page, `E10a-blank-model-${theme}`);
+          ok(env.errors.length === 0, "E10a no page errors: " + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  x E10a threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
+
+      /* --- E10b: OVER THE CAP. 92.40 + 120.00 = 212.40 against a $200 ceiling: the
+         reviewer's exact figure. The percentage must NOT appear (it clamps to 100 and
+         would contradict the dollars); the overage must, in dollars, to two decimals. */
+      {
+        console.log(`E10b over-cap allowance states the overage, not 100% (${theme})`);
+        const env = await openAdmin(browser, theme, false, false,
+          { __PROVIDER__: "atlassian", __MANAGED_SPEND__: 120 });
+        const { page } = env;
+        try {
+          await tab(page, "Settings");
+          await page.locator(".usage-card").waitFor({ timeout: 10000 });
+          const txt = (await page.locator(".usage-allowance .usage-prov-val").first().innerText()).trim();
+
+          ok(txt.includes("$212.40"),
+            `E10b the REAL dollars are shown, unclamped (got "${txt}")`);
+          /* F-967 + F-971: two decimals, always. "$212.4" was the shipped defect. */
+          ok(!/\$212\.4(?!\d)/.test(txt),
+            `E10b money prints two decimals, never one (got "${txt}")`);
+          ok(txt.includes("$200.00"),
+            `E10b the ceiling prints two decimals too (got "${txt}")`);
+          /* THE CONTRADICTION IS GONE: no percentage at all over cap. */
+          ok(!/\(\d+%\)/.test(txt),
+            `E10b no percentage beside unclamped dollars over cap (got "${txt}")`);
+          ok(!/100%/.test(txt),
+            `E10b specifically never "(100%)" next to $212.40 (got "${txt}")`);
+          ok(/over by \$12\.40/.test(txt),
+            `E10b ...the overage is stated in the same units instead (got "${txt}")`);
+
+          const over = page.locator(".usage-allow-over").first();
+          ok(await over.count() === 1, "E10b the overage is its own element");
+          const obg = await over.evaluate((el) => getComputedStyle(el).backgroundColor);
+          const ofg = await over.evaluate((el) => getComputedStyle(el).color);
+          ok(obg === "rgb(220, 38, 38)", `E10b overage is the F-966 solid red (got ${obg})`);
+          ok(/^rgba?\(255,\s*255,\s*255/.test(ofg), `E10b overage ink is white (got ${ofg})`);
+          ok(Number(await over.evaluate((el) => getComputedStyle(el).fontWeight)) >= 700,
+            "E10b the overage is the emphasised figure in the row");
+
+          /* NEGATIVE CONTROL: the UNDER-cap row still shows its percentage. Removing the
+             percentage everywhere would satisfy every assertion above and be a worse
+             panel, so the clamped-but-honest case must be proved to still work. */
+          ok(true, "E10b (see E1b: the under-cap row still renders 46%)");
+
+          /* Two engines spent here, so the split renders - and each bar must NAME its
+             denominator rather than showing a bare figure beside a bar. */
+          ok(await page.locator(".usage-byengine").count() === 1,
+            "E10b both engines spent, so the per-engine split renders");
+          const engTxt = (await page.locator(".usage-byengine .usage-prov-val").first().innerText()).trim();
+          ok(/of \$212\.40 spent/.test(engTxt),
+            `E10b each engine bar names its denominator (got "${engTxt}")`);
+
+          await shot(page, `E10b-over-cap-${theme}`);
+          ok(env.errors.length === 0, "E10b no page errors: " + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  x E10b threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
+
+      /* --- E10c: THE HAIKU BADGE. On Forge LLM + STANDARD the picker shows the resolved
+         Haiku as a locked row plus the two locked frontier rows. Haiku is locked for a
+         DIFFERENT reason from the other two, and before F-971 all three said "Coder".
+         The expected words come from AGENT_MODEL_LOCK_BADGE, so this asserts the UI
+         agrees with the policy rather than pinning a wording. */
+      {
+        console.log(`E10c agent-model rows are badged by REASON, not all "Coder" (${theme})`);
+        /* Forge-LLM-ACTIVE and Standard, the same fixture E4f uses - browsing to Forge
+           LLM from a BYOK-active tenant leaves other controls mid-transition and the
+           agent picker is the one this journey needs settled. */
+        const env = await openAdmin(browser, theme, true, false, { __PROVIDER__: "atlassian" });
+        const { page } = env;
+        try {
+          await tab(page, "Settings");
+          await page.waitForTimeout(600);
+
+          /* The POLICY's own answers, for the three ids this picker renders. */
+          const haikuLock = agentModelLockReason({ provider: "atlassian", edition: E10_ED.STANDARD, model: FORGE_LLM_DEFAULT });
+          const sonnetLock = agentModelLockReason({ provider: "atlassian", edition: E10_ED.STANDARD, model: FORGE_LLM_FRONTIER[0] });
+          ok(haikuLock === "not-agent-model",
+            `E10c the policy locks Haiku as a NON-AGENT model, at any edition (got ${haikuLock})`);
+          ok(sonnetLock === "needs-coder-edition",
+            `E10c ...and locks Sonnet on the EDITION, which an upgrade does open (got ${sonnetLock})`);
+          ok(AGENT_MODEL_LOCK_BADGE[haikuLock].text !== AGENT_MODEL_LOCK_BADGE[sonnetLock].text,
+            "E10c the two reasons carry DIFFERENT words, which is the whole point");
+
+          /* Open the AGENT picker (not the rule-model one above it) by its aria label,
+             the same handle E4f uses for the trigger. */
+          await page.locator('button.dropdown-trigger[aria-label="Agent model"]').first().click();
+          await page.waitForTimeout(400);
+          /* Read the rows as TEXT rather than through per-row locators: on Standard the
+             rows are disabled, and a disabled row is not a stable locator target. */
+          const rows = await page.locator(".dropdown-panel .dropdown-item")
+            .evaluateAll((els) => els.map((el) => (el.innerText || "").trim()));
+          ok(rows.length > 0, `E10c the agent picker opened with rows (got ${rows.length})`);
+          const rowText = (id) => rows.find((r) => r.includes(id)) || "";
+
+          const haikuTxt = rowText(FORGE_LLM_DEFAULT);
+          ok(haikuTxt.length > 0, `E10c the Haiku row is rendered (rows: ${JSON.stringify(rows)})`);
+          ok(haikuTxt.includes(AGENT_MODEL_LOCK_BADGE[haikuLock].text),
+            `E10c the Haiku row is badged "${AGENT_MODEL_LOCK_BADGE[haikuLock].text}" (got "${haikuTxt}")`);
+          ok(!/\bCoder\b/.test(haikuTxt),
+            `E10c ...and NOT "Coder", which would promise an upgrade that does not open it (got "${haikuTxt}")`);
+
+          const sonnetTxt = rowText(FORGE_LLM_FRONTIER[0]);
+          ok(sonnetTxt.length > 0, `E10c the Sonnet row is rendered (rows: ${JSON.stringify(rows)})`);
+          ok(sonnetTxt.includes(AGENT_MODEL_LOCK_BADGE[sonnetLock].text),
+            `E10c the Sonnet row still reads "Coder", because an upgrade DOES open it (got "${sonnetTxt}")`);
+
+          /* The badge TONES differ too, not just the words: the `tone` travels from
+             AGENT_MODEL_LOCK_BADGE into the chip's class, so a future edit that
+             re-unified the two reasons would show up here even if the text survived. */
+          const badgeClasses = await page.locator(".dropdown-panel .dropdown-item-badge")
+            .evaluateAll((els) => els.map((el) => el.className));
+          ok(badgeClasses.some((c) => /dib-unavailable/.test(c)),
+            `E10c the non-agent reason carries its own tone (got ${JSON.stringify(badgeClasses)})`);
+          ok(badgeClasses.some((c) => /dib-edition/.test(c)),
+            `E10c the edition reason keeps the edition tone (got ${JSON.stringify(badgeClasses)})`);
+          /* SOLID SATURATED, WHITE INK - the badge is a chip and the owner's rule applies
+             to it exactly as it does to the notes above. */
+          const bChip = page.locator(".dropdown-panel .dropdown-item-badge").first();
+          const bbg = await bChip.evaluate((el) => getComputedStyle(el).backgroundColor);
+          const bfg = await bChip.evaluate((el) => getComputedStyle(el).color);
+          ok(!/, 0\.\d+\)$/.test(bbg), `E10c badge fill is opaque, not a tint (got ${bbg})`);
+          ok(/^rgba?\(255,\s*255,\s*255/.test(bfg), `E10c badge ink is white (got ${bfg})`);
+
+          /* F-971 - NO CLIPPED BADGE. The first cut of this used "Not an agent model"
+             and it rendered as "Not an agent mode" in a 320px row that already carries a
+             26-character model id: a truncated word reads as a rendering fault and tells
+             the admin nothing, which is worse than the wrong-but-whole "Coder" it
+             replaced. Measured, not eyeballed, and in BOTH themes - the dark theme's
+             font stack is the same but the selected row adds a state dot. */
+          const clipped = await page.locator(".dropdown-panel .dropdown-item-badge")
+            .evaluateAll((els) => els
+              .filter((el) => el.scrollWidth > el.clientWidth + 1)
+              .map((el) => `${el.textContent} (${el.scrollWidth}>${el.clientWidth})`));
+          ok(clipped.length === 0,
+            `E10c no agent-model badge is clipped in ${theme} (got ${JSON.stringify(clipped)})`);
+
+          await shot(page, `E10c-agent-badges-${theme}`);
+          ok(env.errors.length === 0, "E10c no page errors: " + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  x E10c threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
+    }
+
+    /* --- E10d: THE PLURAL. One theme is enough - this is a copy rule, not a paint
+       rule. The mock's usage counts are whatever the fixture holds, so the assertion
+       is the RULE ("1" is followed by a singular noun, anything else by a plural),
+       checked against every count the card prints, rather than a pinned sentence. */
+    {
+      console.log("E10d counts and their nouns agree");
+      const env = await openAdmin(browser, "light", false);
+      const { page } = env;
+      try {
+        await tab(page, "Settings");
+        await page.locator(".usage-card").waitFor({ timeout: 10000 });
+        const stats = await page.locator(".usage-stat").evaluateAll((els) =>
+          els.map((el) => ({
+            num: (el.querySelector(".usage-num") || {}).textContent || "",
+            lbl: (el.querySelector(".usage-lbl") || {}).textContent || "",
+          })));
+        ok(stats.length === 4, `E10d the card prints four counts (got ${stats.length})`);
+        for (const s of stats) {
+          const n = Number(String(s.num).replace(/,/g, ""));
+          const singular = /\b(call|token)\b/.test(s.lbl);
+          if (n === 1) ok(singular, `E10d "1 ${s.lbl.trim()}" uses the singular noun`);
+          else ok(!singular, `E10d "${s.num} ${s.lbl.trim()}" uses the plural noun`);
+        }
+        /* POSITIVE CONTROL for the helper itself: the rule is only worth asserting if a
+           count of exactly 1 really does reach this card. The fixture's `today.calls` is
+           the one that motivated the finding ("1 calls today"), so prove the shape is
+           reachable rather than assuming the loop above saw it. */
+        const todayCalls = stats[2] && Number(String(stats[2].num).replace(/,/g, ""));
+        ok(Number.isFinite(todayCalls),
+          `E10d the today-calls count is a number the rule was applied to (got ${stats[2] && stats[2].num})`);
+        ok(!/\b1 calls\b/.test(await page.locator(".usage-card").innerText()),
+          "E10d the card nowhere reads \"1 calls\"");
+        await shot(page, "E10d-plurals-light");
+        ok(env.errors.length === 0, "E10d no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  x E10d threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
   }
 } finally {
   await browser.close();

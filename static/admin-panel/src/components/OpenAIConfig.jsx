@@ -20,7 +20,23 @@ import {
   EDITION_IDS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL,
   agentCapabilityCopy, allowanceConsequenceCopy, allowanceApproachingCopy,
+  /* F-971 - WHY a row is locked is a policy question, answered in edition.js beside the
+     predicate that enforces it. This file must never carry its own list of which ids are
+     agent models: that is a second copy of FORGE_LLM_FRONTIER. */
+  agentModelLockReason, AGENT_MODEL_LOCK_BADGE,
+  /* F-971 - the scope of the Haiku refusal, from the one home, for the Forge-LLM-only
+     note further down. Three surfaces in this repo make this claim; none of them spells
+     it any more. */
+  HAIKU_AGENT_LIMIT_SENTENCE,
 } from "../../../../src/shared/edition.js";
+/* F-971 - the model a rule runs on when the admin has saved none. The fallback chain's
+   own tail, imported, so the panel cannot name a different model from the one the
+   backend picks - and so no model id is ever typed in a renderer. */
+import { defaultModelForProvider } from "../../../../src/shared/model-resolution.js";
+/* F-971 - the queue's default pace, from the module that owns it. The hint used to name
+   the default only when the backend happened to send one, so the commonest reading of
+   the commonest provider showed "Blank = default" with no number at all. */
+import { AI_BUDGET_DEFAULT_TPM } from "../../../../src/shared/ai-budget.js";
 /* F-955 - the month boundary is the meter's own rule and is imported, never restated:
    `rolled()` rolls when monthKey(now) changes and monthKey is UTC, so "resets on" is
    the first instant of the next UTC month and this helper is where that is written. */
@@ -38,6 +54,11 @@ const ExtLink = ({ href, children, style }) => (
     {children}
   </a>
 );
+
+/* F-971 - one count, one noun. Only the regular "+s" case, because every noun this card
+   counts (call, token, user) is regular; an irregular plural should be written out at the
+   site rather than taught to this helper. */
+const plural = (n, word) => `${word}${Number(n) === 1 ? "" : "s"}`;
 
 const PROVIDER_OPTIONS = [
   { value: "openai", label: PROVIDER_LABELS.openai, icon: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M14.949 6.547a3.94 3.94 0 0 0-.348-3.273 4.11 4.11 0 0 0-4.4-1.934 4.1 4.1 0 0 0-1.778-.14 4.15 4.15 0 0 0-2.118-.114 4.1 4.1 0 0 0-1.891.948 4.04 4.04 0 0 0-1.158 1.753 4.1 4.1 0 0 0-1.563.679 4 4 0 0 0-1.14 1.253.99 3.99 0 0 0 .502 4.731 3.94 3.94 0 0 0 .346 3.274 4.11 4.11 0 0 0 4.402 1.933c.382.425.852.764 1.377.995.526.231 1.095.35 1.67.346 1.78.002 3.358-1.132 3.901-2.804a4.1 4.1 0 0 0 1.563-.68 4 4 0 0 0 1.14-1.253 3.99 3.99 0 0 0-.506-4.716m-6.097 8.406a3.05 3.05 0 0 1-1.945-.694l.096-.054 3.23-1.838a.53.53 0 0 0 .265-.455v-4.49l1.366.778q.02.011.025.035v3.722c-.003 1.653-1.361 2.992-3.037 2.996m-6.53-2.75a2.95 2.95 0 0 1-.36-2.01l.095.057L5.29 12.09a.53.53 0 0 0 .527 0l3.949-2.246v1.555a.05.05 0 0 1-.022.041L6.473 13.3c-1.454.826-3.311.335-4.15-1.098m-.85-6.94A3.02 3.02 0 0 1 3.07 3.949v3.785a.51.51 0 0 0 .262.451l3.93 2.237-1.366.779a.05.05 0 0 1-.048 0L2.585 9.342a2.98 2.98 0 0 1-1.113-4.094zm11.216 2.571L8.747 5.576l1.362-.776a.05.05 0 0 1 .048 0l3.265 1.86a3 3 0 0 1 1.173 1.207 2.96 2.96 0 0 1-.27 3.2 3.05 3.05 0 0 1-1.36.997V8.279a.52.52 0 0 0-.276-.445m1.36-2.015-.097-.057-3.226-1.855a.53.53 0 0 0-.53 0L6.249 6.153V4.598a.04.04 0 0 1 .019-.04L9.533 2.7a3.07 3.07 0 0 1 3.257.139c.474.325.843.778 1.066 1.303.223.526.289 1.103.191 1.664zM5.503 8.575 4.139 7.8a.05.05 0 0 1-.026-.037V4.049c0-.57.166-1.127.476-1.607s.752-.864 1.275-1.105a3.08 3.08 0 0 1 3.234.41l-.096.054-3.23 1.838a.53.53 0 0 0-.265.455zm.742-1.577 1.758-1 1.762 1v2l-1.755 1-1.762-1z"/></svg>' },
@@ -1463,6 +1484,20 @@ export default function OpenAIConfig({ invoke }) {
      for the same measured reason F-895 gives - `.dropdown-item-meta` is one ellipsised
      line in a 320px panel. */
   const savedModelId = (currentModel || "").trim();
+  /* F-971 - THE BLANK MODEL CONTROL, WHILE CALLS ARE BEING BOOKED.
+     When nothing has been saved for the active provider, `currentModel` is empty, so the
+     picker shows "Select a model..." and the "Currently active:" line below it does not
+     render at all. Nothing on the screen names a model - and yet every validator, rule
+     and post-function is running one, because the resolution chain falls through to the
+     provider's default and bills it. The admin is reading "unconfigured" off a screen
+     that describes a system actively spending their money.
+     `defaultModelForProvider` is that chain's own no-I/O tail, imported. Gated on
+     `isByok` because the vendor-billed engines resolve their own model server-side and
+     always report one back, so this state cannot arise there and a second answer would
+     only be a chance to disagree. */
+  const fallbackModelId = (!savedModelId && isByok && activeProvider)
+    ? defaultModelForProvider(activeProvider)
+    : null;
   const modelOutOfList = !!savedModelId
     && !effectiveModels.includes(savedModelId)
     && !effectiveLocked.includes(savedModelId)
@@ -1551,10 +1586,32 @@ export default function OpenAIConfig({ invoke }) {
      one home, not retyped, and a backend change to the period follows automatically.
      If a future resolver starts sending a reset date, prefer it here and delete this. */
   const allowanceResetsOn = allowance ? allowanceResetLabel(usage && usage.month && usage.month.key) : null;
-  /* F-967 - BOTH decimals, always. `maximumFractionDigits` alone let the allowance meter
-     read "$92.4 of $200" - a money figure with one decimal and another with none, side by
-     side in one sentence, which reads as a rounding error rather than a bill. */
+  /* F-971 - MINIMUM two decimals, not just a maximum. F-967 set `maximumFractionDigits: 2`
+     and stopped there, so a figure with one significant decimal still printed as "$212.4":
+     a money column where some cells have two decimals and some have one does not read as
+     money at all, and "$212.4" beside "$200.00" invites a misread of the magnitude. Both
+     bounds, so every dollar figure on this card has exactly two. */
   const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  /* F-971 - THE PERCENTAGE AND THE DOLLARS MUST NEVER DISAGREE.
+     `allowancePct` is clamped to 100 (correctly - it drives a bar WIDTH, and a bar cannot
+     be wider than its track). The dollars beside it are not clamped, and must not be: the
+     real spend is the number an admin needs. Printing both unmediated produced
+     "$212.40 of $200.00 used (100%)", which states that 212.40 is 100% of 200 and reads
+     as a rounding bug rather than the overage it is.
+     So the OVERAGE gets its own words instead of being folded into a percentage that
+     cannot express it. Over cap the row says how far over, in the same units as the
+     figures beside it; at or under cap nothing changes at all. */
+  const allowanceOverUsd = allowance
+    ? Math.max(0, (Number(allowance.estUsd) || 0) - (Number(allowance.allowanceUsd) || 0))
+    : 0;
+  const allowanceOverCap = allowanceOverUsd > 0;
+  /* F-971 - the pace a blank box actually means. The backend's `defaultBudget` is
+     preferred when it arrives (it is computed for the ACTIVE provider and can only be
+     more specific than a client-side table); the shared constant is the floor under it so
+     the hint is never a default with no number. Same table the backend reads. */
+  const budgetDefaultTpm = (aiBudget && Number(aiBudget.defaultBudget))
+    || AI_BUDGET_DEFAULT_TPM[String(activeProvider || "")]
+    || 0;
 
   const resetUsage = async () => {
     setUsageResetting(true);
@@ -1595,11 +1652,17 @@ export default function OpenAIConfig({ invoke }) {
               <button className="btn-small" onClick={() => setUsageConfirmReset(true)}>Reset</button>
             )}
           </div>
+          {/* F-971 - "1 calls today". The number and its noun are rendered as two
+              separate spans, which is exactly how a hard-coded plural survives review:
+              nobody reads them as one sentence. `plural` keeps them one sentence. It is
+              a local helper and not a shared export on purpose - these are ordinary
+              English nouns, not product copy, and the seats row three blocks down
+              already does the same thing inline. */}
           <div className="usage-stats">
-            <div className="usage-stat"><span className="usage-num">{usage.month.calls.toLocaleString()}</span><span className="usage-lbl">calls this month</span></div>
-            <div className="usage-stat"><span className="usage-num">{usage.month.total.toLocaleString()}</span><span className="usage-lbl">tokens this month</span></div>
-            <div className="usage-stat"><span className="usage-num">{usage.today.calls.toLocaleString()}</span><span className="usage-lbl">calls today</span></div>
-            <div className="usage-stat"><span className="usage-num">{usage.today.total.toLocaleString()}</span><span className="usage-lbl">tokens today</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.month.calls.toLocaleString()}</span><span className="usage-lbl">{plural(usage.month.calls, "call")} this month</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.month.total.toLocaleString()}</span><span className="usage-lbl">{plural(usage.month.total, "token")} this month</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.today.calls.toLocaleString()}</span><span className="usage-lbl">{plural(usage.today.calls, "call")} today</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.today.total.toLocaleString()}</span><span className="usage-lbl">{plural(usage.today.total, "token")} today</span></div>
           </div>
           {Object.keys(usage.month.byProvider || {}).length > 0 && (
             <div className="usage-providers">
@@ -1607,7 +1670,9 @@ export default function OpenAIConfig({ invoke }) {
                 <div className="usage-prov-row" key={prov}>
                   <span className="usage-prov-name">{providerLabelFor(prov)}</span>
                   <span className="usage-prov-bar"><span className="usage-prov-fill" style={{ width: `${Math.round(((v.total || 0) / usageProviderMax) * 100)}%` }} /></span>
-                  <span className="usage-prov-val">{(v.total || 0).toLocaleString()} tok · {v.calls} calls</span>
+                  {/* F-971 - the same "1 calls" defect lived here too. A reported symptom
+                      is a pointer, not the scope. */}
+                  <span className="usage-prov-val">{(v.total || 0).toLocaleString()} tok · {v.calls} {plural(v.calls, "call")}</span>
                 </div>
               ))}
             </div>
@@ -1625,7 +1690,14 @@ export default function OpenAIConfig({ invoke }) {
                   />
                 </span>
                 <span className="usage-prov-val">
-                  {money(allowance.estUsd)} of {money(allowance.allowanceUsd)} used ({allowancePct}%)
+                  {/* F-971 - one statement of one fact. Under cap: the percentage, which
+                      is exact. Over cap: the OVERAGE, because a percentage clamped to 100
+                      cannot say "212.40 of 200" and saying it anyway made the two numbers
+                      contradict each other on screen. */}
+                  {money(allowance.estUsd)} of {money(allowance.allowanceUsd)} used
+                  {allowanceOverCap
+                    ? <>, <strong className="usage-allow-over">over by {money(allowanceOverUsd)}</strong></>
+                    : ` (${allowancePct}%)`}
                   {allowanceResetsOn && <>, resets <span className="usage-allow-reset">{allowanceResetsOn}</span></>}
                 </span>
               </div>
@@ -1639,14 +1711,19 @@ export default function OpenAIConfig({ invoke }) {
                     <span className="usage-prov-bar">
                       <span className="usage-prov-fill usage-engine-fill eng-forge" style={{ width: `${enginePct(engineForge)}%` }} />
                     </span>
-                    <span className="usage-prov-val">{money(engineForge)}</span>
+                    {/* F-971 - a bar with no denominator is unreadable. These two are
+                        proportions of the SPEND SO FAR (engineTotal), not of the monthly
+                        ceiling, because that is what their widths divide by. Naming the
+                        ceiling here would label the bar with a number it is not drawn
+                        against. */}
+                    <span className="usage-prov-val">{money(engineForge)} of {money(engineTotal)} spent</span>
                   </div>
                   <div className="usage-prov-row">
                     <span className="usage-prov-name">CogniRunner Cloud AI</span>
                     <span className="usage-prov-bar">
                       <span className="usage-prov-fill usage-engine-fill eng-managed" style={{ width: `${enginePct(engineManaged)}%` }} />
                     </span>
-                    <span className="usage-prov-val">{money(engineManaged)}</span>
+                    <span className="usage-prov-val">{money(engineManaged)} of {money(engineTotal)} spent</span>
                   </div>
                 </div>
               )}
@@ -1681,7 +1758,7 @@ export default function OpenAIConfig({ invoke }) {
                 </p>
               )}
               {usageSeats !== undefined && usageSeats !== null && (
-                <div className="usage-seats">{usageSeats} licensed {usageSeats === 1 ? "user" : "users"} on this site.</div>
+                <div className="usage-seats">{usageSeats} licensed {plural(usageSeats, "user")} on this site.</div>
               )}
             </div>
           )}
@@ -2230,8 +2307,14 @@ export default function OpenAIConfig({ invoke }) {
               gate (model listing works regardless — listing != invoking). */}
           {showModelPicker && (
             <div>
+              {/* F-971 - the label says WHAT THIS MODEL DRIVES. "Model" alone, sitting
+                  above a second control explicitly labelled "Agent model", invites the
+                  reading that this one is the global default and the other an override.
+                  It is not: they are two independent slots, and this one is the one every
+                  transition runs on. The agent selector already names its own scope, so
+                  this is the half of the pair that was missing it. */}
               <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
-                Model
+                Model for validators and rules
               </label>
               {effectiveModels.length === 0 && effectiveLocked.length === 0 ? (
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)" }}>
@@ -2258,7 +2341,11 @@ export default function OpenAIConfig({ invoke }) {
                     <CustomSelect
                       value={selectedModel}
                       onChange={setSelectedModel}
-                      placeholder="Select a model..."
+                      /* F-971 - the placeholder NAMES THE MODEL IN EFFECT rather than
+                         implying none is. "Select a model..." over a provider that is
+                         already answering calls is not a prompt, it is a false statement
+                         about the running system. */
+                      placeholder={fallbackModelId ? `${fallbackModelId} (default in effect)` : "Select a model..."}
                       searchable
                       searchPlaceholder="Search models..."
                       options={isLmStudio && modelDetails.length > 0
@@ -2394,6 +2481,16 @@ export default function OpenAIConfig({ invoke }) {
                   Currently active: <strong>{currentModel}</strong>
                 </p>
               )}
+              {/* F-971 - THE NOTE THE BLANK CONTROL OWED THE READER. The "Currently
+                  active" line above renders only when a model is SAVED, so the one state
+                  where the admin cannot work out what is running was the one state with
+                  no line at all. This is its counterpart, and it says both halves: which
+                  model, and that it is running now rather than waiting on a choice. */}
+              {fallbackModelId && (
+                <p className="model-fallback-note">
+                  No model chosen. Rules run on <strong>{fallbackModelId}</strong> until you pick one.
+                </p>
+              )}
 
               {/* === Agent model (1.3) ===========================================
                   A separate slot from the rule model above. Coder and the Virtual
@@ -2451,13 +2548,23 @@ export default function OpenAIConfig({ invoke }) {
                                sentence lives in the note right under the picker, where it
                                is readable WITHOUT opening the dropdown at all; the row
                                carries the badge, which is what a row can hold. */
-                            badges: [{ text: isAdvanced ? "Not an agent model" : "Coder", tone: isAdvanced ? "unavailable" : "edition" }],
+                            /* F-971 - THE BADGE IS THE REASON, and the reason comes from
+                               edition.js. This row used to read the edition flag
+                               directly, which got Haiku-on-Standard wrong: it said
+                               "Coder", promising that an upgrade opens the row, when
+                               Haiku is refused as an agent model at EVERY edition. */
+                            badges: [AGENT_MODEL_LOCK_BADGE[agentModelLockReason({ provider, edition, model: agentModelId })] || AGENT_MODEL_LOCK_BADGE["not-agent-model"]],
                           }] : []),
-                          ...FORGE_LLM_FRONTIER.map((m) => (
-                            isAdvanced
-                              ? { value: m, label: m }
-                              : { value: m, label: m, disabled: true, badges: [{ text: "Coder", tone: "edition" }] }
-                          )),
+                          ...FORGE_LLM_FRONTIER.map((m) => {
+                            /* Same question, same answer, for the frontier rows: these
+                               ARE agent models, so the only thing that can lock them is
+                               the edition - but that is the policy's conclusion, not an
+                               assumption spelled here. */
+                            const lock = agentModelLockReason({ provider, edition, model: m });
+                            return lock
+                              ? { value: m, label: m, disabled: true, badges: [AGENT_MODEL_LOCK_BADGE[lock]] }
+                              : { value: m, label: m };
+                          }),
                         ]}
                       />
                     </div>
@@ -2534,7 +2641,14 @@ export default function OpenAIConfig({ invoke }) {
                       || (isManaged && !managedAvailable)
                     }
                   >
-                    Save
+                    {/* F-971 - THREE SAVE BUTTONS, THREE SLOTS, THREE LABELS. This card is
+                        not one form: the key, the rule model and the agent model are
+                        separate KVS slots written by separate resolvers, so one combined
+                        Save would have to write slots the admin did not touch. They stay
+                        three buttons, and the ambiguous bare "Save" - the only one that
+                        did not say what it wrote, sitting two controls below "Save Model"
+                        - now names its slot like its siblings do. */}
+                    Save Agent Model
                   </button>
                 </div>
                 <p style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
@@ -2575,9 +2689,15 @@ export default function OpenAIConfig({ invoke }) {
                     {HAIKU_ON_BYOK_SENTENCE}
                   </p>
                 )}
+                {/* F-971 - THE THIRD HOME of the Haiku claim, and it was the unqualified
+                    one: "Haiku never does." Contextually this branch is Forge LLM only,
+                    so the sentence was not false where it rendered - but it sits eleven
+                    lines below the BYOK note that says the opposite, reads as a universal
+                    rule, and is the wording an admin carries to the other screen. The
+                    scope now travels WITH the claim, from edition.js. */}
                 {isAtlassian && isAdvanced && agentFrontierOnly && (
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    Only Sonnet 5 and Opus 5 can drive agents. Haiku never does.
+                    Only Sonnet 5 and Opus 5 can drive agents here. {HAIKU_AGENT_LIMIT_SENTENCE}
                   </p>
                 )}
                 {savedAgentModel && (
@@ -2596,7 +2716,7 @@ export default function OpenAIConfig({ invoke }) {
                     min="0"
                     value={aiBudgetInput}
                     onChange={(e) => setAiBudgetInput(e.target.value)}
-                    placeholder={aiBudget && aiBudget.defaultBudget ? `default ${aiBudget.defaultBudget.toLocaleString()}` : "0 = no pacing"}
+                    placeholder={budgetDefaultTpm ? `default ${budgetDefaultTpm.toLocaleString()}` : "0 = no pacing"}
                     style={{ width: "140px", padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px" }}
                     onKeyDown={(e) => e.key === "Enter" && handleSaveAiBudget()}
                   />
@@ -2609,14 +2729,22 @@ export default function OpenAIConfig({ invoke }) {
                   </button>
                   {aiBudget && aiBudget.budget > 0 && (
                     <span className="ai-budget-meter" title="Tokens spent + reserved in the current minute, against the queue budget">
-                      this minute: <strong>{(aiBudget.used + aiBudget.reserved).toLocaleString()}</strong> / {aiBudget.budget.toLocaleString()}
+                      {/* F-971 - a bare "X / Y" makes the reader work out what Y is. */}
+                      this minute: <strong>{(aiBudget.used + aiBudget.reserved).toLocaleString()}</strong> of {aiBudget.budget.toLocaleString()}/min
                     </span>
                   )}
                 </div>
                 <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                   Background AI work (post-functions, listeners, scheduled jobs, code generation) is drained from the queue at this pace; when a minute is full the next job waits for the next one instead of failing. Validators keep the headroom above it.
                   {aiBudget && aiBudget.platformLimit ? <> Platform limit for this provider: <strong>{aiBudget.platformLimit.toLocaleString()}</strong> tokens/min. </> : " "}
-                  <strong>Blank = default{aiBudget && aiBudget.defaultBudget ? ` (${aiBudget.defaultBudget.toLocaleString()})` : ""}, 0 = no pacing.</strong>
+                  {/* F-971 - NAME THE DEFAULT. This read "Blank = default" with the
+                      number attached only when the backend happened to send
+                      `defaultBudget`, so on the commonest reading the admin was told a
+                      default exists and never what it is - which is the one fact that
+                      makes the blank box actionable. The number now falls back to the
+                      constant in src/shared/ai-budget.js, which is the same table the
+                      backend computes `defaultBudget` from. */}
+                  <strong>Blank = default{budgetDefaultTpm ? ` (${budgetDefaultTpm.toLocaleString()} tokens per minute)` : ""}, 0 = no pacing.</strong>
                 </p>
               </div>
               {isLmStudio && (

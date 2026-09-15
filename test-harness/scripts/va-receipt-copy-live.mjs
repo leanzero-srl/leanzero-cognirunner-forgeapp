@@ -56,6 +56,12 @@ import { runProvenance, formatResultLine, resultExitCode } from "../lib/driver-r
    `receipts: []` beside a named `receiptsUnavailable`, which the length read as zero.
    Both answers now come from the lib, on IDENTITY (`tickId` + `at`). */
 import { receiptAppeared, receiptPollNew, newestReceipt, unavailableNote } from "../lib/va-tick-receipt.mjs";
+/* F-971 - the assertion below used to RETYPE this remedy's opening sentence, which is
+   the exact defect this driver exists to catch on screen: one claim, two homes. When the
+   sentence was corrected in edition.js (it said "Haiku never drives an agent",
+   unqualified and false on every BYOK provider) this copy would have gone on asserting
+   the old words and failed for the right change. It reads the one home now. */
+import { AGENT_CAPABILITY_REASONS, HAIKU_AGENT_LIMIT_SENTENCE } from "../../src/shared/edition.js";
 
 /* F-796 - THE RUN'S OWN THROW, CARRIED INTO THE RESULT LINE. A summary printed from a
    catch or a finally prints the counters the throw FROZE; `formatResultLine({crashed})`
@@ -335,8 +341,8 @@ async function main() {
         info(`pane text:\n${paneText.split("\n").map((l) => "          " + l).join("\n")}`);
 
         // capability — the F-501 COPY ROW, with the ONE home's words
-        const capTitle = "Coder is off - the agent model is not a frontier model";
-        const capRemedy = "Haiku never drives an agent.";
+        const capTitle = AGENT_CAPABILITY_REASONS["needs-frontier-model"].title;
+        const capRemedy = HAIKU_AGENT_LIMIT_SENTENCE;
         const capRows = await card.locator(".va-receipt-cap").count();
         if (paneText.includes(capTitle) && paneText.includes(capRemedy)) PASS("the capability skip renders agentCapabilityCopy's own title AND remedy", { capRows });
         else if (ev.receiptCapability) FAIL("a capability skip exists but its mapped sentence is not on screen", { capRows, want: capTitle });

@@ -224,7 +224,9 @@ export const clampForgeLlmModel = (edition, id) =>
  *   BYOK provider           → enabled. The tenant pays their own tokens and we do
  *                             not judge their model or their edition.
  *   Forge LLM + Standard    → refused: needs-coder-edition.
- *   Forge LLM + Haiku       → refused: needs-frontier-model. Haiku never drives an agent.
+ *   Forge LLM + Haiku       → refused: needs-frontier-model. Haiku does not drive an
+ *                             agent ON FORGE LLM (see HAIKU_AGENT_LIMIT_SENTENCE - on a
+ *                             BYOK key Haiku drives agents perfectly well).
  *   Forge LLM + allowance   → refused: allowance-exhausted (hard cap reached this month).
  *   otherwise               → enabled: forge-frontier.
  *
@@ -250,6 +252,27 @@ export const clampForgeLlmModel = (edition, id) =>
  * do not merge the tables - one answers "why is Coder off", the other "why was THIS
  * action refused on THIS rule".
  */
+/**
+ * F-971 - THE ONE HAIKU SENTENCE, AND THE QUALIFIER IS NOT OPTIONAL.
+ *
+ * This remedy used to open "Haiku never drives an agent." - flatly, with no engine named.
+ * That is FALSE on every BYOK provider: `agentCapability` below returns
+ * `{enabled: true, reason: "byok"}` before the model is looked at at all, so an admin on
+ * their own OpenAI/Anthropic/OpenRouter key runs agents on Haiku today. Meanwhile
+ * productNames.js carried a SECOND Haiku sentence that DID carry the qualifier, so the
+ * two surfaces contradicted each other: the Code tab said "Haiku is only refused on
+ * Atlassian Forge LLM" while this remedy said it never works. An admin who believed this
+ * one would go and change a model that was never the problem.
+ *
+ * So the refusal's scope is a CONSTANT, stated once, and both consumers compose it:
+ * this table's `needs-frontier-model` remedy, and HAIKU_ON_BYOK_SENTENCE in
+ * static/admin-panel/src/components/productNames.js, which imports it rather than
+ * re-typing the claim. The scope in the words matches the scope in the predicate - the
+ * refusal below only fires on `provider === "atlassian"`.
+ */
+export const HAIKU_AGENT_LIMIT_SENTENCE =
+  "Claude Haiku does not drive an agent on Atlassian Forge LLM.";
+
 export const AGENT_CAPABILITY_REASONS = {
   "needs-coder-edition": {
     title: "Coder is off - this site is on CogniRunner Standard",
@@ -258,7 +281,7 @@ export const AGENT_CAPABILITY_REASONS = {
   },
   "needs-frontier-model": {
     title: "Coder is off - the agent model is not a frontier model",
-    remedy: "Haiku never drives an agent. Pick Claude Sonnet 5 or Opus 5 as the agent model in Settings, or switch to a BYOK provider.",
+    remedy: `${HAIKU_AGENT_LIMIT_SENTENCE} Pick Claude Sonnet 5 or Opus 5 as the agent model in Settings, or switch to a BYOK provider, where any model you choose drives agents.`,
     link: "settings",
   },
   "allowance-exhausted": {
@@ -354,8 +377,27 @@ export const agentCapabilityCopy = (reason) =>
  * owns the rollover (allowanceResetLabel, src/shared/usage-meter.js) and this file only
  * says the words around it.
  */
+/*
+ * F-971 - "RULES THAT USE AI ARE NOT VALIDATED" DOES NOT SAY WHAT HAPPENS.
+ *
+ * Both maps below used that phrase, and a reader cannot tell from it whether their
+ * transitions START FAILING or start SAILING THROUGH. Those are opposite operational
+ * outcomes and the difference is the whole reason an admin reads an allowance warning:
+ * one means work stops, the other means the control they bought is silently off while
+ * work carries on. The app FAILS OPEN (a validator that cannot reach AI returns
+ * `{result: true}` rather than blocking a transition on a billing state), so the copy
+ * now says that in the operator's own terms, with the jargon named once in parentheses
+ * so a support conversation and a log line use the same word.
+ *
+ * ONE HOME because both the 100% sentence and the 80% warning make this claim, and the
+ * pair must never describe the same engine two ways - that is the defect the F-955 block
+ * below this one was written to prevent, for the neighbouring clause.
+ */
+export const FAIL_OPEN_CONSEQUENCE_CLAUSE =
+  "validators let every transition through (fail open)";
+
 const ALLOWANCE_CONSEQUENCE = {
-  [MANAGED_PROVIDER_ID]: (when) => `Allowance spent. ${MANAGED_PROVIDER_LABEL} has stopped until ${when}: rules that use AI are not validated, and queued jobs and agent tasks refuse. Switch to Atlassian Forge LLM or a BYOK provider to keep going.`,
+  [MANAGED_PROVIDER_ID]: (when) => `Allowance spent. ${MANAGED_PROVIDER_LABEL} has stopped until ${when}: ${FAIL_OPEN_CONSEQUENCE_CLAUSE}, and queued jobs and agent tasks refuse. Switch to Atlassian Forge LLM or a BYOK provider to keep going.`,
   atlassian: (when) => `Allowance spent. Sonnet 5 and Opus 5 are paused until ${when}; rules keep running on Claude Haiku.`,
 };
 
@@ -370,7 +412,7 @@ const ALLOWANCE_CONSEQUENCE = {
  * earlier warning, which is the one an admin can still do something about.
  */
 const ALLOWANCE_APPROACHING = {
-  [MANAGED_PROVIDER_ID]: (when) => `At 100% ${MANAGED_PROVIDER_LABEL} stops until ${when}: rules that use AI are not validated, and queued jobs and agent tasks refuse.`,
+  [MANAGED_PROVIDER_ID]: (when) => `At 100% ${MANAGED_PROVIDER_LABEL} stops until ${when}: ${FAIL_OPEN_CONSEQUENCE_CLAUSE}, and queued jobs and agent tasks refuse.`,
   atlassian: (when) => `At 100% rules fall back to Claude Haiku and agents pause until ${when}.`,
 };
 
@@ -424,4 +466,60 @@ export const agentCapability = ({ provider, edition, agentModel, allowanceLevel,
   if (!FORGE_LLM_FRONTIER.includes(String(agentModel || ""))) return { enabled: false, reason: "needs-frontier-model" };
   if (allowanceLevel === "hard") return { enabled: false, reason: "allowance-exhausted" };
   return { enabled: true, reason: "forge-frontier" };
+};
+
+export const AGENT_MODEL_LOCK_NOT_AGENT = "not-agent-model";
+export const AGENT_MODEL_LOCK_NEEDS_CODER = "needs-coder-edition";
+
+/**
+ * F-971 - WHY IS THIS AGENT-MODEL ROW LOCKED? THE REASON IS A POLICY, NOT A UI LIST.
+ *
+ * The admin panel's agent-model picker rendered EVERY disabled row with a "Coder" badge,
+ * Haiku included. That is wrong about Haiku in the way that costs an admin real time:
+ * "Coder" says "buy the upgrade and this row opens", and for Haiku it never does -
+ * `agentCapability` above refuses it on Forge LLM at ANY edition, because it is not a
+ * frontier model. An admin on Standard reading "Coder" beside Haiku would upgrade and
+ * find the row still dead.
+ *
+ * The reason therefore comes from HERE, beside the predicate that produces it, and not
+ * from a hand-maintained list in the renderer - a UI-side list of which ids are "really"
+ * agent models is a second copy of FORGE_LLM_FRONTIER and would drift the first time a
+ * model is added to the offer.
+ *
+ * ORDER IS DELIBERATE AND IT IS NOT agentCapability's ORDER. That function answers
+ * "why is Coder off for this TENANT", so it reports the edition first: it is the thing
+ * the admin must fix first. This one answers "why can I not pick THIS ROW", where the
+ * durable fact wins - a model that can never drive an agent is still not one after an
+ * upgrade, so the model reason is reported even on Standard. Same inputs, different
+ * question, and conflating them is what produced the single "Coder" badge.
+ *
+ * @returns {null|"not-agent-model"|"needs-coder-edition"} null when the row is selectable.
+ */
+export const agentModelLockReason = ({ provider, edition, model } = {}) => {
+  // BYOK and the managed engine lock NOTHING here. On a customer key the model is not
+  // judged at all (agentCapability returns `byok` before looking), and every id the
+  // managed engine offers is already a frontier model.
+  if (provider !== "atlassian") return null;
+  if (!FORGE_LLM_FRONTIER.includes(String(model || ""))) return AGENT_MODEL_LOCK_NOT_AGENT;
+  if (edition !== EDITION_IDS.ADVANCED) return AGENT_MODEL_LOCK_NEEDS_CODER;
+  return null;
+};
+
+/**
+ * The BADGE WORD for each lock reason, in the one place the reason is defined. `tone` is
+ * the solid saturated chip tone the row renders with.
+ *
+ * THE LENGTH IS A MEASURED CONSTRAINT, NOT A STYLE CHOICE. These render inside a 320px
+ * CustomSelect row that already carries a model id (about 26 characters) and, on the
+ * selected row, a state dot. "Not an agent model" was photographed CLIPPED, as
+ * "Not an agent mode" - which is worse than the wrong-but-whole "Coder" it replaced,
+ * because a truncated word reads as a rendering fault and tells the admin nothing. The
+ * same 320px panel is why the FULL reason sentence lives in the note under the picker
+ * (see the F-895 note in OpenAIConfig.jsx) and not on the row.
+ * A badge added here must fit beside a long model id. Verify it in editions.test.mjs
+ * E10c, which measures the chip's scrollWidth against its clientWidth in both themes.
+ */
+export const AGENT_MODEL_LOCK_BADGE = {
+  [AGENT_MODEL_LOCK_NOT_AGENT]: { text: "Not for agents", tone: "unavailable" },
+  [AGENT_MODEL_LOCK_NEEDS_CODER]: { text: "Coder", tone: "edition" },
 };

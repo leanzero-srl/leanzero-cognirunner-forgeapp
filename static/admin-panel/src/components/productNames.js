@@ -28,7 +28,10 @@
  * id they never saw ("advanced") is.
  */
 
-import { EDITIONS, MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL } from "../../../../src/shared/edition.js";
+import {
+  EDITIONS, MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL,
+  HAIKU_AGENT_LIMIT_SENTENCE,
+} from "../../../../src/shared/edition.js";
 
 /**
  * Provider id -> the name on the vendor's own product. Keyed by the id the backend
@@ -68,9 +71,17 @@ export const editionLabel = (id) => {
  * the model is NOT judged on a BYOK provider, so Haiku really does drive an agent there.
  * The refusal is Forge LLM's alone, and saying otherwise would send an admin chasing a
  * model change that changes nothing.
+ *
+ * F-971 - THE SCOPE CLAUSE IS NOW IMPORTED, NOT RE-TYPED. This sentence used to state
+ * the Forge-LLM-only limit in its own words while AGENT_CAPABILITY_REASONS in edition.js
+ * stated the opposite ("Haiku never drives an agent", unqualified). Two homes, one
+ * claim, and they had already drifted into contradicting each other on two screens of
+ * the same app. edition.js owns the claim because it owns the predicate that enforces
+ * it; this sentence composes it and adds only the BYOK half, which is this file's own
+ * product-facing framing.
  */
 export const HAIKU_ON_BYOK_SENTENCE =
-  "On your own provider key, Coder and Virtual Administrators run on the agent model you choose; Haiku is only refused on Atlassian Forge LLM.";
+  `${HAIKU_AGENT_LIMIT_SENTENCE} On your own provider key, Coder and Virtual Administrators run on the agent model you choose, Haiku included.`;
 
 /** Does this id name a Haiku-class model? Display only, never access control. */
 export const looksLikeHaiku = (id) => /haiku/i.test(String(id || ""));

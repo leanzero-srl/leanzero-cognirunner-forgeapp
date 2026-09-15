@@ -53,6 +53,12 @@ export async function load(url, ctx, next) {
     "export const createSandboxSession = args => globalThis.__coder.session(args);"
     + "export const getOpenAIKey = async () => 'mock-key';"
     + "export const getOpenAIModel = async () => 'mock-model';"
+    // F-991 — the Coder turn dispatches the CODER slot and the agent loop the AGENT slot.
+    // The double offers all three names so the surfaces under test can run; which one each
+    // site ACTUALLY calls is asserted by the source scan in model-slots.test.mjs, because
+    // a double that answers the same string to all three cannot tell them apart.
+    + "export const getCoderModel = async () => 'mock-model';"
+    + "export const getAgentModel = async () => 'mock-model';"
     + "export const getProviderConfig = async () => ({ provider: globalThis.__coder.provider || 'anthropic' });"
     + "export const raceDeadline = p => p;"
     + "export const callAIChat = args => globalThis.__coder.chat(args);"

@@ -16,7 +16,7 @@ export async function resolve(spec, ctx, next) {
 }
 export async function load(url, ctx, next) {
   if (url === "agent-reference:index") return { format: "module", shortCircuit: true, source: \
-    "export const createSandboxSession = args => globalThis.__agentReference.session(args); export const getOpenAIKey = async () => 'mock-key'; export const getOpenAIModel = async () => 'mock-model'; export const raceDeadline = p => p; export const callAIChat = args => globalThis.__agentReference.provider(args); export const isJobCancelled = async () => false; export const coerceToAdf = s => s; export const extractTextFromADF = s => s;" };
+    "export const createSandboxSession = args => globalThis.__agentReference.session(args); export const getOpenAIKey = async () => 'mock-key'; export const getOpenAIModel = async () => 'mock-model'; export const getAgentModel = async () => 'mock-model'; export const getCoderModel = async () => 'mock-model'; export const raceDeadline = p => p; export const callAIChat = args => globalThis.__agentReference.provider(args); export const isJobCancelled = async () => false; export const coerceToAdf = s => s; export const extractTextFromADF = s => s;" };
   return next(url, ctx);
 }`));
 const { runAgentTask } = await import("../../src/agent-runner.js");

@@ -4,7 +4,8 @@ import { register } from "node:module";
 import assert from "node:assert/strict";
 const real = await import("../../src/index.js");
 const { default: jira } = await import("@forge/api");
-globalThis.__agentIdentity = { ...real, getOpenAIKey: async () => "offline", getOpenAIModel: async () => "offline", raceDeadline: p => p };
+// F-991 — runAgentTask dispatches the AGENT model now, not the rules model.
+globalThis.__agentIdentity = { ...real, getOpenAIKey: async () => "offline", getOpenAIModel: async () => "offline", getAgentModel: async () => "offline", raceDeadline: p => p };
 register("data:text/javascript," + encodeURIComponent(`
 export async function resolve(spec, ctx, next) {
   if(spec === './index.js' && ctx.parentURL.endsWith('/src/agent-runner.js')) return {url:'agent-identity:index',shortCircuit:true};
@@ -12,7 +13,7 @@ export async function resolve(spec, ctx, next) {
 }
 export async function load(url,ctx,next) {
   if(url==='agent-identity:index') return {format:'module',shortCircuit:true,source:
-    'export const createSandboxSession=(...a)=>globalThis.__agentIdentity.createSandboxSession(...a); export const getOpenAIKey=(...a)=>globalThis.__agentIdentity.getOpenAIKey(...a); export const getOpenAIModel=(...a)=>globalThis.__agentIdentity.getOpenAIModel(...a); export const callAIChat=(...a)=>globalThis.__agentIdentity.callAIChat(...a); export const raceDeadline=p=>p; export const isJobCancelled=async()=>false;'};
+    'export const createSandboxSession=(...a)=>globalThis.__agentIdentity.createSandboxSession(...a); export const getOpenAIKey=(...a)=>globalThis.__agentIdentity.getOpenAIKey(...a); export const getOpenAIModel=(...a)=>globalThis.__agentIdentity.getOpenAIModel(...a); export const getAgentModel=(...a)=>globalThis.__agentIdentity.getAgentModel(...a); export const callAIChat=(...a)=>globalThis.__agentIdentity.callAIChat(...a); export const raceDeadline=p=>p; export const isJobCancelled=async()=>false;'};
   return next(url,ctx);
 }`));
 const { runAgentTask } = await import("../../src/agent-runner.js");

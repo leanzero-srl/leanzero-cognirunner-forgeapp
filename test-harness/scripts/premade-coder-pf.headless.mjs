@@ -35,6 +35,9 @@ export async function load(url, ctx, next) {
     "export const createSandboxSession = args => globalThis.__coderpf.session(args);"
     + "export const getOpenAIKey = async () => 'mock-key';"
     + "export const getOpenAIModel = async () => 'mock-model';"
+    // F-991 — the Coder turn reads the coder slot, the agent loop the agent slot.
+    + "export const getCoderModel = async () => 'mock-model';"
+    + "export const getAgentModel = async () => 'mock-model';"
     + "export const getProviderConfig = async () => ({ provider: 'openai' });"
     + "export const raceDeadline = p => p;"
     + "export const callAIChat = args => globalThis.__coderpf.chat(args);"

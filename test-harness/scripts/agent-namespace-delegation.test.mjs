@@ -6,7 +6,8 @@ import { register } from "node:module";
 import assert from "node:assert/strict";
 const real = await import("../../src/index.js");
 const { default: jira } = await import("@forge/api");
-globalThis.__agentNs = { ...real, getOpenAIKey: async () => "offline", getOpenAIModel: async () => "offline" };
+// F-991 — runAgentTask dispatches the AGENT model now, not the rules model.
+globalThis.__agentNs = { ...real, getOpenAIKey: async () => "offline", getOpenAIModel: async () => "offline", getAgentModel: async () => "offline" };
 register("data:text/javascript," + encodeURIComponent(`
 export async function resolve(spec, ctx, next) {
   if(spec === './index.js' && ctx.parentURL.endsWith('/src/agent-runner.js')) return {url:'agent-ns:index',shortCircuit:true};
@@ -14,7 +15,7 @@ export async function resolve(spec, ctx, next) {
 }
 export async function load(url,ctx,next) {
   if(url==='agent-ns:index') return {format:'module',shortCircuit:true,source:
-    'export const createSandboxSession=(...a)=>globalThis.__agentNs.createSandboxSession(...a); export const getOpenAIKey=(...a)=>globalThis.__agentNs.getOpenAIKey(...a); export const getOpenAIModel=(...a)=>globalThis.__agentNs.getOpenAIModel(...a); export const callAIChat=(...a)=>globalThis.__agentNs.callAIChat(...a); export const extractTextFromADF=(...a)=>globalThis.__agentNs.extractTextFromADF(...a); export const coerceToAdf=(...a)=>globalThis.__agentNs.coerceToAdf(...a); export const raceDeadline=p=>p; export const isJobCancelled=async()=>false;'};
+    'export const createSandboxSession=(...a)=>globalThis.__agentNs.createSandboxSession(...a); export const getOpenAIKey=(...a)=>globalThis.__agentNs.getOpenAIKey(...a); export const getOpenAIModel=(...a)=>globalThis.__agentNs.getOpenAIModel(...a); export const getAgentModel=(...a)=>globalThis.__agentNs.getAgentModel(...a); export const callAIChat=(...a)=>globalThis.__agentNs.callAIChat(...a); export const extractTextFromADF=(...a)=>globalThis.__agentNs.extractTextFromADF(...a); export const coerceToAdf=(...a)=>globalThis.__agentNs.coerceToAdf(...a); export const raceDeadline=p=>p; export const isJobCancelled=async()=>false;'};
   return next(url,ctx);
 }`));
 const { runAgentTask } = await import("../../src/agent-runner.js");

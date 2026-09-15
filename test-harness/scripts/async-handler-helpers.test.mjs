@@ -299,8 +299,16 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/if \(!provider\) return null;/.test(key), "getOpenAIKey: null provider → no key");
   ok(key.indexOf("if (!provider) return null;") < key.indexOf('if (provider === "atlassian") return "atlassian-forge-llm";'),
     "…checked BEFORE the Forge LLM sentinel, so a fault can never mint one");
-  const mod = asyncSrc.match(/const getOpenAIModel = async \(providerOverride = null\) => \{[\s\S]*?\n\};/)[0];
+  // F-991 — the consumer's model reader takes a second argument (the surface's SLOT
+  // CHAIN, for the PR review), so the signature is matched loosely. The property asserted
+  // is unchanged: a null provider yields no model, before any slot is touched.
+  const mod = asyncSrc.match(/const getOpenAIModel = async \(providerOverride = null[^)]*\) => \{[\s\S]*?\n\};/)[0];
   ok(/if \(!provider\) return null;/.test(mod), "getOpenAIModel: null provider → no model");
+  // …and the CODER reader is that same function with a chain, not a second copy of it:
+  // a reader of its own here would be the third home of the chain F-826 collapsed.
+  const coderMod = asyncSrc.match(/const getCoderModel = async \(providerOverride = null\) =>[\s\S]*?;\n/)[0];
+  ok(/getOpenAIModel\(providerOverride, MODEL_SLOT_FOR_SURFACE\[AGENT_SURFACES\.CODER\]\)/.test(coderMod),
+    "getCoderModel delegates to the one reader with the CODER row of the surface table");
   const raw = asyncSrc.match(/const callAIChatSimpleRaw = async \(\{[\s\S]*?\n  let model = requestedModel;/)[0];
   ok(/if \(!provider\) return \{ ok: false, status: 0, error: "No AI provider configured/.test(raw),
     "callAIChatSimpleRaw refuses a null provider BEFORE any routing branch");

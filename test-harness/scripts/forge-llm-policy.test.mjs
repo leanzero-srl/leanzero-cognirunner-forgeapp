@@ -638,7 +638,10 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
 // =====================================================================================
 {
   const bind = codeOnly.match(/const resolveModelForProvider = async \(provider, \{[^}]*\} = \{\}\) => resolveModelChain\(\{[\s\S]*?\n\}\);/);
-  const cons = asyncSrc.match(/const getOpenAIModel = async \(providerOverride = null\) => \{[\s\S]*?\n\};/);
+  // F-991 — the consumer's reader gained a second parameter (the surface slot chain), so
+  // the signature is matched loosely. The two-process parity below is the point and is
+  // unchanged: both bindings must answer the same model for the same instance.
+  const cons = asyncSrc.match(/const getOpenAIModel = async \(providerOverride = null[^)]*\) => \{[\s\S]*?\n\};/);
   ok(!!bind && !!cons, "found both bindings of the model chain");
   ok(!/const PROVIDER_DEFAULT_MODELS = \{/.test(asyncSrc),
     "the consumer keeps NO second default-model table (F-826)");

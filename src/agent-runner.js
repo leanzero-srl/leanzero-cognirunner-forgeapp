@@ -945,7 +945,22 @@ export const runAgentTask = async ({
 
   const apiKey = await m.getOpenAIKey();
   if (!apiKey) { result.error = "No AI provider key configured — set one in CogniRunner Settings."; log(`ERROR: ${result.error}`); return result; }
-  const model = await m.getOpenAIModel();
+  // F-991 — THE LISTENER / SCHEDULED-JOB AGENT RUNS ON THE AGENT MODEL. This is F-482's
+  // defect one surface over: that fix moved the Virtual Administrator's REASONING to the
+  // agent model because a persona running on the rules model was the wrong product, and
+  // the listener/job agent — the same loop, the same tools, the same gate, which is
+  // checked against the AGENT model before this line is reached — was left behind on
+  // `getOpenAIModel()`.
+  //
+  // THIS CHANGES BEHAVIOUR ON UPGRADE, deliberately: an instance whose agent slot differs
+  // from its rules slot will see listener and job agent runs move to the agent model, and
+  // on Forge LLM that is the frontier model the gate already required them to have. The
+  // alternative was leaving a run gated on one model and billed on another, which is the
+  // whole of this cut.
+  //
+  // `evaluateAiCondition` (this file, above) is NOT this and stays on the ordinary model:
+  // it is a per-event yes/no over a field, not an agent turn.
+  const model = await m.getAgentModel();
   // ONE gate (src/shared/agent-actions.js). Run time DROPS a refused action rather
   // than refusing the whole run — a permission or edition change must not become an
   // outage — but it says so in the log, because a quiet drop is how an operator comes

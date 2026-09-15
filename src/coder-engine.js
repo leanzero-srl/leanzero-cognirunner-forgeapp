@@ -778,7 +778,15 @@ const runCoderTurnClaimed = async ({
 
   const apiKey = await m.getOpenAIKey();
   if (!apiKey) return fail("No AI provider key configured — set one in CogniRunner Settings.");
-  const model = await m.getOpenAIModel();
+  // F-991 — THE CODER TURN RUNS ON THE CODER SLOT, and until now it ran on
+  // `getOpenAIModel()`: the ORDINARY rules model. The gate immediately above this line
+  // checks the model an AGENT may drive, so the instance was gated on one model and billed
+  // for another — an admin could be refused `needs-frontier-model` for an agent model they
+  // had set correctly, or, worse, allowed through the gate and then handed the cheap rules
+  // model to do the work the gate had just approved. The slot chain is `["coder","agent"]`
+  // (MODEL_SLOT_FOR_SURFACE), so an instance with no coder model set resolves the agent
+  // model — which is what the gate checked all along.
+  const model = await m.getCoderModel();
   let provider = null;
   try { provider = (await m.getProviderConfig()).provider || null; } catch (e) { /* the cache observation is optional */ }
 

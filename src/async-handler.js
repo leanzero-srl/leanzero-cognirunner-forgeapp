@@ -145,7 +145,7 @@ import { runCoderTurn, isHeadlessTrigger, getCoderThread, getCoderPinnedKnowledg
 // F-829 — the ONE gate predicate and the ONE refusal vocabulary, used here exactly as the
 // producer uses them. Nothing about capability is decided in this file; it only supplies
 // FRESH facts to the same three functions.
-import { buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText, AGENT_SURFACES } from "./shared/agent-actions.js";
+import { buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText, AGENT_SURFACES, MODEL_SLOT_FOR_SURFACE } from "./shared/agent-actions.js";
 // F-884 — the arming-stamp default and the admin comparison have ONE home.
 import { DEFAULT_SAVED_BY_ROLE, ADMIN_SAVED_BY_ROLE, isAdminSavedByRole } from "./shared/roster-roles.js";
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
@@ -242,6 +242,9 @@ const currentEditionFresh = async () => {
  *   - `migrate: false` — the one-time legacy-slot WRITE belongs to the interactive
  *     active-provider path, not to a queued job that may be running for any provider.
  *   - `providerOverride` — a task carries the provider it was queued for.
+ *   - `slotChain` (F-991) — the named slots a SURFACE reads before the ordinary model
+ *     slot, taken from MODEL_SLOT_FOR_SURFACE. Null (the default) is the ordinary rules
+ *     model, which is what every task in this consumer except the PR review wants.
  *
  * THE TAIL, RECONCILED (one behaviour in both processes): a NULL provider answers null
  * BEFORE the chain is entered, so callers bail on the key exactly as the sync seam does;
@@ -249,7 +252,7 @@ const currentEditionFresh = async () => {
  * the shared chain. The old code conflated the two by wrapping the provider read in the
  * same try/catch as the slot reads.
  */
-const getOpenAIModel = async (providerOverride = null) => {
+const getOpenAIModel = async (providerOverride = null, slotChain = null) => {
   let provider = providerOverride || null;
   if (!provider) {
     try {
@@ -268,9 +271,27 @@ const getOpenAIModel = async (providerOverride = null) => {
     readSlot: (key) => storage.get(key),
     env: process.env,
     migrate: false,
+    slotChain,
     log: console,
   });
 };
+
+/**
+ * F-991 — THE CODER SURFACE'S MODEL, in this process.
+ *
+ * The queued PULL-REQUEST REVIEW is Coder work: it is gated as the Coder (git actions,
+ * the `coder` surface in resolveFreshCoderGate below) and it is the single most demanding
+ * call the app makes. It nevertheless dispatched `getOpenAIModel(aiProvider)` — the
+ * ORDINARY rules model — while its gate judged the agent model. Same defect as the Coder
+ * turn in src/coder-engine.js, one process over, which is exactly why the SLOT CHAIN comes
+ * from the shared surface table and not from a literal typed in either place.
+ *
+ * The rest of this consumer's model readers stay where they are on purpose: codegen, fix
+ * and distill are STATIC post-function authoring, not the Coder surface, and they have
+ * always been rules-model work.
+ */
+const getCoderModel = async (providerOverride = null) =>
+  getOpenAIModel(providerOverride, MODEL_SLOT_FOR_SURFACE[AGENT_SURFACES.CODER]);
 
 // The consumer no longer keeps a PROVIDERS base-URL table: the base URL now comes with
 // the provider from readProviderConfigFresh (src/index.js), which owns the one table.
@@ -1150,7 +1171,10 @@ const executeGitReview = async (params, taskId) => {
   if (!aiProvider) return finish({ success: false, error: NO_PROVIDER_ERROR }, { decision: "ERROR", reason: NO_PROVIDER_ERROR, recommendation: "Set an AI provider and key in CogniRunner Settings." });
   const apiKey = await getOpenAIKey(aiProvider);
   if (!apiKey) return finish({ success: false, error: "No API key configured" }, { decision: "ERROR", reason: "No API key configured", recommendation: "Add the provider's API key in CogniRunner Settings." });
-  const model = await getOpenAIModel(aiProvider);
+  // F-991 — the PR review is CODER work and runs on the coder slot, not on the ordinary
+  // rules model. See getCoderModel's docblock above for why this one reader in this file
+  // moves and the codegen/fix/distill readers do not.
+  const model = await getCoderModel(aiProvider);
 
   let connection = null;
   let gitProvider = null;

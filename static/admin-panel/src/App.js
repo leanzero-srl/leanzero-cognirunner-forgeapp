@@ -191,7 +191,13 @@ const injectStyles = () => {
     }
     .edition-chip.edition-advanced { background: #c2410c; }
     .edition-chip.edition-standard { background: #475569; }
-    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    /* F-957 - WHITE ink, both themes. The dark theme used to lighten this fill to #f97316
+       and then darken the TEXT to near-black to keep it legible, which is the one thing
+       the rule two lines above forbids. White on #f97316 is 2.80:1, so the fix darkens the
+       FILL instead of the text: #c2410c carries white at 5.18:1. No orange light enough to
+       read as "one shade lighter" clears 4.5:1 with white, so the dark fill matches the
+       light one on purpose. */
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
 
     .section {
@@ -498,13 +504,14 @@ const injectStyles = () => {
     .port-status { display: inline-flex; padding: 2px 8px; border-radius: var(--r-sm, 6px); font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #fff; white-space: nowrap; }
     .port-status-ready { background: #16a34a; }
     .port-status-committed { background: #16a34a; }
-    .port-status-needs-rebind { background: #d97706; color: #2a1602; }
+    .port-status-needs-rebind { background: #b45309; color: #fff; }
     .port-status-conflict { background: #4f46e5; }
     .port-status-invalid { background: #dc2626; }
     .port-status-error { background: #dc2626; }
     html[data-color-mode="dark"] .port-status-ready,
     html[data-color-mode="dark"] .port-status-committed { background: #22c55e; }
-    html[data-color-mode="dark"] .port-status-needs-rebind { background: #f59e0b; color: #2a1602; }
+    /* F-957 - white ink; amber darkened one step (white on #f59e0b is 2.15:1, on #bf5309 4.71:1). */
+    html[data-color-mode="dark"] .port-status-needs-rebind { background: #bf5309; color: #fff; }
     html[data-color-mode="dark"] .port-status-conflict { background: #6366f1; }
     html[data-color-mode="dark"] .port-status-invalid,
     html[data-color-mode="dark"] .port-status-error { background: #ef4444; }
@@ -772,18 +779,20 @@ const injectStyles = () => {
     }
     .log-src-runtime { background: #475569; }
     .log-src-async   { background: #4f46e5; }
-    /* amber/orange/cyan need dark ink for WCAG AA — white fails on these hues at 9px
-       (same decision the repo already made for .job-status.* dark below). */
-    .log-src-test    { background: #d97706; color: #2a1602; }
+    /* F-957 - the amber and orange chips now carry WHITE ink, like every other chip on
+       this sheet. White did fail AA on the old fills, but the answer to that is a darker
+       FILL, not darker text: #b45309 and #c2410c carry white at 5.02:1 and 5.18:1. The
+       cyan pair below still uses dark ink and is left for its own owner. */
+    .log-src-test    { background: #b45309; color: #fff; }
     .log-flag-simulated      { background: #0891b2; color: #04141d; }
     .log-flag-transientError { background: #dc2626; }
-    .log-flag-capped         { background: #ea580c; color: #2a1602; }
+    .log-flag-capped         { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
     html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
-    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .log-src-test    { background: #bf5309; color: #fff; }
     html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; color: #04141d; }
     html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
-    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; color: #2a1602; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #c2410c; color: #fff; }
     .lt-validator { background: #2563eb; }
     .lt-condition { background: #7c3aed; }
     .lt-pf, .lt-pf-semantic { background: #0d9488; }
@@ -954,7 +963,8 @@ const injectStyles = () => {
     .job-status.done { background: #16a34a; }
     .job-status.error { background: #dc2626; }
     .job-status.cancelled { background: #475569; }
-    .job-status.stalled { background: #d97706; color: #2a1602; }
+    /* F-957 - white ink on a darkened amber (see .log-src-test). */
+    .job-status.stalled { background: #b45309; color: #fff; }
     .job-status.budgetwait { background: #7c3aed; color: #fff; }
     .ai-budget-meter { font-size: 12px; font-weight: 600; color: #7c3aed; white-space: nowrap; }
     html[data-color-mode="dark"] .job-status.queued { background: #22d3ee; color: #06283d; }
@@ -962,7 +972,7 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .job-status.done { background: #22c55e; }
     html[data-color-mode="dark"] .job-status.error { background: #ef4444; }
     html[data-color-mode="dark"] .job-status.cancelled { background: #64748b; }
-    html[data-color-mode="dark"] .job-status.stalled { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .job-status.stalled { background: #bf5309; color: #fff; }
     html[data-color-mode="dark"] .job-status.budgetwait { background: #8b5cf6; color: #fff; }
     html[data-color-mode="dark"] .ai-budget-meter { color: #a78bfa; }
     .job-type-badge {
@@ -1727,7 +1737,9 @@ const injectStyles = () => {
        text; the locked row keeps a SOLID secondary text colour (never opacity /
        a faded wash) so it stays legible while reading as unavailable. */
     .dib-edition { background: #c2410c; }
-    html[data-color-mode="dark"] .dib-edition { background: #f97316; color: #2a1602; }
+    /* F-957 - white ink; the dark fill matches the light one because no lighter orange
+       clears 4.5:1 with white (see .edition-chip.edition-advanced). */
+    html[data-color-mode="dark"] .dib-edition { background: #c2410c; color: #fff; }
     .dropdown-item.dropdown-item-locked {
       cursor: not-allowed;
       color: var(--text-secondary);

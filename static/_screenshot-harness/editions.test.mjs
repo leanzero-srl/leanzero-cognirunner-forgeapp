@@ -298,7 +298,12 @@ try {
       ok(await page.locator(".edition-chip.edition-advanced").count() === 1, "E1 chip carries the advanced class");
       const bg = await chip.first().evaluate((el) => getComputedStyle(el).backgroundColor);
       const fg = await chip.first().evaluate((el) => getComputedStyle(el).color);
-      ok(bg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `E1 chip solid hue per theme (got ${bg})`);
+      /* F-957 - one fill in BOTH themes. The dark theme used to lighten it to #f97316 and
+         darken the ink to near-black to stay legible; white is the rule, so the FILL stopped
+         moving instead. E7 measures the contrast that forced it. */
+      ok(bg === "rgb(194, 65, 12)", `E1 chip solid hue per theme (got ${bg})`);
+      ok(/^rgba?\(255,\s*255,\s*255/.test(fg), `E1 chip ink is white (got ${fg})`);
+      ok(/^rgba?\(/.test(fg) && !/, 0\.\d+\)$/.test(bg), "E1 chip fill is opaque (no faded tint)");
       ok(/^rgba?\(/.test(fg) && !/, 0\.\d+\)$/.test(bg), "E1 chip fill is opaque (no faded tint)");
 
       await tab(page, "Settings");
@@ -374,7 +379,11 @@ try {
       ok(await page.locator(".dropdown-item-locked .dib-edition").count() === 2, "E2 locked rows carry the Coder badge");
       ok((await locked.first().getAttribute("aria-disabled")) === "true", "E2 locked row is aria-disabled");
       const badgeBg = await page.locator(".dib-edition").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(badgeBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `E2 Coder badge solid hue per theme (got ${badgeBg})`);
+      /* F-957 - the badge is #c2410c in BOTH themes now. The dark theme used to lighten it
+         to #f97316 and pay for that with near-black ink; white on #f97316 is 2.80:1, and no
+         orange light enough to read as "one shade lighter" clears AA with white, so the
+         fill stopped moving instead of the text. */
+      ok(badgeBg === "rgb(194, 65, 12)", `E2 Coder badge solid hue per theme (got ${badgeBg})`);
       const lockedOpacity = await locked.first().evaluate((el) => getComputedStyle(el).opacity);
       ok(lockedOpacity === "1", "E2 locked row is NOT faded (opacity 1 — solid colour instead)");
       const lockedCursor = await locked.first().evaluate((el) => getComputedStyle(el).cursor);
@@ -1035,6 +1044,71 @@ try {
       ok(env.errors.length === 0, "E6c no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  x E6c threw: " + e.message.split("\n")[0]); }
     await close(env);
+  }
+  {
+    /* ═══ E7 (F-957) — the seven amber/orange chips carry WHITE ink in BOTH themes ═══
+       They used to paint near-black #2a1602 on a solid orange, two lines under a comment
+       promising "solid saturated fill + white text". The assertion reads the LIVE CSSOM
+       rather than one rendered chip, because five of the seven live behind a tab, a
+       dropdown or a stalled job and a journey that only photographs the reachable ones
+       would call the rest fixed without looking. Contrast is measured, not assumed. */
+    console.log("E7 (F-957) amber/orange chips: white ink + AA contrast, both themes");
+    const SELECTORS = [
+      ".edition-chip.edition-advanced",
+      ".port-status-needs-rebind",
+      ".log-src-test",
+      ".log-flag-capped",
+      ".job-status.stalled",
+      /* The probe must carry the class pair the DOM really uses: CustomSelect renders
+         `dropdown-item-badge dib-<tone>`, and the white ink lives on the base class. */
+      ".dropdown-item-badge.dib-edition",
+    ];
+    for (const theme of ["light", "dark"]) {
+      const env = await openAdmin(browser, theme);
+      const { page } = env;
+      try {
+        /* A PROBE ELEMENT, not a hand-rolled cascade: each selector is mounted as a real
+           span carrying its classes and read with getComputedStyle, so the browser resolves
+           the base rule, the variant rule and the dark override exactly as it does on the
+           live chip. Five of these six live behind a tab, a dropdown or a stalled job, and
+           a journey that only photographed the reachable ones would call the rest fixed. */
+        const res = await page.evaluate((sels) => {
+          const host = document.querySelector(".container") || document.body;
+          const out = [];
+          for (const sel of sels) {
+            const el = document.createElement("span");
+            el.className = sel.split(".").filter(Boolean).join(" ");
+            el.textContent = "Ag";
+            host.appendChild(el);
+            const cs = getComputedStyle(el);
+            out.push({ sel, bg: cs.backgroundColor, fg: cs.color });
+            el.remove();
+          }
+          return out;
+        }, SELECTORS);
+        const rgb = (c) => { const m = String(c).match(/\d+/g); return m ? m.slice(0, 3).map(Number) : null; };
+        const lum = (c) => { const v = c.map((x) => x / 255).map((x) => (x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+        for (const r of res) {
+          const f = rgb(r.fg), b = rgb(r.bg);
+          ok(!!f && !!b, `E7 ${theme} ${r.sel} resolves a fill and an ink (got ${r.bg} / ${r.fg})`);
+          if (!f || !b) continue;
+          ok(f[0] === 255 && f[1] === 255 && f[2] === 255, `E7 ${theme} ${r.sel} ink is WHITE, got ${r.fg}`);
+          const L1 = Math.max(lum(f), lum(b)), L2 = Math.min(lum(f), lum(b));
+          const ratio = (L1 + 0.05) / (L2 + 0.05);
+          ok(ratio >= 4.5, `E7 ${theme} ${r.sel} white-on-fill is AA (${ratio.toFixed(2)}:1 on ${r.bg})`);
+        }
+        // ...and the one chip that is on screen without navigating really renders white.
+        const live = await page.locator(".edition-chip").first().evaluate((el) => getComputedStyle(el).color);
+        ok(/^rgba?\(255,\s*255,\s*255/.test(live), `E7 ${theme} the rendered edition chip is white, got ${live}`);
+        /* A SHOT OF THE REAL CHIPS, not only of the header: the log source and flag chips
+           live on the Execution Logs tab, which is where a reader meets the amber. */
+        await tab(page, "Execution Logs");
+        await page.locator(".tab-panel").first().waitFor({ timeout: 10000 });
+        await shot(page, `f957-chips-${theme}`);
+        ok(env.errors.length === 0, `E7 ${theme} no page errors: ` + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  x E7 threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
   }
 } finally {
   await browser.close();

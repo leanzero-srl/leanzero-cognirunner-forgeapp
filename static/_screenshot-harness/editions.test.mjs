@@ -55,10 +55,13 @@ const shot = async (page, name) => {
    knobs: __MANAGED_MISSING__, __MANAGED_DISABLED__, __MANAGED_SPEND__). Keeping it a bag
    rather than more positional booleans is what stopped this signature growing a fifth and
    sixth flag nobody can read at the call site. */
-async function openAdmin(browser, theme = "light", standard = false, unlicensed = false, extra = {}) {
+/* F-957 - `viewport` is an explicit optional argument so a journey can measure the tab
+   strip at a REAL Jira content width (the defect only appears below ~1300px). Every
+   existing call keeps the 1440 it always had. */
+async function openAdmin(browser, theme = "light", standard = false, unlicensed = false, extra = {}, viewport = { width: 1440, height: 1200 }) {
   const root = ensureFreshBuildShot("admin-panel"); // F-125: never serve a bundle older than src/
   const { s, port } = await serve(root);
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+  const ctx = await browser.newContext({ viewport });
   await ctx.addInitScript(([th, std, unl, ex]) => {
     window.__SHOT__ = "admin"; window.__THEME__ = th;
     if (std) window.__STANDARD__ = true; if (unl) window.__UNLICENSED__ = true;
@@ -298,7 +301,11 @@ try {
       ok(await page.locator(".edition-chip.edition-advanced").count() === 1, "E1 chip carries the advanced class");
       const bg = await chip.first().evaluate((el) => getComputedStyle(el).backgroundColor);
       const fg = await chip.first().evaluate((el) => getComputedStyle(el).color);
-      ok(bg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `E1 chip solid hue per theme (got ${bg})`);
+      /* F-957 - one fill in BOTH themes. The dark theme used to lighten it to #f97316 and
+         darken the ink to near-black to stay legible; white is the rule, so the FILL stopped
+         moving instead. E7 measures the contrast that forced it. */
+      ok(bg === "rgb(194, 65, 12)", `E1 chip solid hue per theme (got ${bg})`);
+      ok(/^rgba?\(255,\s*255,\s*255/.test(fg), `E1 chip ink is white (got ${fg})`);
       ok(/^rgba?\(/.test(fg) && !/, 0\.\d+\)$/.test(bg), "E1 chip fill is opaque (no faded tint)");
 
       await tab(page, "Settings");
@@ -374,7 +381,11 @@ try {
       ok(await page.locator(".dropdown-item-locked .dib-edition").count() === 2, "E2 locked rows carry the Coder badge");
       ok((await locked.first().getAttribute("aria-disabled")) === "true", "E2 locked row is aria-disabled");
       const badgeBg = await page.locator(".dib-edition").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(badgeBg === (theme === "dark" ? "rgb(249, 115, 22)" : "rgb(194, 65, 12)"), `E2 Coder badge solid hue per theme (got ${badgeBg})`);
+      /* F-957 - the badge is #c2410c in BOTH themes now. The dark theme used to lighten it
+         to #f97316 and pay for that with near-black ink; white on #f97316 is 2.80:1, and no
+         orange light enough to read as "one shade lighter" clears AA with white, so the
+         fill stopped moving instead of the text. */
+      ok(badgeBg === "rgb(194, 65, 12)", `E2 Coder badge solid hue per theme (got ${badgeBg})`);
       const lockedOpacity = await locked.first().evaluate((el) => getComputedStyle(el).opacity);
       ok(lockedOpacity === "1", "E2 locked row is NOT faded (opacity 1 — solid colour instead)");
       const lockedCursor = await locked.first().evaluate((el) => getComputedStyle(el).cursor);
@@ -1034,6 +1045,129 @@ try {
       ok(!/anthropic\//.test(String(ph)), "E6c and never the OpenRouter namespaced form");
       ok(env.errors.length === 0, "E6c no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  x E6c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* ═══ E7 (F-957) — the seven amber/orange chips carry WHITE ink in BOTH themes ═══
+       They used to paint near-black #2a1602 on a solid orange, two lines under a comment
+       promising "solid saturated fill + white text". The assertion reads the LIVE CSSOM
+       rather than one rendered chip, because five of the seven live behind a tab, a
+       dropdown or a stalled job and a journey that only photographs the reachable ones
+       would call the rest fixed without looking. Contrast is measured, not assumed. */
+    console.log("E7 (F-957) amber/orange chips: white ink + AA contrast, both themes");
+    const SELECTORS = [
+      ".edition-chip.edition-advanced",
+      ".port-status-needs-rebind",
+      ".log-src-test",
+      ".log-flag-capped",
+      ".job-status.stalled",
+      /* The probe must carry the class pair the DOM really uses: CustomSelect renders
+         `dropdown-item-badge dib-<tone>`, and the white ink lives on the base class. */
+      ".dropdown-item-badge.dib-edition",
+    ];
+    for (const theme of ["light", "dark"]) {
+      const env = await openAdmin(browser, theme);
+      const { page } = env;
+      try {
+        /* A PROBE ELEMENT, not a hand-rolled cascade: each selector is mounted as a real
+           span carrying its classes and read with getComputedStyle, so the browser resolves
+           the base rule, the variant rule and the dark override exactly as it does on the
+           live chip. Five of these six live behind a tab, a dropdown or a stalled job, and
+           a journey that only photographed the reachable ones would call the rest fixed. */
+        const res = await page.evaluate((sels) => {
+          const host = document.querySelector(".container") || document.body;
+          const out = [];
+          for (const sel of sels) {
+            const el = document.createElement("span");
+            el.className = sel.split(".").filter(Boolean).join(" ");
+            el.textContent = "Ag";
+            host.appendChild(el);
+            const cs = getComputedStyle(el);
+            out.push({ sel, bg: cs.backgroundColor, fg: cs.color });
+            el.remove();
+          }
+          return out;
+        }, SELECTORS);
+        const rgb = (c) => { const m = String(c).match(/\d+/g); return m ? m.slice(0, 3).map(Number) : null; };
+        const lum = (c) => { const v = c.map((x) => x / 255).map((x) => (x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+        for (const r of res) {
+          const f = rgb(r.fg), b = rgb(r.bg);
+          ok(!!f && !!b, `E7 ${theme} ${r.sel} resolves a fill and an ink (got ${r.bg} / ${r.fg})`);
+          if (!f || !b) continue;
+          ok(f[0] === 255 && f[1] === 255 && f[2] === 255, `E7 ${theme} ${r.sel} ink is WHITE, got ${r.fg}`);
+          const L1 = Math.max(lum(f), lum(b)), L2 = Math.min(lum(f), lum(b));
+          const ratio = (L1 + 0.05) / (L2 + 0.05);
+          ok(ratio >= 4.5, `E7 ${theme} ${r.sel} white-on-fill is AA (${ratio.toFixed(2)}:1 on ${r.bg})`);
+        }
+        // ...and the one chip that is on screen without navigating really renders white.
+        const live = await page.locator(".edition-chip").first().evaluate((el) => getComputedStyle(el).color);
+        ok(/^rgba?\(255,\s*255,\s*255/.test(live), `E7 ${theme} the rendered edition chip is white, got ${live}`);
+        /* A SHOT OF THE REAL CHIPS, not only of the header: the log source and flag chips
+           live on the Execution Logs tab, which is where a reader meets the amber. */
+        await tab(page, "Execution Logs");
+        await page.locator(".tab-panel").first().waitFor({ timeout: 10000 });
+        await shot(page, `f957-chips-${theme}`);
+        ok(env.errors.length === 0, `E7 ${theme} no page errors: ` + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  x E7 threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+  }
+  {
+    /* ═══ E8 (F-957) — the tab strip never clips a label ═══
+       F-916 made the strip one scrolling row. On macOS the scrollbar is an overlay and is
+       not painted until something scrolls, so at a real Jira width the strip cut
+       "Listeners" to "ners" with no visible affordance at all. It now wraps between
+       GROUPS. The assertion is geometric: every button's box must sit inside the bar's
+       box and must be wide enough for its own text, at the two widths where it broke. */
+    console.log("E8 (F-957) tab strip: no clipped label at 1100 and 1280");
+    for (const width of [1100, 1280]) {
+      for (const theme of ["light", "dark"]) {
+        const env = await openAdmin(browser, theme, false, false, {}, { width, height: 1200 });
+        const { page } = env;
+        try {
+          await page.locator(".tab-bar").waitFor({ timeout: 10000 });
+          const m = await page.evaluate(() => {
+            const bar = document.querySelector(".tab-bar");
+            const bb = bar.getBoundingClientRect();
+            const btns = Array.from(bar.querySelectorAll(".tab-btn")).map((b) => {
+              const r = b.getBoundingClientRect();
+              return { label: b.textContent.trim(), left: r.left, right: r.right, w: r.width, sw: b.scrollWidth, cw: b.clientWidth };
+            });
+            return {
+              barLeft: bb.left, barRight: bb.right, barScroll: bar.scrollWidth, barClient: bar.clientWidth,
+              groups: bar.querySelectorAll(".tab-group").length, rows: new Set(Array.from(bar.querySelectorAll(".tab-btn")).map((b) => Math.round(b.getBoundingClientRect().top))).size,
+              btns,
+            };
+          });
+          ok(m.groups === 4, `E8 ${width} ${theme} the strip renders four groups, got ${m.groups}`);
+          ok(m.barScroll <= m.barClient + 1, `E8 ${width} ${theme} the bar itself does not overflow (${m.barScroll} vs ${m.barClient})`);
+          ok(m.rows <= 2, `E8 ${width} ${theme} at most two rows, got ${m.rows}`);
+          for (const b of m.btns) {
+            ok(b.sw <= b.cw + 1, `E8 ${width} ${theme} "${b.label}" is not clipped inside its button (${b.sw} vs ${b.cw})`);
+            ok(b.left >= m.barLeft - 1 && b.right <= m.barRight + 1, `E8 ${width} ${theme} "${b.label}" sits inside the bar`);
+          }
+          const labels = m.btns.map((b) => b.label);
+          ok(labels.includes("Listeners") && labels.includes("Rules"), `E8 ${width} ${theme} the clipped tabs are present in full, got ${JSON.stringify(labels)}`);
+          await shot(page, `f957-tabstrip-${width}-${theme}`);
+          ok(env.errors.length === 0, `E8 ${width} ${theme} no page errors: ` + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  x E8 threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
+    }
+  }
+  {
+    /* E9 (F-957) - the tab eyebrow lost its "§" glyph. */
+    console.log("E9 (F-957) tab eyebrow carries no section glyph");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".tab-intro-eyebrow").first().waitFor({ timeout: 10000 });
+      const t = (await page.locator(".tab-intro-eyebrow").first().innerText()).trim();
+      ok(!t.includes("§"), `E9 no section sign in the eyebrow, got: ${t}`);
+      ok(t.length > 0, "E9 the eyebrow still says something");
+      ok(env.errors.length === 0, "E9 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E9 threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 } finally {

@@ -191,7 +191,13 @@ const injectStyles = () => {
     }
     .edition-chip.edition-advanced { background: #c2410c; }
     .edition-chip.edition-standard { background: #475569; }
-    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    /* F-957 - WHITE ink, both themes. The dark theme used to lighten this fill to #f97316
+       and then darken the TEXT to near-black to keep it legible, which is the one thing
+       the rule two lines above forbids. White on #f97316 is 2.80:1, so the fix darkens the
+       FILL instead of the text: #c2410c carries white at 5.18:1. No orange light enough to
+       read as "one shade lighter" clears 4.5:1 with white, so the dark fill matches the
+       light one on purpose. */
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
 
     .section {
@@ -498,13 +504,14 @@ const injectStyles = () => {
     .port-status { display: inline-flex; padding: 2px 8px; border-radius: var(--r-sm, 6px); font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #fff; white-space: nowrap; }
     .port-status-ready { background: #16a34a; }
     .port-status-committed { background: #16a34a; }
-    .port-status-needs-rebind { background: #d97706; color: #2a1602; }
+    .port-status-needs-rebind { background: #b45309; color: #fff; }
     .port-status-conflict { background: #4f46e5; }
     .port-status-invalid { background: #dc2626; }
     .port-status-error { background: #dc2626; }
     html[data-color-mode="dark"] .port-status-ready,
     html[data-color-mode="dark"] .port-status-committed { background: #22c55e; }
-    html[data-color-mode="dark"] .port-status-needs-rebind { background: #f59e0b; color: #2a1602; }
+    /* F-957 - white ink; amber darkened one step (white on #f59e0b is 2.15:1, on #bf5309 4.71:1). */
+    html[data-color-mode="dark"] .port-status-needs-rebind { background: #bf5309; color: #fff; }
     html[data-color-mode="dark"] .port-status-conflict { background: #6366f1; }
     html[data-color-mode="dark"] .port-status-invalid,
     html[data-color-mode="dark"] .port-status-error { background: #ef4444; }
@@ -772,18 +779,20 @@ const injectStyles = () => {
     }
     .log-src-runtime { background: #475569; }
     .log-src-async   { background: #4f46e5; }
-    /* amber/orange/cyan need dark ink for WCAG AA — white fails on these hues at 9px
-       (same decision the repo already made for .job-status.* dark below). */
-    .log-src-test    { background: #d97706; color: #2a1602; }
+    /* F-957 - the amber and orange chips now carry WHITE ink, like every other chip on
+       this sheet. White did fail AA on the old fills, but the answer to that is a darker
+       FILL, not darker text: #b45309 and #c2410c carry white at 5.02:1 and 5.18:1. The
+       cyan pair below still uses dark ink and is left for its own owner. */
+    .log-src-test    { background: #b45309; color: #fff; }
     .log-flag-simulated      { background: #0891b2; color: #04141d; }
     .log-flag-transientError { background: #dc2626; }
-    .log-flag-capped         { background: #ea580c; color: #2a1602; }
+    .log-flag-capped         { background: #c2410c; color: #fff; }
     html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
     html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
-    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .log-src-test    { background: #bf5309; color: #fff; }
     html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; color: #04141d; }
     html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
-    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; color: #2a1602; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #c2410c; color: #fff; }
     .lt-validator { background: #2563eb; }
     .lt-condition { background: #7c3aed; }
     .lt-pf, .lt-pf-semantic { background: #0d9488; }
@@ -954,7 +963,8 @@ const injectStyles = () => {
     .job-status.done { background: #16a34a; }
     .job-status.error { background: #dc2626; }
     .job-status.cancelled { background: #475569; }
-    .job-status.stalled { background: #d97706; color: #2a1602; }
+    /* F-957 - white ink on a darkened amber (see .log-src-test). */
+    .job-status.stalled { background: #b45309; color: #fff; }
     .job-status.budgetwait { background: #7c3aed; color: #fff; }
     .ai-budget-meter { font-size: 12px; font-weight: 600; color: #7c3aed; white-space: nowrap; }
     html[data-color-mode="dark"] .job-status.queued { background: #22d3ee; color: #06283d; }
@@ -962,7 +972,7 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .job-status.done { background: #22c55e; }
     html[data-color-mode="dark"] .job-status.error { background: #ef4444; }
     html[data-color-mode="dark"] .job-status.cancelled { background: #64748b; }
-    html[data-color-mode="dark"] .job-status.stalled { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .job-status.stalled { background: #bf5309; color: #fff; }
     html[data-color-mode="dark"] .job-status.budgetwait { background: #8b5cf6; color: #fff; }
     html[data-color-mode="dark"] .ai-budget-meter { color: #a78bfa; }
     .job-type-badge {
@@ -1727,7 +1737,9 @@ const injectStyles = () => {
        text; the locked row keeps a SOLID secondary text colour (never opacity /
        a faded wash) so it stays legible while reading as unavailable. */
     .dib-edition { background: #c2410c; }
-    html[data-color-mode="dark"] .dib-edition { background: #f97316; color: #2a1602; }
+    /* F-957 - white ink; the dark fill matches the light one because no lighter orange
+       clears 4.5:1 with white (see .edition-chip.edition-advanced). */
+    html[data-color-mode="dark"] .dib-edition { background: #c2410c; color: #fff; }
     .dropdown-item.dropdown-item-locked {
       cursor: not-allowed;
       color: var(--text-secondary);
@@ -3726,31 +3738,28 @@ const injectStyles = () => {
        Everything below is a deliberate override of a rule declared earlier in this same
        sheet, so it MUST stay at the end. Keep it together and keep the delimiters.
 
-       THE TAB BAR SCROLLS, IT DOES NOT WRAP. Twelve tabs at a normal admin width wrapped
-       onto a second row, which moved every tab's position whenever the window changed and
-       pushed the page content down by a row. The two ways out were one scrolling row and a
-       grouped bar with a CustomSelect on narrow widths; this is the scrolling row, because
-       grouping hides tabs behind a menu (the Agents tab an admin has never opened is
-       exactly the one they cannot find) and the labels stay legible in one line. The
-       affordance is a REAL scrollbar, sized and coloured to be seen - not a fade over the
-       right edge, which would be the washed-out tint the design rules forbid. */
+       F-957 SUPERSEDES THE SCROLLING ROW. F-916 made this bar one nowrap row with a thin
+       scrollbar as its affordance. On macOS the scrollbar is an OVERLAY: it is not painted
+       until something scrolls, so at a real Jira width with the sidebar open the bar simply
+       cut "Listeners" to "ners" and offered the reader nothing. A clipped label is worse
+       than a second row.
+
+       So the bar WRAPS AGAIN — but it wraps between GROUPS, which is what made the original
+       wrap unusable. Each group (Rules / Agents / Knowledge / Site, declared on TABS) is a
+       nowrap unit, so a narrower window moves a whole group down as a block; tabs never
+       re-shuffle individually and no label is ever clipped. Nothing is hidden behind a menu
+       or a chevron, so the tab an admin has never opened is still the one they can see. */
     .tab-bar {
-      flex-wrap: nowrap;
-      overflow-x: auto;
-      overflow-y: hidden;
-      scrollbar-width: thin;
-      scrollbar-color: #475569 transparent;
-      /* The row must not collapse its buttons to fit; a clipped label is not a tab. */
+      flex-wrap: wrap;
+      overflow: visible;
+      row-gap: 0;
+      column-gap: 14px;
       align-items: stretch;
     }
+    .tab-group { display: flex; flex: 0 0 auto; flex-wrap: nowrap; }
     .tab-bar .tab-btn { flex: 0 0 auto; white-space: nowrap; }
-    .tab-bar::-webkit-scrollbar { height: 6px; }
-    .tab-bar::-webkit-scrollbar-track { background: transparent; }
-    .tab-bar::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
-    html[data-color-mode="dark"] .tab-bar { scrollbar-color: #64748b transparent; }
-    html[data-color-mode="dark"] .tab-bar::-webkit-scrollbar-thumb { background: #64748b; }
-    /* KEYBOARD FOCUS STAYS VISIBLE inside a clipping scroller: an outline drawn outside
-       the button would be cut off by the hidden overflow, so it is drawn inside it. */
+    /* Keyboard focus is drawn INSIDE the button: it used to be clipped by the scroller,
+       and keeping it inside costs nothing now that nothing clips. */
     .tab-bar .tab-btn:focus-visible { outline: 2px solid #2563eb; outline-offset: -3px; border-radius: 4px; }
     html[data-color-mode="dark"] .tab-bar .tab-btn:focus-visible { outline-color: #3b82f6; }
 
@@ -6838,30 +6847,34 @@ const injectCopiedComponentStyles = () => {
 let invoke;
 let router;
 
+/* F-957 - every tab carries a GROUP. The strip wraps between groups and never inside
+   one, so a narrow window moves a whole group down instead of moving every tab and
+   instead of clipping a label to "ners". The DOM order is unchanged on purpose; the
+   group is only a wrap boundary, it is not drawn. */
 const TABS = [
-  { key: "rules", label: "Rules" },
-  { key: "listeners", label: "Listeners" },
-  { key: "jobs", label: "Scheduled Jobs" },
+  { key: "rules", label: "Rules", group: "rules" },
+  { key: "listeners", label: "Listeners", group: "rules" },
+  { key: "jobs", label: "Scheduled Jobs", group: "rules" },
   // 1.5 — the Virtual Administrator. Deliberately NOT adminOnly, for the same reason the
   // Code tab is not: every write behind it is gated by the backend roster, which answers a
   // refusal the tab renders as one ("ask a CogniRunner admin"), and a tab that silently
   // does not exist teaches a reader nothing about a capability they may be entitled to.
-  { key: "agents", label: "Agents" },
-  { key: "logs", label: "Execution Logs" },
-  { key: "docs", label: "Documentation" },
-  { key: "skills", label: "Skills" },
-  { key: "memories", label: "Memories" },
+  { key: "agents", label: "Agents", group: "agents" },
+  { key: "logs", label: "Execution Logs", group: "agents" },
+  { key: "docs", label: "Documentation", group: "knowledge" },
+  { key: "skills", label: "Skills", group: "knowledge" },
+  { key: "memories", label: "Memories", group: "knowledge" },
   // 1.4 commit 14b - the BAKED field guide, beside the three knowledge stores an admin
   // already curates here. Deliberately NOT adminOnly, for the reason the Code tab is not:
   // `getKnowledgePacks` has a VIEWER floor, so a non-admin genuinely can read the state,
   // and only the switch belongs to an admin.
-  { key: "knowledge", label: "Knowledge" },
+  { key: "knowledge", label: "Knowledge", group: "knowledge" },
   // Deliberately NOT adminOnly. Every resolver behind it is requireAdmin, so a
   // non-admin sees the backend's own refusal note - which names the remedy - instead of
   // a tab that silently does not exist and a feature they cannot find out about.
-  { key: "code", label: "Code" },
-  { key: "permissions", label: "Permissions", adminOnly: true },
-  { key: "settings", label: "Settings", adminOnly: true },
+  { key: "code", label: "Code", group: "site" },
+  { key: "permissions", label: "Permissions", adminOnly: true, group: "site" },
+  { key: "settings", label: "Settings", adminOnly: true, group: "site" },
 ];
 
 // One-line "what this is / when to use it" per tab — the single copy source so the
@@ -7967,7 +7980,7 @@ function App() {
 
       {SURFACES[activeTab] && (
         <div className="tab-intro">
-          <span className="tab-intro-eyebrow">§ {SURFACES[activeTab].eyebrow}</span>
+          <span className="tab-intro-eyebrow">{SURFACES[activeTab].eyebrow}</span>
           <span className="tab-intro-what">{SURFACES[activeTab].what}</span>
           {SURFACES[activeTab].terms && (
             <span className="tab-intro-terms">

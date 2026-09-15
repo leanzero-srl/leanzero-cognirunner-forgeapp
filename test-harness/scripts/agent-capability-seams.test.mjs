@@ -166,6 +166,53 @@ const runF811Case = async (name) => {
     await f811Agree("F-811.BLOCK_atlassian_vendor_prefixed", { enabled: false, reason: "needs-frontier-model", provider: "atlassian", agentModel: "claude-haiku-4-5-20251001" });
     return;
   }
+  if (name === "coder-slot-split") {
+    /* F-993 - THE CODER'S ENTRY GATE AND ITS ACTION GATE JUDGED DIFFERENT MODELS.
+     *
+     * Forge LLM, agent slot on a frontier id, coder slot on Haiku. That instance is
+     * ENTITLED to a Virtual Administrator (the VA runs the AGENT slot, which is frontier)
+     * and is NOT entitled to a Coder turn (the coder slot is not a frontier id, and Haiku
+     * never drives an agent on Forge LLM). Before this cut every one of the three doors
+     * read `facts.agentModel`, so the Coder's status card said ENABLED and its entry gate
+     * let the turn START - while the ACTION gate inside the turn
+     * (`buildAgentGateContext({surface:"coder"})`, F-991) refused every git action and the
+     * dispatch ran Haiku. Tokens burnt on a turn that could not do its job.
+     *
+     * SO THE ARMS DELIBERATELY DISAGREE HERE, and that is the assertion: the card is about
+     * the CODER and refuses, the VA verdict is about the AGENT and allows. Every other
+     * case in this file leaves the coder slot UNSET, where the chain falls through
+     * `["coder","agent"]` and the two arms must still agree exactly as they did before -
+     * which is what those six cases now also prove about F-993.
+     */
+    await storage.set("COGNIRUNNER_AI_PROVIDER", "atlassian");
+    await storage.set("COGNIRUNNER_AGENT_MODEL_atlassian", "claude-opus-5");
+    await storage.set("COGNIRUNNER_CODER_MODEL_atlassian", "claude-haiku-4-5-20251001");
+
+    const status = await f811StatusArm();
+    const save = await f811SaveArm();
+
+    eq(status.surface, "coder", "F-993: the status card says WHICH SURFACE its verdict is about");
+    eq(String(status.coderModel), "claude-haiku-4-5-20251001", "F-993: …and names the coder model it judged");
+    eq(status.enabled, false, "F-993: the Coder-branded card REFUSES on a Haiku coder slot");
+    eq(status.reason, "needs-frontier-model", "F-993: …for the reason the coder slot earns");
+    eq(String(status.agentModel), "claude-opus-5", "F-993: …while still reporting the frontier AGENT model, so the card can explain itself");
+
+    eq(save.enabled, true, "F-993: the VA verdict ALLOWS - a Virtual Administrator runs the AGENT slot, which is frontier");
+    eq(save.reason, "forge-frontier", "F-993: …on the reason a Forge LLM Coder-edition instance earns");
+
+    /* THE ENTRY GATE, through the real door. `coderGate` is private, so this asks the
+     * resolver that rides it. The refusal shape (`agentDisabled`) is the one the panel
+     * renders, and its reason must be the CARD's reason, not the VA's. */
+    const { handler } = await import("../../src/index.js");
+    const turn = await handler(
+      { call: { functionKey: "startCoderTurn", payload: { issueKey: "TEST-1", message: "ship it" } }, context: {} },
+      { principal: { accountId: ADMIN } },
+    );
+    eq(turn.success, false, "F-993: the ENTRY gate refuses the turn instead of starting one the action gate will gut");
+    eq(turn.agentDisabled, true, "F-993: …with the capability refusal shape the panel renders");
+    eq(turn.reason, "needs-frontier-model", "F-993: …naming the CODER slot's reason, the same one the card gave");
+    return;
+  }
   fail++; console.log("FAIL: unknown F-811 case", name);
 };
 
@@ -631,7 +678,7 @@ console.log(`agent capability seams (F-485, world ${world}): ${pass} passed, ${f
  * the 30 s provider memo cannot be flipped once index.js has read it. */
 if (!CAP_OFF && fail === 0) {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  for (const c of ["cold-no-row", "memo-managed-row-deleted", "managed-null-slot", "managed-junk-slot", "managed-opus", "atlassian-vendor-prefixed"]) {
+  for (const c of ["cold-no-row", "memo-managed-row-deleted", "managed-null-slot", "managed-junk-slot", "managed-opus", "atlassian-vendor-prefixed", "coder-slot-split"]) {
     const env = { ...process.env, CR_F811_CASE: c };
     // The managed arms need the vendor engine to LOOK deployed, or every one of them
     // answers `managed-key-missing` and proves nothing about the model. The value is a

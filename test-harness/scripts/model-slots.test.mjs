@@ -171,6 +171,44 @@ const { FORGE_LLM_DEFAULT, EDITION_IDS } = await import("../../src/shared/editio
     "no LITERAL slot chain is typed anywhere in src/index.js");
   ok(!/slotChain: \[\s*"/.test(src("async-handler.js")),
     "…nor in the consumer");
+
+  /* ═══ F-993 — NO GATE IN src/ ASKS THE PREDICATE WITHOUT NAMING ITS SURFACE ═══
+   *
+   * The scan above stops a DISPATCH site reaching for the wrong model. This one stops a
+   * GATE judging the wrong model, which is the same defect one layer up and it shipped:
+   * the Coder's ENTRY gate (`coderGate`) called `agentCapability(facts)` directly and so
+   * judged `facts.agentModel`, while every ACTION gate on that same surface rode
+   * `buildAgentGateContext({surface:"coder"})` and judged the CODER model. Forge LLM +
+   * frontier agent slot + Haiku coder slot = the turn STARTS, every git action inside it
+   * is refused, and the dispatch runs Haiku.
+   *
+   * `agentCapability` stays the ONE predicate; what must be single-homed is the hop that
+   * decides WHICH MODEL it is handed, and that home is `capabilityForSurface`
+   * (src/shared/agent-actions.js). So: no file under src/ may call the bare predicate
+   * except the two that legitimately own it — `edition.js`, where it is defined, and
+   * `agent-actions.js`, which is the one home of the hop. Comments are stripped first
+   * (see stripComments), so the explanations at the two former call sites do not trip it.
+   */
+  {
+    const gateFiles = ["index.js", "virtual-admin.js", "coder-engine.js", "async-handler.js", "agent-runner.js", "rules-api.js", "listeners.js", "va-admin.js", "jobs.js"];
+    for (const f of gateFiles) {
+      let body;
+      try { body = src(f); } catch (e) { continue; }
+      const bare = [...body.matchAll(/(?<![A-Za-z0-9_.])agentCapability\s*\(/g)];
+      eq(bare.length, 0, `F-993: src/${f} never calls the bare predicate — it rides capabilityForSurface or buildAgentGateContext`);
+    }
+    // …and the one home really is one: the hop that chooses the model lives in exactly one
+    // function, and the gate-context builder calls IT rather than carrying a second copy.
+    const aa = src("shared/agent-actions.js");
+    eq([...aa.matchAll(/const modelForSurface = /g)].length, 1,
+      "F-993: the surface→model hop is declared exactly once");
+    ok(/export const capabilityForSurface = /.test(aa),
+      "F-993: …and is exported to every gate as capabilityForSurface");
+    ok(/capability: \{ git: provider \? capabilityForSurface\(/.test(aa),
+      "F-993: buildAgentGateContext rides that same function — one implementation, not two");
+    eq([...aa.matchAll(/(?<![A-Za-z0-9_.])agentCapability\s*\(/g)].length, 1,
+      "F-993: …so the predicate itself is called from exactly ONE place in the shared module");
+  }
   // THE BINDER MUST FORWARD IT. Measured while cutting F-991: index.js's binder drops any
   // option it does not name, and a dropped slot chain does not fail loudly — it falls
   // through to the ORDINARY model slot, which is the very defect being fixed.

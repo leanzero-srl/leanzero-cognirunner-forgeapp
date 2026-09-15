@@ -78,7 +78,7 @@ import { lintVoice } from "./shared/voice-lint.js";
 // THE ONE agent-capability predicate (F-482). Pure, and shared with the Coder, the
 // listener gate and the admin's own capability read - a VA must not be the surface that
 // answers this question differently, or not at all.
-import { agentCapability } from "./shared/edition.js";
+import { capabilityForSurface, AGENT_SURFACES } from "./shared/agent-actions.js";
 // `getAgentAction` is how F-571's write-class re-check asks the CATALOGUE what a write is,
 // instead of retyping a list of action ids that the next action added would silently miss.
 import { assertWriteScope, getAgentAction } from "./shared/agent-actions.js";
@@ -2776,7 +2776,14 @@ export const vaCapabilityVerdict = async () => {
     const m = _index || (await import("./index.js"));
     facts = { ...facts, ...(await m.agentGateFacts(null, { fresh: true })) };
   } catch (e) { return { enabled: false, reason: "unknown", ...facts }; }
-  const verdict = facts.provider ? agentCapability(facts) : { enabled: false, reason: "unknown" };
+  // F-993 - THE SURFACE IS NAMED. A Virtual Administrator runs the AGENT slot
+  // (MODEL_SLOT_FOR_SURFACE: va -> ["agent"]), which is exactly what the bare predicate
+  // was already judging, so THIS VERDICT DOES NOT MOVE. It is named anyway because the
+  // question "which model does this gate judge?" now has one home
+  // (`capabilityForSurface`, src/shared/agent-actions.js) and a surface that keeps asking
+  // the predicate directly is the copy that drifts the next time a slot is added - which
+  // is precisely how the Coder's entry gate and its action gates came to disagree.
+  const verdict = facts.provider ? capabilityForSurface({ ...facts, surface: AGENT_SURFACES.VA }) : { enabled: false, reason: "unknown" };
   return { enabled: verdict.enabled === true, reason: verdict.reason, ...facts };
 };
 

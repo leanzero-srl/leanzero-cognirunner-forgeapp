@@ -46,7 +46,10 @@ import {
   resolveEdition, EDITIONS, EDITION_IDS, ADVANCED_FEATURES, isFeatureAllowed,
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, normalizeModelId,
-  agentCapability, agentCapabilityCopy,
+  // F-993 - `agentCapability` itself is no longer imported here: every gate in this file
+  // asks it THROUGH `capabilityForSurface` (or `buildAgentGateContext`), so the model the
+  // verdict judges is chosen in one place. The COPY is still this file's business.
+  agentCapabilityCopy,
   MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_DEFAULT_MODEL, MANAGED_MODELS,
   managedModelAllowed, clampManagedModel,
 } from "./shared/edition.js";
@@ -176,7 +179,7 @@ import { isKnownEvent, buildEventPromptBlock, GIT_EVENT_IDS } from "./shared/jir
 // F-302: the ONE builder of the agent action gate's context. index.js reads the facts
 // (agentGateFacts, below) and NEVER assembles the context shape itself.
 import {
-  buildAgentGateContext, normalizeAllowedActions, getAgentAction, agentActionRefusalText,
+  buildAgentGateContext, capabilityForSurface, normalizeAllowedActions, getAgentAction, agentActionRefusalText,
   // F-463 — the ONE clamp for a rule's skill binding (shape, count, duplicates). The
   // Coder's two paths use the same normalizer a listener's agent block does, so four
   // means four in exactly one place.
@@ -12156,8 +12159,18 @@ resolver.define("getAgentCapability", async ({ context }) => {
     const facts = await agentGateFacts(context, { fresh: true });
     // No provider read = no capability, the same rule buildAgentGateContext applies
     // (F-281): an unanswered question is refused, never assumed.
+    //
+    // F-993 — THE SURFACE IS NAMED, AND IT IS THE CODER. This card is Coder-branded
+    // everywhere it is rendered ("is Coder on?", the Code tab, the Coder panel's off
+    // card), so the question it answers is "can the CODER run" — which means the model it
+    // judges must be the model a Coder turn will dispatch, not the agent slot. It called
+    // `agentCapability(facts)` directly and therefore judged `facts.agentModel`, which on
+    // an instance with a Haiku coder slot and a frontier agent slot said ENABLED about a
+    // turn every action gate on that surface refuses. `capabilityForSurface` is the one
+    // home of that hop (src/shared/agent-actions.js); `coderGate` below rides it too, so
+    // the card and the door can no longer disagree.
     const verdict = facts.provider
-      ? agentCapability(facts)
+      ? capabilityForSurface({ ...facts, surface: AGENT_SURFACES.CODER })
       : { enabled: false, reason: "unknown" };
     return {
       success: true,
@@ -12166,6 +12179,11 @@ resolver.define("getAgentCapability", async ({ context }) => {
       provider: facts.provider,
       edition: facts.edition,
       agentModel: facts.agentModel,
+      // F-993 — WHICH SURFACE THIS VERDICT IS ABOUT, and the model it was judged on. The
+      // reader needs both: "needs a frontier model" next to a frontier `agentModel` reads
+      // as a contradiction until the card can say the refusal is about the CODER slot.
+      surface: AGENT_SURFACES.CODER,
+      coderModel: facts.coderModel,
       allowanceLevel: facts.allowanceLevel,
       // F-954 - for COPY only: may this reader be shown the doors, or the sentence?
       admin: role === "admin",
@@ -12210,7 +12228,15 @@ const coderGate = async (context) => {
   const facts = await agentGateFacts(context, { fresh: true });
   // FAILS TO THE RESTRICTIVE SIDE, like every other consumer of these facts: no provider
   // read means no capability, never an assumed one.
-  const verdict = facts.provider ? agentCapability(facts) : { enabled: false, reason: "unknown" };
+  //
+  // F-993 — THE ENTRY GATE JUDGES THE MODEL THE TURN WILL RUN. This asked
+  // `agentCapability(facts)`, which reads `facts.agentModel`, while every ACTION gate on
+  // this same surface rides `buildAgentGateContext({surface: CODER})` and judges the
+  // CODER model. On Forge LLM with a frontier agent slot and a Haiku coder slot the two
+  // disagreed: the turn was ALLOWED to start, every git action inside it was refused, and
+  // the dispatch ran Haiku — tokens spent on a turn that could not do its job. One
+  // surface, one question, one home for the model hop: `capabilityForSurface`.
+  const verdict = facts.provider ? capabilityForSurface({ ...facts, surface: AGENT_SURFACES.CODER }) : { enabled: false, reason: "unknown" };
   if (!verdict.enabled) {
     return {
       refusal: {

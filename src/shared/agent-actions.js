@@ -972,6 +972,40 @@ const gateActions = (ids, opts) => {
 const modelForSurface = (surface, agentModel, coderModel) =>
   (surface === AGENT_SURFACES.CODER && coderModel !== undefined ? coderModel : agentModel);
 
+/**
+ * F-993 — THE CAPABILITY VERDICT **FOR ONE SURFACE**, and the ONE home of the question
+ * "which model does this gate judge?".
+ *
+ * `agentCapability` (src/shared/edition.js) stays the ONE PREDICATE — it is not copied,
+ * wrapped in new policy, or given a second frontier rule here. What this adds is the hop
+ * that was being made, or NOT made, at each call site: on Forge LLM the predicate judges
+ * a MODEL, and the model a surface runs is decided by `MODEL_SLOT_FOR_SURFACE`, so a gate
+ * that judges `agentModel` while its surface dispatches the coder slot is asking about a
+ * model nobody will run.
+ *
+ * THAT WAS A LIVE SPLIT. The Coder's ENTRY gate (`coderGate`, src/index.js) called
+ * `agentCapability(facts)` directly and therefore judged the AGENT model, while every
+ * ACTION gate on the same surface rode `buildAgentGateContext({surface:"coder"})` and
+ * judged the CODER model. Forge LLM + a frontier agent slot + a Haiku coder slot =
+ * entry ALLOWS, the action gate REFUSES every git action, and the dispatch runs Haiku: a
+ * turn starts, burns tokens and cannot do its job. One surface, two answers, is the
+ * defect — not either answer on its own.
+ *
+ * EVERY CALLER NAMES ITS SURFACE. An omitted surface answers the AGENT model, which is
+ * what every pre-F-991 caller meant and what an instance with no coder slot resolves
+ * anyway, so naming nothing moves no verdict; naming `coder` is what makes the entry gate
+ * and the action gate agree.
+ *
+ * NO PROVIDER IS NOT HANDLED HERE, deliberately: the two families of caller give the same
+ * refusal a different CODE — the gate context says `capability-off:git` (it is building a
+ * capability map) and the resolvers say `unknown` (they are answering a status card). The
+ * rule itself is identical and is stated at both sites: an unanswered question is
+ * refused, never assumed. FAILS CLOSED, and this is not the fail-open contract validators
+ * and conditions carry.
+ */
+export const capabilityForSurface = ({ surface = null, provider = null, edition = null, agentModel = null, coderModel = undefined, allowanceLevel = null, managedKeyPresent = undefined } = {}) =>
+  agentCapability({ provider, edition, agentModel: modelForSurface(surface, agentModel, coderModel), allowanceLevel, managedKeyPresent });
+
 // F-991 — `coderModel` is the model the CODER SURFACE will run, and it is here for one
 // reason: the gate must judge the model that is actually going to be dispatched. Before
 // the coder slot existed there was only one agent model and the question could not be
@@ -996,7 +1030,7 @@ export const buildAgentGateContext = ({ edition = null, provider = null, agentMo
   // the same fallthrough the dispatch chain performs; for every other surface it is the
   // agent model, unchanged. `agentCapability` keeps ONE frontier rule and is simply told
   // which model to apply it to.
-  capability: { git: provider ? agentCapability({ provider, edition, agentModel: modelForSurface(surface, agentModel, coderModel), allowanceLevel, managedKeyPresent }) : { enabled: false, reason: "capability-off:git" } },
+  capability: { git: provider ? capabilityForSurface({ surface, provider, edition, agentModel, coderModel, allowanceLevel, managedKeyPresent }) : { enabled: false, reason: "capability-off:git" } },
   // `surface` is a PASS-THROUGH too (F-865), and it is normally left null here: the RUN
   // sites that build a context are the listener and job runners, and null is the answer
   // they want. The Virtual Administrator never reaches this builder — its tool list is

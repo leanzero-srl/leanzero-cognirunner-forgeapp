@@ -85,3 +85,67 @@ export const HAIKU_ON_BYOK_SENTENCE =
 
 /** Does this id name a Haiku-class model? Display only, never access control. */
 export const looksLikeHaiku = (id) => /haiku/i.test(String(id || ""));
+
+/**
+ * THE THREE MODEL SLOTS, IN ONE HOME (F-991).
+ *
+ * This card writes THREE separate KVS slots and, before F-991, each one described itself
+ * in a string typed into the renderer. That was already one claim too many: the agent
+ * block's own comment said "Coder and the Virtual Administrators run on it", which stayed
+ * on screen after the Coder turn moved to a slot of its own, and became simply false.
+ *
+ * A slot's description is a PRODUCT fact - what does this model actually drive - and not
+ * a rendering detail, so it lives here beside the provider and edition names and is read
+ * by the renderer. The harness reads the same map, which is what stops a journey from
+ * pinning a wording the panel no longer uses.
+ *
+ * `select`, `save` and `savedToast` are here for the same reason: three save buttons that
+ * each name their own slot is a rule (F-971), and a rule with three copies is a rule
+ * waiting to drift.
+ */
+export const MODEL_SLOT_COPY = {
+  /* The ordinary model. F-971 named what it drives so it could not be read as a global
+     default that the other two override. */
+  model: {
+    label: "Model for validators and rules",
+  },
+  agent: {
+    label: "Agent model",
+    select: "Select an agent model...",
+    save: "Save Agent Model",
+    savedToast: "Agent model saved",
+    /* F-991 - the Coder turn and the PR review are NOT on this slot any more. */
+    drives: "Used by Virtual Administrators and by listener and job agents. Validators and rules keep using the model above.",
+    ariaLabel: "Agent model",
+    /* The harness's handles for this slot's own elements. They are
+       class names and nothing more - no rule hangs off them (the shared
+       `.model-pick-back` carries the styling) - but they live here so a journey
+       and the renderer cannot disagree about which slot it is looking at. */
+    blockClass: "model-slot-agent",
+    pickBackClass: "agent-model-pick-back",
+    fallbackNoteClass: "agent-model-fallback-note",
+    upgradeError: "The agent model is part of CogniRunner Coder. The Coder note under the agent model carries the upgrade link.",
+    forgeOffSentence: "On Atlassian Forge LLM the agent model needs the Coder edition AND Claude Sonnet 5 or Opus 5, so an upgrade on its own still leaves it off. Pointing CogniRunner at your own provider key turns it on with no upgrade at all.",
+  },
+  coder: {
+    label: "Coder model",
+    select: "Select a coder model...",
+    save: "Save Coder Model",
+    savedToast: "Coder model saved",
+    /* The owner's own framing for why this slot exists: Haiku for the cheapest work,
+       Sonnet for the agents, Opus for the Coder. Writing code and reviewing a pull
+       request is the heaviest turn the app takes, and it was sharing one slot with
+       every agent tick. */
+    drives: "Used by the Coder and by PR review. Validators and rules keep using the model above.",
+    ariaLabel: "Coder model",
+    /* The harness's handles for this slot's own elements. They are
+       class names and nothing more - no rule hangs off them (the shared
+       `.model-pick-back` carries the styling) - but they live here so a journey
+       and the renderer cannot disagree about which slot it is looking at. */
+    blockClass: "model-slot-coder",
+    pickBackClass: "coder-model-pick-back",
+    fallbackNoteClass: "coder-model-fallback-note",
+    upgradeError: "The coder model is part of CogniRunner Coder. The Coder note under the coder model carries the upgrade link.",
+    forgeOffSentence: "On Atlassian Forge LLM the coder model needs the Coder edition AND Claude Sonnet 5 or Opus 5, so an upgrade on its own still leaves it off. Pointing CogniRunner at your own provider key turns it on with no upgrade at all.",
+  },
+};

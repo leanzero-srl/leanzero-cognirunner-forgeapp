@@ -85,12 +85,25 @@ const { allowanceResetLabel, monthKey } = await import("../../src/shared/usage-m
 
 /* F-955 - the agent model is a PICKER now; typing an id is the last row. Every journey
    that needs the text box walks the same two clicks, so the path is written once. */
-async function openAgentTypingBox(page) {
-  await page.locator('[aria-label="Agent model"]').first().click();
+/* F-991 - and now there are TWO such pickers, so the walk takes the slot's aria label.
+   It defaults to the agent slot, which is what every journey written before the Coder
+   slot existed means. The label comes from MODEL_SLOT_COPY below, never retyped. */
+async function openAgentTypingBox(page, label = "Agent model") {
+  await page.locator(`[aria-label="${label}"]`).first().click();
   await page.waitForTimeout(200);
-  await page.locator(".dropdown-item", { hasText: "Other (type an id)" }).first().click();
+  /* `.last()` on purpose: both pickers render an "Other (type an id)" row, and only the
+     OPEN panel's row is clickable - but a `.first()` here matched the agent panel's row
+     in the DOM even while the coder panel was the one showing. Scope to the open panel. */
+  await page.locator(".dropdown-panel .dropdown-item", { hasText: "Other (type an id)" }).first().click();
   await page.waitForTimeout(200);
 }
+
+/* F-991 - THE SLOT COPY THE PANEL ITSELF READS. Imported rather than retyped so a
+   journey can never pin a label the panel has stopped using - the failure mode this file
+   already met once when the agent block described itself in a comment. */
+const { MODEL_SLOT_COPY } = await import("../admin-panel/src/components/productNames.js");
+/* The two slots that own a model picker of their own, as the journeys walk them. */
+const AGENT_AND_CODER = [MODEL_SLOT_COPY.agent, MODEL_SLOT_COPY.coder];
 
 // Switch the provider picker to Forge LLM — that is where the edition rules bite.
 async function pickForgeLlm(page) {
@@ -340,7 +353,14 @@ try {
         "E1 browsing Forge LLM does not show an allowance to a BYOK-ACTIVE tenant");
       const body = await page.locator(".container").innerText();
       ok(body.includes("Sonnet 5 and Opus 5 unlocked."), "E1 unlocked notice on Coder");
-      ok(body.includes("Used by Coder and Virtual Administrators."), "E1 agent-model help text");
+      /* F-991 - this used to pin "Used by Coder and Virtual Administrators.", which was
+         the agent slot describing work it no longer does. Both slots are read from
+         MODEL_SLOT_COPY now, so the journey follows a rename instead of failing on one. */
+      for (const slot of AGENT_AND_CODER) {
+        ok(body.includes(slot.drives), `E1 ${slot.label} help text, from MODEL_SLOT_COPY`);
+      }
+      ok(!body.includes("Used by Coder and Virtual Administrators."),
+        "E1 the retired one-slot sentence is gone from the card");
       ok(!body.includes("upgrade in Jira"), "E1 no upgrade prompt on Coder");
       ok(await page.locator(".dropdown-item-locked").count() === 0, "E1 no locked rows on Coder (panel closed)");
       await shot(page, `E1-coder-settings-${theme}`);
@@ -427,10 +447,20 @@ try {
       ok(body.includes("On Atlassian Forge LLM the agent model needs the Coder edition AND Claude Sonnet 5 or Opus 5"), "E2 agent-model upgrade line names BOTH requirements");
       // ...and it says it ONCE. The same fact repeated three times on one screen is what
       // the walk called noise; the status card carries the long form, this slot the short.
-      ok((body.match(/needs the Coder edition AND Claude Sonnet 5 or Opus 5/g) || []).length === 2,
-        "E2 the frontier requirement is stated once per off state, not three times");
-      // Two off states on this screen (key status + agent model), each with its own link.
-      ok(await page.locator(".agent-off a.agent-off-link").count() === 2, "E2 the agent-model note has a real link too");
+      /* F-991 - the count is DERIVED from the number of off states on the screen, not
+         pinned at two. There are now three (key status, agent model, coder model) and the
+         rule being asserted is unchanged: ONCE per off state, never repeated within one. */
+      const OFF_STATES = 1 + AGENT_AND_CODER.length;
+      ok((body.match(/needs the Coder edition AND Claude Sonnet 5 or Opus 5/g) || []).length === OFF_STATES,
+        `E2 the frontier requirement is stated once per off state (want ${OFF_STATES}, got ${(body.match(/needs the Coder edition AND Claude Sonnet 5 or Opus 5/g) || []).length})`);
+      /* ...and each slot names ITSELF in that sentence, so an admin reading three of them
+         can tell which control each one is about. */
+      for (const slot of AGENT_AND_CODER) {
+        ok(body.includes(slot.forgeOffSentence), `E2 the ${slot.label} off state names its own slot`);
+      }
+      // Every off state on this screen carries its own real link.
+      ok(await page.locator(".agent-off a.agent-off-link").count() === OFF_STATES,
+        "E2 each model slot's note has a real link too");
       ok(!/[\u2013\u2014]/.test(body), "E2 no em dash or en dash anywhere on the Standard settings screen");
       await shot(page, `E2-standard-settings-${theme}`);
       ok(env.errors.length === 0, "E2 no page errors: " + env.errors.join(" | "));
@@ -630,11 +660,15 @@ try {
         await page.keyboard.press("Escape");
         await page.waitForTimeout(200);
 
-        // Agent model on this provider: a CustomSelect with the SAME list, not free text.
-        const agentSel = page.locator('[aria-label="Agent model"]');
-        ok(await agentSel.count() >= 1, "E4b an agent model control exists on the managed engine");
-        const agentIsInput = await page.locator('input[aria-label="Agent model"]').count();
-        ok(agentIsInput === 0, "E4b the managed agent model is a CustomSelect, never a free-text input");
+        /* Agent AND Coder models on this provider: a CustomSelect with the SAME list,
+           not free text. F-991 - the Coder slot is asserted as the agent slot's twin
+           rather than trusted to have inherited the rule. */
+        for (const slot of AGENT_AND_CODER) {
+          const sel = page.locator(`[aria-label="${slot.ariaLabel}"]`);
+          ok(await sel.count() >= 1, `E4b a ${slot.label} control exists on the managed engine`);
+          const isInput = await page.locator(`input[aria-label="${slot.ariaLabel}"]`).count();
+          ok(isInput === 0, `E4b the managed ${slot.label} is a CustomSelect, never a free-text input`);
+        }
         await shot(page, `E4b-managed-available-${theme}`);
         ok(env.errors.length === 0, "E4b no page errors: " + env.errors.join(" | "));
       } catch (e) { fail++; console.log("  ✗ E4b threw: " + e.message.split("\n")[0]); }
@@ -889,23 +923,27 @@ try {
     {
       const { FORGE_LLM_DEFAULT } = await import("../../src/shared/edition.js");
       const expectedCopy = agentCapabilityCopy("needs-coder-edition");
+      /* F-991 - BOTH SLOTS. The Coder picker resolves through the same chain and can
+         land on the same out-of-frontier id, so the same defect - a placeholder painted
+         over a model that is already running - is available to it verbatim. */
       for (const theme of ["light", "dark"]) {
-        console.log(`E4f Standard + Forge LLM agent model (${theme})`);
+       for (const slot of AGENT_AND_CODER) {
+        console.log(`E4f Standard + Forge LLM ${slot.label.toLowerCase()} (${theme})`);
         const env = await openAdmin(browser, theme, true, false, { __PROVIDER__: "atlassian" });
         const { page } = env;
         try {
           await tab(page, "Settings");
           await page.waitForTimeout(600);
-          const trigger = page.locator('button.dropdown-trigger[aria-label="Agent model"]').first();
-          ok(await trigger.count() === 1, "E4f the agent model picker is a CustomSelect trigger");
+          const trigger = page.locator(`button.dropdown-trigger[aria-label="${slot.ariaLabel}"]`).first();
+          ok(await trigger.count() === 1, `E4f the ${slot.label.toLowerCase()} picker is a CustomSelect trigger`);
           const label = (await trigger.innerText()).trim();
           ok(label.includes(FORGE_LLM_DEFAULT),
-            `E4f the trigger shows the RESOLVED agent model (want ${FORGE_LLM_DEFAULT}, got "${label}")`);
-          ok(!/Select an agent model/i.test(label),
+            `E4f the trigger shows the RESOLVED model (want ${FORGE_LLM_DEFAULT}, got "${label}")`);
+          ok(label !== slot.select,
             `E4f the trigger is NOT the placeholder over a resolved model (got "${label}")`);
 
           // The reason, readable without opening the dropdown.
-          const note = page.locator(".agent-model-fallback-note").first();
+          const note = page.locator(`.${slot.fallbackNoteClass}`).first();
           ok(await note.count() === 1, "E4f the fallback reason note is rendered");
           const noteTxt = (await note.innerText()).trim();
           ok(noteTxt.startsWith(expectedCopy.title),
@@ -923,7 +961,7 @@ try {
             return { l: cs.borderLeftWidth, t: cs.borderTopWidth };
           });
           ok(rail.l === rail.t, `E4f the fallback note has no left accent rail (l=${rail.l} t=${rail.t})`);
-          await shot(page, `E4f-agent-model-fallback-${theme}`);
+          await shot(page, `E4f-${slot.ariaLabel.toLowerCase().split(" ").join("-")}-fallback-${theme}`);
 
           // Open it: the resolved id is a row, and a LOCKED one - named, never offered.
           await trigger.click();
@@ -948,12 +986,13 @@ try {
              shot does not contain it. Photograph the element itself. */
           if (SHOTS) {
             await page.locator(".dropdown-panel").first()
-              .screenshot({ path: path.join(OUT, `E4f-agent-model-locked-row-${theme}.png`) });
+              .screenshot({ path: path.join(OUT, `E4f-${slot.ariaLabel.toLowerCase().split(" ").join("-")}-locked-row-${theme}.png`) });
           }
           await page.keyboard.press("Escape");
           ok(env.errors.length === 0, "E4f no page errors: " + env.errors.join(" | "));
         } catch (e) { fail++; console.log("  ✗ E4f threw: " + e.message.split("\n")[0]); }
         await close(env);
+       }
       }
     }
   }
@@ -1089,10 +1128,15 @@ try {
       /* F-955 - the box is now REACHED, not rendered by default: the agent model is a
          picker over the provider's live list and typing is the last row. The
          placeholder rule it is testing is unchanged, so the journey walks to it. */
-      await openAgentTypingBox(page);
-      const ph = await page.locator('input[aria-label="Agent model"]').first().getAttribute("placeholder");
-      ok(ph === "e.g. claude-sonnet-5", `E6c Anthropic gets an Anthropic id, got: ${ph}`);
-      ok(!/anthropic\//.test(String(ph)), "E6c and never the OpenRouter namespaced form");
+      /* F-991 - BOTH typeable slots, ONE placeholder table. The Coder box is asserted
+         here rather than trusted: a second placeholder table is exactly the shape the
+         original defect had, and it would be invisible on the agent box alone. */
+      for (const slot of AGENT_AND_CODER) {
+        await openAgentTypingBox(page, slot.ariaLabel);
+        const ph = await page.locator(`input[aria-label="${slot.ariaLabel}"]`).first().getAttribute("placeholder");
+        ok(ph === "e.g. claude-sonnet-5", `E6c ${slot.label}: Anthropic gets an Anthropic id, got: ${ph}`);
+        ok(!/anthropic\//.test(String(ph)), `E6c ${slot.label}: and never the OpenRouter namespaced form`);
+      }
       ok(env.errors.length === 0, "E6c no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  x E6c threw: " + e.message.split("\n")[0]); }
     await close(env);
@@ -1230,8 +1274,14 @@ try {
      - it is still accepted, because the list can be stale, invisible to a
      fine-grained key, or simply not carry an inference-profile id.
      ================================================================== */
+  /* F-991 - AND THE SAME JOURNEY FOR THE CODER SLOT. Every assertion below is a rule
+     about a model picker, not about the agent slot in particular, so the walk is taken
+     TWICE with the slot's own aria label and its own "Pick from list" handle. A Coder
+     picker that quietly shared the agent's state, lost the "Other" row, or offered a
+     different list for the same key fails here and nowhere else. */
   for (const theme of ["light", "dark"]) {
-    console.log(`E7 agent model picker over the live list (${theme})`);
+   for (const slot of AGENT_AND_CODER) {
+    console.log(`E7 ${slot.label.toLowerCase()} picker over the live list (${theme})`);
     const env = await openAdmin(browser, theme);
     const { page } = env;
     try {
@@ -1239,9 +1289,9 @@ try {
       await page.locator(".usage-card").waitFor({ timeout: 10000 });
 
       // (a) it is the app's own primitive, never a native <select> (owner mandate).
-      const control = page.locator('[aria-label="Agent model"]').first();
+      const control = page.locator(`[aria-label="${slot.ariaLabel}"]`).first();
       const tagName = await control.evaluate((el) => el.tagName);
-      ok(tagName !== "SELECT", `E7 the agent model is never a native select (got ${tagName})`);
+      ok(tagName !== "SELECT", `E7 the ${slot.label.toLowerCase()} is never a native select (got ${tagName})`);
       ok(await control.evaluate((el) => el.classList.contains("dropdown-trigger")),
         "E7 ...it is the app's CustomSelect trigger");
 
@@ -1249,7 +1299,9 @@ try {
       //     picker renders - plus exactly one "Other" row, and nothing invented.
       await control.click();
       await page.waitForTimeout(200);
-      const labels = (await page.locator(".dropdown-item").allTextContents()).map((t) => t.trim());
+      /* Scoped to the OPEN panel: with two model pickers on this card an unscoped
+         `.dropdown-item` sweeps rows belonging to the other one. */
+      const labels = (await page.locator(".dropdown-panel .dropdown-item").allTextContents()).map((t) => t.trim());
       const { invoke: e7invoke } = await import("./bridge.js");
       const live = (await e7invoke("getOpenAIModels", { provider: "anthropic" })).models || [];
       for (const id of live) {
@@ -1262,12 +1314,15 @@ try {
 
       // (c) the escape hatch still accepts any id - the earlier decision to allow
       //     typing is preserved, it just stopped being silent.
-      await openAgentTypingBox(page);
-      const box = page.locator('input[aria-label="Agent model"]').first();
+      await openAgentTypingBox(page, slot.ariaLabel);
+      const box = page.locator(`input[aria-label="${slot.ariaLabel}"]`).first();
       ok(await box.count() === 1, "E7 the Other row reveals a text input");
       await box.fill("some-model-nobody-lists");
       await page.waitForTimeout(250);
-      const note = page.locator(".model-unlisted-note").first();
+      /* Scoped to THIS slot's block: the other slot carries a note of its own from the
+         fixture, and an unscoped locator read it instead - which is how the negative
+         control below passed against the wrong element on the first cut. */
+      const note = page.locator(`.${slot.blockClass} .model-unlisted-note`).first();
       ok(await note.count() === 1, "E7 an unlisted id is called out");
       const noteTxt = (await note.innerText()).trim();
       ok(/not in the list your provider returned/.test(noteTxt),
@@ -1289,7 +1344,7 @@ try {
          renders. `..` because "Pick from list" sits INSIDE the input's own wrapper
          and Save is the wrapper's sibling - an anchor on the button alone finds
          nothing, which is how this locator was wrong the first time. */
-      const saveBtn = page.locator(".agent-model-pick-back")
+      const saveBtn = page.locator(`.${slot.pickBackClass}`)
         .locator("xpath=../following-sibling::button[1]").first();
       ok(await saveBtn.count() === 1, "E7 the Save button is beside the typed id");
       ok(!(await saveBtn.isDisabled()), "E7 an unlisted id can still be saved");
@@ -1297,22 +1352,35 @@ try {
       // (e) NEGATIVE CONTROL: an id that IS in the live list draws no note at all.
       await box.fill(live[0]);
       await page.waitForTimeout(250);
-      ok(await page.locator(".model-unlisted-note").count() === 0,
-        `E7 a listed id (${live[0]}) draws no note`);
+      ok(await page.locator(`.${slot.blockClass} .model-unlisted-note`).count() === 0,
+        `E7 a listed id (${live[0]}) draws no note in the ${slot.label}`);
 
       // (f) "Pick from list" returns to the picker and restores the SAVED id, never
       //     leaving a half-typed string standing where a resolved model belongs.
       await box.fill("half-typed-");
-      await page.locator(".agent-model-pick-back").first().click();
+      await page.locator(`.${slot.pickBackClass}`).first().click();
       await page.waitForTimeout(250);
-      ok(await page.locator('input[aria-label="Agent model"]').count() === 0, "E7 the box closes");
-      const back = (await page.locator('[aria-label="Agent model"]').first().innerText()).trim();
+      ok(await page.locator(`input[aria-label="${slot.ariaLabel}"]`).count() === 0, "E7 the box closes");
+      const back = (await page.locator(`[aria-label="${slot.ariaLabel}"]`).first().innerText()).trim();
       ok(!back.includes("half-typed-"), `E7 ...and the abandoned text is gone (got "${back}")`);
 
-      await shot(page, `E7-agent-model-picker-${theme}`);
+      /* F-991 - THE TWO SLOTS ARE NOT ONE PIECE OF STATE. The cheapest way to wire a
+         second picker wrongly is to hand it the first one's value, and every assertion
+         above would still pass. So: type into THIS slot and read the OTHER one back. */
+      const other = AGENT_AND_CODER.find((o) => o !== slot);
+      await openAgentTypingBox(page, slot.ariaLabel);
+      await page.locator(`input[aria-label="${slot.ariaLabel}"]`).first().fill("only-this-slot");
+      await page.waitForTimeout(250);
+      const otherTxt = (await page.locator(`[aria-label="${other.ariaLabel}"]`).first().inputValue().catch(async () =>
+        (await page.locator(`[aria-label="${other.ariaLabel}"]`).first().innerText()))).trim();
+      ok(!otherTxt.includes("only-this-slot"),
+        `E7 typing in the ${slot.label} does not change the ${other.label} (got "${otherTxt}")`);
+
+      await shot(page, `E7-${slot.ariaLabel.toLowerCase().split(" ").join("-")}-picker-${theme}`);
       ok(env.errors.length === 0, "E7 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  x E7 threw: " + e.message.split("\n")[0]); }
     await close(env);
+   }
   }
 
   /* ==================================================================
@@ -1517,8 +1585,26 @@ try {
 
           /* THE LABEL SAYS WHAT THE MODEL DRIVES (F-971 #7), so it cannot be read as a
              global default that the Agent model overrides. */
-          ok(cardTxt.includes("Model for validators and rules"),
+          ok(cardTxt.includes(MODEL_SLOT_COPY.model.label),
             "E10a the Model label names what it drives");
+
+          /* F-991 - THREE SLOTS, THREE HONEST DESCRIPTIONS, ONE HOME. The card is read
+             as a whole because the defect this replaces was a TRUE sentence in the wrong
+             place: the agent block claimed the Coder turn, which was correct until the
+             Coder got a slot of its own and then quietly was not. */
+          for (const slot of AGENT_AND_CODER) {
+            ok(cardTxt.includes(slot.label), `E10a the ${slot.label} control is on the card`);
+            ok(cardTxt.includes(slot.drives), `E10a ...and says what it drives, from MODEL_SLOT_COPY`);
+          }
+          /* The retired claim, as a PROPERTY of the card: no surface may tell an admin
+             that the agent model runs the Coder any more. */
+          ok(!/[Aa]gent model[^.]*\bCoder\b[^.]*run/.test(cardTxt),
+            "E10a nothing on the card still says the agent model runs the Coder");
+          ok(MODEL_SLOT_COPY.agent.drives !== MODEL_SLOT_COPY.coder.drives,
+            "E10a ...and the two slots do not share one description");
+          /* POSITIVE CONTROL for the scan above, so a green result means "absent". */
+          ok(/[Aa]gent model[^.]*\bCoder\b[^.]*run/.test("The agent model is the slot Coder and the Virtual Administrators run on"),
+            "E10a ...and the scan can see that claim when it is present");
 
           /* F-971 - NO UNQUALIFIED HAIKU CLAIM ANYWHERE ON THIS CARD. Three surfaces in
              this repo asserted the Haiku limit and one of them (the Forge-LLM agent note)
@@ -1599,8 +1685,12 @@ try {
          DIFFERENT reason from the other two, and before F-971 all three said "Coder".
          The expected words come from AGENT_MODEL_LOCK_BADGE, so this asserts the UI
          agrees with the policy rather than pinning a wording. */
-      {
-        console.log(`E10c agent-model rows are badged by REASON, not all "Coder" (${theme})`);
+      for (const slot of AGENT_AND_CODER) {
+        /* F-991 - MEASURED ON BOTH PICKERS. The 320px constraint that clipped
+           "Not an agent model" (src/shared/edition.js:520-534) is a property of the row,
+           and the Coder picker is the same 320px row with the same badges - so the clip
+           check is taken there too rather than inferred from the agent's result. */
+        console.log(`E10c ${slot.label.toLowerCase()} rows are badged by REASON, not all "Coder" (${theme})`);
         /* Forge-LLM-ACTIVE and Standard, the same fixture E4f uses - browsing to Forge
            LLM from a BYOK-active tenant leaves other controls mid-transition and the
            agent picker is the one this journey needs settled. */
@@ -1622,13 +1712,13 @@ try {
 
           /* Open the AGENT picker (not the rule-model one above it) by its aria label,
              the same handle E4f uses for the trigger. */
-          await page.locator('button.dropdown-trigger[aria-label="Agent model"]').first().click();
+          await page.locator(`button.dropdown-trigger[aria-label="${slot.ariaLabel}"]`).first().click();
           await page.waitForTimeout(400);
           /* Read the rows as TEXT rather than through per-row locators: on Standard the
              rows are disabled, and a disabled row is not a stable locator target. */
           const rows = await page.locator(".dropdown-panel .dropdown-item")
             .evaluateAll((els) => els.map((el) => (el.innerText || "").trim()));
-          ok(rows.length > 0, `E10c the agent picker opened with rows (got ${rows.length})`);
+          ok(rows.length > 0, `E10c the ${slot.label.toLowerCase()} picker opened with rows (got ${rows.length})`);
           const rowText = (id) => rows.find((r) => r.includes(id)) || "";
 
           const haikuTxt = rowText(FORGE_LLM_DEFAULT);
@@ -1671,9 +1761,9 @@ try {
               .filter((el) => el.scrollWidth > el.clientWidth + 1)
               .map((el) => `${el.textContent} (${el.scrollWidth}>${el.clientWidth})`));
           ok(clipped.length === 0,
-            `E10c no agent-model badge is clipped in ${theme} (got ${JSON.stringify(clipped)})`);
+            `E10c no ${slot.label.toLowerCase()} badge is clipped in ${theme} (got ${JSON.stringify(clipped)})`);
 
-          await shot(page, `E10c-agent-badges-${theme}`);
+          await shot(page, `E10c-${slot.ariaLabel.toLowerCase().split(" ").join("-")}-badges-${theme}`);
           ok(env.errors.length === 0, "E10c no page errors: " + env.errors.join(" | "));
         } catch (e) { fail++; console.log("  x E10c threw: " + e.message.split("\n")[0]); }
         await close(env);

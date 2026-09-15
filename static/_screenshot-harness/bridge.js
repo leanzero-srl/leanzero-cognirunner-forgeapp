@@ -2265,7 +2265,18 @@ function invoke(name, payload) {
         isByok: false, edition: edName(), clamped: isStandardEd(),
       });
       return Promise.resolve({ success: true, model: FORGE_HAIKU, isByok: true, edition: edName(), clamped: false });
-    case "getAgentModel":
+    case "getAgentModel": {
+      /* F-991 - THE SLOT. `getAgentModel`/`saveAgentModel` now take
+         `{ slot: "agent" | "coder" }` and DEFAULT to "agent", so an older caller keeps
+         reading the agent slot exactly as before. The mock honours the same default, and
+         the Coder slot gets its own forcing knob (`window.__CODER_MODEL__`) so a journey
+         can put DIFFERENT ids in the two pickers - which is the only fixture that can
+         catch the two controls being wired to one piece of state. */
+      const slot = (payload && payload.slot) || "agent";
+      if (slot === "coder" && payload && payload.provider !== MANAGED_PROVIDER_ID && payload.provider !== "atlassian"
+          && typeof window !== "undefined" && window.__CODER_MODEL__) {
+        return Promise.resolve({ success: true, model: String(window.__CODER_MODEL__), edition: edName(), frontierOnly: false });
+      }
       /* F-914 - `window.__AGENT_MODEL__` forces the saved agent model for a BYOK
          provider, so a journey can model the one state the walk asked about: Haiku on a
          customer's own key, which agentCapability() ALLOWS (provider !== "atlassian"
@@ -2290,11 +2301,18 @@ function invoke(name, payload) {
         return Promise.resolve({ success: true, model: isStandardEd() ? FORGE_HAIKU : FORGE_FRONTIER[0], edition: edName(), frontierOnly: true });
       }
       return Promise.resolve({ success: true, model: MANAGED_MODELS[1], edition: edName(), frontierOnly: false });
-    case "saveAgentModel":
+    }
+    case "saveAgentModel": {
+      /* The refusal is the SLOT'S OWN, named in the error, because an admin who saved
+         both and was refused once needs to know which one did not land. `featureId`
+         stays `agentModel`: the entitlement is one gate for both slots. */
+      const saveSlot = (payload && payload.slot) || "agent";
       if (isStandardEd() && payload && payload.provider === "atlassian") {
-        return Promise.resolve({ success: false, upgradeRequired: true, featureId: "agentModel", error: "The agent model on Forge LLM is part of CogniRunner Coder \u2014 upgrade in Jira's Manage apps." });
+        const what = saveSlot === "coder" ? "coder model" : "agent model";
+        return Promise.resolve({ success: false, upgradeRequired: true, featureId: "agentModel", error: `The ${what} on Forge LLM is part of CogniRunner Coder \u2014 upgrade in Jira's Manage apps.` });
       }
       return Promise.resolve({ success: true });
+    }
     case "pingLmStudio": return Promise.resolve({ success: true, ok: true, authOk: true, modelCount: LM_MODELS.length, message: `Connected — ${LM_MODELS.length} model(s) available` });
     case "loadLmStudioModel": return Promise.resolve({ success: true });
     case "getLmStudioMcps": return Promise.resolve({ success: true, enabled: { context7: true, webSearch: true, docReader: true, docWriter: false, localContext7: false, localWebSearch: false, localDocReader: false }, supported: [{ key: "context7", label: "context7", tools: ["resolve-library-id", "query-docs"] }, { key: "webSearch", label: "web-search", tools: ["get-web-search-summaries", "full-web-search", "get-single-web-page-content", "get-pdf-content"] }, { key: "docReader", label: "doc-reader", tools: ["read-doc"] }] });

@@ -12,7 +12,10 @@ import AgentOffState from "./AgentOffState";
 /* Imported UNDER A NEW NAME: this file already has a component-scoped `providerLabel`
    string for the VIEWED provider, and the two in one scope is how the first cut of
    F-914 called a string. */
-import { PROVIDER_LABELS, providerLabel as productProviderLabel, HAIKU_ON_BYOK_SENTENCE, looksLikeHaiku } from "./productNames";
+/* F-991 - MODEL_SLOT_COPY is the one home for what each of the three model slots drives
+   and for the three Save labels. The agent block used to describe itself inline, which is
+   how it kept claiming the Coder turn long after the Coder turn had a slot of its own. */
+import { PROVIDER_LABELS, providerLabel as productProviderLabel, HAIKU_ON_BYOK_SENTENCE, looksLikeHaiku, MODEL_SLOT_COPY } from "./productNames";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
 import { providerReady } from "./capability";
@@ -242,8 +245,9 @@ export default function OpenAIConfig({ invoke }) {
   // The model the admin actually SAVED, when the backend reports it alongside the
   // clamp. Without it we still say the model was clamped, just without naming it.
   const [clampedFrom, setClampedFrom] = useState("");
-  // Agent model — drives Coder and Virtual Administrators; validators/rules keep the
-  // model above. Frontier-only on Forge LLM, any id on BYOK.
+  /* Agent model - drives the Virtual Administrators and the listener/job agents;
+     validators and rules keep the model above and the Coder keeps the slot below.
+     Frontier-only on Forge LLM, any id on BYOK. */
   const [agentModel, setAgentModel] = useState("");
   const [savedAgentModel, setSavedAgentModel] = useState("");
   const [agentFrontierOnly, setAgentFrontierOnly] = useState(false);
@@ -255,6 +259,16 @@ export default function OpenAIConfig({ invoke }) {
      previous provider's typed id in an open box. */
   const [agentModelTyping, setAgentModelTyping] = useState(false);
   const [savingAgentModel, setSavingAgentModel] = useState(false);
+  /* F-991 - THE CODER SLOT. Same resolvers, same shape, one extra argument:
+     getAgentModel/saveAgentModel take `{ slot: "agent" | "coder" }` and default to
+     "agent", so this state is the agent state's twin rather than a second mechanism.
+     The owner's reason for splitting them is a cost one - Haiku for the cheap work,
+     Sonnet for the agents, Opus for the Coder - and one slot could not express it. */
+  const [coderModel, setCoderModel] = useState("");
+  const [savedCoderModel, setSavedCoderModel] = useState("");
+  const [coderFrontierOnly, setCoderFrontierOnly] = useState(false);
+  const [coderModelTyping, setCoderModelTyping] = useState(false);
+  const [savingCoderModel, setSavingCoderModel] = useState(false);
   // AI usage meter (admin-only). Best-effort under-count of AI calls + tokens.
   const [usage, setUsage] = useState(null);
   // F-077: getAiUsage returns { success, usage, seats, forgeLlm } — `seats` and
@@ -526,6 +540,26 @@ export default function OpenAIConfig({ invoke }) {
         setAgentModel("");
         setSavedAgentModel("");
         setAgentModelTyping(false);
+      }
+      /* F-991 - the Coder slot, loaded exactly like the agent slot and in its own try:
+         a backend that predates `slot` answers the AGENT model here (the parameter
+         defaults to "agent"), which is the honest degradation - the picker shows a real
+         id rather than a blank control - and a backend that throws leaves this block on
+         its own default without taking the agent block down with it. */
+      try {
+        const coderResult = await invoke("getAgentModel", { provider: target, slot: "coder" });
+        if (providerRef.current !== target) return;
+        if (coderResult && coderResult.success) {
+          setCoderModel(coderResult.model || "");
+          setSavedCoderModel(coderResult.model || "");
+          setCoderFrontierOnly(!!coderResult.frontierOnly);
+          setCoderModelTyping(false);
+          if (coderResult.edition) setEdition(coderResult.edition);
+        }
+      } catch (e) {
+        setCoderModel("");
+        setSavedCoderModel("");
+        setCoderModelTyping(false);
       }
       setCustomModelInput("");
     } catch (e) {
@@ -1278,30 +1312,39 @@ export default function OpenAIConfig({ invoke }) {
     setSavingModel(false);
   };
 
-  // Agent model — the slot Coder and the Virtual Administrators run on. Same refusal
-  // shape as saveOpenAIModel ({ success:false, upgradeRequired, error }).
-  const handleSaveAgentModel = async () => {
-    const model = (agentModel || "").trim();
+  /* Agent and Coder models - two KVS slots behind ONE resolver, so ONE save path with a
+     `slot` argument rather than two near-identical handlers that drift. Same refusal
+     shape as saveOpenAIModel ({ success:false, upgradeRequired, error }). Every sentence
+     it can print comes from MODEL_SLOT_COPY, never from here.
+     F-991 - `slot` is passed EXPLICITLY on both calls, including "agent". Relying on the
+     backend default for one of them would make the agent save the only call in this file
+     whose target is implied, and that is the call a future edit gets wrong. */
+  const saveModelSlot = async (slotKey, value, setSaved, setSaving) => {
+    const copy = MODEL_SLOT_COPY[slotKey];
+    const model = (value || "").trim();
     if (!model) return;
-    setSavingAgentModel(true);
+    setSaving(true);
     setError(null);
     setSuccess(null);
     try {
-      const result = await invoke("saveAgentModel", { provider, model });
+      const result = await invoke("saveAgentModel", { provider, model, slot: slotKey });
       if (result && result.success) {
-        setSavedAgentModel(model);
-        setSuccess("Agent model saved: " + model);
-        showToast("Agent model saved");
+        setSaved(model);
+        setSuccess(copy.savedToast + ": " + model);
+        showToast(copy.savedToast);
       } else {
         setError((result && result.error) || (result && result.upgradeRequired
-          ? "The agent model is part of CogniRunner Coder. The Coder note under the agent model carries the upgrade link."
-          : "Failed to save the agent model"));
+          ? copy.upgradeError
+          : "Failed to save the " + copy.label.toLowerCase()));
       }
     } catch (e) {
-      setError("Failed to save the agent model: " + e.message);
+      setError("Failed to save the " + copy.label.toLowerCase() + ": " + e.message);
     }
-    setSavingAgentModel(false);
+    setSaving(false);
   };
+
+  const handleSaveAgentModel = () => saveModelSlot("agent", agentModel, setSavedAgentModel, setSavingAgentModel);
+  const handleSaveCoderModel = () => saveModelSlot("coder", coderModel, setSavedCoderModel, setSavingCoderModel);
 
   // Bedrock: save the chosen region (the backend constructs the Converse host from it).
   // activate:false — editing the region does NOT activate Bedrock.
@@ -1543,6 +1586,41 @@ export default function OpenAIConfig({ invoke }) {
      EDITION is checked before the MODEL, so a Standard tenant reads the edition sentence
      even though its Haiku fallback would fail the frontier test too. */
   const agentFallbackCopy = agentCapabilityCopy(isAdvanced ? "needs-frontier-model" : "needs-coder-edition");
+  /* F-991 - THE CODER SLOT'S DERIVED STATE, from the SAME rules. `agentModelOptions` is
+     reused rather than recomputed: it is the provider's one live list, and a second copy
+     could offer a different set of models for the same key - the exact failure F-955
+     removed between the rule model and the agent model. The lock reason likewise stays
+     agentModelLockReason() from src/shared/edition.js; "which ids can drive an agent" is
+     one policy and this file must never grow a second answer for the Coder. */
+  const coderModelId = (coderModel || "").trim();
+  const coderOutOfList = isAtlassian && !!coderModelId && !FORGE_LLM_FRONTIER.includes(coderModelId);
+  const coderSavedOutOfLiveList = !isAtlassian && !isManaged
+    && !!coderModelId && agentModelOptions.length > 0 && !agentModelOptions.includes(coderModelId);
+  const coderUnlistedNote = (!isAtlassian && !isManaged)
+    ? unlistedModelNote(coderModelId, agentModelOptions)
+    : null;
+  /* THE TWO SLOTS, AS DATA. The block below is rendered from this list rather than
+     written twice: the picker/free-text/Other structure, the locked-row rule, the
+     unlisted note and the off state are ONE set of rules, and a copy-pasted twin is how
+     the agent block's own description went stale in the first place. */
+  const MODEL_SLOTS = [
+    {
+      key: "agent", copy: MODEL_SLOT_COPY.agent,
+      value: agentModel, setValue: setAgentModel, saved: savedAgentModel,
+      typing: agentModelTyping, setTyping: setAgentModelTyping,
+      saving: savingAgentModel, onSave: handleSaveAgentModel, frontierOnly: agentFrontierOnly,
+      id: agentModelId, outOfList: agentOutOfList,
+      savedOutOfLiveList: agentSavedOutOfLiveList, unlistedNote: agentUnlistedNote,
+    },
+    {
+      key: "coder", copy: MODEL_SLOT_COPY.coder,
+      value: coderModel, setValue: setCoderModel, saved: savedCoderModel,
+      typing: coderModelTyping, setTyping: setCoderModelTyping,
+      saving: savingCoderModel, onSave: handleSaveCoderModel, frontierOnly: coderFrontierOnly,
+      id: coderModelId, outOfList: coderOutOfList,
+      savedOutOfLiveList: coderSavedOutOfLiveList, unlistedNote: coderUnlistedNote,
+    },
+  ];
   // F-091: the Forge LLM allowance meter belongs to Forge LLM ONLY. The backend now
   // sends `forgeLlm: null` for Standard and for BYOK tenants, but the provider gate
   // lives here too: a BYOK tenant must never be shown a vendor allowance, whatever
@@ -2314,7 +2392,10 @@ export default function OpenAIConfig({ invoke }) {
                   transition runs on. The agent selector already names its own scope, so
                   this is the half of the pair that was missing it. */}
               <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
-                Model for validators and rules
+                {/* F-971 named what this model drives so it could not be read as a
+                    global default the other slots override; F-991 moved the wording to
+                    MODEL_SLOT_COPY, where its two siblings live. */}
+                {MODEL_SLOT_COPY.model.label}
               </label>
               {effectiveModels.length === 0 && effectiveLocked.length === 0 ? (
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)" }}>
@@ -2492,220 +2573,242 @@ export default function OpenAIConfig({ invoke }) {
                 </p>
               )}
 
-              {/* === Agent model (1.3) ===========================================
-                  A separate slot from the rule model above. Coder and the Virtual
-                  Administrators run on it; validators, conditions and post-functions
-                  do not. On Forge LLM only the frontier ids are selectable (and only
-                  on the Coder edition — otherwise they render as locked rows). On a
-                  BYOK provider it is a free-text id: the customer pays those tokens
-                  and we do not judge their model. */}
-              <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>
-                  Agent model
-                </label>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  {isManaged ? (
-                    /* The managed engine answers frontierOnly:true, and every id in
-                       MANAGED_MODELS already IS a frontier model - so this is the same
-                       fixed list as the rule model above, never a free-text id. There is
-                       no locked row here: a Standard tenant cannot reach this provider at
-                       all, which is the honest boundary and the one the picker renders. */
-                    <div style={{ flex: 1, maxWidth: "320px" }}>
-                      <CustomSelect
-                        value={agentModel}
-                        onChange={setAgentModel}
-                        placeholder="Select an agent model..."
-                        searchable={false}
-                        ariaLabel="Agent model"
-                        disabled={!managedAvailable}
-                        options={(managedModels || []).map((m) => ({
-                          value: m,
-                          label: m,
-                          badges: m === managedDefaultModel ? [{ text: "default", tone: "info" }] : undefined,
-                        }))}
-                      />
-                    </div>
-                  ) : isAtlassian ? (
-                    <div style={{ flex: 1, maxWidth: "320px" }}>
-                      <CustomSelect
-                        value={agentModel}
-                        onChange={setAgentModel}
-                        placeholder="Select an agent model..."
-                        searchable={false}
-                        ariaLabel="Agent model"
-                        options={[
-                          // F-895: the resolved-but-unselectable id, first and locked, so
-                          // the trigger shows the model instead of the placeholder.
-                          ...(agentOutOfList ? [{
-                            value: agentModelId,
-                            label: agentModelId,
-                            disabled: true,
-                            /* NO `meta` HERE, on purpose, and it is not an oversight to
-                               "fix" later: `.dropdown-item-meta` is a single-line
-                               ellipsised slot sized for an id or a region, and this panel
-                               is 320px wide, so the reason sentence rendered as "Cod…"
-                               (measured). A truncated sentence is worse than none. The
-                               sentence lives in the note right under the picker, where it
-                               is readable WITHOUT opening the dropdown at all; the row
-                               carries the badge, which is what a row can hold. */
-                            /* F-971 - THE BADGE IS THE REASON, and the reason comes from
-                               edition.js. This row used to read the edition flag
-                               directly, which got Haiku-on-Standard wrong: it said
-                               "Coder", promising that an upgrade opens the row, when
-                               Haiku is refused as an agent model at EVERY edition. */
-                            badges: [AGENT_MODEL_LOCK_BADGE[agentModelLockReason({ provider, edition, model: agentModelId })] || AGENT_MODEL_LOCK_BADGE["not-agent-model"]],
-                          }] : []),
-                          ...FORGE_LLM_FRONTIER.map((m) => {
-                            /* Same question, same answer, for the frontier rows: these
-                               ARE agent models, so the only thing that can lock them is
-                               the edition - but that is the policy's conclusion, not an
-                               assumption spelled here. */
-                            const lock = agentModelLockReason({ provider, edition, model: m });
-                            return lock
-                              ? { value: m, label: m, disabled: true, badges: [AGENT_MODEL_LOCK_BADGE[lock]] }
-                              : { value: m, label: m };
-                          }),
-                        ]}
-                      />
-                    </div>
-                  ) : agentModelTyping ? (
-                    /* F-955 - the escape hatch, reached ON PURPOSE from the picker's last
-                       row. Every id the previous free-text box accepted is still typeable
-                       here; the difference is that the admin had to look at the live list
-                       first, and an unlisted id now carries the note below. */
-                    /* Wider than the picker branch (320px) because this row carries THREE
-                       controls, and a model id squeezed into ~180px is unreadable at the
-                       exact moment the admin is checking it for a typo. */
-                    <div style={{ flex: 1, maxWidth: "460px", display: "flex", alignItems: "center", gap: "8px" }}>
-                      <input
-                        type="text"
-                        value={agentModel}
-                        onChange={(e) => setAgentModel(e.target.value)}
-                        placeholder={pHelp.agentModelPlaceholder || "the model id your provider expects"}
-                        aria-label="Agent model"
-                        autoFocus
-                        style={{ flex: 1, minWidth: 0, padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px", fontFamily: "SFMono-Regular, Consolas, monospace" }}
-                        onKeyDown={(e) => e.key === "Enter" && handleSaveAgentModel()}
-                      />
-                      <button
-                        type="button"
-                        className="btn-small agent-model-pick-back"
-                        /* Back to the list, and the saved id comes back with it: an
-                           abandoned typing session must not leave a half-typed string
-                           standing where a resolved model belongs. */
-                        onClick={() => { setAgentModelTyping(false); setAgentModel(savedAgentModel || ""); }}
-                      >
-                        Pick from list
-                      </button>
-                    </div>
-                  ) : (
-                    /* F-955 - THE LIVE LIST, not a free-text box. `Model` directly above
-                       has always been a picker over exactly this array; the agent slot
-                       was the one place a typo saved silently and surfaced as a refused
-                       Coder turn hours later. Same list, same component, one extra row. */
-                    <div style={{ flex: 1, maxWidth: "320px" }}>
-                      <CustomSelect
-                        value={agentModel}
-                        onChange={(v) => {
-                          if (v === OTHER_MODEL_VALUE) { setAgentModelTyping(true); return; }
-                          setAgentModel(v);
-                        }}
-                        placeholder="Select an agent model..."
-                        searchable={agentModelOptions.length > 8}
-                        searchPlaceholder="Search models..."
-                        ariaLabel="Agent model"
-                        options={withOtherModelRow([
-                          /* The RESOLVED id first and locked when the live list does not
-                             carry it - F-895's rule, for the same reason: without it the
-                             trigger reads "Select an agent model..." over a model that is
-                             already saved and already running. */
-                          ...(agentSavedOutOfLiveList ? [{
-                            value: agentModelId,
-                            label: agentModelId,
-                            disabled: true,
-                            badges: [{ text: "in use", tone: "info" }],
-                          }] : []),
-                          ...agentModelOptions.map((m) => ({ value: m, label: m })),
-                        ])}
-                      />
-                    </div>
+              {/* === Agent model and Coder model (1.3, split in F-991) ============
+                  TWO slots, separate from the rule model above and separate from each
+                  other, rendered from MODEL_SLOTS because they are ONE set of rules and
+                  not two blocks that happen to look alike.
+
+                  WHAT EACH ONE DRIVES is stated in MODEL_SLOT_COPY and nowhere else.
+                  The sentence that used to live in this comment - "Coder and the Virtual
+                  Administrators run on it" - was true of the single slot that existed
+                  when it was written and became false the moment the Coder turn moved to
+                  its own slot. A description typed beside a control is a description that
+                  outlives the control's behaviour.
+
+                  The owner's reason for the split is cost, not taste: Haiku for the
+                  cheapest work, Sonnet for the agents that tick all day, Opus for the
+                  Coder turn and the PR review, which are the heaviest calls the app makes
+                  and were previously billed at whatever the agents were set to.
+
+                  On Forge LLM only the frontier ids are selectable, and only on the Coder
+                  edition - otherwise they render as LOCKED rows badged with the reason
+                  from src/shared/edition.js (agentModelLockReason). There is exactly one
+                  such rule and both slots ask it; a Coder-specific copy of "which ids can
+                  drive an agent" would be a second FORGE_LLM_FRONTIER. On a BYOK provider
+                  both slots take a free-text id: the customer pays those tokens and we do
+                  not judge their model. */}
+              {MODEL_SLOTS.map((slot) => (
+                <div key={slot.key} className={"model-slot " + slot.copy.blockClass} style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
+                  <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>
+                    {slot.copy.label}
+                  </label>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    {isManaged ? (
+                      /* The managed engine answers frontierOnly:true, and every id in
+                         MANAGED_MODELS already IS a frontier model - so this is the same
+                         fixed list as the rule model above, never a free-text id. There is
+                         no locked row here: a Standard tenant cannot reach this provider at
+                         all, which is the honest boundary and the one the picker renders. */
+                      <div style={{ flex: 1, maxWidth: "320px" }}>
+                        <CustomSelect
+                          value={slot.value}
+                          onChange={slot.setValue}
+                          placeholder={slot.copy.select}
+                          searchable={false}
+                          ariaLabel={slot.copy.ariaLabel}
+                          disabled={!managedAvailable}
+                          options={(managedModels || []).map((m) => ({
+                            value: m,
+                            label: m,
+                            badges: m === managedDefaultModel ? [{ text: "default", tone: "info" }] : undefined,
+                          }))}
+                        />
+                      </div>
+                    ) : isAtlassian ? (
+                      <div style={{ flex: 1, maxWidth: "320px" }}>
+                        <CustomSelect
+                          value={slot.value}
+                          onChange={slot.setValue}
+                          placeholder={slot.copy.select}
+                          searchable={false}
+                          ariaLabel={slot.copy.ariaLabel}
+                          options={[
+                            // F-895: the resolved-but-unselectable id, first and locked, so
+                            // the trigger shows the model instead of the placeholder.
+                            ...(slot.outOfList ? [{
+                              value: slot.id,
+                              label: slot.id,
+                              disabled: true,
+                              /* NO `meta` HERE, on purpose, and it is not an oversight to
+                                 "fix" later: `.dropdown-item-meta` is a single-line
+                                 ellipsised slot sized for an id or a region, and this panel
+                                 is 320px wide, so the reason sentence rendered as "Cod..."
+                                 (measured). A truncated sentence is worse than none. The
+                                 sentence lives in the note right under the picker, where it
+                                 is readable WITHOUT opening the dropdown at all; the row
+                                 carries the badge, which is what a row can hold. */
+                              /* F-971 - THE BADGE IS THE REASON, and the reason comes from
+                                 edition.js. This row used to read the edition flag
+                                 directly, which got Haiku-on-Standard wrong: it said
+                                 "Coder", promising that an upgrade opens the row, when
+                                 Haiku is refused as an agent model at EVERY edition.
+                                 F-991 - the Coder slot asks the SAME question. */
+                              badges: [AGENT_MODEL_LOCK_BADGE[agentModelLockReason({ provider, edition, model: slot.id })] || AGENT_MODEL_LOCK_BADGE["not-agent-model"]],
+                            }] : []),
+                            ...FORGE_LLM_FRONTIER.map((m) => {
+                              /* Same question, same answer, for the frontier rows: these
+                                 ARE agent models, so the only thing that can lock them is
+                                 the edition - but that is the policy's conclusion, not an
+                                 assumption spelled here. */
+                              const lock = agentModelLockReason({ provider, edition, model: m });
+                              return lock
+                                ? { value: m, label: m, disabled: true, badges: [AGENT_MODEL_LOCK_BADGE[lock]] }
+                                : { value: m, label: m };
+                            }),
+                          ]}
+                        />
+                      </div>
+                    ) : slot.typing ? (
+                      /* F-955 - the escape hatch, reached ON PURPOSE from the picker's last
+                         row. Every id the previous free-text box accepted is still typeable
+                         here; the difference is that the admin had to look at the live list
+                         first, and an unlisted id now carries the note below. */
+                      /* Wider than the picker branch (320px) because this row carries THREE
+                         controls, and a model id squeezed into ~180px is unreadable at the
+                         exact moment the admin is checking it for a typo. */
+                      <div style={{ flex: 1, maxWidth: "460px", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <input
+                          type="text"
+                          value={slot.value}
+                          onChange={(e) => slot.setValue(e.target.value)}
+                          /* F-914 - ONE placeholder table, per provider, shared by both
+                             slots. A second table for the Coder box would be a second
+                             chance to offer an OpenRouter id to an Anthropic tenant. */
+                          placeholder={pHelp.agentModelPlaceholder || "the model id your provider expects"}
+                          aria-label={slot.copy.ariaLabel}
+                          autoFocus
+                          style={{ flex: 1, minWidth: 0, padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px", fontFamily: "SFMono-Regular, Consolas, monospace" }}
+                          onKeyDown={(e) => e.key === "Enter" && slot.onSave()}
+                        />
+                        <button
+                          type="button"
+                          className={"btn-small model-pick-back " + slot.copy.pickBackClass}
+                          /* Back to the list, and the saved id comes back with it: an
+                             abandoned typing session must not leave a half-typed string
+                             standing where a resolved model belongs. */
+                          onClick={() => { slot.setTyping(false); slot.setValue(slot.saved || ""); }}
+                        >
+                          Pick from list
+                        </button>
+                      </div>
+                    ) : (
+                      /* F-955 - THE LIVE LIST, not a free-text box. `Model` directly above
+                         has always been a picker over exactly this array; the agent slot
+                         was the one place a typo saved silently and surfaced as a refused
+                         Coder turn hours later. Same list, same component, one extra row.
+                         Both slots read the SAME `agentModelOptions` - one live list, three
+                         controls, so no two of them can offer different models for one key. */
+                      <div style={{ flex: 1, maxWidth: "320px" }}>
+                        <CustomSelect
+                          value={slot.value}
+                          onChange={(v) => {
+                            if (v === OTHER_MODEL_VALUE) { slot.setTyping(true); return; }
+                            slot.setValue(v);
+                          }}
+                          placeholder={slot.copy.select}
+                          searchable={agentModelOptions.length > 8}
+                          searchPlaceholder="Search models..."
+                          ariaLabel={slot.copy.ariaLabel}
+                          options={withOtherModelRow([
+                            /* The RESOLVED id first and locked when the live list does not
+                               carry it - F-895's rule, for the same reason: without it the
+                               trigger reads the placeholder over a model that is already
+                               saved and already running. */
+                            ...(slot.savedOutOfLiveList ? [{
+                              value: slot.id,
+                              label: slot.id,
+                              disabled: true,
+                              badges: [{ text: "in use", tone: "info" }],
+                            }] : []),
+                            ...agentModelOptions.map((m) => ({ value: m, label: m })),
+                          ])}
+                        />
+                      </div>
+                    )}
+                    <button
+                      className={"btn-small btn-edit" + (slot.saving ? " is-busy" : "")}
+                      onClick={slot.onSave}
+                      disabled={
+                        slot.saving
+                        || !(slot.value || "").trim()
+                        || (slot.value || "").trim() === slot.saved
+                        || (isAtlassian && !isAdvanced)
+                        || (isManaged && !managedAvailable)
+                      }
+                    >
+                      {/* F-971 - FOUR SAVE BUTTONS, FOUR SLOTS, FOUR LABELS. This card is
+                          not one form: the key, the rule model, the agent model and now the
+                          coder model are separate KVS slots written by separate calls, so
+                          one combined Save would have to write slots the admin did not
+                          touch. They stay separate buttons, and each one names what it
+                          writes rather than reading a bare "Save". */}
+                      {slot.copy.save}
+                    </button>
+                  </div>
+                  <p style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                    {slot.copy.drives}
+                  </p>
+                  {/* F-955 - AN ID NOBODY CONFIRMED, SAID OUT LOUD BEFORE IT COSTS A TURN.
+                      The save still goes through: the list can be stale, invisible to a
+                      fine-grained key, or simply not carry the inference-profile id this
+                      provider needs. What it must not do is stay silent. */}
+                  {slot.unlistedNote && (
+                    <p className="model-unlisted-note" style={{ margin: "6px 0 0 0", fontSize: "11px" }}>
+                      {slot.unlistedNote}
+                    </p>
                   )}
-                  <button
-                    className={"btn-small btn-edit" + (savingAgentModel ? " is-busy" : "")}
-                    onClick={handleSaveAgentModel}
-                    disabled={
-                      savingAgentModel
-                      || !(agentModel || "").trim()
-                      || (agentModel || "").trim() === savedAgentModel
-                      || (isAtlassian && !isAdvanced)
-                      || (isManaged && !managedAvailable)
-                    }
-                  >
-                    {/* F-971 - THREE SAVE BUTTONS, THREE SLOTS, THREE LABELS. This card is
-                        not one form: the key, the rule model and the agent model are
-                        separate KVS slots written by separate resolvers, so one combined
-                        Save would have to write slots the admin did not touch. They stay
-                        three buttons, and the ambiguous bare "Save" - the only one that
-                        did not say what it wrote, sitting two controls below "Save Model"
-                        - now names its slot like its siblings do. */}
-                    Save Agent Model
-                  </button>
+                  {/* F-895 - the same sentence the locked row carries, readable WITHOUT
+                      opening the dropdown, and naming the id that is actually resolved. */}
+                  {slot.outOfList && (
+                    <p className={slot.copy.fallbackNoteClass} style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" }}>
+                      {agentFallbackCopy.title}. The resolved {slot.copy.label.toLowerCase()} is <strong style={{ fontWeight: 700, color: "var(--text-color)" }}>{slot.id}</strong>.
+                    </p>
+                  )}
+                  {isAtlassian && !isAdvanced && (
+                    /* F-914 - same off state, same two actions, one component. The BYOK
+                       escape hatch stays in the sentence because it is the remedy that
+                       costs nothing and turns the slot on immediately. */
+                    <AgentOffState sentence={slot.copy.forgeOffSentence} />
+                  )}
+                  {/* F-914 - THE SENTENCE THAT STOPS A POINTLESS MODEL CHANGE. Verified
+                      against agentCapability() in src/shared/edition.js: a BYOK provider
+                      returns `enabled: true, reason: "byok"` without looking at the model
+                      at all, so Haiku genuinely drives an agent there. An admin who has
+                      read the Forge LLM rule elsewhere on this screen would otherwise go
+                      hunting for a frontier model they do not need. */}
+                  {!isAtlassian && !isManaged && looksLikeHaiku(slot.value) && (
+                    <p className="agent-haiku-note" style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" }}>
+                      {HAIKU_ON_BYOK_SENTENCE}
+                    </p>
+                  )}
+                  {/* F-971 - THE THIRD HOME of the Haiku claim, and it was the unqualified
+                      one: "Haiku never does." Contextually this branch is Forge LLM only,
+                      so the sentence was not false where it rendered - but it sits eleven
+                      lines below the BYOK note that says the opposite, reads as a universal
+                      rule, and is the wording an admin carries to the other screen. The
+                      scope now travels WITH the claim, from edition.js. */}
+                  {isAtlassian && isAdvanced && slot.frontierOnly && (
+                    <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                      Only Sonnet 5 and Opus 5 can drive agents here. {HAIKU_AGENT_LIMIT_SENTENCE}
+                    </p>
+                  )}
+                  {slot.saved && (
+                    <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                      Currently active: <strong>{slot.saved}</strong>
+                    </p>
+                  )}
                 </div>
-                <p style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                  Used by Coder and Virtual Administrators. Validators and rules keep using the model above.
-                </p>
-                {/* F-955 - AN ID NOBODY CONFIRMED, SAID OUT LOUD BEFORE IT COSTS A TURN.
-                    The save still goes through: the list can be stale, invisible to a
-                    fine-grained key, or simply not carry the inference-profile id this
-                    provider needs. What it must not do is stay silent. */}
-                {agentUnlistedNote && (
-                  <p className="model-unlisted-note" style={{ margin: "6px 0 0 0", fontSize: "11px" }}>
-                    {agentUnlistedNote}
-                  </p>
-                )}
-                {/* F-895 — the same sentence the locked row carries, readable WITHOUT
-                    opening the dropdown, and naming the id that is actually resolved. */}
-                {agentOutOfList && (
-                  <p className="agent-model-fallback-note" style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" }}>
-                    {agentFallbackCopy.title}. The resolved agent model is <strong style={{ fontWeight: 700, color: "var(--text-color)" }}>{agentModelId}</strong>.
-                  </p>
-                )}
-                {isAtlassian && !isAdvanced && (
-                  /* F-914 - same off state, same two actions, one component. The BYOK
-                     escape hatch stays in the sentence because it is the remedy that
-                     costs nothing and turns the agent on immediately. */
-                  <AgentOffState
-                    sentence="On Atlassian Forge LLM the agent model needs the Coder edition AND Claude Sonnet 5 or Opus 5, so an upgrade on its own still leaves it off. Pointing CogniRunner at your own provider key turns it on with no upgrade at all."
-                  />
-                )}
-                {/* F-914 - THE SENTENCE THAT STOPS A POINTLESS MODEL CHANGE. Verified
-                    against agentCapability() in src/shared/edition.js: a BYOK provider
-                    returns `enabled: true, reason: "byok"` without looking at the model
-                    at all, so Haiku genuinely drives an agent there. An admin who has
-                    read the Forge LLM rule elsewhere on this screen would otherwise go
-                    hunting for a frontier model they do not need. */}
-                {!isAtlassian && !isManaged && looksLikeHaiku(agentModel) && (
-                  <p className="agent-haiku-note" style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" }}>
-                    {HAIKU_ON_BYOK_SENTENCE}
-                  </p>
-                )}
-                {/* F-971 - THE THIRD HOME of the Haiku claim, and it was the unqualified
-                    one: "Haiku never does." Contextually this branch is Forge LLM only,
-                    so the sentence was not false where it rendered - but it sits eleven
-                    lines below the BYOK note that says the opposite, reads as a universal
-                    rule, and is the wording an admin carries to the other screen. The
-                    scope now travels WITH the claim, from edition.js. */}
-                {isAtlassian && isAdvanced && agentFrontierOnly && (
-                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    Only Sonnet 5 and Opus 5 can drive agents here. {HAIKU_AGENT_LIMIT_SENTENCE}
-                  </p>
-                )}
-                {savedAgentModel && (
-                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    Currently active: <strong>{savedAgentModel}</strong>
-                  </p>
-                )}
-              </div>
+              ))}
               <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>
                   AI token budget (tokens per minute)

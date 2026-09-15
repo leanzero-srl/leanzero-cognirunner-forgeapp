@@ -4050,6 +4050,18 @@ const injectStyles = () => {
       background: #dc2626; color: #ffffff; font-weight: 700;
     }
     html[data-color-mode="dark"] .usage-allow-over { background: #dc2626; color: #ffffff; }
+
+    /* F-991 - THE "PICK FROM LIST" BUTTON, FOR EVERY MODEL SLOT THAT HAS ONE.
+       The .agent-model-pick-back rule above carried this when the agent model was the
+       only typeable slot. The Coder slot renders the identical control, so the rule moved
+       to a class BOTH carry, and the per-slot classes stay as handles for the harness
+       only. No colour here on purpose: it is a secondary control beside a text box and
+       the card's own .btn-small already paints it.
+       NO BACKTICKS IN THIS SHEET, EVER - and that is not a style note. injectStyles() is
+       ONE template literal, so a backtick quoting a class name in a comment CLOSES the
+       string: the first cut of this block white-screened the whole admin panel with
+       "ReferenceError: model is not defined", from a comment. */
+    .model-pick-back { white-space: nowrap; flex: 0 0 auto; }
 `;
   document.head.appendChild(style);
 };

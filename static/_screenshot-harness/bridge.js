@@ -2014,7 +2014,12 @@ function invoke(name, payload) {
     // must not collapse the two: without a fixture on this side, the only rendering a real
     // Jira outage produces ("CogniRunner has you as no role, ask an admin") is untested
     // and reads as a confident false claim to the admin most likely to hit it.
-    case "checkIsAdmin": return Promise.resolve(
+    /* F-990 - `__SLOW_ADMIN_MS__` delays THIS answer and nothing else. accountId arrives
+       only with it, and useDraft must read and write nothing until it does; the fast mock
+       made that window a single tick, which is exactly the width that hides the bug. */
+    case "checkIsAdmin": return (typeof window !== "undefined" && window.__SLOW_ADMIN_MS__
+      ? new Promise((r) => setTimeout(r, window.__SLOW_ADMIN_MS__))
+      : Promise.resolve()).then(() =>
       typeof window !== "undefined" && window.__ROLE_UNKNOWN__
         ? { success: true, isAdmin: false, role: null, unknown: true, reason: "jira-unreachable", accountId: ACCT }
         : typeof window !== "undefined" && window.__NO_ROSTER__

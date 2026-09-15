@@ -45,7 +45,10 @@
  *     from a sentence match.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import useDraft from "./useDraft";
+import DraftResumeCard from "./DraftResumeCard";
+import { DRAFT_FORM_IDS } from "../../../../src/shared/draft-state.js";
 import CustomSelect from "./CustomSelect";
 import AgentOffState from "./AgentOffState";
 import { providerLabel, editionLabel, HAIKU_ON_BYOK_SENTENCE, looksLikeHaiku } from "./productNames";
@@ -299,7 +302,7 @@ function PipelineError({ err, onNeedIdentity }) {
 
 /** The pipeline half of a repo row: the installed state, the step chain of a run in
  *  flight, the setup form when there is no row yet, and the deploy trigger. */
-function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
+function PipelineCard({ invoke, conn, repoId, onNeedIdentity, accountId = null }) {
   const [row, setRow] = useState(null);
   const [deploy, setDeploy] = useState(null);
   const [deployError, setDeployError] = useState(null);
@@ -441,6 +444,43 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
   const serverErrFor = (field) => (fieldRefusal && fieldRefusal.field === field ? fieldRefusal.message : null);
   const hasCustomUi = scaffoldHasCustomUi({ UI_DIR: uiDir });
 
+  /* -- F-990 - THE SCAFFOLD SETUP, WHICH IS THE LONGEST TYPING IN THIS APP -----------
+     A pasted manifest.yml, a site, a product, a branch and four scaffold variables. Losing
+     it to a reload is the single most expensive instance of the owner's complaint.
+
+     WHY THE DRAFT CARRIES `repoId` AND CHECKS IT. The draft key is
+     cr-draft plus the account plus the form id, by design: the vocabulary is closed so the
+     key space stays bounded and testable. But a PipelineCard is per repository and several
+     can be open at once, so one key is shared by all of them. The repoId stamp means a card
+     only ever OFFERS work that was typed against its own repository; a draft from another
+     repo simply does not raise a card here. What it does not do is stop a second card,
+     being actively edited at the same moment, from overwriting the first one's stored copy.
+     That is a real and accepted limit of a two-part key, bounded by the fact that a card
+     writes nothing until its form moves off the state it armed on, so merely having other
+     cards open costs nothing.
+
+     Nothing credential-shaped is in here. The deploy identity (email and API token) is a
+     different card entirely and every one of its fields is in DRAFT_SECRET_FIELDS. */
+  const pipeDraftState = useMemo(() => ({
+    repoId, manifestYaml, site, product, branch, appName, uiDir, developerSpaceId, appId,
+  }), [repoId, manifestYaml, site, product, branch, appName, uiDir, developerSpaceId, appId]);
+  const pipeDraft = useDraft(DRAFT_FORM_IDS.CODE_PIPELINE, accountId, pipeDraftState);
+  const pipeDraftIsOurs = !!(pipeDraft.hasDraft && pipeDraft.draft && pipeDraft.draft.repoId === repoId);
+
+  const restorePipeDraft = () => {
+    const d = pipeDraft.restore();
+    if (!d) return;
+    const has = (k) => Object.prototype.hasOwnProperty.call(d, k);
+    if (has("manifestYaml")) setManifestYaml(d.manifestYaml);
+    if (has("site")) setSite(d.site);
+    if (has("product")) setProduct(d.product);
+    if (has("branch")) setBranch(d.branch);
+    if (has("appName")) { setAppName(d.appName); appNameTouched.current = true; }
+    if (has("uiDir")) setUiDir(d.uiDir);
+    if (has("developerSpaceId")) setDeveloperSpaceId(d.developerSpaceId);
+    if (has("appId")) setAppId(d.appId);
+  };
+
   const handleSetup = async () => {
     if (busy || !varsOk) return;
     setBusy(true); setErr(null); setFieldRefusal(null);
@@ -465,6 +505,7 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
       });
       if (r && r.success) {
         setRow(r.status || null);
+        pipeDraft.clear();   // F-990 - the answers are with the backend now
         showToast("Pipeline setup queued");
         restartPolling();
       } else if (isPermissionRefusal(r) || isUpgradeRequired(r)) {
@@ -692,6 +733,14 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
           `status !== "installed"`, which is exactly the state an outdated pipeline is in. */}
       {!live && (status !== "installed" || outdated) && (
         <div className="code-pipe-form">
+          {pipeDraftIsOurs && (
+            <DraftResumeCard
+              savedAt={pipeDraft.savedAt}
+              what="an unfinished pipeline setup"
+              onContinue={restorePipeDraft}
+              onDiscard={pipeDraft.discard}
+            />
+          )}
           <p className="hint" style={{ marginTop: 0 }}>
             CogniRunner commits a deploy workflow to this repository, stores the deploy identity as CI secrets, and locks the app's permissions to the manifest you paste here. The lock is what refuses a later manifest that quietly asks for more.
           </p>
@@ -804,7 +853,7 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
 }
 
 /** One allow-listed repository: its webhook state and its pipeline. */
-function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity }) {
+function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity, accountId = null }) {
   const hook = (conn.webhooks && conn.webhooks[repoId]) || null;
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null);       // a refusal or a fault, said plainly
@@ -906,7 +955,7 @@ function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity }) {
         <p className="hint code-hook-hint">Nothing in this repository reaches CogniRunner until a webhook is registered. The secret is minted here and never shown, to anyone.</p>
       )}
       {note && <div className="code-hook-note" role="alert">{note}</div>}
-      {openPipe && <PipelineCard invoke={invoke} conn={conn} repoId={repoId} onNeedIdentity={onNeedIdentity} />}
+      {openPipe && <PipelineCard invoke={invoke} conn={conn} repoId={repoId} onNeedIdentity={onNeedIdentity} accountId={accountId} />}
     </div>
   );
 }
@@ -917,7 +966,7 @@ function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity }) {
  * reader nowhere is the dead end F-914 found, not a fix for it. This tab knows nothing
  * about the tab registry; App.js decides.
  */
-export default function CodeTab({ invoke, onGoToSettings = null }) {
+export default function CodeTab({ invoke, onGoToSettings = null, accountId = null }) {
   const [capability, setCapability] = useState(null);
   const [connections, setConnections] = useState([]);
   const [identity, setIdentity] = useState(null);
@@ -1009,6 +1058,31 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
     setFormError(null);
   };
 
+  /* -- F-990 - THE ADD-CONNECTION FORM, MINUS THE CREDENTIAL -------------------------
+     THREE FIELDS, AND ONLY THREE: kind, label and repos. The token and the Bitbucket
+     email are NOT here and must never be, which is why they are named in
+     DRAFT_SECRET_FIELDS and also caught by the shape belt: a personal access token with
+     repository write, sitting in localStorage for a week, is a worse outcome than every
+     lost draft this feature prevents put together. `handleSave` is explicit that the token
+     leaves state the instant the write returns; a draft that copied it would quietly undo
+     that.
+
+     What this DOES save is the part that is annoying to retype and harmless to keep: the
+     provider, the label and the repository allowlist. The admin comes back, the card
+     offers them, and the only thing they retype is the secret, which they were going to
+     have to paste from their password manager anyway. */
+  const connDraftState = useMemo(() => ({ kind, label, repos }), [kind, label, repos]);
+  const connDraft = useDraft(DRAFT_FORM_IDS.CODE_CONNECTION, accountId, connDraftState);
+
+  const restoreConnDraft = () => {
+    const d = connDraft.restore();
+    if (!d) return;
+    const has = (k) => Object.prototype.hasOwnProperty.call(d, k);
+    if (has("kind")) setKind(d.kind);
+    if (has("label")) setLabel(d.label);
+    if (has("repos")) setRepos(d.repos);
+  };
+
   const handleSave = async () => {
     if (saving) return;
     setSaving(true); setFormError(null);
@@ -1019,6 +1093,7 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
       });
       if (r && r.success) {
         // The token leaves state the moment the write returns. Nothing reads it back.
+        connDraft.clear();   // F-990 - and neither does the draft of the rest of the form
         setShowAdd(false); resetForm();
         showToast("Connection saved");
         await load();
@@ -1237,6 +1312,14 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
 
         {showAdd && (
           <div className="code-form">
+            {connDraft.hasDraft && (
+              <DraftResumeCard
+                savedAt={connDraft.savedAt}
+                what="an unfinished connection"
+                onContinue={restoreConnDraft}
+                onDiscard={connDraft.discard}
+              />
+            )}
             <div className="form-group" style={{ maxWidth: 220 }}>
               <span className="label">Provider</span>
               {/* The app's own dropdown. There is no native select anywhere in this app. */}
@@ -1346,7 +1429,7 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
                       ? <span className="code-repo-none">No repositories allowed. An agent can do nothing with this connection.</span>
                       : c.repos.map((r) => (
                           <RepoRow key={r} invoke={invoke} conn={c} repoId={r}
-                            onChanged={load} onNeedIdentity={goToIdentity} />
+                            onChanged={load} onNeedIdentity={goToIdentity} accountId={accountId} />
                         ))}
                   </div>
 

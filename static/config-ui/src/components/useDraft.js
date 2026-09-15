@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { useState, useEffect, useRef, useCallback } from "react";
-import { draftKey, serializeDraft, deserializeDraft, isDraftStale } from "../../../../src/shared/draft-state.js";
+import { draftKey, serializeDraft, deserializeDraft, isDraftStale, draftFingerprint } from "../../../../src/shared/draft-state.js";
 
 /**
  * THE CONTRACT (F-990). Read this before wiring a form.
@@ -54,13 +54,41 @@ export function useDraft(formId, accountId, state, enabled = true) {
   const key = enabled ? draftKey(accountId, formId) : null;
   const [found, setFound] = useState(null);      // { data, savedAt } from storage, unresolved
   const resolvedRef = useRef(false);             // may we write yet?
-  const baselineRef = useRef(null);              // the serialization of the state we armed on
+  const baselineRef = useRef(null);              // the FINGERPRINT of the state we armed on
   const readKeyRef = useRef(null);
   const timerRef = useRef(null);
+
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const rebaseTimerRef = useRef(null);
 
   const remove = useCallback((k) => {
     try { if (k) window.localStorage.removeItem(k); } catch (e) { /* silent-open */ }
   }, []);
+
+  /* THE RE-BASELINE, and why it is two-phase (found by admin-drafts D3 and D4).
+     After a Discard or a successful save the form is about to sit at a state nobody
+     wants persisted - pristine, or freshly reset by the form's own resetForm(). Leaving
+     the baseline null there meant the very next commit wrote that empty form straight
+     back to storage, so a discarded draft reappeared on the next reload and a saved
+     connection left a draft offering to re-create it. Both were invisible on screen and
+     both were caught only by reading localStorage.
+     Phase one baselines the state as it is RIGHT NOW, which is correct for Discard (the
+     form does not change). Phase two runs 50 ms before the write debounce would fire and
+     baselines again, which is correct for a save (clear() is called first and the reset
+     lands a tick later). Whichever applies, the pending write then finds raw === baseline
+     and removes the key instead of writing it. */
+  const rebaseline = useCallback((k) => {
+    remove(k);
+    baselineRef.current = draftFingerprint(stateRef.current);
+    if (rebaseTimerRef.current) clearTimeout(rebaseTimerRef.current);
+    rebaseTimerRef.current = setTimeout(() => {
+      baselineRef.current = draftFingerprint(stateRef.current);
+      remove(k);
+    }, Math.max(0, DEBOUNCE_MS - 50));
+  }, [remove]);
+
+  useEffect(() => () => { if (rebaseTimerRef.current) clearTimeout(rebaseTimerRef.current); }, []);
 
   /* READ, once per key. */
   useEffect(() => {
@@ -74,7 +102,7 @@ export function useDraft(formId, accountId, state, enabled = true) {
     } else {
       if (parsed) remove(key);          // stale or foreign: it will never be offered, so drop it
       resolvedRef.current = true;       // nothing to lose, start saving
-      baselineRef.current = serializeDraft(state);
+      baselineRef.current = draftFingerprint(state);
     }
   }, [key, remove, state]);
 
@@ -83,24 +111,41 @@ export function useDraft(formId, accountId, state, enabled = true) {
     if (!key || !resolvedRef.current) return;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      const raw = serializeDraft(state);
       /* Back at the state we armed on (or nothing worth keeping) is not a draft: writing
-         one would put the resume card in front of an admin who changed nothing. */
-      if (!raw || raw === baselineRef.current) { remove(key); return; }
+         one would put the resume card in front of an admin who changed nothing. The
+         comparison is on the FINGERPRINT, never on serializeDraft output, which carries a
+         savedAt stamp and so is never equal to itself a moment later. */
+      const fp = draftFingerprint(state);
+      if (!fp || fp === baselineRef.current) { remove(key); return; }
+      const raw = serializeDraft(state);
+      if (!raw) { remove(key); return; }
       try { window.localStorage.setItem(key, raw); } catch (e) { /* silent-open */ }
     }, DEBOUNCE_MS);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [key, state, remove]);
 
-  const arm = useCallback(() => {
+  /* Continue: the caller is about to push the draft INTO state, and that state is the
+     thing we want persisted from here on, so there is no baseline to hold it back. */
+  const restore = useCallback(() => {
+    const d = found ? found.data : null;
     resolvedRef.current = true;
-    baselineRef.current = null;   // whatever happens next IS the draft
+    baselineRef.current = null;
     setFound(null);
-  }, []);
+    return d;
+  }, [found]);
 
-  const restore = useCallback(() => { const d = found ? found.data : null; arm(); return d; }, [found, arm]);
-  const discard = useCallback(() => { remove(key); arm(); }, [key, remove, arm]);
-  const clear = useCallback(() => { remove(key); resolvedRef.current = true; baselineRef.current = null; setFound(null); }, [key, remove]);
+  /* Discard and clear both end with a form whose current contents must NOT be written. */
+  const discard = useCallback(() => {
+    resolvedRef.current = true;
+    rebaseline(key);
+    setFound(null);
+  }, [key, rebaseline]);
+
+  const clear = useCallback(() => {
+    resolvedRef.current = true;
+    rebaseline(key);
+    setFound(null);
+  }, [key, rebaseline]);
 
   return {
     draft: found ? found.data : null,

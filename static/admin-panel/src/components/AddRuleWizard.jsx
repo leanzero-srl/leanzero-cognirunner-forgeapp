@@ -5,8 +5,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
+import useDraft from "./useDraft";
+import DraftResumeCard from "./DraftResumeCard";
+import { DRAFT_FORM_IDS } from "../../../../src/shared/draft-state.js";
 import CustomSelect from "./CustomSelect";
 import AILoadingState from "./AILoadingState";
 
@@ -132,7 +135,7 @@ function WizardShell({ onClose, children }) {
    entry point that grows a second caller should not silently re-open the hole. */
 /* F-243 — `roleUnknown` rides beside `canEdit` and says WHY it is false: a refusal about
    this reader, or a role probe that never reached Jira. Pass-through to FunctionBuilder. */
-export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = false, roleUnknown = false }) {
+export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = false, roleUnknown = false, accountId = null }) {
   // Wizard steps: project -> workflow -> transition -> type -> config
   const [step, setStep] = useState(1);
 
@@ -571,6 +574,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
           } catch (e) { warn(e?.message || "the request failed"); }
         }
         if (onCreated) onCreated();
+        /* F-990 - the work exists now; a draft offering to restore it would invite a
+           duplicate rule. Every successful save path clears. */
+        wizDraft.clear();
         setCreated(true);
       } else {
         // Config was saved but injection failed — show warning, don't close
@@ -580,6 +586,121 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
       setError("Failed to save: " + e.message);
     }
     setSaving(false);
+  };
+
+  /* ── F-990 — THE WIZARD'S UNFINISHED WORK ─────────────────────────────────────────
+     Five steps, a project, a workflow, a transition, a rule type and a whole
+     configuration form, all of it in useState and none of it surviving a reload. This is
+     the form the owner's complaint is most obviously about.
+
+     WHAT GOES IN: the ANSWERS. Not the catalogues (projects, workflows, transitions,
+     fields are re-fetched from Jira on restore, because a week-old copy of a project list
+     is a list of things that may no longer exist), not the loading flags, not `saving`,
+     `error`, `testRunning`, `testResult`, `created` or `submitted`, and not `premadeValid`
+     which is derived by the child on every render.
+
+     THE STATIC-PF STEPS ARE SAFE BY CONSTRUCTION, and that is worth saying out loud
+     because it is the case most likely to produce an orphan poll. FunctionBlock keeps its
+     generation state - the async taskId, the poll timer, the busy flag and the
+     generation-token ref that guards against a stale result - in its OWN useState/useRef,
+     never in the step object it hands back through onUpdate. The step object carries only
+     answers and outputs (name, prompts, endpoint, method, variableName, code,
+     generationMeta, testedFingerprint, selectedDocIds, selectedSkillIds). So a draft saved
+     while a generation was in flight restores a block that is IDLE, with whatever code had
+     landed, and with nothing polling. draft-state.js's exclusion would drop a taskId
+     anyway if one ever moved into the step object; this is the belt under the belt. */
+  const draftState = useMemo(() => ({
+    step, ruleType, ruleKind, fieldId, prompt,
+    selectedProject, selectedWorkflow, selectedTransition,
+    premadeConfig, conditionPrompt, actionPrompt, actionFieldId, crossCheckClaims, runAsync,
+    docFormat, contentPrompt, docTitlePrompt, attachComment,
+    researchQuery, researchTitle, autoSelectResearchDoc, researchSources, libraryName, alsoSaveToLibrary,
+    commentPrompt, subtaskPrompt, linkPrompt, linkTypeName, maxLinks,
+    simulationMode, suppressNotifications, enableTools, selectedDocIds, functions, testIssue,
+  }), [step, ruleType, ruleKind, fieldId, prompt, selectedProject, selectedWorkflow, selectedTransition,
+    premadeConfig, conditionPrompt, actionPrompt, actionFieldId, crossCheckClaims, runAsync,
+    docFormat, contentPrompt, docTitlePrompt, attachComment, researchQuery, researchTitle,
+    autoSelectResearchDoc, researchSources, libraryName, alsoSaveToLibrary, commentPrompt,
+    subtaskPrompt, linkPrompt, linkTypeName, maxLinks, simulationMode, suppressNotifications,
+    enableTools, selectedDocIds, functions, testIssue]);
+
+  const wizDraft = useDraft(DRAFT_FORM_IDS.ADD_RULE_WIZARD, accountId, draftState);
+
+  /* Restoring the answers is not enough: the catalogues are fetched by the CLICK handlers
+     (handleProjectSelect and friends), not by an effect on the selection, so a restored
+     step 5 would render an empty field picker and an empty transition list. These refetch
+     WITHOUT clearing the selections the handlers deliberately clear. Each failure is
+     silent for the same reason the whole feature is: a catalogue that will not load leaves
+     the admin exactly where they were before drafts existed. */
+  const refetchForDraft = async (d) => {
+    if (d.selectedProject) {
+      const token = ++workflowsFetchToken.current;
+      setLoadingWorkflows(true);
+      try {
+        const r = await invoke("getProjectWorkflows", { projectKey: d.selectedProject.key, projectId: d.selectedProject.id });
+        if (token === workflowsFetchToken.current && r && r.success) setWorkflows(r.workflows || []);
+      } catch (e) { /* silent-open */ }
+      if (token === workflowsFetchToken.current) setLoadingWorkflows(false);
+    }
+    if (d.selectedWorkflow) {
+      const token = ++transitionsFetchToken.current;
+      setLoadingTransitions(true);
+      try {
+        const r = await invoke("getWorkflowTransitions", { workflowName: d.selectedWorkflow.name });
+        if (token === transitionsFetchToken.current && r && r.success) setTransitions(r.transitions || []);
+      } catch (e) { /* silent-open */ }
+      if (token === transitionsFetchToken.current) setLoadingTransitions(false);
+    }
+    if (d.ruleType) {
+      setLoadingFields(true);
+      try {
+        const r = await invoke("getFields");
+        if (r && r.success) setFields(r.fields || []);
+      } catch (e) { /* silent-open */ }
+      setLoadingFields(false);
+    }
+  };
+
+  const restoreDraft = () => {
+    const d = wizDraft.restore();
+    if (!d) return;
+    const has = (k) => Object.prototype.hasOwnProperty.call(d, k);
+    if (has("step")) setStep(d.step);
+    if (has("selectedProject")) setSelectedProject(d.selectedProject);
+    if (has("selectedWorkflow")) setSelectedWorkflow(d.selectedWorkflow);
+    if (has("selectedTransition")) setSelectedTransition(d.selectedTransition);
+    if (has("ruleType")) setRuleType(d.ruleType);
+    if (has("ruleKind")) setRuleKind(d.ruleKind);
+    if (has("fieldId")) setFieldId(d.fieldId);
+    if (has("prompt")) setPrompt(d.prompt);
+    if (has("premadeConfig")) setPremadeConfig(d.premadeConfig);
+    if (has("conditionPrompt")) setConditionPrompt(d.conditionPrompt);
+    if (has("actionPrompt")) setActionPrompt(d.actionPrompt);
+    if (has("actionFieldId")) setActionFieldId(d.actionFieldId);
+    if (has("crossCheckClaims")) setCrossCheckClaims(d.crossCheckClaims);
+    if (has("runAsync")) setRunAsync(d.runAsync);
+    if (has("docFormat")) setDocFormat(d.docFormat);
+    if (has("contentPrompt")) setContentPrompt(d.contentPrompt);
+    if (has("docTitlePrompt")) setDocTitlePrompt(d.docTitlePrompt);
+    if (has("attachComment")) setAttachComment(d.attachComment);
+    if (has("researchQuery")) setResearchQuery(d.researchQuery);
+    if (has("researchTitle")) setResearchTitle(d.researchTitle);
+    if (has("autoSelectResearchDoc")) setAutoSelectResearchDoc(d.autoSelectResearchDoc);
+    if (has("researchSources")) setResearchSources(d.researchSources);
+    if (has("libraryName")) setLibraryName(d.libraryName);
+    if (has("alsoSaveToLibrary")) setAlsoSaveToLibrary(d.alsoSaveToLibrary);
+    if (has("commentPrompt")) setCommentPrompt(d.commentPrompt);
+    if (has("subtaskPrompt")) setSubtaskPrompt(d.subtaskPrompt);
+    if (has("linkPrompt")) setLinkPrompt(d.linkPrompt);
+    if (has("linkTypeName")) setLinkTypeName(d.linkTypeName);
+    if (has("maxLinks")) setMaxLinks(d.maxLinks);
+    if (has("simulationMode")) setSimulationMode(d.simulationMode);
+    if (has("suppressNotifications")) setSuppressNotifications(d.suppressNotifications);
+    if (has("enableTools")) setEnableTools(d.enableTools);
+    if (has("selectedDocIds")) setSelectedDocIds(d.selectedDocIds);
+    if (has("functions") && Array.isArray(d.functions) && d.functions.length) setFunctions(d.functions);
+    if (has("testIssue")) setTestIssue(d.testIssue);
+    refetchForDraft(d);
   };
 
   const fieldOptions = fields.map((f) => ({ value: f.id, label: `${f.name} (${f.id})` }));
@@ -625,6 +746,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
           <div style={{ display: "flex", gap: "8px" }}>
             <button className="btn-small" onClick={onClose}>Done</button>
             <button className="btn-small btn-edit" onClick={() => {
+              /* F-990 - a hand reset is the same event as a fresh open: whatever the hook
+                 was holding describes the rule that was just created. */
+              wizDraft.clear();
               setCreated(false); setStep(1); setSubmitted(false); setInstanceIdWarning(null);
               setSelectedProject(null); setSelectedWorkflow(null); setSelectedTransition(null); setRuleType(null);
               setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId(""); setCrossCheckClaims(false);
@@ -688,6 +812,15 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
           <span className="wiz-sep">/</span>
           {stepLabel(5, "Configure")}
         </div>
+
+        {wizDraft.hasDraft && (
+          <DraftResumeCard
+            savedAt={wizDraft.savedAt}
+            what="an unfinished rule"
+            onContinue={restoreDraft}
+            onDiscard={wizDraft.discard}
+          />
+        )}
 
         {error && (
           <div className="alert alert-error" style={{ marginBottom: "12px" }}>

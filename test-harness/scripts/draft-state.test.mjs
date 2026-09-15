@@ -38,6 +38,7 @@ import {
   serializeDraft,
   deserializeDraft,
   isDraftStale,
+  draftFingerprint,
   draftAgeLabel,
 } from "../../src/shared/draft-state.js";
 import { DRAFT_TTL_DAYS as TTL_FROM_LIMITS } from "../../src/shared/registry-limits.js";
@@ -191,7 +192,25 @@ try { pruneDraft(cyclic); } catch (e) { cycleThrew = true; }
 ok(!cycleThrew, "a cyclic state does not blow the stack");
 ok(serializeDraft(cyclic) !== null, "and still yields a writable draft");
 
-/* ── 9. the age label, and the house rule on dashes ─────────────────────────────────── */
+/* ── 9. the fingerprint: STAMP-FREE, which is the whole point ───────────────────────── */
+// REGRESSION. The hook compares the form's contents against the contents it armed on, so
+// that an untouched form writes nothing. It first did that with serializeDraft output,
+// which carries `savedAt` - so no two serializations of the same answers were ever equal,
+// the comparison silently never fired, and the emptied form was written straight back
+// after a Discard and after a successful save. Invisible on screen; found by reading
+// localStorage in admin-drafts D3/D4. These assertions are what stop it coming back.
+const fpA = draftFingerprint({ label: "x", n: 1 });
+ok(fpA === draftFingerprint({ label: "x", n: 1 }), "the same answers fingerprint the same, whenever they are taken");
+ok(serializeDraft({ label: "x" }, 1) !== serializeDraft({ label: "x" }, 2),
+  "serializeDraft output DIFFERS with the clock, which is exactly why it cannot be the comparison");
+ok(draftFingerprint({ label: "x" }) !== draftFingerprint({ label: "y" }), "different answers fingerprint differently");
+ok(!/savedAt/.test(String(fpA)) && !/"v"/.test(String(fpA)), "the fingerprint carries no envelope at all");
+ok(draftFingerprint({ label: "x", token: "SENTINEL" }) === draftFingerprint({ label: "x" }),
+  "a field the draft would never persist cannot make two forms look different");
+ok(draftFingerprint({}) === null && draftFingerprint(null) === null, "nothing fingerprints as nothing");
+ok(draftFingerprint({ fn: () => {} }) === null, "a state with nothing persistable fingerprints as nothing");
+
+/* ── 10. the age label, and the house rule on dashes ────────────────────────────────── */
 const labels = [
   draftAgeLabel(now, now), draftAgeLabel(now - 60000, now), draftAgeLabel(now - 300000, now),
   draftAgeLabel(now - 3600000, now), draftAgeLabel(now - 7200000, now),

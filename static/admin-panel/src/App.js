@@ -8562,6 +8562,10 @@ function App() {
                Without it the wizard's Memories tab would keep making the verdict claim
                during the very outage the header note above is explaining. */
             roleUnknown={roleUnknown}
+            /* F-990 - the wizard keeps a local draft of the answers; it is keyed on the
+               ADMIN so two people on one machine never read each other's half-finished
+               rule. Null until checkIsAdmin answers, and useDraft waits for it. */
+            accountId={accountId}
           />
         )}
 
@@ -9134,7 +9138,7 @@ function App() {
         /* F-914 - the Code tab's off state offers to MOVE the admin to Settings. The tab
            registry is App.js's, and the Settings tab is adminOnly, so a non-admin gets
            null and the off state simply does not paint a button it cannot honour. */
-        <CodeTab invoke={invoke} onGoToSettings={isAdmin ? () => setActiveTab("settings") : null} />
+        <CodeTab invoke={invoke} onGoToSettings={isAdmin ? () => setActiveTab("settings") : null} accountId={accountId} />
       )}
 
       {activeTab === "permissions" && isAdmin && (

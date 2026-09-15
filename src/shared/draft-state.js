@@ -288,6 +288,26 @@ export const serializeDraft = (state, now = Date.now()) => {
 };
 
 /**
+ * "Is this the same draft as that one", stamp and all removed.
+ *
+ * The hook compares the form's current contents against the contents it armed on, so that
+ * a form nobody has touched writes nothing and never raises a resume card. It must NOT do
+ * that by comparing `serializeDraft` output: that envelope carries `savedAt`, so two
+ * serializations of identical answers taken a second apart differ, every comparison is
+ * unequal, and the "untouched form" rule silently does nothing. MEASURED: it wrote the
+ * emptied form straight back after a Discard and after a successful save, so a discarded
+ * draft returned on the next reload and a saved connection left a draft offering to
+ * re-create it. Both were invisible on screen; only reading localStorage found them.
+ *
+ * Returns null when there is nothing to compare, which is its own equivalence class.
+ */
+export const draftFingerprint = (state) => {
+  const data = pruneDraft(state);
+  if (!data || typeof data !== "object" || Array.isArray(data) || Object.keys(data).length === 0) return null;
+  try { return JSON.stringify(data); } catch (e) { return null; }
+};
+
+/**
  * Read one back. Returns `{ data, savedAt }` or null for: corrupt JSON, a foreign or
  * missing version stamp, or a payload that is not an object. Never throws, because this
  * runs on mount and a bad string in storage must not be able to white-screen the panel.

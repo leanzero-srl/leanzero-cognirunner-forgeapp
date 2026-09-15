@@ -4020,7 +4020,6 @@ const injectStyles = () => {
     .va-people-row:hover:not(:disabled) .va-people-already { color: inherit; }
     .va-people-note { margin: 0; }
     /* ====================== F-969 BLOCK END ============================== */
-=======
     /* F-971 - THE MODEL RUNNING WHILE NOTHING IS CHOSEN.
        This note appears in exactly the state where the Model control is blank and the
        "Currently active" line is absent, so it is the ONLY thing on the card naming the

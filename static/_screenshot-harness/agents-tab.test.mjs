@@ -1410,27 +1410,42 @@ try {
       ok(saidTwice === 1, `A19 it is said once on the page, not twice (got ${saidTwice})`);
       await page.waitForTimeout(700);
 
-      /* THE TAB BAR IS ONE ROW. Measured, not asserted from the CSS: the bar's height must
-         be within one button's height, and every tab must sit on the same top edge. */
+      /* THE TAB BAR NEVER CLIPS A LABEL. F-916 asserted here that the bar was ONE nowrap
+         row with a scrollbar. F-957 replaced that: on macOS the scrollbar is an overlay
+         and is not painted until something scrolls, so at this very width the bar silently
+         cut "Listeners" to "ners" and offered nothing. The bar wraps again, but only
+         between GROUPS, so a whole group moves down as a block and no tab is ever clipped
+         or re-shuffled. What is measured is the thing that broke: labels and geometry. */
       const bar = page.locator(".tab-bar");
       const geom = await bar.evaluate((el) => {
         const btns = [...el.querySelectorAll(".tab-btn")];
         const tops = btns.map((b) => Math.round(b.getBoundingClientRect().top));
+        const bb = el.getBoundingClientRect();
         return {
-          barH: Math.round(el.getBoundingClientRect().height),
+          barH: Math.round(bb.height),
           btnH: Math.round(btns[0].getBoundingClientRect().height),
           rows: new Set(tops).size,
           count: btns.length,
-          scrollable: el.scrollWidth > el.clientWidth + 1,
-          overflowX: getComputedStyle(el).overflowX,
+          groups: el.querySelectorAll(".tab-group").length,
+          overflows: el.scrollWidth > el.clientWidth + 1,
           wrap: getComputedStyle(el).flexWrap,
+          clipped: btns.filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent.trim()),
+          outside: btns.filter((b) => {
+            const r = b.getBoundingClientRect();
+            return r.left < bb.left - 1 || r.right > bb.right + 1;
+          }).map((b) => b.textContent.trim()),
+          labels: btns.map((b) => b.textContent.trim()),
         };
       });
       ok(geom.count >= 10, `A19 the bar really has the tabs (got ${geom.count})`);
-      ok(geom.rows === 1, `A19 every tab sits on one row at 1200px (got ${geom.rows} rows)`);
-      ok(geom.barH <= geom.btnH + 12, `A19 the bar is one button high (bar ${geom.barH}, button ${geom.btnH})`);
-      ok(geom.wrap === "nowrap" && geom.overflowX === "auto", `A19 the bar scrolls instead of wrapping (${geom.wrap}/${geom.overflowX})`);
-      ok(geom.scrollable, "A19 at this width the row genuinely overflows, so the scroll affordance is the one that matters");
+      ok(geom.groups === 4, `A19 the tabs are rendered in four wrap groups (got ${geom.groups})`);
+      ok(geom.wrap === "wrap", `A19 the bar wraps between groups instead of clipping (${geom.wrap})`);
+      ok(!geom.overflows, "A19 nothing is parked outside the bar behind an invisible scrollbar");
+      ok(geom.clipped.length === 0, `A19 no label is clipped inside its button (clipped: ${JSON.stringify(geom.clipped)})`);
+      ok(geom.outside.length === 0, `A19 every tab sits inside the bar (outside: ${JSON.stringify(geom.outside)})`);
+      ok(geom.rows <= 2, `A19 the bar is at most two rows at 1200px (got ${geom.rows})`);
+      ok(geom.barH <= geom.btnH * geom.rows + 12, `A19 the bar is exactly as tall as its rows (bar ${geom.barH}, button ${geom.btnH}, rows ${geom.rows})`);
+      ok(geom.labels.includes("Listeners"), `A19 "Listeners" is present in full, not cut to "ners" (got ${JSON.stringify(geom.labels)})`);
 
       /* KEYBOARD FOCUS STAYS VISIBLE inside the clipping scroller. */
       await page.locator(".tab-btn").first().focus();

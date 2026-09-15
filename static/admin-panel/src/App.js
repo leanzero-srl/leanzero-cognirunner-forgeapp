@@ -3738,31 +3738,28 @@ const injectStyles = () => {
        Everything below is a deliberate override of a rule declared earlier in this same
        sheet, so it MUST stay at the end. Keep it together and keep the delimiters.
 
-       THE TAB BAR SCROLLS, IT DOES NOT WRAP. Twelve tabs at a normal admin width wrapped
-       onto a second row, which moved every tab's position whenever the window changed and
-       pushed the page content down by a row. The two ways out were one scrolling row and a
-       grouped bar with a CustomSelect on narrow widths; this is the scrolling row, because
-       grouping hides tabs behind a menu (the Agents tab an admin has never opened is
-       exactly the one they cannot find) and the labels stay legible in one line. The
-       affordance is a REAL scrollbar, sized and coloured to be seen - not a fade over the
-       right edge, which would be the washed-out tint the design rules forbid. */
+       F-957 SUPERSEDES THE SCROLLING ROW. F-916 made this bar one nowrap row with a thin
+       scrollbar as its affordance. On macOS the scrollbar is an OVERLAY: it is not painted
+       until something scrolls, so at a real Jira width with the sidebar open the bar simply
+       cut "Listeners" to "ners" and offered the reader nothing. A clipped label is worse
+       than a second row.
+
+       So the bar WRAPS AGAIN — but it wraps between GROUPS, which is what made the original
+       wrap unusable. Each group (Rules / Agents / Knowledge / Site, declared on TABS) is a
+       nowrap unit, so a narrower window moves a whole group down as a block; tabs never
+       re-shuffle individually and no label is ever clipped. Nothing is hidden behind a menu
+       or a chevron, so the tab an admin has never opened is still the one they can see. */
     .tab-bar {
-      flex-wrap: nowrap;
-      overflow-x: auto;
-      overflow-y: hidden;
-      scrollbar-width: thin;
-      scrollbar-color: #475569 transparent;
-      /* The row must not collapse its buttons to fit; a clipped label is not a tab. */
+      flex-wrap: wrap;
+      overflow: visible;
+      row-gap: 0;
+      column-gap: 14px;
       align-items: stretch;
     }
+    .tab-group { display: flex; flex: 0 0 auto; flex-wrap: nowrap; }
     .tab-bar .tab-btn { flex: 0 0 auto; white-space: nowrap; }
-    .tab-bar::-webkit-scrollbar { height: 6px; }
-    .tab-bar::-webkit-scrollbar-track { background: transparent; }
-    .tab-bar::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
-    html[data-color-mode="dark"] .tab-bar { scrollbar-color: #64748b transparent; }
-    html[data-color-mode="dark"] .tab-bar::-webkit-scrollbar-thumb { background: #64748b; }
-    /* KEYBOARD FOCUS STAYS VISIBLE inside a clipping scroller: an outline drawn outside
-       the button would be cut off by the hidden overflow, so it is drawn inside it. */
+    /* Keyboard focus is drawn INSIDE the button: it used to be clipped by the scroller,
+       and keeping it inside costs nothing now that nothing clips. */
     .tab-bar .tab-btn:focus-visible { outline: 2px solid #2563eb; outline-offset: -3px; border-radius: 4px; }
     html[data-color-mode="dark"] .tab-bar .tab-btn:focus-visible { outline-color: #3b82f6; }
 
@@ -6799,30 +6796,34 @@ const injectCopiedComponentStyles = () => {
 let invoke;
 let router;
 
+/* F-957 - every tab carries a GROUP. The strip wraps between groups and never inside
+   one, so a narrow window moves a whole group down instead of moving every tab and
+   instead of clipping a label to "ners". The DOM order is unchanged on purpose; the
+   group is only a wrap boundary, it is not drawn. */
 const TABS = [
-  { key: "rules", label: "Rules" },
-  { key: "listeners", label: "Listeners" },
-  { key: "jobs", label: "Scheduled Jobs" },
+  { key: "rules", label: "Rules", group: "rules" },
+  { key: "listeners", label: "Listeners", group: "rules" },
+  { key: "jobs", label: "Scheduled Jobs", group: "rules" },
   // 1.5 — the Virtual Administrator. Deliberately NOT adminOnly, for the same reason the
   // Code tab is not: every write behind it is gated by the backend roster, which answers a
   // refusal the tab renders as one ("ask a CogniRunner admin"), and a tab that silently
   // does not exist teaches a reader nothing about a capability they may be entitled to.
-  { key: "agents", label: "Agents" },
-  { key: "logs", label: "Execution Logs" },
-  { key: "docs", label: "Documentation" },
-  { key: "skills", label: "Skills" },
-  { key: "memories", label: "Memories" },
+  { key: "agents", label: "Agents", group: "agents" },
+  { key: "logs", label: "Execution Logs", group: "agents" },
+  { key: "docs", label: "Documentation", group: "knowledge" },
+  { key: "skills", label: "Skills", group: "knowledge" },
+  { key: "memories", label: "Memories", group: "knowledge" },
   // 1.4 commit 14b - the BAKED field guide, beside the three knowledge stores an admin
   // already curates here. Deliberately NOT adminOnly, for the reason the Code tab is not:
   // `getKnowledgePacks` has a VIEWER floor, so a non-admin genuinely can read the state,
   // and only the switch belongs to an admin.
-  { key: "knowledge", label: "Knowledge" },
+  { key: "knowledge", label: "Knowledge", group: "knowledge" },
   // Deliberately NOT adminOnly. Every resolver behind it is requireAdmin, so a
   // non-admin sees the backend's own refusal note - which names the remedy - instead of
   // a tab that silently does not exist and a feature they cannot find out about.
-  { key: "code", label: "Code" },
-  { key: "permissions", label: "Permissions", adminOnly: true },
-  { key: "settings", label: "Settings", adminOnly: true },
+  { key: "code", label: "Code", group: "site" },
+  { key: "permissions", label: "Permissions", adminOnly: true, group: "site" },
+  { key: "settings", label: "Settings", adminOnly: true, group: "site" },
 ];
 
 // One-line "what this is / when to use it" per tab — the single copy source so the

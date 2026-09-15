@@ -55,10 +55,13 @@ const shot = async (page, name) => {
    knobs: __MANAGED_MISSING__, __MANAGED_DISABLED__, __MANAGED_SPEND__). Keeping it a bag
    rather than more positional booleans is what stopped this signature growing a fifth and
    sixth flag nobody can read at the call site. */
-async function openAdmin(browser, theme = "light", standard = false, unlicensed = false, extra = {}) {
+/* F-957 - `viewport` is an explicit optional argument so a journey can measure the tab
+   strip at a REAL Jira content width (the defect only appears below ~1300px). Every
+   existing call keeps the 1440 it always had. */
+async function openAdmin(browser, theme = "light", standard = false, unlicensed = false, extra = {}, viewport = { width: 1440, height: 1200 }) {
   const root = ensureFreshBuildShot("admin-panel"); // F-125: never serve a bundle older than src/
   const { s, port } = await serve(root);
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+  const ctx = await browser.newContext({ viewport });
   await ctx.addInitScript(([th, std, unl, ex]) => {
     window.__SHOT__ = "admin"; window.__THEME__ = th;
     if (std) window.__STANDARD__ = true; if (unl) window.__UNLICENSED__ = true;
@@ -1108,6 +1111,49 @@ try {
         ok(env.errors.length === 0, `E7 ${theme} no page errors: ` + env.errors.join(" | "));
       } catch (e) { fail++; console.log("  x E7 threw: " + e.message.split("\n")[0]); }
       await close(env);
+    }
+  }
+  {
+    /* ═══ E8 (F-957) — the tab strip never clips a label ═══
+       F-916 made the strip one scrolling row. On macOS the scrollbar is an overlay and is
+       not painted until something scrolls, so at a real Jira width the strip cut
+       "Listeners" to "ners" with no visible affordance at all. It now wraps between
+       GROUPS. The assertion is geometric: every button's box must sit inside the bar's
+       box and must be wide enough for its own text, at the two widths where it broke. */
+    console.log("E8 (F-957) tab strip: no clipped label at 1100 and 1280");
+    for (const width of [1100, 1280]) {
+      for (const theme of ["light", "dark"]) {
+        const env = await openAdmin(browser, theme, false, false, {}, { width, height: 1200 });
+        const { page } = env;
+        try {
+          await page.locator(".tab-bar").waitFor({ timeout: 10000 });
+          const m = await page.evaluate(() => {
+            const bar = document.querySelector(".tab-bar");
+            const bb = bar.getBoundingClientRect();
+            const btns = Array.from(bar.querySelectorAll(".tab-btn")).map((b) => {
+              const r = b.getBoundingClientRect();
+              return { label: b.textContent.trim(), left: r.left, right: r.right, w: r.width, sw: b.scrollWidth, cw: b.clientWidth };
+            });
+            return {
+              barLeft: bb.left, barRight: bb.right, barScroll: bar.scrollWidth, barClient: bar.clientWidth,
+              groups: bar.querySelectorAll(".tab-group").length, rows: new Set(Array.from(bar.querySelectorAll(".tab-btn")).map((b) => Math.round(b.getBoundingClientRect().top))).size,
+              btns,
+            };
+          });
+          ok(m.groups === 4, `E8 ${width} ${theme} the strip renders four groups, got ${m.groups}`);
+          ok(m.barScroll <= m.barClient + 1, `E8 ${width} ${theme} the bar itself does not overflow (${m.barScroll} vs ${m.barClient})`);
+          ok(m.rows <= 2, `E8 ${width} ${theme} at most two rows, got ${m.rows}`);
+          for (const b of m.btns) {
+            ok(b.sw <= b.cw + 1, `E8 ${width} ${theme} "${b.label}" is not clipped inside its button (${b.sw} vs ${b.cw})`);
+            ok(b.left >= m.barLeft - 1 && b.right <= m.barRight + 1, `E8 ${width} ${theme} "${b.label}" sits inside the bar`);
+          }
+          const labels = m.btns.map((b) => b.label);
+          ok(labels.includes("Listeners") && labels.includes("Rules"), `E8 ${width} ${theme} the clipped tabs are present in full, got ${JSON.stringify(labels)}`);
+          await shot(page, `f957-tabstrip-${width}-${theme}`);
+          ok(env.errors.length === 0, `E8 ${width} ${theme} no page errors: ` + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  x E8 threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
     }
   }
 } finally {

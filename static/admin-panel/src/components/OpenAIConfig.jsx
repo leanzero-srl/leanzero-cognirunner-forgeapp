@@ -19,8 +19,12 @@ import { providerReady } from "./capability";
 import {
   EDITION_IDS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL,
-  agentCapabilityCopy, allowanceConsequenceCopy,
+  agentCapabilityCopy, allowanceConsequenceCopy, allowanceApproachingCopy,
 } from "../../../../src/shared/edition.js";
+/* F-955 - the month boundary is the meter's own rule and is imported, never restated:
+   `rolled()` rolls when monthKey(now) changes and monthKey is UTC, so "resets on" is
+   the first instant of the next UTC month and this helper is where that is written. */
+import { allowanceResetLabel } from "../../../../src/shared/usage-meter.js";
 
 // Forge Custom UI runs in a sandboxed iframe — plain <a target="_blank"> links
 // are blocked (nothing happens on click). router.open() is the supported way to
@@ -80,6 +84,47 @@ const PROVIDER_HELP = {
   // The managed engine has NO key field and NO URL field: its credential is an encrypted
   // Forge env var on LeanZero's side, never KVS and never something a tenant admin pastes.
   [MANAGED_PROVIDER_ID]: { keyPlaceholder: "", keyLabel: "API Key", endpointNeeded: false, noKey: true },
+};
+
+/* ===== F-955 - TYPING A MODEL ID, IN ONE HOME ==================================
+   Two places on this screen let an admin TYPE a model id instead of picking one: the
+   Bedrock rule-model box, and (until this cut) the whole agent-model control on every
+   BYOK provider. A typo in either saves silently and is discovered at RUN time - Coder
+   refuses its first turn naming a model the admin believes they configured.
+
+   THE DECISION, and why it is not "just validate it": a free-text box was deliberate.
+   Bedrock needs inference-profile ids the catalogue call does not list, LM Studio lists
+   whatever is on the machine, and a vendor's list can be stale or invisible to a
+   fine-grained key. Refusing an id we cannot see would break real configurations. So the
+   control becomes a PICKER over the live list with a last row that reveals the text box,
+   and the typed id is still ACCEPTED - it just stops being silent. When the list answered
+   and the id is not in it, this sentence says what will happen and when.
+
+   `liveListAnswered` is the honest question, not `ids.length > 0`: a list call that
+   degraded returns an empty array, and "not in an empty list" is not evidence of
+   anything. With no list there is nothing to check against and the note stays the
+   same sentence - the admin is told the id is unverified either way, which is true. */
+export const OTHER_MODEL_VALUE = "__cr_other_model__";
+export const OTHER_MODEL_LABEL = "Other (type an id)";
+
+/** The row that reveals the text input, appended to whatever live list a picker has. */
+export const withOtherModelRow = (options) => [
+  ...options,
+  { value: OTHER_MODEL_VALUE, label: OTHER_MODEL_LABEL },
+];
+
+/**
+ * The ONE sentence for "you typed an id nobody has confirmed exists". Returns null when
+ * the id IS in the list the provider answered with - the only case where we know it is
+ * real. Shared by the agent-model box and the Bedrock rule-model box so the two can
+ * never drift into two different promises about the same risk.
+ */
+export const unlistedModelNote = (id, liveIds) => {
+  const wanted = String(id || "").trim();
+  if (!wanted) return null;
+  const list = Array.isArray(liveIds) ? liveIds : [];
+  if (list.includes(wanted)) return null;
+  return "This model is not in the list your provider returned; Coder will refuse the first turn if it does not exist.";
 };
 
 // AWS Bedrock regions. Bedrock endpoints are region-specific and model availability
@@ -181,6 +226,13 @@ export default function OpenAIConfig({ invoke }) {
   const [agentModel, setAgentModel] = useState("");
   const [savedAgentModel, setSavedAgentModel] = useState("");
   const [agentFrontierOnly, setAgentFrontierOnly] = useState(false);
+  /* F-955 - "Other (type an id)" is a MODE, not a value. It has to be state rather than
+     `!list.includes(agentModel)` because the admin picks Other BEFORE typing anything:
+     derived from an empty id the box would close on its own first keystroke-ish render,
+     and derived from a non-empty one it could never be left. It is reset whenever a
+     provider load writes a fresh agent model, so switching provider never strands the
+     previous provider's typed id in an open box. */
+  const [agentModelTyping, setAgentModelTyping] = useState(false);
   const [savingAgentModel, setSavingAgentModel] = useState(false);
   // AI usage meter (admin-only). Best-effort under-count of AI calls + tokens.
   const [usage, setUsage] = useState(null);
@@ -444,11 +496,15 @@ export default function OpenAIConfig({ invoke }) {
           setAgentModel(agentResult.model || "");
           setSavedAgentModel(agentResult.model || "");
           setAgentFrontierOnly(!!agentResult.frontierOnly);
+          /* F-955 - a fresh answer closes the typing box. Leaving it open would show the
+             PREVIOUS provider's typed id over this provider's saved model. */
+          setAgentModelTyping(false);
           if (agentResult.edition) setEdition(agentResult.edition);
         }
       } catch (e) {
         setAgentModel("");
         setSavedAgentModel("");
+        setAgentModelTyping(false);
       }
       setCustomModelInput("");
     } catch (e) {
@@ -521,8 +577,23 @@ export default function OpenAIConfig({ invoke }) {
         setContext7Url(context7Result.url || "");
         setContext7HasApiKey(!!context7Result.hasApiKey);
       }
-      // Show the active provider's config first.
-      await loadProviderConfig(initial);
+      /* F-955 - THE FRAME FIRST, THE VALUES UNDER A VEIL.
+         MEASURED in the screenshot harness (__MODELS_DELAY_MS__ = 4300, the staging
+         figure): the provider card's section existed at 57 ms and its first real control
+         did not appear until 4379 ms - 4.3 seconds of skeleton bars where the card, its
+         heading and its layout could have been on screen the whole time.
+         The cause is one call, not the mount: every other read here is a KVS get, but
+         `getOpenAIModels` inside loadProviderConfig leaves Forge and asks the VENDOR for
+         a catalogue. The REST card below never waits on anything like it, which is why
+         only this card skeletons for seconds.
+         So `loading` - the flag that swaps the whole card for skeleton bars - is cleared
+         BEFORE that call, and the call runs as a REFRESH: the card's real frame paints
+         immediately and the existing `.veil` covers the value cells while the vendor
+         answers. Nothing is shown that is not known - the veil is opaque over the values
+         and every field under it is still the "nothing loaded yet" default it always was.
+         Awaited, unchanged, so the `finally` below is still the end of the load. */
+      setLoading(false);
+      await loadProviderConfig(initial, { asRefresh: true });
     } catch (e) {
       console.error("Failed to load AI config status:", e);
       setLoadError(e.message || String(e));
@@ -1410,6 +1481,29 @@ export default function OpenAIConfig({ invoke }) {
      it does not offer it. */
   const agentModelId = (agentModel || "").trim();
   const agentOutOfList = isAtlassian && !!agentModelId && !FORGE_LLM_FRONTIER.includes(agentModelId);
+  /* F-955 - THE BYOK AGENT PICKER'S LIST. It is the SAME array the rule-model picker
+     above renders (`models`, straight from getOpenAIModels for the viewed provider), and
+     deliberately not a second fetch: one live list, two controls, so the two can never
+     offer different models for the same key. LM Studio's richer `modelDetails` collapses
+     to its ids here - the agent slot stores an id and nothing else, and the load/quant
+     badges belong to the control that can act on them.
+     `effectiveModels` is NOT used: its Forge LLM / managed fallbacks belong to the two
+     branches above, which never reach this one. */
+  const agentModelOptions = (isLmStudio && modelDetails.length > 0)
+    ? modelDetails.map((m) => m.id)
+    : (models || []);
+  /* Did the provider's list actually ANSWER? An empty array is a degraded call, not a
+     verdict, and "not in an empty list" proves nothing - so the note is driven by
+     membership alone (unlistedModelNote) and this flag only decides whether to render a
+     locked "in use" row for a saved id the list cannot vouch for. */
+  const agentSavedOutOfLiveList = !isAtlassian && !isManaged
+    && !!agentModelId && agentModelOptions.length > 0 && !agentModelOptions.includes(agentModelId);
+  /* THE SENTENCE, from the one home, for the one control that can type an id. Rendered
+     only on the BYOK branch: Forge LLM and the managed engine have fixed lists with no
+     text box at all, so an "unverified id" cannot exist there. */
+  const agentUnlistedNote = (!isAtlassian && !isManaged)
+    ? unlistedModelNote(agentModelId, agentModelOptions)
+    : null;
   /* Which refusal it is, in the gate's own order (agentCapability in edition.js): the
      EDITION is checked before the MODEL, so a Standard tenant reads the edition sentence
      even though its Haiku fallback would fail the frontier test too. */
@@ -1445,6 +1539,18 @@ export default function OpenAIConfig({ invoke }) {
   // 0-1 FRACTION, not a percentage. Convert in exactly ONE place — the bar width
   // and every piece of copy read this, so the two can never disagree again.
   const allowancePct = allowance ? Math.max(0, Math.min(100, Math.round((Number(allowance.pct) || 0) * 100))) : 0;
+  /* F-955 - WHEN IT COMES BACK. The meter read "Vendor allowance - $141 of $200 - 71%"
+     and stopped there: no date, and "Vendor" is LeanZero's word for its own bill, not a
+     word the admin reading the screen has ever bought. It is now a sentence in their
+     vocabulary - "Monthly allowance: $141 of $200 used, resets 1 October".
+
+     THE DATE IS DERIVED, NOT SENT. `getAiUsage` does not return a reset date; what it
+     DOES return is `usage.month.key`, the very key whose change IS the rollover
+     (rolled(), src/shared/usage-meter.js). So the date is computed here from that key
+     through the shared module's own helper - the boundary rule is still read from its
+     one home, not retyped, and a backend change to the period follows automatically.
+     If a future resolver starts sending a reset date, prefer it here and delete this. */
+  const allowanceResetsOn = allowance ? allowanceResetLabel(usage && usage.month && usage.month.key) : null;
   const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 
   const resetUsage = async () => {
@@ -1506,7 +1612,9 @@ export default function OpenAIConfig({ invoke }) {
           {allowance && (
             <div className="usage-allowance">
               <div className="usage-prov-row">
-                <span className="usage-prov-name">Vendor allowance</span>
+                {/* F-955 - "Vendor allowance" was LeanZero's internal word for its own
+                    bill. The admin bought a monthly allowance; that is what it is called. */}
+                <span className="usage-prov-name">Monthly allowance</span>
                 <span className="usage-prov-bar">
                   <span
                     className={`usage-prov-fill usage-allow-fill lvl-${allowance.level || "ok"}`}
@@ -1514,7 +1622,8 @@ export default function OpenAIConfig({ invoke }) {
                   />
                 </span>
                 <span className="usage-prov-val">
-                  {money(allowance.estUsd)} of {money(allowance.allowanceUsd)} · {allowancePct}%
+                  {money(allowance.estUsd)} of {money(allowance.allowanceUsd)} used ({allowancePct}%)
+                  {allowanceResetsOn && <>, resets <span className="usage-allow-reset">{allowanceResetsOn}</span></>}
                 </span>
               </div>
               {/* WHERE the money went, inside the ONE ceiling. Rendered only when both
@@ -1538,9 +1647,21 @@ export default function OpenAIConfig({ invoke }) {
                   </div>
                 </div>
               )}
+              {/* F-955 - A WARNING WITH A CONSEQUENCE AND A DEADLINE. This note used to
+                  read "Most of this month's vendor allowance is used." and stop: no date,
+                  no outcome, and LeanZero's word for its own bill. The consequence comes
+                  from the SAME home as the 100% note below (edition.js), in the future
+                  tense, so the two can never describe the engine differently - on Forge
+                  LLM the app degrades to Haiku, on the managed engine it stops, and that
+                  difference matters MORE at 80% than at 100% because there is still time
+                  to act on it. */}
               {allowance.level === "soft" && (
                 <p className="usage-allow-note lvl-soft">
-                  Most of this month&apos;s vendor allowance is used.
+                  Most of this month&apos;s allowance is used
+                  {allowanceResetsOn ? <>, and it resets <span className="usage-allow-reset">{allowanceResetsOn}</span></> : null}.
+                  {allowanceApproachingCopy(activeProvider, allowanceResetsOn)
+                    ? " " + allowanceApproachingCopy(activeProvider, allowanceResetsOn)
+                    : ""}
                 </p>
               )}
               {/* F-556 - the consequence is NOT the same on both vendor-billed engines,
@@ -1549,9 +1670,11 @@ export default function OpenAIConfig({ invoke }) {
                   fail open and queued work stops. The sentence comes from the one copy
                   home (src/shared/edition.js) and is keyed on `activeProvider` - what is
                   SAVED and running, never the picker's current selection. */}
-              {allowance.level === "hard" && allowanceConsequenceCopy(activeProvider) && (
+              {/* F-955 - the same sentence it always was, with the day it lifts spliced
+                  in where "next month" used to stand. Same home, same key, one argument. */}
+              {allowance.level === "hard" && allowanceConsequenceCopy(activeProvider, allowanceResetsOn) && (
                 <p className="usage-allow-note lvl-hard">
-                  {allowanceConsequenceCopy(activeProvider)}
+                  {allowanceConsequenceCopy(activeProvider, allowanceResetsOn)}
                 </p>
               )}
               {usageSeats !== undefined && usageSeats !== null && (
@@ -2231,6 +2354,14 @@ export default function OpenAIConfig({ invoke }) {
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                     Many Bedrock models require a cross-region inference-profile id (<code style={{ fontSize: "11px" }}>eu.</code> / <code style={{ fontSize: "11px" }}>us.</code> prefix) rather than the bare model id.
                   </p>
+                  {/* F-955 - the SAME sentence as the agent box, from the same helper.
+                      This box and that one are the only two places a model id is typed,
+                      and a typo in either is discovered at run time; one rule, one home. */}
+                  {unlistedModelNote(customModelInput, models) && (
+                    <p className="model-unlisted-note" style={{ margin: "6px 0 0 0", fontSize: "11px" }}>
+                      {unlistedModelNote(customModelInput, models)}
+                    </p>
+                  )}
                 </div>
               )}
               {isLmStudio && selectedModelMeta && (
@@ -2327,16 +2458,67 @@ export default function OpenAIConfig({ invoke }) {
                         ]}
                       />
                     </div>
+                  ) : agentModelTyping ? (
+                    /* F-955 - the escape hatch, reached ON PURPOSE from the picker's last
+                       row. Every id the previous free-text box accepted is still typeable
+                       here; the difference is that the admin had to look at the live list
+                       first, and an unlisted id now carries the note below. */
+                    /* Wider than the picker branch (320px) because this row carries THREE
+                       controls, and a model id squeezed into ~180px is unreadable at the
+                       exact moment the admin is checking it for a typo. */
+                    <div style={{ flex: 1, maxWidth: "460px", display: "flex", alignItems: "center", gap: "8px" }}>
+                      <input
+                        type="text"
+                        value={agentModel}
+                        onChange={(e) => setAgentModel(e.target.value)}
+                        placeholder={pHelp.agentModelPlaceholder || "the model id your provider expects"}
+                        aria-label="Agent model"
+                        autoFocus
+                        style={{ flex: 1, minWidth: 0, padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px", fontFamily: "SFMono-Regular, Consolas, monospace" }}
+                        onKeyDown={(e) => e.key === "Enter" && handleSaveAgentModel()}
+                      />
+                      <button
+                        type="button"
+                        className="btn-small agent-model-pick-back"
+                        /* Back to the list, and the saved id comes back with it: an
+                           abandoned typing session must not leave a half-typed string
+                           standing where a resolved model belongs. */
+                        onClick={() => { setAgentModelTyping(false); setAgentModel(savedAgentModel || ""); }}
+                      >
+                        Pick from list
+                      </button>
+                    </div>
                   ) : (
-                    <input
-                      type="text"
-                      value={agentModel}
-                      onChange={(e) => setAgentModel(e.target.value)}
-                      placeholder={pHelp.agentModelPlaceholder || "the model id your provider expects"}
-                      aria-label="Agent model"
-                      style={{ flex: 1, padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px", fontFamily: "SFMono-Regular, Consolas, monospace" }}
-                      onKeyDown={(e) => e.key === "Enter" && handleSaveAgentModel()}
-                    />
+                    /* F-955 - THE LIVE LIST, not a free-text box. `Model` directly above
+                       has always been a picker over exactly this array; the agent slot
+                       was the one place a typo saved silently and surfaced as a refused
+                       Coder turn hours later. Same list, same component, one extra row. */
+                    <div style={{ flex: 1, maxWidth: "320px" }}>
+                      <CustomSelect
+                        value={agentModel}
+                        onChange={(v) => {
+                          if (v === OTHER_MODEL_VALUE) { setAgentModelTyping(true); return; }
+                          setAgentModel(v);
+                        }}
+                        placeholder="Select an agent model..."
+                        searchable={agentModelOptions.length > 8}
+                        searchPlaceholder="Search models..."
+                        ariaLabel="Agent model"
+                        options={withOtherModelRow([
+                          /* The RESOLVED id first and locked when the live list does not
+                             carry it - F-895's rule, for the same reason: without it the
+                             trigger reads "Select an agent model..." over a model that is
+                             already saved and already running. */
+                          ...(agentSavedOutOfLiveList ? [{
+                            value: agentModelId,
+                            label: agentModelId,
+                            disabled: true,
+                            badges: [{ text: "in use", tone: "info" }],
+                          }] : []),
+                          ...agentModelOptions.map((m) => ({ value: m, label: m })),
+                        ])}
+                      />
+                    </div>
                   )}
                   <button
                     className={"btn-small btn-edit" + (savingAgentModel ? " is-busy" : "")}
@@ -2355,6 +2537,15 @@ export default function OpenAIConfig({ invoke }) {
                 <p style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                   Used by Coder and Virtual Administrators. Validators and rules keep using the model above.
                 </p>
+                {/* F-955 - AN ID NOBODY CONFIRMED, SAID OUT LOUD BEFORE IT COSTS A TURN.
+                    The save still goes through: the list can be stale, invisible to a
+                    fine-grained key, or simply not carry the inference-profile id this
+                    provider needs. What it must not do is stay silent. */}
+                {agentUnlistedNote && (
+                  <p className="model-unlisted-note" style={{ margin: "6px 0 0 0", fontSize: "11px" }}>
+                    {agentUnlistedNote}
+                  </p>
+                )}
                 {/* F-895 — the same sentence the locked row carries, readable WITHOUT
                     opening the dropdown, and naming the id that is actually resolved. */}
                 {agentOutOfList && (

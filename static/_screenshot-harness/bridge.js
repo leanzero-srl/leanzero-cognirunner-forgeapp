@@ -2018,7 +2018,12 @@ function invoke(name, payload) {
     // Do not nest them again.
     case "getAiUsage": return Promise.resolve({
       success: true,
-      usage: { month: { key: "2026-07", calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }] },
+      /* F-955 - the month key is now LOAD-BEARING: the panel derives "resets <date>"
+         from it through the shared helper, exactly as it must when the resolver sends no
+         reset date. It is computed from `now` for the same reason mockAllowance() is -
+         the two travel on ONE object in the real backend, and a fixture whose allowance
+         figures and whose period disagree would photograph a state that cannot exist. */
+      usage: { month: { key: monthKey(Date.now()), calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }] },
       // 1.3: the monthly Forge LLM allowance meter. F-091: Standard (and any BYOK
       // tenant) gets an explicit `null`, which is what the backend sends — NOT
       // `undefined`, so "no allowance row" is tested against the real absent value.
@@ -2105,6 +2110,19 @@ function invoke(name, payload) {
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, provider: "lmstudio", baseUrl: LM_URL, hasKey: false, hasToken: true, isByok: true });
       return Promise.resolve(isAdmin ? { success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", hasKey: true, isByok: true } : { success: true, isByok: false });
     case "getOpenAIModels":
+      /* F-955 - THE SLOW CALL, MODELLED. `getOpenAIModels` is the only mount read that
+         leaves Forge and asks the VENDOR for a catalogue, so it is the one whose latency
+         the admin actually waits on (4.3 s measured on staging). Every other mount read
+         is a KVS get. The knob exists so a journey can photograph the panel WHILE that
+         call is outstanding; with it unset the fixture answers instantly and every
+         pre-existing shot and assertion is byte-for-byte what it was. */
+      if (typeof window !== "undefined" && Number(window.__MODELS_DELAY_MS__) > 0) {
+        const ms = Number(window.__MODELS_DELAY_MS__);
+        const inner = invoke("__getOpenAIModelsNow", payload);
+        return new Promise((r) => setTimeout(() => r(inner), ms));
+      }
+      // eslint-disable-next-line no-fallthrough
+    case "__getOpenAIModelsNow":
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, isByok: true, models: LM_MODELS.map((m) => m.id), modelDetails: LM_MODELS, locked: [], edition: edName() });
       /* The managed engine: a FIXED list (MANAGED_MODELS), never OpenRouter's catalogue,
          and an EMPTY list when the deployment has no engine. `locked` stays empty — a

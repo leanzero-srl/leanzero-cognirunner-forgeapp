@@ -340,9 +340,33 @@ export const agentCapabilityCopy = (reason) =>
  *
  * Keyed on the ACTIVE engine (what is saved), never on a picker selection.
  */
+/*
+ * F-955 - "until next month" NAMES NO DATE, and the meter beside it named none either,
+ * so an admin at 80% could not tell whether to wait a day or pay their way out. Both
+ * maps now take the reset day and splice it in; `resetsOn` defaults to the old wording
+ * so a caller that cannot compute a date still gets a true sentence rather than a hole.
+ * The DATE itself is not computed here - the month boundary belongs to the meter that
+ * owns the rollover (allowanceResetLabel, src/shared/usage-meter.js) and this file only
+ * says the words around it.
+ */
 const ALLOWANCE_CONSEQUENCE = {
-  [MANAGED_PROVIDER_ID]: `Allowance spent. ${MANAGED_PROVIDER_LABEL} has stopped until next month: rules that use AI are not validated, and queued jobs and agent tasks refuse. Switch to Atlassian Forge LLM or a BYOK provider to keep going.`,
-  atlassian: "Allowance spent. Sonnet 5 and Opus 5 are paused until next month; rules keep running on Claude Haiku.",
+  [MANAGED_PROVIDER_ID]: (when) => `Allowance spent. ${MANAGED_PROVIDER_LABEL} has stopped until ${when}: rules that use AI are not validated, and queued jobs and agent tasks refuse. Switch to Atlassian Forge LLM or a BYOK provider to keep going.`,
+  atlassian: (when) => `Allowance spent. Sonnet 5 and Opus 5 are paused until ${when}; rules keep running on Claude Haiku.`,
+};
+
+/*
+ * THE SAME TWO OUTCOMES, STATED BEFORE THEY HAPPEN (F-955). The 80% note said only
+ * "Most of this month's vendor allowance is used" - a warning with no consequence and no
+ * deadline, which is a warning an admin cannot act on. These are deliberately the SAME
+ * facts as ALLOWANCE_CONSEQUENCE above, in the future tense, and they live beside it so
+ * the pair can never tell two different stories about one engine: on Forge LLM the app
+ * DEGRADES to Haiku, on the managed engine it STOPS. That distinction is the whole
+ * reason this block exists (see the comment above it) and it must survive into the
+ * earlier warning, which is the one an admin can still do something about.
+ */
+const ALLOWANCE_APPROACHING = {
+  [MANAGED_PROVIDER_ID]: (when) => `At 100% ${MANAGED_PROVIDER_LABEL} stops until ${when}: rules that use AI are not validated, and queued jobs and agent tasks refuse.`,
+  atlassian: (when) => `At 100% rules fall back to Claude Haiku and agents pause until ${when}.`,
 };
 
 /**
@@ -351,8 +375,18 @@ const ALLOWANCE_CONSEQUENCE = {
  * own bill and is never shown the meter), so a surface renders nothing rather than a
  * sentence that is true of someone else.
  */
-export const allowanceConsequenceCopy = (activeProvider) =>
-  ALLOWANCE_CONSEQUENCE[String(activeProvider || "")] || null;
+export const allowanceConsequenceCopy = (activeProvider, resetsOn) => {
+  const fn = ALLOWANCE_CONSEQUENCE[String(activeProvider || "")];
+  return fn ? fn(resetsOn ? String(resetsOn) : "next month") : null;
+};
+
+/**
+ * The same, for a tenant that is NEARLY there. Same null rule, same engines.
+ */
+export const allowanceApproachingCopy = (activeProvider, resetsOn) => {
+  const fn = ALLOWANCE_APPROACHING[String(activeProvider || "")];
+  return fn ? fn(resetsOn ? String(resetsOn) : "next month") : null;
+};
 
 export const agentCapability = ({ provider, edition, agentModel, allowanceLevel, managedKeyPresent } = {}) => {
   /*

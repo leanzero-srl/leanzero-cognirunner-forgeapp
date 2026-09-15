@@ -74,6 +74,21 @@ async function openAdmin(browser, theme = "light", standard = false, unlicensed 
 async function close(env) { await env.ctx.close(); await new Promise((r) => env.s.close(r)); }
 const tab = (page, label) => page.locator(".tab-btn", { hasText: new RegExp(`^\\s*${label}\\s*$`) }).first().click();
 
+/* F-955 - THE MONTH BOUNDARY IS IMPORTED, NEVER RETYPED. The panel derives "resets
+   <day>" from `usage.month.key` through the shared helper; a journey that hard-coded a
+   date would pass against a panel computing the WRONG one, which is the only failure
+   worth catching here. Both come from src/shared/usage-meter.js, the one home. */
+const { allowanceResetLabel, monthKey } = await import("../../src/shared/usage-meter.js");
+
+/* F-955 - the agent model is a PICKER now; typing an id is the last row. Every journey
+   that needs the text box walks the same two clicks, so the path is written once. */
+async function openAgentTypingBox(page) {
+  await page.locator('[aria-label="Agent model"]').first().click();
+  await page.waitForTimeout(200);
+  await page.locator(".dropdown-item", { hasText: "Other (type an id)" }).first().click();
+  await page.waitForTimeout(200);
+}
+
 // Switch the provider picker to Forge LLM — that is where the edition rules bite.
 async function pickForgeLlm(page) {
   await page.locator(".dropdown-trigger").first().click();
@@ -483,14 +498,14 @@ try {
           and carries the EXACT sentence from agentCapabilityCopy(reason) - imported
           from the one home, never retyped here, so a reworded remedy fails loudly
           instead of drifting.
-       d) The allowance card is "Vendor allowance" and splits into two SOLID bars when
+       d) The allowance card is "Monthly allowance" (F-955) and splits into two SOLID bars when
           both vendor-billed engines spent. Colours are read COMPUTED, per theme.
        e) F-556: at level "hard" the note states the consequence of the ACTIVE engine -
           Forge LLM downgrades, the managed engine STOPS - and never the other one's. */
   {
     const {
       MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL,
-      agentCapabilityCopy, allowanceConsequenceCopy,
+      agentCapabilityCopy, allowanceConsequenceCopy, allowanceApproachingCopy,
     } = await import("../../src/shared/edition.js");
 
     const openProviderPicker = async (page) => {
@@ -746,7 +761,7 @@ try {
       }
     }
 
-    // ---- E4d the allowance card: "Vendor allowance" + two solid bars -------
+    // ---- E4d the allowance card: "Monthly allowance" + two solid bars ------
     for (const theme of ["light", "dark"]) {
       console.log(`E4d vendor allowance, both engines (${theme})`);
       /* F-545's actual defect shape: a Coder tenant whose ACTIVE provider IS the managed
@@ -763,8 +778,10 @@ try {
         /* innerText, not textContent: `.usage-prov-name` carries text-transform:capitalize,
            so the rendered string is "Vendor Allowance". Compare case-insensitively rather
            than asserting the CSS-transformed casing, which is a styling choice. */
-        ok((await card.locator(".usage-prov-name").first().innerText()).trim().toLowerCase() === "vendor allowance",
-          "E4d the allowance card is titled 'Vendor allowance'");
+        /* F-955 renamed this row: "Vendor" is LeanZero's word for its own bill and
+           appears nowhere the admin bought anything. The row is what they pay for. */
+        ok((await card.locator(".usage-prov-name").first().innerText()).trim().toLowerCase() === "monthly allowance",
+          "E4d the allowance card is titled 'Monthly allowance'");
 
         const split = page.locator(".usage-byengine").first();
         ok(await split.count() === 1, "E4d the per-engine split is rendered when both engines spent");
@@ -808,9 +825,16 @@ try {
           const note = page.locator(".usage-allow-note.lvl-hard").first();
           ok(await note.count() === 1, `E4e the exhausted note is shown on ${engine}`);
           const txt = (await note.innerText()).trim();
-          ok(txt === allowanceConsequenceCopy(key),
+          /* F-955 - the sentence now carries the DAY the allowance lifts where "next
+             month" used to stand. Still compared against the one copy home, with the
+             date the panel itself derives - NOT a date retyped here, which would pass
+             against a panel that computed the wrong one. */
+          const resetsOn = allowanceResetLabel(monthKey(Date.now()));
+          ok(txt === allowanceConsequenceCopy(key, resetsOn),
             `E4e the ${engine} note is the exact sentence from the one copy home (got "${txt.slice(0, 70)}…")`);
-          ok(txt !== allowanceConsequenceCopy(engine === "managed" ? "atlassian" : MANAGED_PROVIDER_ID),
+          ok(txt.includes(resetsOn), `E4e ...and it names the reset day (${resetsOn})`);
+          ok(!/until next month/.test(txt), "E4e ...so it never falls back to the dateless wording");
+          ok(txt !== allowanceConsequenceCopy(engine === "managed" ? "atlassian" : MANAGED_PROVIDER_ID, resetsOn),
             `E4e ...and NOT the other engine's sentence (${engine})`);
           ok(!txt.includes("—"), `E4e no em-dash in the exhausted note (${engine})`);
           if (engine === "managed") {
@@ -1029,11 +1053,244 @@ try {
     try {
       await tab(page, "Settings");
       await page.locator(".usage-card").waitFor({ timeout: 10000 });
+      /* F-955 - the box is now REACHED, not rendered by default: the agent model is a
+         picker over the provider's live list and typing is the last row. The
+         placeholder rule it is testing is unchanged, so the journey walks to it. */
+      await openAgentTypingBox(page);
       const ph = await page.locator('input[aria-label="Agent model"]').first().getAttribute("placeholder");
       ok(ph === "e.g. claude-sonnet-5", `E6c Anthropic gets an Anthropic id, got: ${ph}`);
       ok(!/anthropic\//.test(String(ph)), "E6c and never the OpenRouter namespaced form");
       ok(env.errors.length === 0, "E6c no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  x E6c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ==================================================================
+     E7 (F-955) - THE AGENT MODEL IS A PICKER, NOT A FREE-TEXT BOX.
+     `Model` directly above has always been a CustomSelect over the list the
+     provider's own key returns; the agent slot beside it was a text input, so a
+     typo saved silently and surfaced hours later as a Coder turn refusing a model
+     the admin believed they had configured. The control is now the same list plus
+     a last row that reveals the box, and an id the list does not carry is SAID so
+     - it is still accepted, because the list can be stale, invisible to a
+     fine-grained key, or simply not carry an inference-profile id.
+     ================================================================== */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E7 agent model picker over the live list (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      await page.locator(".usage-card").waitFor({ timeout: 10000 });
+
+      // (a) it is the app's own primitive, never a native <select> (owner mandate).
+      const control = page.locator('[aria-label="Agent model"]').first();
+      const tagName = await control.evaluate((el) => el.tagName);
+      ok(tagName !== "SELECT", `E7 the agent model is never a native select (got ${tagName})`);
+      ok(await control.evaluate((el) => el.classList.contains("dropdown-trigger")),
+        "E7 ...it is the app's CustomSelect trigger");
+
+      // (b) the options ARE the provider's live list - the same array the rule-model
+      //     picker renders - plus exactly one "Other" row, and nothing invented.
+      await control.click();
+      await page.waitForTimeout(200);
+      const labels = (await page.locator(".dropdown-item").allTextContents()).map((t) => t.trim());
+      const { invoke: e7invoke } = await import("./bridge.js");
+      const live = (await e7invoke("getOpenAIModels", { provider: "anthropic" })).models || [];
+      for (const id of live) {
+        ok(labels.some((l) => l.includes(id)), `E7 the live model ${id} is offered`);
+      }
+      ok(labels.filter((l) => l === "Other (type an id)").length === 1,
+        `E7 exactly one "Other" row (got ${JSON.stringify(labels)})`);
+      ok(labels[labels.length - 1] === "Other (type an id)", "E7 ...and it is the LAST row");
+      await page.keyboard.press("Escape");
+
+      // (c) the escape hatch still accepts any id - the earlier decision to allow
+      //     typing is preserved, it just stopped being silent.
+      await openAgentTypingBox(page);
+      const box = page.locator('input[aria-label="Agent model"]').first();
+      ok(await box.count() === 1, "E7 the Other row reveals a text input");
+      await box.fill("some-model-nobody-lists");
+      await page.waitForTimeout(250);
+      const note = page.locator(".model-unlisted-note").first();
+      ok(await note.count() === 1, "E7 an unlisted id is called out");
+      const noteTxt = (await note.innerText()).trim();
+      ok(/not in the list your provider returned/.test(noteTxt),
+        `E7 ...in the sentence that says why (got "${noteTxt}")`);
+      ok(/refuse the first turn/.test(noteTxt), "E7 ...and what it will cost");
+      ok(!noteTxt.includes("—"), "E7 no em-dash in the unlisted note");
+      /* Solid and saturated in BOTH themes, never a faded tint (owner mandate). The
+         hue is the map's caution amber, one shade lighter in dark. */
+      ok(await note.evaluate((el) => getComputedStyle(el).opacity) === "1",
+        `E7 the unlisted note is solid, not faded (${theme})`);
+      const weight = await note.evaluate((el) => getComputedStyle(el).fontWeight);
+      ok(Number(weight) >= 600, `E7 ...and 600+ weight (got ${weight})`);
+      const colour = await note.evaluate((el) => getComputedStyle(el).color);
+      ok(colour === (theme === "dark" ? "rgb(251, 191, 36)" : "rgb(180, 83, 9)"),
+        `E7 ...in this theme's own amber (${theme}, got ${colour})`);
+
+      // (d) SAVE IS NOT BLOCKED. The note is a warning, not a refusal.
+      /* The Save beside the control, reached from the one element only this branch
+         renders. `..` because "Pick from list" sits INSIDE the input's own wrapper
+         and Save is the wrapper's sibling - an anchor on the button alone finds
+         nothing, which is how this locator was wrong the first time. */
+      const saveBtn = page.locator(".agent-model-pick-back")
+        .locator("xpath=../following-sibling::button[1]").first();
+      ok(await saveBtn.count() === 1, "E7 the Save button is beside the typed id");
+      ok(!(await saveBtn.isDisabled()), "E7 an unlisted id can still be saved");
+
+      // (e) NEGATIVE CONTROL: an id that IS in the live list draws no note at all.
+      await box.fill(live[0]);
+      await page.waitForTimeout(250);
+      ok(await page.locator(".model-unlisted-note").count() === 0,
+        `E7 a listed id (${live[0]}) draws no note`);
+
+      // (f) "Pick from list" returns to the picker and restores the SAVED id, never
+      //     leaving a half-typed string standing where a resolved model belongs.
+      await box.fill("half-typed-");
+      await page.locator(".agent-model-pick-back").first().click();
+      await page.waitForTimeout(250);
+      ok(await page.locator('input[aria-label="Agent model"]').count() === 0, "E7 the box closes");
+      const back = (await page.locator('[aria-label="Agent model"]').first().innerText()).trim();
+      ok(!back.includes("half-typed-"), `E7 ...and the abandoned text is gone (got "${back}")`);
+
+      await shot(page, `E7-agent-model-picker-${theme}`);
+      ok(env.errors.length === 0, "E7 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E7 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ==================================================================
+     E8 (F-955) - THE ALLOWANCE SAYS WHEN IT COMES BACK.
+     The meter read "Vendor allowance - $141 of $200 - 71%": LeanZero's word for
+     its own bill, and no date at all, so an admin at 80% could not tell whether to
+     wait a day or pay their way out. The 80% note had no consequence either.
+     The date is DERIVED from `usage.month.key` through the shared helper, so this
+     journey computes it the same way rather than hard-coding a day - a pinned date
+     would pass against a panel computing the wrong one.
+     ================================================================== */
+  {
+    const { MANAGED_PROVIDER_ID: E8_MANAGED, allowanceApproachingCopy: e8Approaching } =
+      await import("../../src/shared/edition.js");
+    for (const theme of ["light", "dark"]) {
+      const resetsOn = allowanceResetLabel(monthKey(Date.now()));
+      {
+        console.log(`E8 allowance meter names its reset day (${theme})`);
+        const env = await openAdmin(browser, theme, false, false, { __PROVIDER__: "atlassian" });
+        const { page } = env;
+        try {
+          await tab(page, "Settings");
+          await page.locator(".usage-card").waitFor({ timeout: 10000 });
+          const row = page.locator(".usage-allowance .usage-prov-row").first();
+          const txt = (await row.innerText()).trim();
+          ok(/Monthly allowance/.test(txt), `E8 the row is named in the admin's words (got "${txt}")`);
+          ok(!/Vendor allowance/.test(txt), "E8 ...never LeanZero's internal word for its own bill");
+          ok(/used/.test(txt), "E8 the figures say what they ARE");
+          ok(txt.includes(`resets ${resetsOn}`), `E8 ...and it names the reset day (${resetsOn}, got "${txt}")`);
+          ok(!txt.includes("—"), "E8 no em-dash in the allowance row");
+          const d = page.locator(".usage-allow-reset").first();
+          ok(Number(await d.evaluate((el) => getComputedStyle(el).fontWeight)) >= 700,
+            "E8 the date is emphasised, not buried");
+          await shot(page, `E8-allowance-reset-${theme}`);
+          ok(env.errors.length === 0, "E8 no page errors: " + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  x E8 threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
+      /* E8b - the 80% note gains the date AND the consequence, in the SAME words the
+         100% note uses. The distinction matters MORE here than at 100% because there
+         is still time to act: on Forge LLM the app degrades to Haiku, on the managed
+         engine it STOPS. Compared against the one copy home, never retyped. */
+      for (const [engine, key] of [["atlassian", "atlassian"], ["managed", E8_MANAGED]]) {
+        console.log(`E8b the 80% note states the consequence on ${engine} (${theme})`);
+        const env = await openAdmin(browser, theme, false, false,
+          { __PROVIDER__: key, __MANAGED_SPEND__: 75 });   // 92.40 + 75 of 200 = 84%, "soft"
+        const { page } = env;
+        try {
+          await tab(page, "Settings");
+          await page.locator(".usage-card").waitFor({ timeout: 10000 });
+          const note = page.locator(".usage-allow-note.lvl-soft").first();
+          ok(await note.count() === 1, `E8b the 80% note is shown on ${engine}`);
+          const txt = (await note.innerText()).trim();
+          ok(txt.includes(resetsOn), `E8b it names the reset day (${resetsOn}, got "${txt}")`);
+          ok(!/vendor allowance/i.test(txt), "E8b ...and drops LeanZero's word");
+          const consequence = e8Approaching(key, resetsOn);
+          ok(txt.includes(consequence),
+            `E8b ...and carries the consequence from the one copy home (want "${consequence}")`);
+          ok(!txt.includes(e8Approaching(engine === "managed" ? "atlassian" : E8_MANAGED, resetsOn)),
+            `E8b ...and NOT the other engine's consequence (${engine})`);
+          if (engine === "managed") {
+            ok(!/fall back|Haiku/i.test(txt),
+              "E8b the managed 80% note never promises a Haiku fallback - there is none");
+          } else {
+            ok(/Haiku/.test(txt), "E8b the Forge LLM 80% note names the real Haiku fallback");
+          }
+          ok(!txt.includes("—"), "E8b no em-dash in the 80% note");
+          ok(await note.evaluate((el) => getComputedStyle(el).opacity) === "1",
+            `E8b the note is solid, not faded (${engine}, ${theme})`);
+          await shot(page, `E8b-allowance-soft-${engine}-${theme}`);
+          ok(env.errors.length === 0, "E8b no page errors: " + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  x E8b threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
+    }
+  }
+
+  /* ==================================================================
+     E9 (F-955) - THE PROVIDER CARD PAINTS ITS FRAME BEFORE THE VENDOR ANSWERS.
+     MEASURED in this harness: with the vendor catalogue call held for 4.3 s (the
+     staging figure), the card's section existed at ~60 ms and its first real
+     control did not appear until ~4.38 s - seconds of skeleton bars over a layout
+     that was already known. Only ONE mount read leaves Forge (getOpenAIModels asks
+     the vendor for a catalogue); every other is a KVS get, which is why the REST
+     card below never behaves this way. The frame now paints immediately and the
+     app's own veil covers the value cells while the vendor answers.
+     ================================================================== */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E9 provider card frame-first under a slow vendor list (${theme})`);
+    const env = await openAdmin(browser, theme, false, false, { __MODELS_DELAY_MS__: 4300 });
+    const { page } = env;
+    try {
+      await tab(page, "Settings");
+      const seen = await page.evaluate(async () => {
+        const t0 = Date.now();
+        const sec = () => [...document.querySelectorAll(".section")]
+          .find((n) => /AI Provider Configuration/.test(n.textContent || ""));
+        const m = { skeleton: false };
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+          const n = sec();
+          if (n) {
+            if (n.querySelector(".sk")) m.skeleton = true;
+            if (m.veil === undefined && n.querySelector(".veil")) m.veil = Date.now() - t0;
+            if (n.querySelector(".dropdown-trigger")) { m.frame = Date.now() - t0; break; }
+          }
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        return m;
+      });
+      /* The number that matters: the frame arrives in a fraction of the vendor's
+         4.3 s, not after it. Generous bound - this asserts "did not WAIT for the
+         call", not a performance budget that would flake on a loaded machine. */
+      ok(typeof seen.frame === "number" && seen.frame < 2000,
+        `E9 the provider card's frame paints without waiting for the vendor (got ${seen.frame}ms of 4300)`);
+      ok(seen.skeleton === false,
+        "E9 ...so the card never falls back to skeleton bars for the vendor call");
+      ok(typeof seen.veil === "number",
+        `E9 ...and the value cells are veiled while it answers (got ${seen.veil})`);
+      /* NEGATIVE CONTROL: the veil is not permanent - it lifts when the call lands,
+         and the real values arrive. A frame that painted and never filled would
+         satisfy every assertion above. */
+      await page.waitForFunction(() => {
+        const n = [...document.querySelectorAll(".section")]
+          .find((x) => /AI Provider Configuration/.test(x.textContent || ""));
+        return n && !n.querySelector(".veil");
+      }, { timeout: 15000 });
+      const shown = (await page.locator(".dropdown-trigger").nth(1).innerText()).trim();
+      ok(shown.includes("claude-haiku-4-5-20251001"),
+        `E9 the veil lifts onto the real model list (got "${shown}")`);
+      await shot(page, `E9-provider-frame-first-${theme}`);
+      ok(env.errors.length === 0, "E9 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E9 threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 } finally {

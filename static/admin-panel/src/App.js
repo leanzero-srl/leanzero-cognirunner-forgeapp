@@ -3866,6 +3866,32 @@ const injectStyles = () => {
        every surface in the app reads. The --text-secondary token clears 4.5:1 in both
        themes and is still visibly secondary. */
     .code-tab .empty-state { color: var(--text-secondary); }
+
+    /* ======================================================================
+       F-955 - THE SECOND COLD WALK. Appended at the foot for the same reason
+       the F-914 block above is: it only ever grows downward, so parallel
+       surgeons cannot collide in it. Solid saturated colour, 600-700 weight,
+       a dark override for every hue, no rails and no tints.
+       ====================================================================== */
+
+    /* An id the provider's own list does not carry. AMBER, the map's "caution"
+       hue (#d97706 light / #f59e0b dark, the same pair the memory "test" source
+       uses) - not red, because the save is ALLOWED and usually correct; the
+       sentence is a warning, not a refusal. 600 weight so it reads as a
+       statement rather than as another muted hint. */
+    .model-unlisted-note { color: #b45309; font-weight: 600; line-height: 1.5; max-width: 60ch; }
+    html[data-color-mode="dark"] .model-unlisted-note { color: #fbbf24; }
+
+    /* Back to the picker from the typed-id box. A quiet neutral next to the solid
+       Save beside it: two loud buttons in one row and neither reads as the action. */
+    .agent-model-pick-back { white-space: nowrap; flex: 0 0 auto; }
+
+    /* WHEN THE MONEY COMES BACK. The reset date is the half of the allowance
+       sentence that was missing, and it is the same fact in the meter row, the
+       80% note and the 100% note - so it gets one class and one colour in each,
+       never a third styling of the same date. */
+    .usage-allow-reset { font-weight: 700; color: var(--text-color); }
+
 `;
   document.head.appendChild(style);
 };

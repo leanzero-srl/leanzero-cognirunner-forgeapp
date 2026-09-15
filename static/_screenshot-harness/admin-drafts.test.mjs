@@ -377,6 +377,109 @@ try {
       ok(env.errors.length === 0, `D6 no page errors: ${env.errors.join(" | ")}`);
     } finally { await close(env); }
   }
+
+  /* ─── D8 — every OTHER wired form, end to end, one journey each ────────────────────
+     D1-D6 prove the mechanism on two forms. This proves the WIRING on the other five,
+     which otherwise have nothing but a successful webpack build behind them: a form whose
+     hook is passed the wrong form id, or whose accountId never arrives because a prop was
+     not threaded, compiles perfectly and writes nothing. Each case types into one real
+     field, waits past the debounce, and asserts a key with THAT form's id exists. */
+  {
+    console.log("D8 the remaining wired forms each write their own draft");
+    const CASES = [
+      {
+        id: DRAFT_FORM_IDS.LISTENER_EDITOR, tab: "Listeners",
+        open: /^\s*\+ Add (Listener|your first listener)\s*$/,
+        field: "#lst-name", value: "Escalate customer complaints",
+      },
+      {
+        id: DRAFT_FORM_IDS.JOB_EDITOR, tab: "Scheduled Jobs",
+        open: /^\s*\+ Add (Job|your first job)\s*$/,
+        field: "#job-name", value: "Nudge stale In Progress issues",
+      },
+      {
+        id: DRAFT_FORM_IDS.VA_EDITOR, tab: "Agents",
+        open: /^\s*Use the form\s*$/,
+        field: ".va-editor input[type=text]", value: "Ops assistant",
+      },
+      {
+        id: DRAFT_FORM_IDS.SKILL_EDITOR, tab: "Skills",
+        open: /^\s*\+ New Skill\s*$/,
+        field: ".doc-add-form input[type=text]", value: "Slack webhook notifications",
+      },
+    ];
+    for (const c of CASES) {
+      const env = await openAdmin(browser, "light");
+      const { page } = env;
+      try {
+        await tab(page, c.tab);
+        await page.waitForTimeout(600);
+        const btn = page.locator("button", { hasText: c.open }).first();
+        await btn.waitFor({ timeout: 20000 });
+        await btn.click();
+        const input = page.locator(c.field).first();
+        await input.waitFor({ timeout: 20000 });
+        await input.fill(c.value);
+        await settleWrite(page);
+        const keys = await draftKeys(page);
+        ok(keys.length === 1 && keys[0].endsWith(":" + c.id),
+          `D8 ${c.tab} writes exactly its own draft (${c.id}), got ${JSON.stringify(keys)}`);
+        const data = JSON.parse((await wholeStorage(page))[keys[0]]).data;
+        ok(JSON.stringify(data).includes(c.value), `D8 ${c.tab} the typed value is in the payload`);
+        /* And it comes BACK. A key that is written but never offered is half a feature. */
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await page.waitForFunction(() => !!document.querySelector(".container"), { timeout: 20000 });
+        await tab(page, c.tab);
+        await page.waitForTimeout(600);
+        const btn2 = page.locator("button", { hasText: c.open }).first();
+        await btn2.waitFor({ timeout: 20000 });
+        await btn2.click();
+        await page.locator(".draft-resume").first().waitFor({ timeout: 20000 });
+        ok(await page.locator(".draft-resume").count() === 1, `D8 ${c.tab} offers the card after a reload`);
+        await page.locator(".draft-resume-continue").click();
+        await page.waitForTimeout(800);
+        const back = await page.locator(c.field).first().inputValue();
+        ok(back === c.value, `D8 ${c.tab} Continue restores the value, got: ${back}`);
+        ok(env.errors.length === 0, `D8 ${c.tab} no page errors: ${env.errors.join(" | ")}`);
+      } finally { await close(env); }
+    }
+  }
+
+  /* The memory quick-add lives inside the rule wizard's Knowledge panel, which is where
+     the accountId pass-through chain is longest and so the most likely to be broken. */
+  {
+    console.log("D8b the memory quick-add inside the wizard's Knowledge panel");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Rules");
+      await page.locator("button", { hasText: /\+ Add Rule/ }).first().click();
+      await page.locator(".wizard-body").waitFor({ timeout: 20000 });
+      const pick = async (name) => {
+        const b = page.locator(".wizard-body button", { hasText: new RegExp(name) }).first();
+        await b.waitFor({ timeout: 20000 }); await b.click(); await page.waitForTimeout(500);
+      };
+      await pick("Demo Project");
+      await pick("Software Simplified Workflow");
+      await pick("Submit for Review");
+      await pick("Static Post Function");
+      const kp = page.locator(".knowledge-panel-header, .kp-header, .knowledge-panel").first();
+      await kp.waitFor({ timeout: 20000 });
+      await kp.click();
+      await page.waitForTimeout(600);
+      const memTab = page.locator(".kp-tab, .knowledge-tab", { hasText: /Memories/i }).first();
+      await memTab.waitFor({ timeout: 20000 });
+      await memTab.click();
+      const input = page.locator(".memory-quick-add input").first();
+      await input.waitFor({ timeout: 20000 });
+      await input.fill("Custom field 10042 is the release notes field");
+      await settleWrite(page);
+      const keys = await draftKeys(page);
+      ok(keys.some((k) => k.endsWith(":" + DRAFT_FORM_IDS.MEMORY_ADD)),
+        `D8b the memory quick-add draft reached storage through the whole pass-through chain, got ${JSON.stringify(keys)}`);
+      ok(env.errors.length === 0, `D8b no page errors: ${env.errors.join(" | ")}`);
+    } finally { await close(env); }
+  }
 } finally {
   await browser.close();
   await new Promise((r) => server.close(r));

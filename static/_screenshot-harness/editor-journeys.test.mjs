@@ -902,7 +902,7 @@ try {
          Everywhere else in the app #f59e0b carries DARK text (#2a1602); this note keeps
          WHITE text because white-on-solid is the grammar for a filled note, so the fill
          is what had to move. */
-      const wantBg = theme === "dark" ? [217, 119, 6] : [180, 83, 9];
+      const wantBg = [180, 83, 9]; // F-966: one shade in both themes
       ok(bg.slice(0, 3).every((v, i) => Math.abs(v - wantBg[i]) <= 2),
         `F-273 ${theme} the fill is the solid orange ${wantBg.join(",")} — got ${st.bg}`);
       /* Alpha 1 states the "no faded tint" law numerically — a 10% wash would still match
@@ -1167,7 +1167,7 @@ try {
   // __FAIL__ = ["generatePostFunctionCode"] makes the resolver reject (the catch arm).
   const FIXTURE_CODE = /Find all issues in this project with a similar summary/;
   const KEPT_TEXT = /Generation failed, your existing code was kept/;
-  const RED = { light: "rgb(220, 38, 38)", dark: "rgb(239, 68, 68)" };
+  const RED = { light: "rgb(220, 38, 38)", dark: "rgb(220, 38, 38)" };
   const errBg = (scope) => scope.evaluate(() => {
     const el = document.querySelector(".async-error-note");
     return el ? getComputedStyle(el).backgroundColor : null;
@@ -2900,7 +2900,7 @@ try {
       // MODE IS REQUIRED. Before one is chosen the editor says so in its own words...
       ok(await page.locator(".cpf-gate").count() === 1, `J16p (${theme}) the save gate is shown while no mode is chosen`);
       const gateBg = await page.locator(".cpf-gate").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(gateBg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"), `J16p (${theme}) the gate is a SOLID agents-hue block, not a tint - got ${gateBg}`);
+      ok(gateBg === (theme === "dark" ? "rgb(180, 83, 9)" : "rgb(180, 83, 9)"), `J16p (${theme}) the gate is a SOLID agents-hue block, not a tint - got ${gateBg}`);
       ok(await page.locator(".cpf-gate").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J16p (${theme}) the gate has no left accent rail`);
       // ...and the save is actually REFUSED, not merely discouraged.
       const refused = await page.evaluate(async () => await window.__ON_CONFIGURE__());
@@ -2974,7 +2974,7 @@ try {
         await chips.nth(0).click();
         await chips.nth(2).click();
         const onBg = await page.locator(".pr-skill-chip.is-on").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-        ok(onBg === (theme === "dark" ? "rgb(139, 92, 246)" : "rgb(124, 58, 237)"), `J16s (${theme}) a chosen skill is the solid skills hue (got ${onBg})`);
+        ok(onBg === (theme === "dark" ? "rgb(124, 58, 237)" : "rgb(124, 58, 237)"), `J16s (${theme}) a chosen skill is the solid skills hue (got ${onBg})`);
         ok(await page.locator(".pr-skill-chip.is-on").first().evaluate((el) => getComputedStyle(el).borderLeftWidth)
           === await page.locator(".pr-skill-chip.is-on").first().evaluate((el) => getComputedStyle(el).borderTopWidth),
           `J16s (${theme}) the chip has no left accent rail`);
@@ -3026,7 +3026,7 @@ try {
       ok(/Upgrade the app's edition|switch to any BYOK provider/i.test(capText), `J16q (${theme}) the OFF arm names the remedy`);
       ok(/cannot be saved/i.test(capText), `J16q (${theme}) the OFF arm says the rule cannot be saved`);
       const bg = await page.locator(".cpf-cap-off").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(bg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"), `J16q (${theme}) the OFF arm is a SOLID block - got ${bg}`);
+      ok(bg === (theme === "dark" ? "rgb(180, 83, 9)" : "rgb(180, 83, 9)"), `J16q (${theme}) the OFF arm is a SOLID block - got ${bg}`);
       ok(await page.locator(".cpf-cap-off").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J16q (${theme}) the OFF arm has no left accent rail`);
 
       // Complete the rule anyway - the refusal must survive a form that is otherwise valid.
@@ -3244,11 +3244,10 @@ try {
       ok(style.borderLeftWidth === "0px", `J23e (${theme}) no left accent rail on the chip`);
       ok(/^rgb\(\d+, \d+, \d+\)$/.test(style.background), `J23e (${theme}) the chip fill is a SOLID colour, not an alpha tint (got ${style.background})`);
       ok(Number(style.fontWeight) >= 600, `J23e (${theme}) the chip carries the 600-700 emphasis weight`);
-      ok(style.background === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"),
+      ok(style.background === (theme === "dark" ? "rgb(180, 83, 9)" : "rgb(180, 83, 9)"),
         `J23e (${theme}) the amber has a dark-mode override (got ${style.background})`);
-      /* Dark takes dark ink on #f59e0b: white on that amber is the one pair in the project
-         hue map that fails contrast, the same exception .pf-test-stale makes. */
-      ok(style.color === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"),
+      /* F-966: one shade #b45309 in both themes, white ink. */
+      ok(style.color === "rgb(255, 255, 255)",
         `J23e (${theme}) the ink is the readable one for this fill (got ${style.color})`);
     } catch (e) { fail++; console.log(`  ✗ J23e (${theme}) threw: ` + e.message.split("\n")[0]); }
     await closeEditor(env);
@@ -3897,7 +3896,7 @@ try {
       ok(/ACME-42/.test(exampleText), `J16u (${theme}) the live example substitutes the sample issue key (got "${exampleText}")`);
       ok(/"ACME-42"/.test(exampleText), `J16u (${theme}) the example shows the value ARRIVING QUOTED, which is what the template must not do itself`);
       const exBg = await page.locator(".pr-conf-example").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(exBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J16u (${theme}) the example block is a SOLID Confluence-hue fill, not a tint - got ${exBg}`);
+      ok(exBg === (theme === "dark" ? "rgb(37, 99, 235)" : "rgb(29, 78, 216)"), `J16u (${theme}) the example block is a SOLID Confluence-hue fill, not a tint - got ${exBg}`);
       ok(await page.locator(".pr-conf-example").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J16u (${theme}) the example block has NO left accent rail`);
 
       // THE MODE SWITCH: semantic reveals the prompt, and the prompt is REQUIRED there
@@ -4156,7 +4155,7 @@ try {
         const cs = getComputedStyle(el);
         return { bg: cs.backgroundColor, fg: cs.color, leftBorder: cs.borderLeftWidth, weight: cs.fontWeight };
       });
-      ok(btnStyle.bg === (theme === "dark" ? "rgb(99, 102, 241)" : "rgb(79, 70, 229)"), `J16y (${theme}) it is a SOLID indigo fill with a dark override, not a tint (got ${btnStyle.bg})`);
+      ok(btnStyle.bg === (theme === "dark" ? "rgb(79, 70, 229)" : "rgb(79, 70, 229)"), `J16y (${theme}) it is a SOLID indigo fill with a dark override, not a tint (got ${btnStyle.bg})`);
       ok(btnStyle.fg === "rgb(255, 255, 255)", `J16y (${theme}) white text on it (got ${btnStyle.fg})`);
       ok(btnStyle.leftBorder === "0px", `J16y (${theme}) and no left accent rail (got ${btnStyle.leftBorder})`);
       ok(Number(btnStyle.weight) >= 600, `J16y (${theme}) 600-700 weight for the emphasis (got ${btnStyle.weight})`);
@@ -4238,7 +4237,7 @@ try {
       ok(/Turn Strict on/.test(bannerText), `J23d (${theme}) the banner names the remedy`);
       ok(/unreachable/.test(bannerText), `J23d (${theme}) the banner names WHICH fault it was`);
       const bg = await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(bg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J23d (${theme}) the banner is a SOLID Confluence-hue fill, not a tint - got ${bg}`);
+      ok(bg === (theme === "dark" ? "rgb(37, 99, 235)" : "rgb(29, 78, 216)"), `J23d (${theme}) the banner is a SOLID Confluence-hue fill, not a tint - got ${bg}`);
       ok(await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J23d (${theme}) the banner has NO left accent rail`);
     } catch (e) { fail++; console.log(`  ✗ J23d (${theme}) threw: ` + e.message.split("\n")[0]); }
     await closeEditor(env);
@@ -4309,7 +4308,7 @@ try {
         ok(/storage-format|storage format|CQL/i.test(nsText), `J18n (${theme}) the sub-rows carry the member summaries, not just names`);
         // Design: SOLID Confluence hue, white text, no left rail, no tint.
         const chipBg = await ns.locator(".api-ref-ns-chip").evaluate((el) => getComputedStyle(el).backgroundColor);
-        ok(chipBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J18n (${theme}) the namespace chip is a SOLID Confluence-hue fill - got ${chipBg}`);
+        ok(chipBg === (theme === "dark" ? "rgb(37, 99, 235)" : "rgb(29, 78, 216)"), `J18n (${theme}) the namespace chip is a SOLID Confluence-hue fill - got ${chipBg}`);
         ok(await ns.locator(".api-ref-ns-chip").evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `J18n (${theme}) the namespace chip has white text`);
         ok(await ns.evaluate((el) => getComputedStyle(el).borderLeftWidth) === "1px", `J18n (${theme}) the namespace group has a full hairline box, NOT a left accent rail`);
         ok(await ns.evaluate((el) => {

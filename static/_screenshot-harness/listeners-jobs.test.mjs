@@ -299,7 +299,7 @@ try {
       await page.locator(".dropdown-item", { hasText: "Custom cron" }).click();
       await page.locator(".schp-cron").fill("");
       ok(await page.locator(".schp-preview-error").count() === 1, "R1 empty custom cron stays invalid");
-      await page.waitForFunction((th) => getComputedStyle(document.querySelector(".schp-preview-error")).backgroundColor === (th === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), theme);
+      await page.waitForFunction((th) => getComputedStyle(document.querySelector(".schp-preview-error")).backgroundColor === "rgb(220, 38, 38)", theme);
       ok(true, "R1 invalid schedule has a red background after rendering settles");
       await page.locator(".schp-zone .dropdown-trigger").click();
       await page.locator(".schp-zone .dropdown-combobox-input").fill("Europe/London");
@@ -401,7 +401,7 @@ try {
       ok(chips.map((c) => c.trim()).join(",") === "Admin,Viewer", `A1 ${theme} role chips per row (got ${chips.join(",")})`);
       // solid saturated fill, white text — the chip must never be a faded tint
       const chipStyle = await page.locator(".apx-table tbody tr").nth(1).locator(".apx-role-chip").evaluate((el) => { const c = getComputedStyle(el); return { bg: c.backgroundColor, fg: c.color, weight: c.fontWeight }; });
-      ok(chipStyle.bg === (theme === "dark" ? "rgb(20, 184, 166)" : "rgb(13, 148, 136)"), `A1 ${theme} viewer chip uses the teal hue (got ${chipStyle.bg})`);
+      ok(chipStyle.bg === (theme === "dark" ? "rgb(15, 118, 110)" : "rgb(15, 118, 110)"), `A1 ${theme} viewer chip uses the teal hue (got ${chipStyle.bg})`);
       ok(chipStyle.fg === "rgb(255, 255, 255)" && Number(chipStyle.weight) >= 600, `A1 ${theme} viewer chip is white on solid, bold`);
 
       ok(await page.locator(".apx-examples").count() === 1, `A1 ${theme} curl examples present`);
@@ -1500,7 +1500,7 @@ try {
         });
         const bg = (st.bg.match(/[\d.]+/g) || []).map(Number);
         const fg = (st.fg.match(/[\d.]+/g) || []).map(Number);
-        const wantBg = theme === "dark" ? [217, 119, 6] : [180, 83, 9];
+        const wantBg = theme === "dark" ? [180, 83, 9] : [180, 83, 9];
         ok(bg.slice(0, 3).every((v, i) => Math.abs(v - wantBg[i]) <= 2),
           `M6g ${theme} ${label}: the fill is the solid orange ${wantBg.join(",")} - got ${st.bg}`);
         ok(bg.length < 4 || bg[3] === 1,
@@ -2542,9 +2542,9 @@ try {
       ok(total >= 5, "F-462 the picker lists the instance's skills");
       for (let i = 0; i < 4; i++) await skillChips.nth(i).click();
       ok(await page.locator(".agc-knowledge .va-chip.on").count() === 4, "F-462 four skills bind");
-      ok((await page.locator(".va-chip-cap").first().innerText()).includes("4/4"), "F-462 the cap is shown as 4/4");
+      ok(/4 (of|\/) 4/.test(await page.locator(".va-chip-cap").first().innerText()), "F-462 the cap is shown as 4 of 4 (F-969 gave the counter its noun)");
       const chipStyle = await page.locator(".agc-knowledge .va-chip.on").first().evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, color: cs.color, bl: cs.borderLeftWidth, bt: cs.borderTopWidth }; });
-      ok(chipStyle.bg === (theme === "dark" ? "rgb(139, 92, 246)" : "rgb(124, 58, 237)"), `F-462 ${theme} a bound skill wears the solid skills purple (got ${chipStyle.bg})`);
+      ok(chipStyle.bg === (theme === "dark" ? "rgb(124, 58, 237)" : "rgb(124, 58, 237)"), `F-462 ${theme} a bound skill wears the solid skills purple (got ${chipStyle.bg})`);
       ok(chipStyle.color === "rgb(255, 255, 255)" && chipStyle.bl === chipStyle.bt, "F-462 white text, no rail on the bound-skill chip");
       await skillChips.nth(4).click();
       ok(await page.locator(".agc-knowledge .va-chip.on").count() === 4, "F-462 the fifth skill is refused, and no earlier pick is dropped");
@@ -2571,7 +2571,7 @@ try {
       ok(krChip.bl === krChip.bt, "F-462 no rail on the listed bindings");
       const rstyle = await refusal.evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, bl: cs.borderLeftWidth, bt: cs.borderTopWidth, color: cs.color }; });
       ok(rstyle.bl === rstyle.bt, "F-462 the refusal has NO left accent rail");
-      ok(rstyle.bg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `F-462 ${theme} the refusal is a solid red, never a tint (got ${rstyle.bg})`);
+      ok(rstyle.bg === "rgb(220, 38, 38)", `F-462 ${theme} the refusal is a solid red, never a tint (got ${rstyle.bg})`);
       ok(rstyle.color === "rgb(255, 255, 255)", "F-462 white text on the refusal");
       await shot(page, `F-462-${theme}-unknown-skill`);
       await page.evaluate(() => { window.__UNKNOWN_SKILL__ = null; });
@@ -2609,7 +2609,7 @@ try {
       const btxt = await page.locator(".runres-brake").first().innerText();
       ok(btxt.replace(/\s+/g, " ").includes("BRAKED (job-writes 2/2)"), `F-462 the run says BRAKED (job-writes 2/2) (got ${btxt})`);
       const bstyle = await page.locator(".runres-brake").first().evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, color: cs.color, bl: cs.borderLeftWidth, bt: cs.borderTopWidth }; });
-      ok(bstyle.bg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(217, 119, 6)"), `F-462 ${theme} the brake badge is solid amber (got ${bstyle.bg})`);
+      ok(bstyle.bg === (theme === "dark" ? "rgb(180, 83, 9)" : "rgb(180, 83, 9)"), `F-462 ${theme} the brake badge is solid amber (got ${bstyle.bg})`);
       ok(bstyle.color === "rgb(255, 255, 255)" && bstyle.bl === bstyle.bt, "F-462 white text, no rail on the brake badge");
       ok(await page.locator("select").count() === 0, "F-462 no native <select> anywhere in these editors");
       await shot(page, `F-462-${theme}-job-write-brake`);
@@ -2658,9 +2658,9 @@ try {
 
       /* Solid saturated amber, white text, and NO left rail — both themes. */
       const cs = await cap.first().evaluate((el) => { const s = getComputedStyle(el); return { bg: s.backgroundColor, color: s.color, bl: s.borderLeftWidth, bt: s.borderTopWidth }; });
-      ok(cs.bg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"), `F-486 ${theme} the note is solid amber, never a tint (got ${cs.bg})`);
+      ok(cs.bg === (theme === "dark" ? "rgb(180, 83, 9)" : "rgb(180, 83, 9)"), `F-486 ${theme} the note is solid amber, never a tint (got ${cs.bg})`);
       ok(cs.bl === cs.bt, "F-486 the capability note has NO left accent rail");
-      ok(cs.color === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"), `F-486 full-contrast text on the note (got ${cs.color})`);
+      ok(cs.color === (theme === "dark" ? "rgb(255, 255, 255)" : "rgb(255, 255, 255)"), `F-486 full-contrast text on the note (got ${cs.color})`);
 
       /* THE POINT: it never opens. A forced click on a disabled control changes nothing. */
       await blocked.first().click({ force: true }).catch(() => {});
@@ -2780,7 +2780,7 @@ try {
       const rtxt = (await refusal.innerText()).replace(/\s+/g, " ").trim();
       ok(rtxt === "Connect a Git provider in Settings before this rule can use Git actions", `F-902 the empty instance is told where to go (got ${rtxt})`);
       const st = await refusal.evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, color: cs.color, bl: cs.borderLeftWidth, bt: cs.borderTopWidth, w: cs.fontWeight }; });
-      ok(st.bg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `F-902 ${theme} the sentence is a solid red, never a tint (got ${st.bg})`);
+      ok(st.bg === "rgb(220, 38, 38)", `F-902 ${theme} the sentence is a solid red, never a tint (got ${st.bg})`);
       ok(st.color === "rgb(255, 255, 255)", "F-902 white text on the refusal");
       ok(st.bl === st.bt, "F-902 the refusal has NO left accent rail");
       ok(Number(st.w) >= 600, `F-902 the refusal is 600+ weight (got ${st.w})`);

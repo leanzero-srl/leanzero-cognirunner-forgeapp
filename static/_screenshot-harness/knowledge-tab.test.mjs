@@ -123,7 +123,7 @@ async function assertNoRailsOrTints(page, where, sel) {
   ok(bad.length === 0, `${where} no rails and no faded tints (${bad.join("; ")})`);
 }
 
-const AMBER = { light: "rgb(180, 83, 9)", dark: "rgb(245, 158, 11)" };
+const AMBER = { light: "rgb(180, 83, 9)", dark: "rgb(180, 83, 9)" };
 const SLATE = { light: "rgb(71, 85, 105)", dark: "rgb(100, 116, 139)" };
 
 const browser = await chromium.launch();
@@ -479,7 +479,7 @@ try {
       /* Amber on dark takes DARK ink. White on #f59e0b is the one pair in the project
          palette that fails contrast, and this is the assertion that keeps the exception. */
       const ink = await page.locator(".kn-switch.is-on").first().evaluate((el) => getComputedStyle(el).color);
-      ok(theme === "light" ? ink === "rgb(255, 255, 255)" : ink === "rgb(42, 22, 2)", `K6 ${theme} the switch ink is legible on its fill, got ${ink}`);
+      ok(theme === "light" ? ink === "rgb(255, 255, 255)" : ink === "rgb(255, 255, 255)", `K6 ${theme} the switch ink is legible on its fill, got ${ink}`);
 
       await assertNoRailsOrTints(page, `K6 ${theme}`, ".kn-tab .card, .kn-tab .kn-switch, .kn-tab .kn-state, .kn-tab .kn-pack-fact, .kn-tab .kn-pack-purpose, .kn-tab .kn-prov-line, .kn-tab .kn-pack-pin-note, .kn-tab .kn-pack-pin-warn");
 
@@ -490,7 +490,7 @@ try {
         const warn = off.locator(".kn-pack-pin-warn");
         ok(await warn.count() === 1, `F-956 ${theme} the off pinned pack names what it costs`);
         const bg = await warn.evaluate((el) => getComputedStyle(el).backgroundColor);
-        ok(bg === (theme === "light" ? "rgb(220, 38, 38)" : "rgb(239, 68, 68)"), `F-956 ${theme} the warning is solid red, got ${bg}`);
+        ok(bg === (theme === "light" ? "rgb(220, 38, 38)" : "rgb(220, 38, 38)"), `F-956 ${theme} the warning is solid red, got ${bg}`);
         const ink = await warn.evaluate((el) => getComputedStyle(el).color);
         ok(ink === "rgb(255, 255, 255)", `F-956 ${theme} white ink on the warning, got ${ink}`);
       }

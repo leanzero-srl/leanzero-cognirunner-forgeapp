@@ -26,6 +26,9 @@
  */
 
 import React, { useMemo, useState } from "react";
+import useDraft from "./useDraft";
+import DraftResumeCard from "./DraftResumeCard";
+import { DRAFT_FORM_IDS } from "../../../../src/shared/draft-state.js";
 import SchedulePicker from "./SchedulePicker";
 import { showToast } from "./toast";
 import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, NoteList, PeoplePicker } from "./VaPickers";
@@ -65,7 +68,7 @@ const recordToAnswers = (va) => {
   };
 };
 
-export default function VaEditor({ client, catalog = {}, initial = null, initialRefusals = [], onSaved, onCancel }) {
+export default function VaEditor({ client, catalog = {}, initial = null, initialRefusals = [], onSaved, onCancel, accountId = null }) {
   const [a, setA] = useState(() => recordToAnswers(initial));
   const [saving, setSaving] = useState(false);
   // What the SAVE narrowed, which `preview.refused` can never contain (F-538). Holding it
@@ -110,6 +113,22 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
     catch { return { ok: false, unchecked: true, replies: [], blocks: [], warnings: [] }; }
   }, [a.voice, a.personaName, a.signature]);
 
+  /* -- F-990 - THE WHOLE ANSWER SET, but only for a NEW agent -----------------------
+     `a` is the entire answers object this form edits, the same shape the chat wizard
+     collects, so the draft is simply `a`. There is nothing credential-shaped anywhere in
+     it; the closest thing is a persona name.
+
+     ENABLED ONLY WHEN `initial` IS NULL, and that is the important half. Editing an
+     existing agent is not the case the owner complained about: the record is already
+     saved, nothing is lost by a reload, and a week-old draft restored over a record that
+     has since been changed by someone else would quietly revert their change. That is the
+     "expensive to resume wrongly" the TTL exists for, arriving as data loss instead of as
+     a stale form. A new agent has no record behind it, so there is nothing to revert.
+
+     The CHAT wizard keeps its own server-side resume (va_wizard:{accountId}, F-969) and is
+     deliberately untouched: one record must not have two half-finished copies racing. */
+  const vaDraft = useDraft(DRAFT_FORM_IDS.VA_EDITOR, accountId, a, initial === null);
+
   const save = async () => {
     setAttempted(true);
     if (!preview.va) { showToast(preview.error || "This agent cannot be saved yet.", "error"); return; }
@@ -117,6 +136,7 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
     const r = await client.saveAgent(preview.va);
     setSaving(false);
     if (!r.success) { showToast(r.error || "Save failed", "error"); return; }
+    vaDraft.clear();   // F-990 - the agent exists now
     showToast(initial ? "Agent saved" : "Agent created");
     const notes = collectSaveNotes(r);
     if (notes.length) { setSaveNotes({ notes, job: r.job || null }); return; }
@@ -143,6 +163,14 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
         </div>
       </div>
 
+      {vaDraft.hasDraft && (
+        <DraftResumeCard
+          savedAt={vaDraft.savedAt}
+          what="an unfinished agent"
+          onContinue={() => { const d = vaDraft.restore(); if (d) setA((prev) => ({ ...prev, ...d })); }}
+          onDiscard={vaDraft.discard}
+        />
+      )}
       {saveNotes && <SaveNotes notes={saveNotes.notes} onDismiss={() => { const job = saveNotes.job; setSaveNotes(null); onSaved(job); }} dismissLabel="Got it, back to agents" />}
       <NoteList items={arr(initialRefusals)} kind="refusal" />
       {/* The banner is the SAVE's answer, the field error is the FIELD's: showing both for one

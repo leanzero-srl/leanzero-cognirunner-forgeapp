@@ -54,6 +54,13 @@ export const DUPLICATED_COMPONENTS = [
   // bottom of this file holds equal.
   "MemoriesTab.jsx", "PremadeRuleForm.jsx", "IssuePicker.jsx", "Skeleton.jsx", "toast.js", "refusal.js",
   "capability.js",
+  // F-990 - the draft hook and the resume card. useDraft.js holds the debounce, the
+  // silent-open try/catch and the wait for accountId; DraftResumeCard.jsx is the one way a
+  // form offers unfinished work back. Every POLICY they obey (the key, the secret
+  // exclusion, the TTL, the size clamp) lives in src/shared/draft-state.js, which both
+  // apps import - so these two stay small, and staying byte-identical is what stops one
+  // app growing a second debounce or a second card with a different sentence on it.
+  "useDraft.js", "DraftResumeCard.jsx",
   // 1.4 commit 14b — the field-guide chip is a fourth shared helper of that kind, gated like
   // capability.js. F-572 gave it a FOURTH home: config-view, the read-only review surface,
   // which renders provenance and had been left out of the chip when 14b landed. Homes:

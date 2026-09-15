@@ -61,7 +61,7 @@ function createEmptyFunction() {
 // and admin-panel's AddRuleWizard / ListenersTab / JobsTab.
 // F-243 — `roleUnknown` rides the same wire and answers WHY `canEdit` is false: a refusal
 // about this reader, or a Jira the role probe could not reach. Pure pass-through.
-export default function FunctionBuilder({ functions, setFunctions, runAsync = false, setRunAsync, codegenContext = null, testContext = null, reviewConfigType = "postfunction-static", howItWorks = true, canEdit = false, roleUnknown = false }) {
+export default function FunctionBuilder({ functions, setFunctions, runAsync = false, setRunAsync, codegenContext = null, testContext = null, reviewConfigType = "postfunction-static", howItWorks = true, canEdit = false, roleUnknown = false, accountId = null }) {
   // Jira fields for editor completions (custom-field write formats etc.)
   const [fields, setFields] = useState([]);
 
@@ -128,6 +128,7 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
           testContext={testContext}
           canEdit={canEdit}
           roleUnknown={roleUnknown}
+          accountId={accountId}
         />
       ))}
 

@@ -22,6 +22,9 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
+import useDraft from "./useDraft";
+import DraftResumeCard from "./DraftResumeCard";
+import { DRAFT_FORM_IDS } from "../../../../src/shared/draft-state.js";
 import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
@@ -144,7 +147,7 @@ export function MemoryFullBanner({ storeFull }) {
 export const ROLE_UNKNOWN_NOTE =
   "CogniRunner could not verify your role with Jira just now, reload to try again.";
 
-export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnknown = false }) {
+export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnknown = false, accountId = null }) {
   const [memories, setMemories] = useState([]);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -253,6 +256,30 @@ export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnk
      saved — the screen contradicting itself, with the newer fact the invisible one. */
   const clearRefusals = () => { setCapRefusal(null); setError(null); };
 
+  /* -- F-990 - ONE LINE, BUT THE ONE THE OWNER LOSES MOST OFTEN ----------------------
+     A memory is a single field, capped at 400 characters, so the draft is one string. It
+     is wired anyway because this is a quick-add that sits BESIDE a list the reader
+     scrolls, and the way it gets lost is not a browser crash - it is clicking a row, a
+     tab, or the panel's own navigation half way through a sentence.
+
+     THE `accountId` PROP IS OPTIONAL, AND IN config-ui IT IS ALWAYS NULL. This file is a
+     byte-identical copy shared with the admin panel, and only the admin panel knows who
+     is looking: `checkIsAdmin` returns an accountId and config-ui never asks. `draftKey`
+     refuses a null account (a draft keyed on "null" would be shared by every admin on the
+     machine), so in the rule editor this hook reads nothing and writes nothing and the
+     card never appears. That is a deliberate inertness, not a bug: the two copies stay
+     byte-identical and the behaviour differs only because one caller can answer the
+     question and the other cannot. Passing the account down through config-ui is a
+     separate change.
+
+     Byte-identical copy in static/admin-panel/src/components/MemoriesTab.jsx. */
+  const memDraftState = { newContent };
+  const memDraft = useDraft(DRAFT_FORM_IDS.MEMORY_ADD, accountId, memDraftState, canEdit);
+  const restoreMemDraft = () => {
+    const d = memDraft.restore();
+    if (d && typeof d.newContent === "string") setNewContent(d.newContent);
+  };
+
   const handleAdd = async () => {
     const content = newContent.trim();
     if (!content || adding) return;
@@ -262,6 +289,7 @@ export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnk
       const result = await invoke("addMemory", { content, source: "user" });
       if (result.success) {
         clearRefusals();
+        memDraft.clear();   // F-990 - the memory is stored now
         setNewContent("");
         await refreshMemories();
         if (result.id) setNewMemoryId(result.id);
@@ -328,23 +356,35 @@ export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnk
           is "not you, ever". Same wording as the admin tab's (MemoriesAdminTab, F-224) so
           the two surfaces that refuse the same write refuse it in the same words. */}
       {canEdit ? (
-        <div className="memory-quick-add">
-          <input
-            type="text"
-            className="input"
-            value={newContent}
-            onChange={(e) => setNewContent(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
-            placeholder="Remember this about your Jira instance..."
-          />
-          <button
-            className={`btn-remember${adding ? " is-busy busy-solid" : ""}`}
-            onClick={handleAdd}
-            disabled={adding || !newContent.trim()}
-          >
-            Remember
-          </button>
-        </div>
+        <React.Fragment>
+          {/* F-990 - ABOVE the row, never inside it: .memory-quick-add is a flex line and a
+              card dropped into it would become a third flex item beside the input. */}
+          {memDraft.hasDraft && (
+            <DraftResumeCard
+              savedAt={memDraft.savedAt}
+              what="an unfinished memory"
+              onContinue={restoreMemDraft}
+              onDiscard={memDraft.discard}
+            />
+          )}
+          <div className="memory-quick-add">
+            <input
+              type="text"
+              className="input"
+              value={newContent}
+              onChange={(e) => setNewContent(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+              placeholder="Remember this about your Jira instance..."
+            />
+            <button
+              className={`btn-remember${adding ? " is-busy busy-solid" : ""}`}
+              onClick={handleAdd}
+              disabled={adding || !newContent.trim()}
+            >
+              Remember
+            </button>
+          </div>
+        </React.Fragment>
       ) : (
         /* F-243 — three answers, not two. `canEdit` false means EITHER "the backend will
            refuse you" (a verdict about this reader) OR "we never got an answer out of

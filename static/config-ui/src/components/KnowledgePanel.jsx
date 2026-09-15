@@ -48,6 +48,10 @@ export default function KnowledgePanel({
   // `canEdit` false: a refusal about this reader, or an outage that says nothing about
   // them. Pure pass-through. Defaults FALSE — the answer we had before we asked.
   roleUnknown = false,
+  /* F-990 - pure pass-through to the draft hooks in the three tabs below. config-ui has
+     no account to give, so it stays null there and those hooks are inert; the admin
+     panel threads the real one. */
+  accountId = null,
 }) {
   const [open, setOpen] = useState(false);
   // The body mounts on FIRST open and then stays mounted (collapsed via the
@@ -236,6 +240,7 @@ export default function KnowledgePanel({
                     selectedDocs={selectedDocIds}
                     onSelectionChange={onDocSelectionChange}
                     onChanged={loadCounts}
+                    accountId={accountId}
                   />
                 </div>
               )}
@@ -245,12 +250,13 @@ export default function KnowledgePanel({
                     selectedSkills={selectedSkillIds}
                     onSkillSelectionChange={onSkillSelectionChange}
                     onChanged={loadCounts}
+                    accountId={accountId}
                   />
                 </div>
               )}
               {activatedTabs.memories && (
                 <div {...panelProps("memories")}>
-                  <MemoriesTab onChanged={loadCounts} canEdit={canEdit} roleUnknown={roleUnknown} />
+                  <MemoriesTab onChanged={loadCounts} canEdit={canEdit} roleUnknown={roleUnknown} accountId={accountId} />
                 </div>
               )}
             </>

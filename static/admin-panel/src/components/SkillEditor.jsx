@@ -23,6 +23,9 @@
  */
 
 import React, { useState } from "react";
+import useDraft from "./useDraft";
+import DraftResumeCard from "./DraftResumeCard";
+import { DRAFT_FORM_IDS } from "../../../../src/shared/draft-state.js";
 import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
@@ -76,6 +79,7 @@ export default function SkillEditor({
   distillContext = null,
   onSaved,
   onCancel,
+  accountId = null,
 }) {
   const [name, setName] = useState(initial.name || "");
   const [category, setCategory] = useState(initial.category || "Other");
@@ -88,6 +92,39 @@ export default function SkillEditor({
   // F-129 — set when the queued distill was cancelled by a tenant Stop-all. Neutral slate
   // note, NOT an error: the form keeps its pre-fill so the user can just retry.
   const [cancelled, setCancelled] = useState(false);
+
+  /* -- F-990 - A HALF-WRITTEN SKILL ---------------------------------------------------
+     Instructions are the long field here, often several paragraphs, and losing them to a
+     reload is the owner's complaint in its purest form. A skill has no credentials and no
+     async state of its own (the distill's in-flight flags are separate useState and are
+     not in this object), so the whole form goes in.
+
+     ONLY FOR A NEW SKILL: an EDIT has a saved record behind it, so nothing is lost by a
+     reload, and a week-old draft laid over a skill someone else has since changed would
+     revert their edit without saying so.
+
+     THE `accountId` PROP IS OPTIONAL, AND IN config-ui IT IS ALWAYS NULL. This file is a
+     byte-identical copy shared with the admin panel, and only the admin panel knows who
+     is looking: `checkIsAdmin` returns an accountId and config-ui never asks. `draftKey`
+     refuses a null account (a draft keyed on "null" would be shared by every admin on the
+     machine), so in the rule editor this hook reads nothing and writes nothing and the
+     card never appears. That is a deliberate inertness, not a bug: the two copies stay
+     byte-identical and the behaviour differs only because one caller can answer the
+     question and the other cannot. Passing the account down through config-ui is a
+     separate change.
+
+     Byte-identical copy in static/admin-panel/src/components/SkillEditor.jsx. */
+  const skillDraftState = { name, category, description, instructions, examples };
+  const skillDraft = useDraft(DRAFT_FORM_IDS.SKILL_EDITOR, accountId, skillDraftState, !initial.id);
+  const restoreSkillDraft = () => {
+    const d = skillDraft.restore();
+    if (!d) return;
+    if (typeof d.name === "string") setName(d.name);
+    if (typeof d.category === "string") setCategory(d.category);
+    if (typeof d.description === "string") setDescription(d.description);
+    if (typeof d.instructions === "string") setInstructions(d.instructions);
+    if (typeof d.examples === "string") setExamples(d.examples);
+  };
 
   const handleSave = async () => {
     if (!name.trim() || !instructions.trim()) {
@@ -106,6 +143,7 @@ export default function SkillEditor({
         examples,
       });
       if (result.success) {
+        skillDraft.clear();   // F-990 - the skill exists now
         showToast("Skill saved");
         onSaved && onSaved(result.id);
       } else {
@@ -154,6 +192,14 @@ export default function SkillEditor({
 
   return (
     <div className="doc-add-form">
+      {skillDraft.hasDraft && (
+        <DraftResumeCard
+          savedAt={skillDraft.savedAt}
+          what="an unfinished skill"
+          onContinue={restoreSkillDraft}
+          onDiscard={skillDraft.discard}
+        />
+      )}
       {error && <div className="doc-error">{error}</div>}
       {/* F-129 — operator Stop-all, not a distill failure. Neutral slate. */}
       {cancelled && (

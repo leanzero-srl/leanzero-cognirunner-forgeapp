@@ -41,7 +41,7 @@ const CATEGORY_CLASS = {
   "Other": "skill-cat-other",
 };
 
-export default function SkillsAdminTab({ invoke, isAdmin }) {
+export default function SkillsAdminTab({ invoke, isAdmin, accountId = null }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -379,6 +379,7 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
       {showAdd && (
         <div className="card" style={{ marginBottom: "14px" }}>
           <SkillEditor
+            accountId={accountId}
             onSaved={async () => {
               setShowAdd(false);
               await loadSkills();

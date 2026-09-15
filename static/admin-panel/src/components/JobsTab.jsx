@@ -6,6 +6,9 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import useDraft from "./useDraft";
+import DraftResumeCard from "./DraftResumeCard";
+import { DRAFT_FORM_IDS } from "../../../../src/shared/draft-state.js";
 import SchedulePicker from "./SchedulePicker";
 import AgentConfig, { agentNeedsGitConnection } from "./AgentConfig";
 import FunctionBuilder from "./FunctionBuilder";
@@ -34,7 +37,7 @@ const fmtTime = (iso, timeZone) => { try { return new Date(iso).toLocaleString(u
    FunctionBuilder → KnowledgePanel → MemoriesTab chain this tab embeds. It is NOT an
    input to `canEdit`, which stays false either way: it only decides whether the note in
    place of the memory add form makes a claim about this reader or names the outage. */
-export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false }) {
+export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false, accountId = null }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -182,6 +185,27 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
     }
     return null;
   };
+  /* -- F-990 - AN UNFINISHED SCHEDULED JOB, AND ONLY AN UNFINISHED ONE ----------------
+     This editor's own state is already called `draft`, so the hook is `jobDraft`; the two
+     words mean different things and the collision is worth naming rather than tidying
+     away. What is persisted is the editor row plus its code steps, which together are
+     everything the admin typed.
+
+     ENABLED ONLY WHILE THE ROW HAS NO ID. Once it is saved there is a record behind the
+     form: nothing is lost by a reload, and restoring a week-old copy over a row someone
+     else has since edited would revert their change silently. AgentConfig is a controlled
+     child of this row, so its answers ride along inside `draft.agent` with no wiring of
+     its own. Test state, the sample payload and the in-flight flags stay out - they
+     describe a run that has finished. */
+  const jobDraftState = useMemo(() => (draft ? { row: draft, functions } : null), [draft, functions]);
+  const jobDraft = useDraft(DRAFT_FORM_IDS.JOB_EDITOR, accountId, jobDraftState, !!draft && !draft.id);
+  const restoreJobDraft = () => {
+    const d = jobDraft.restore();
+    if (!d) return;
+    if (d.row) setDraft((prev) => (prev ? { ...prev, ...d.row } : prev));
+    if (Array.isArray(d.functions) && d.functions.length) setFunctions(d.functions);
+  };
+
   const save = async (andClose = false) => {
     const err = validateDraft();
     if (err) { showToast(err, "error"); return null; }
@@ -190,7 +214,7 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
     try {
       const r = await invoke("saveScheduledJob", { job: buildPayload() });
       if (token !== editorToken.current) return null;
-      if (r.success) { setDraft((d) => ({ ...d, id: r.job.id, stats: r.job.stats })); showToast("Job saved"); if (andClose) closeEditor(); return r.job; }
+      if (r.success) { jobDraft.clear(); setDraft((d) => ({ ...d, id: r.job.id, stats: r.job.stats })); showToast("Job saved"); if (andClose) closeEditor(); return r.job; }
       // The skill binding is refused BY REASON, not by matching the sentence: the panel
       // shows it beside the picker that produced it, where the fix is.
       if (r.reason === "unknown-skill") setKnowledgeRefusal(r.error || "A bound skill does not exist on this instance.");
@@ -221,6 +245,14 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
         </div>
         <p className="hint">{draft.simulationMode ? "Save & run now simulates this job: live reads, writes recorded." : "Save & run now executes this job with real Jira writes. Enable Simulation mode below to record writes instead."}</p>
         <div className="card lst-card">
+          {jobDraft.hasDraft && (
+            <DraftResumeCard
+              savedAt={jobDraft.savedAt}
+              what="an unfinished scheduled job"
+              onContinue={restoreJobDraft}
+              onDiscard={jobDraft.discard}
+            />
+          )}
           <div className="lst-grid">
             <div className="form-group">
               <label className="label" htmlFor="job-name">Name</label>

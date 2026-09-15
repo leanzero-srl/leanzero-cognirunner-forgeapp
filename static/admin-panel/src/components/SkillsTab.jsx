@@ -38,7 +38,7 @@ const CATEGORY_CLASS = {
   "Other": "skill-cat-other",
 };
 
-export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onChanged = null }) {
+export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onChanged = null, accountId = null }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null); // mount-load failure — render retry, not "no skills"
@@ -193,6 +193,7 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
       {showAdd && (
         <div className="anim-rise">
           <SkillEditor
+            accountId={accountId}
             onSaved={async (id) => {
               setShowAdd(false);
               await refreshSkills();

@@ -6,6 +6,9 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import useDraft from "./useDraft";
+import DraftResumeCard from "./DraftResumeCard";
+import { DRAFT_FORM_IDS } from "../../../../src/shared/draft-state.js";
 import CustomSelect from "./CustomSelect";
 import EventPicker from "./EventPicker";
 import AgentConfig, { agentNeedsGitConnection } from "./AgentConfig";
@@ -55,7 +58,7 @@ const hueOf = (cat) => (EVENT_CATEGORIES.find((c) => c.id === cat) || {}).hue ||
    FunctionBuilder → KnowledgePanel → MemoriesTab chain this tab embeds. It is NOT an
    input to `canEdit`, which stays false either way: it only decides whether the note in
    place of the memory add form makes a claim about this reader or names the outage. */
-export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, router, roleUnknown = false }) {
+export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, router, roleUnknown = false, accountId = null }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
   /* Ask ONLY when a row on offer needs an answer: a tab whose premades are all agentless
      must not provoke a capability read it has no use for. */
@@ -236,6 +239,27 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
     }
     return null;
   };
+  /* -- F-990 - AN UNFINISHED LISTENER, AND ONLY AN UNFINISHED ONE ----------------
+     This editor's own state is already called `draft`, so the hook is `lstDraft`; the two
+     words mean different things and the collision is worth naming rather than tidying
+     away. What is persisted is the editor row plus its code steps, which together are
+     everything the admin typed.
+
+     ENABLED ONLY WHILE THE ROW HAS NO ID. Once it is saved there is a record behind the
+     form: nothing is lost by a reload, and restoring a week-old copy over a row someone
+     else has since edited would revert their change silently. AgentConfig is a controlled
+     child of this row, so its answers ride along inside `draft.agent` with no wiring of
+     its own. Test state, the sample payload and the in-flight flags stay out - they
+     describe a run that has finished. */
+  const lstDraftState = useMemo(() => (draft ? { row: draft, functions } : null), [draft, functions]);
+  const lstDraft = useDraft(DRAFT_FORM_IDS.LISTENER_EDITOR, accountId, lstDraftState, !!draft && !draft.id);
+  const restoreLstDraft = () => {
+    const d = lstDraft.restore();
+    if (!d) return;
+    if (d.row) setDraft((prev) => (prev ? { ...prev, ...d.row } : prev));
+    if (Array.isArray(d.functions) && d.functions.length) setFunctions(d.functions);
+  };
+
   const save = async (andClose = false) => {
     const err = validateDraft();
     if (err) { showToast(err, "error"); return null; }
@@ -244,7 +268,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
     try {
       const r = await invoke("saveListener", { listener: buildPayload() });
       if (token !== editorToken.current) return null;
-      if (r.success) { setDraft((d) => ({ ...d, id: r.listener.id, stats: r.listener.stats })); showToast("Listener saved"); if (andClose) closeEditor(); return r.listener; }
+      if (r.success) { lstDraft.clear(); setDraft((d) => ({ ...d, id: r.listener.id, stats: r.listener.stats })); showToast("Listener saved"); if (andClose) closeEditor(); return r.listener; }
       if (r.reason === "unknown-skill") setKnowledgeRefusal(r.error || "A bound skill does not exist on this instance.");
       showToast(r.error || "Save failed", "error");
     } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
@@ -299,6 +323,14 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
           </div>
         </div>
         <div className="card lst-card">
+          {lstDraft.hasDraft && (
+            <DraftResumeCard
+              savedAt={lstDraft.savedAt}
+              what="an unfinished listener"
+              onContinue={restoreLstDraft}
+              onDiscard={lstDraft.discard}
+            />
+          )}
           <div className="lst-grid">
             <div className="form-group">
               <label className="label" htmlFor="lst-name">Name</label>

@@ -6,6 +6,9 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import useDraft from "./useDraft";
+import DraftResumeCard from "./DraftResumeCard";
+import { DRAFT_FORM_IDS } from "../../../../src/shared/draft-state.js";
 import { invoke } from "@forge/bridge";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import Tooltip from "./Tooltip";
@@ -43,7 +46,7 @@ const CATEGORIES = [
   "General",
 ];
 
-export default function DocRepository({ selectedDocs, onSelectionChange, embedded = false, onChanged = null }) {
+export default function DocRepository({ selectedDocs, onSelectionChange, embedded = false, onChanged = null, accountId = null }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null); // mount-load failure — render retry, not "no docs"
@@ -128,6 +131,38 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
   };
 
   // Reload the list while keeping the current rows visible under a veil.
+  /* -- F-990 - A PASTED DOCUMENT THAT HAS NOT BEEN SAVED YET --------------------------
+     The content field takes whole reference documents, so this is the form where a lost
+     reload costs the most typing per keystroke. Title, body and category, nothing else:
+     the validation message, the expanded-row state and the refusals all describe the LIST
+     rather than the form.
+
+     The size clamp in draft-state.js matters here more than anywhere: a document large
+     enough to blow 512 KB is simply not drafted, rather than being written and evicting
+     every other form's draft on quota.
+
+     THE `accountId` PROP IS OPTIONAL, AND IN config-ui IT IS ALWAYS NULL. This file is a
+     byte-identical copy shared with the admin panel, and only the admin panel knows who
+     is looking: `checkIsAdmin` returns an accountId and config-ui never asks. `draftKey`
+     refuses a null account (a draft keyed on "null" would be shared by every admin on the
+     machine), so in the rule editor this hook reads nothing and writes nothing and the
+     card never appears. That is a deliberate inertness, not a bug: the two copies stay
+     byte-identical and the behaviour differs only because one caller can answer the
+     question and the other cannot. Passing the account down through config-ui is a
+     separate change.
+
+     Byte-identical copy in static/admin-panel/src/components/DocRepository.jsx. */
+  const docDraftState = { newTitle, newContent, newCategory };
+  const docDraft = useDraft(DRAFT_FORM_IDS.DOC_ADD, accountId, docDraftState);
+  const restoreDocDraft = () => {
+    const d = docDraft.restore();
+    if (!d) return;
+    if (typeof d.newTitle === "string") setNewTitle(d.newTitle);
+    if (typeof d.newContent === "string") setNewContent(d.newContent);
+    if (typeof d.newCategory === "string") setNewCategory(d.newCategory);
+    setShowAdd(true);
+  };
+
   const refreshDocs = async () => {
     setRefreshing(true);
     await loadDocs();
@@ -206,6 +241,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
         setNewTitle("");
         setNewContent("");
         setNewCategory("General");
+        docDraft.clear();   // F-990 - the document is in the library now
         setShowAdd(false);
         await refreshDocs();
         if (result.id) setNewDocId(result.id);
@@ -333,6 +369,14 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
       {/* Add new document form */}
       {showAdd && (
         <div className="doc-add-form anim-rise">
+          {docDraft.hasDraft && (
+            <DraftResumeCard
+              savedAt={docDraft.savedAt}
+              what="an unfinished document"
+              onContinue={restoreDocDraft}
+              onDiscard={docDraft.discard}
+            />
+          )}
           {error && (
             <div className="doc-error">{error}</div>
           )}

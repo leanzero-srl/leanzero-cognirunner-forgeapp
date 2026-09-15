@@ -389,7 +389,7 @@ function compactionRows(r) {
   return out;
 }
 
-export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = false }) {
+export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = false, accountId = null }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
   const client = useRef(createVaClient(invoke)).current;
 
@@ -438,7 +438,7 @@ export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = fal
     );
   }
   if (view === "form") {
-    return <VaEditor client={client} catalog={catalog} initial={formSeed.initial} initialRefusals={formSeed.refusals} onSaved={afterSave} onCancel={() => { setFormSeed({ initial: null, refusals: [] }); setView("list"); }} />;
+    return <VaEditor client={client} catalog={catalog} accountId={accountId} initial={formSeed.initial} initialRefusals={formSeed.refusals} onSaved={afterSave} onCancel={() => { setFormSeed({ initial: null, refusals: [] }); setView("list"); }} />;
   }
 
   return (

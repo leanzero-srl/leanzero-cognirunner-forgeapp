@@ -196,7 +196,9 @@ try {
           bl: cs.borderLeftWidth, contBg: cont.backgroundColor, contColor: cont.color,
         };
       });
-      const expected = theme === "dark" ? "rgb(59, 130, 246)" : "rgb(37, 99, 235)";
+      /* The SAME blue in both themes, on purpose: #3b82f6 under white is 3.68:1 and
+         chip-contrast refuses it. See the CSS note beside the dark override. */
+      const expected = "rgb(37, 99, 235)";
       ok(styles.bg === expected, `D1b ${theme} the card is the solid hue ${expected}, got ${styles.bg}`);
       ok(styles.color === "rgb(255, 255, 255)", `D1b ${theme} white text, got ${styles.color}`);
       ok(Number(styles.weight) >= 600, `D1b ${theme} 600 or heavier, got ${styles.weight}`);
@@ -418,7 +420,13 @@ console.log("D5 the draft vocabulary is closed");
 
 /* ───────────────── D7 — the duplication convention holds ──────────────────────────── */
 console.log("D7 the copied files are byte-identical");
-for (const rel of ["components/useDraft.js", "components/DraftResumeCard.jsx"]) {
+/* The hook and the card are new copies; the other five are components this change EDITED,
+   and an edit made on one side only is the exact failure the duplication convention
+   exists to catch. They are listed here rather than trusted to a reviewer's eye. */
+for (const rel of ["components/useDraft.js", "components/DraftResumeCard.jsx",
+  "components/SkillEditor.jsx", "components/DocRepository.jsx", "components/MemoriesTab.jsx",
+  "components/KnowledgePanel.jsx", "components/SkillsTab.jsx",
+  "components/FunctionBlock.jsx", "components/FunctionBuilder.jsx"]) {
   const a = fs.readFileSync(path.join(REPO, "static", "config-ui", "src", rel));
   const b = fs.readFileSync(path.join(REPO, "static", "admin-panel", "src", rel));
   ok(a.equals(b), `D7 ${rel} is byte-identical between config-ui and admin-panel`);

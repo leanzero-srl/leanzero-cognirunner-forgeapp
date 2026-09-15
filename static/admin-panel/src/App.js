@@ -7019,7 +7019,7 @@ const injectCopiedComponentStyles = () => {
        A SOLID #2563eb block with white text, never a tinted callout and never a left
        rail: this is an offer the admin must see above a form they think is empty, and a
        10% wash of the docs hue is exactly the thing that gets scrolled past. The dark
-       override is one shade lighter (#3b82f6), as every hue in this app must have.
+       override is stated below, and is the same blue for a measured reason.
        Continue is the filled white button because it is the affirmative act; Discard is
        an outline on the same block, so neither needs a second colour and neither needs a
        confirm dialog - the only thing it destroys is a convenience. */
@@ -7029,7 +7029,15 @@ const injectCopiedComponentStyles = () => {
       margin: 0 0 16px 0; padding: 12px 16px;
       background: #2563eb; color: #ffffff; border-radius: var(--r-md, 8px);
     }
-    html[data-color-mode="dark"] .draft-resume { background: #3b82f6; color: #ffffff; }
+    /* THE DARK OVERRIDE IS THE SAME BLUE, and that is deliberate (found by
+       chip-contrast). One shade lighter is the house rule for a new hue, but #3b82f6
+       under white text measures 3.68:1, which is under AA 4.5:1, and this block carries
+       the sentence AND both buttons - it is not a chip with three words on it. The app
+       already answered this for every other white-on-blue solid: .type-validator,
+       .lt-validator and .memories-admin-src-user all keep #2563eb in dark. Contrast wins
+       over the lightening rule, and the override is written out rather than omitted so
+       the next reader can see it was decided rather than forgotten. */
+    html[data-color-mode="dark"] .draft-resume { background: #2563eb; color: #ffffff; }
     .draft-resume-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
     .draft-resume-title { font-size: 13px; font-weight: 700; color: #ffffff; }
     .draft-resume-sub { font-size: 12px; font-weight: 600; color: #ffffff; }
@@ -9101,17 +9109,17 @@ function App() {
       {/* Documentation Tab */}
       {/* Listeners Tab — Jira product-event rules */}
       {activeTab === "listeners" && (
-        <ListenersTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} siteUrl={siteUrl} router={router} roleUnknown={roleUnknown} />
+        <ListenersTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} siteUrl={siteUrl} router={router} roleUnknown={roleUnknown} accountId={accountId} />
       )}
 
       {/* Agents Tab — virtual administrators (1.5) */}
       {activeTab === "agents" && (
-        <AgentsTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} roleUnknown={roleUnknown} />
+        <AgentsTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} roleUnknown={roleUnknown} accountId={accountId} />
       )}
 
       {/* Scheduled Jobs Tab — cron rules */}
       {activeTab === "jobs" && (
-        <JobsTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} roleUnknown={roleUnknown} />
+        <JobsTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} roleUnknown={roleUnknown} accountId={accountId} />
       )}
 
       {activeTab === "docs" && (

@@ -1244,6 +1244,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
                 <DocRepository
                   selectedDocs={selectedDocIds}
                   onSelectionChange={setSelectedDocIds}
+                  accountId={accountId}
                 />
 
                 {/* AI Review — same component config-ui uses. Critiques the configured
@@ -1514,6 +1515,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
                 setRunAsync={setRunAsync}
                 canEdit={canEdit}
                 roleUnknown={roleUnknown}
+                accountId={accountId}
               />
             )}
 

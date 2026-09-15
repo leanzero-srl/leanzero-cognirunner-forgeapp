@@ -2,10 +2,13 @@
                 --bg-color: transparent;
                 --text-color: #0f172a;
                 --text-secondary: #64748b;
-                --text-muted: #94a3b8;
+                --text-muted: #666d7a;
                 --primary-color: #2563eb;
                 --error-color: #dc2626;
                 --success-color: #16a34a;
+                /* INK ON A WHITE PILL (F-966) - not theme-aware on purpose; see App.js injectStyles. */
+                --on-white-success: #15803d;
+                --on-white-danger: #dc2626;
                 --border-color: #cbd5e1;
                 --card-bg: #ffffff;
                 --input-bg: #f8fafc;
@@ -17,7 +20,7 @@
                 --bg-color: transparent;
                 --text-color: #F5F5F7;
                 --text-secondary: #A0A0B0;
-                --text-muted: #71717a;
+                --text-muted: #909099;
                 --primary-color: #3b82f6;
                 --error-color: #ef4444;
                 --success-color: #22c55e;
@@ -81,10 +84,13 @@
       --bg-color: transparent;
       --text-color: #0f172a;
       --text-secondary: #64748b;
-      --text-muted: #94a3b8;
+      --text-muted: #666d7a;
       --primary-color: #2563eb;
       --error-color: #dc2626;
       --success-color: #16a34a;
+      /* INK ON A WHITE PILL (F-966) - not theme-aware on purpose; see App.js injectStyles. */
+      --on-white-success: #15803d;
+      --on-white-danger: #dc2626;
       --border-color: #cbd5e1;
       --card-bg: #ffffff;
       --input-bg: #f8fafc;
@@ -101,7 +107,7 @@
       --bg-color: transparent;
       --text-color: #F5F5F7;
       --text-secondary: #A0A0B0;
-      --text-muted: #71717a;
+      --text-muted: #909099;
       --primary-color: #3b82f6;
       --error-color: #ef4444;
       --success-color: #22c55e;
@@ -1637,8 +1643,8 @@
       font-weight: 700;
       text-transform: uppercase;
     }
-    .test-badge-pass { background: #ffffff; color: var(--success-color); }
-    .test-badge-fail { background: #ffffff; color: var(--error-color); }
+    .test-badge-pass { background: #ffffff; color: var(--on-white-success); }
+    .test-badge-fail { background: #ffffff; color: var(--on-white-danger); }
 
     .test-result-meta { color: var(--text-muted); font-size: 11px; }
     .test-dismiss {
@@ -1848,7 +1854,7 @@
     .review-item-icon { flex-shrink: 0; }
 
     .review-item-success { background: var(--success-color); color: #ffffff; }
-    .review-item-warning { background: #d97706; color: #ffffff; }
+    .review-item-warning { background: #b45309; color: #ffffff; }
     .review-item-error { background: var(--error-color); color: #ffffff; }
     .review-item-tip { background: var(--primary-color); color: #ffffff; }
 
@@ -1975,4 +1981,4 @@
     .st-proposed {
       color: var(--success-color);
       border: 1px solid rgba(22, 163, 106, 0.2);
-    }</style><script defer="defer" src="./bundle.66d1bcab.js"></script></head><body><div id="root"></div></body></html>
+    }</style><script defer="defer" src="./bundle.adc8f67f.js"></script></head><body><div id="root"></div></body></html>

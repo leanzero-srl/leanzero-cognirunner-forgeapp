@@ -1469,6 +1469,20 @@ const coderThread = (threadId) => {
       seed.push(row);
     }
     const row = { messages: seed, turns: seed.length ? 1 : 0 };
+    /* F-970 - WHICH WAY A LOCKED THREAD RUNS. The engine writes `simulation` onto the
+       thread row with its first turn, and the panel is locked to it from then on. The
+       fixture defaulted to omitting the field entirely, which is the UNKNOWN arm - so the
+       two arms that actually exist in production (locked dry, locked live) had no fixture
+       at all and the grey-on-grey defect could not be photographed. The flag names the
+       stored value; leaving it unset keeps the record silent, which is the third arm. */
+    if (first && row.turns > 0) {
+      const want = String((typeof window !== "undefined" && window.__CODER_THREAD_SIM__) || "live");
+      if (want === "dry") row.simulation = true;
+      else if (want === "live") row.simulation = false;
+      // "unknown" leaves the field off the row on purpose. The DEFAULT is "live", because
+      // that is what the engine writes for a normal turn - the unknown arm is a record
+      // written before the flag existed, and it has to be asked for.
+    }
     /* F-374 - the RELOAD state: the record keeps the ticket id and nothing else. */
     if (first && typeof window !== "undefined" && window.__CODER_PENDING__) row.pendingTicketId = CODER_TICKET_ID;
     CODER_THREADS.set(key, row);
@@ -1531,7 +1545,9 @@ function coderInvoke(name, payload) {
   const t = coderThread(payload && payload.threadId);
   switch (name) {
     case "getCoderThread":
-      return Promise.resolve({ success: true, thread: { messages: t.messages.slice(), turns: t.turns, ...(t.pendingTicketId ? { pendingTicketId: t.pendingTicketId } : {}) } });
+      // F-970: `simulation` is spread the same conditional way pendingTicketId is - an
+      // ABSENT field and a `false` one are different answers, and the panel now tells them apart.
+      return Promise.resolve({ success: true, thread: { messages: t.messages.slice(), turns: t.turns, ...(typeof t.simulation === "boolean" ? { simulation: t.simulation } : {}), ...(t.pendingTicketId ? { pendingTicketId: t.pendingTicketId } : {}) } });
     case "startCoderTurn": {
       CODER_POLLS = 0;
       /* F-463 - the resolver validates `skillIds` BEFORE it queues anything and answers
@@ -1554,6 +1570,10 @@ function coderInvoke(name, payload) {
         });
       }
       t.messages.push({ role: "user", content: String((payload && payload.message) || ""), at: new Date().toISOString(), knowledge: { skillIds: [], skillCount: 0, memoryCount: 1, fieldGuideSections: FIELD_GUIDE_SECTION_IDS.slice(0, 2) } });
+      /* F-970 - the FIRST turn fixes the thread's run mode, which is what makes it locked
+         from then on (coder-engine.js F-360). The fixture records it the same way, so a
+         conversation started as a dry run reads back as one. */
+      if (t.turns === 0 && payload && typeof payload.simulation === "boolean") t.simulation = payload.simulation;
       if (typeof window !== "undefined") window.__CODER_LAST_START__ = payload;
       return Promise.resolve({ success: true, async: true, taskId: "coder_turn_1", threadId: (payload && payload.threadId) || "p_demo" });
     }

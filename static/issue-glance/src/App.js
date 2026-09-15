@@ -18,6 +18,11 @@
 import React, { useEffect, useState } from "react";
 import { invoke, view } from "@forge/bridge";
 import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
+/* F-972 - the glance's pointer to the Coder is gated on the SAME answer the Coder panel
+   gates itself on. `useAgentCapability` is the one home for that question in this bundle
+   (CoderPanel.jsx already uses it); a second predicate here is how the edition gate came
+   to disagree with `coderGate` in the first place. */
+import { useAgentCapability } from "./capability.js";
 import CoderPanel from "./components/CoderPanel.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 
@@ -259,7 +264,12 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .coder-toggle-box { background: #64748b; }
     html[data-color-mode="dark"] .coder-toggle-on .coder-toggle-box { background: #b45309; }
     .coder-toggle:disabled { cursor: default; color: var(--text-muted); }
-    .coder-toggle:disabled .coder-toggle-box { background: var(--border-color); }
+    /* F-970 - the :not(.coder-toggle-on) qualifier, because this rule used to out-specify the ON
+       colour and repaint an ON switch grey the moment it was disabled. The locked thread
+       renders a chip now and never this control, but the switch is ALSO disabled while a
+       turn is in flight, and a busy switch that silently loses its position is the same
+       defect at a smaller scale. Only the OFF track dims. */
+    .coder-toggle:disabled:not(.coder-toggle-on) .coder-toggle-box { background: var(--border-color); }
 
     /* =====================================================================
        MLS (Motion & Loading System) subset - the shared contract, same class
@@ -523,6 +533,31 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .coder-conn-owed { background: #dc2626; color: #ffffff; }
     .coder-conn-note { margin: 0; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
 
+    /* F-970 - THE RUN MODE, WHEN IT IS NO LONGER A CHOICE.
+       The switch used to stay on screen after the thread locked it, disabled. Two rules
+       collided there: .coder-toggle-on .coder-toggle-box (two classes) lost to
+       .coder-toggle:disabled .coder-toggle-box (three), so a LOCKED dry run and a
+       LOCKED live run both painted the neutral grey - the one difference that decides
+       whether the next turn writes to a repository was invisible. A control that cannot
+       be operated is not the way to state a fact, so the locked state renders NO switch
+       and a solid chip instead, in words rather than in a switch position.
+       Hues: blue #2563eb says nothing is written, red #dc2626 says the writes are real, and the slate already used for "the read did not
+       answer" says the record did not tell us which. White text at 800 on all three, full
+       borders only, no rail and no tint. Deliberately NOT uppercased by CSS: the copy is
+       written in capitals so the rendered text and the source string are the same words. */
+    .coder-runmode-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .coder-runmode { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 5px; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; color: #fff; white-space: nowrap; }
+    .coder-runmode-dry { background: #2563eb; }
+    .coder-runmode-live { background: #dc2626; }
+    .coder-runmode-unknown { background: #475569; }
+    /* F-966: a fill under white ink keeps ONE shade in both themes (no dark override for dry/live). */
+    html[data-color-mode="dark"] .coder-runmode-unknown { background: #64748b; }
+
+    /* F-970 - the connection picker had no VISIBLE label, only an aria-label, and the
+       skills summary sits directly above it: "Skills none" read as the dropdown's own
+       caption. The label is the app's secondary text at 700, above the control it names. */
+    .coder-field-label { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: var(--text-secondary); }
+
   `;
   document.head.appendChild(el);
 };
@@ -691,6 +726,15 @@ export default function App() {
 
   const coder = state === "coder";
 
+  /* F-972 - ASK ONLY WHERE THE ANSWER IS USED. The pointer is the empty state's last
+     sentence and nothing else on the glance reads the capability, so the hook is armed
+     exactly when that empty state is on screen: an issue with activity, a loading panel
+     and the Coder-panel mount all issue no `getAgentCapability` at all. `enabled === true`
+     is the restrictive side - a read that never answered points nobody anywhere. */
+  const glanceEmpty = !coder && (state === "ready" || state === "notVisible") && items.length === 0;
+  const { verdict: coderVerdict } = useAgentCapability(invoke, glanceEmpty);
+  const coderAvailable = !!(coderVerdict && coderVerdict.success === true && coderVerdict.enabled === true);
+
   return (
     <div className="glance">
       <div className="glance-head">
@@ -727,16 +771,29 @@ export default function App() {
            journey from here to a first turn. It is deliberately not a button: this app
            cannot open another module's panel from inside its own iframe.
 
-           It is gated on the EDITION, on the restrictive side: the Coder panel refuses a
-           Standard install (`coderGate`), so pointing a Standard reader at it would be
-           sending them to a card that tells them no. `edition` is read from the licence on
-           mount and is always a real id, never blank. */}
+           F-972 REPLACED BOTH HALVES OF THIS BLOCK, and each half was wrong on its own.
+
+           THE GATE. It used to read `edition === ADVANCED`, described as "the restrictive
+           side" because `coderGate` refuses a Standard install. It does not: `coderGate`
+           (F-909) asks `agentCapability` only, and a Standard tenant running its own BYOK
+           key clears it. So the edition gate was not restrictive, it was simply a
+           DIFFERENT question - and it hid the pointer from exactly the readers who could
+           have used it. The gate is now the capability answer itself, from the same
+           `useAgentCapability` hook the Coder panel uses, so the two surfaces cannot drift
+           apart again. The edition is still read, but only for the chip in the header.
+
+           THE COPY. It named an "Apps button at the top of the issue". There is no button
+           with that name: the control is icon-only and its accessible name is "View app
+           actions" (proven on the tenant). Naming a thing the reader cannot find is worse
+           than saying nothing, so the sentence now describes what is actually on screen
+           and what to click in it. Still deliberately not a button: this app cannot open
+           another module's panel from inside its own iframe. */}
       {(state === "ready" || state === "notVisible") && items.length === 0 && (
         <div className="glance-empty">
           No CogniRunner activity recorded on this issue yet. Validators, conditions and post-functions that run on this issue's transitions will appear here.
-          {edition === EDITION_IDS.ADVANCED && (
+          {coderAvailable && (
             <>
-              {" "}To give the Coder work on this issue, open the <strong>CogniRunner Coder</strong> panel from the <strong>Apps</strong> button at the top of the issue and describe what you want done.
+              {" "}To give the Coder work on this issue, open the app actions menu (the icon at the top of the issue, <strong>View app actions</strong>), choose <strong>CogniRunner Coder</strong>, and describe what you want done.
             </>
           )}
         </div>

@@ -3375,12 +3375,17 @@ try {
       /* F-915 - AN HONEST EMPTY STATE IS NOT ENOUGH IF IT IS ALSO A DEAD END. A cold walk
          of a real issue found this panel to be the developer's first contact with the app,
          saying nothing had happened and offering no way to make anything happen. The Coder
-         lives in a SEPARATE issue panel that Jira does not show until the reader adds it
-         from the issue's Apps control, so the sentence has to name both the control and the
-         panel's title. Asserted on the words a reader would look for, not on a class. */
+         lives in a SEPARATE issue panel that Jira does not show until the reader opens it
+         from the issue's app actions control, so the sentence has to name both the control
+         and the panel's title. Asserted on the words a reader would look for, not a class.
+
+         F-972 - the control is NOT called "Apps". It is icon-only and its accessible name
+         is "View app actions" (proven on the tenant), so this assertion used to pin copy
+         that sent readers looking for a button no issue has. */
       const empty = await page.locator(".glance-empty").innerText();
-      ok(/Apps/.test(empty) && /CogniRunner Coder/.test(empty),
-        `E14 the empty state names the Apps button and the Coder panel (got "${empty}")`);
+      ok(/View app actions/.test(empty) && /CogniRunner Coder/.test(empty),
+        `E14 the empty state names the real app-actions control and the Coder panel (got "${empty}")`);
+      ok(!/the Apps button/.test(empty), "E14 ...and never the Apps button, which does not exist");
       ok(/describe what you want done/i.test(empty), "E14 ...and says what to do once it is open");
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, "glance-empty-pointer-light.png") });
     } catch (e) { fail++; console.log("  ✗ E14 threw: " + e.message.split("\n")[0]); }
@@ -3397,21 +3402,36 @@ try {
     await closeEditor(envDark);
   }
 
-  /* --------- E14b — F-915: the pointer is EDITION-GATED, on the restrictive side --------
-     The Coder panel refuses a Standard install (`coderGate`), so a Standard reader sent to
-     it would arrive at a card that tells them no. The empty state still says what it
-     always said; it just stops offering a door that is locked. */
+  /* --------- E14b — F-972: the pointer is CAPABILITY-gated, not EDITION-gated ------------
+     This journey used to assert the opposite, on reasoning that was simply wrong: it said
+     the Coder panel "refuses a Standard install (`coderGate`)". `coderGate` (F-909) asks
+     `agentCapability` and nothing else, and a Standard tenant running its own BYOK key
+     clears it. So the edition gate was not the restrictive side of the right question, it
+     was a different question - and it hid the pointer from precisely the readers who could
+     have used it. Both arms below are STANDARD; the only difference is the capability
+     answer, which is the axis that actually decides. */
   {
-    console.log("E14b issue-glance empty state, Standard edition (F-915)");
+    console.log("E14b issue-glance empty state, Standard + BYOK vs Standard + Forge LLM (F-972)");
+    // Standard, but its own key: the Coder RUNS here, so the pointer must be offered.
     const env = await openEditor(browser, "issue-glance", "issue-glance-empty", "light", { __STANDARD__: true });
     const { page } = env;
     try {
       await page.locator(".glance-empty").waitFor({ timeout: 8000 });
       const empty = await page.locator(".glance-empty").innerText();
       ok(/No CogniRunner activity recorded/i.test(empty), "E14b the empty state itself is unchanged on Standard");
-      ok(!/CogniRunner Coder/.test(empty), `E14b a Standard install is NOT pointed at the Coder panel (got "${empty}")`);
+      ok(/CogniRunner Coder/.test(empty), `E14b a Standard install with BYOK IS pointed at the Coder panel (got "${empty}")`);
     } catch (e) { fail++; console.log("  ✗ E14b threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
+
+    // Standard on Forge LLM: `agentCapability` says no, so there is no door to offer.
+    const envOff = await openEditor(browser, "issue-glance", "issue-glance-empty", "light", { __STANDARD__: true, __CODE_CAP__: "needs-coder-edition" });
+    try {
+      await envOff.page.locator(".glance-empty").waitFor({ timeout: 8000 });
+      const empty = await envOff.page.locator(".glance-empty").innerText();
+      ok(/No CogniRunner activity recorded/i.test(empty), "E14b the empty state itself is unchanged when the Coder is off");
+      ok(!/CogniRunner Coder/.test(empty), `E14b a capability that says no is NOT pointed at the Coder panel (got "${empty}")`);
+    } catch (e) { fail++; console.log("  ✗ E14b off-arm threw: " + e.message.split("\n")[0]); }
+    await closeEditor(envOff);
   }
 
   /* ---------------- E16 — issue-glance error state (getIssueActivity fails) ---------------- */

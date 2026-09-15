@@ -135,6 +135,26 @@ const threadLabel = (id, defaultId) => {
 const simulationLockText = (simulated) =>
   `This conversation runs as a ${simulated ? "dry run" : "live run"}; start a new conversation to change it.`;
 
+/* F-970 - THE LOCKED RUN MODE IS A STATEMENT, NOT A DISABLED SWITCH.
+   A switch that cannot be moved was carrying the most consequential fact this panel knows
+   - whether the next turn writes for real - in its TRACK COLOUR, and the disabled styling
+   out-specified the ON colour, so locked-dry and locked-live were the same grey pixel for
+   pixel. Words, in a solid chip, say it instead. They are written in capitals here rather
+   than uppercased in CSS so that the string in this file is the string on the screen.
+   THIRD state, and it is not cosmetic: a locked thread whose record carries no boolean
+   (a row written before the flag existed, or a partial read) used to fall through to the
+   `false` default and ASSERT "live run" about a conversation nobody had asked. It says it
+   does not know, and offers the read again. */
+const RUN_MODE_DRY_TEXT = "DRY RUN, NOTHING IS WRITTEN";
+const RUN_MODE_LIVE_TEXT = "LIVE RUN, WRITES ARE REAL";
+const RUN_MODE_UNKNOWN_TEXT = "STATUS UNKNOWN";
+const RUN_MODE_UNKNOWN_NOTE =
+  "This conversation's record did not say whether it runs as a dry run or a live run, so the panel cannot tell you. Retry the read before you send a turn.";
+const RUN_MODE_RETRY_LABEL = "Retry";
+/* The one visible caption the connection control never had. F-970: the skills summary
+   sits immediately above it, so "Skills none" was being read as this dropdown's label. */
+const CONNECTION_LABEL = "Git connection";
+
 /** Plain paragraphs. See rule 2 - this is the whole rendering of model text. */
 const paragraphs = (text) => String(text || "").split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
 
@@ -243,6 +263,10 @@ export default function CoderPanel({ issueKey, accountId }) {
   // same statement, and only one of them licenses a sentence about this site.
   const [connsAnswered, setConnsAnswered] = useState(false);
   const [simulation, setSimulation] = useState(false);
+  /* F-970 - the thread is LOCKED but the record never said which way. Distinct from
+     `simulation`, which always has a boolean and would otherwise let the `false` default
+     be told as "live run". Only ever true alongside `simulationLocked`. */
+  const [simUnknown, setSimUnknown] = useState(false);
   const [draft, setDraft] = useState("");
   const [running, setRunning] = useState(false);
   const [rounds, setRounds] = useState(0);
@@ -345,35 +369,49 @@ export default function CoderPanel({ issueKey, accountId }) {
      still makes exactly ONE refused read and never asks for a thread it may not have. */
   const capEnabled = capState === "ok" && !!(cap && cap.enabled === true);
 
+  /* F-970 split the body of the mount effect out so the run-mode UNKNOWN chip can ask the
+     SAME question again rather than growing a second read of its own (one question, one
+     home). `isCancelled` is the mount effect's teardown probe; a Retry click passes nothing
+     and so is never cancelled, which is right - the reader asked for it. */
+  const loadThread = useCallback(async (isCancelled) => {
+    const dead = () => (isCancelled && isCancelled()) || !mountedRef.current;
+    /* "not found" is the normal first-open answer, so it is NOT an error banner: an
+       empty transcript is exactly what a developer who has never used the panel - or
+       who has just started a new conversation - should see. Only a refusal is worth
+       saying out loud. */
+    try {
+      const t = await invoke("getCoderThread", { issueKey, threadId });
+      if (dead()) return;
+      if (isPermissionRefusal(t)) { setRefusal(t); setCapState("refused"); return; }
+      if (t && t.success && t.thread) {
+        setMessages(Array.isArray(t.thread.messages) ? t.thread.messages : []);
+        const stored = Number(t.thread.turns) || 0;
+        setTurns(stored);
+        /* Once the thread has a turn, the RECORD owns the flag. Showing the toggle in
+           any other position would be the panel asserting something about writes that
+           the engine has already decided otherwise. F-970: and when the record does NOT
+           carry the flag, the panel says so instead of inheriting the `false` default,
+           which reads as a promise that the next turn writes for real. */
+        if (stored > 0) {
+          if (typeof t.thread.simulation === "boolean") { setSimulation(t.thread.simulation); setSimUnknown(false); }
+          else setSimUnknown(true);
+        } else {
+          setSimUnknown(false);
+        }
+        /* A ticket that outlived the page. The thread record keeps only the ID, so the
+           action and its preview are genuinely unknown here - the chip says so rather
+           than inventing a name for a write the user is being asked to authorise. */
+        if (t.thread.pendingTicketId) setTicket({ id: t.thread.pendingTicketId, action: null, argsPreview: null });
+      }
+    } catch (e) { /* a thread we could not read is an empty thread, not a broken panel */ }
+  }, [issueKey, threadId]);
+
   useEffect(() => {
     if (!capEnabled) return undefined;
     let cancelled = false;
-    (async () => {
-      /* "not found" is the normal first-open answer, so it is NOT an error banner: an
-         empty transcript is exactly what a developer who has never used the panel - or
-         who has just started a new conversation - should see. Only a refusal is worth
-         saying out loud. */
-      try {
-        const t = await invoke("getCoderThread", { issueKey, threadId });
-        if (cancelled || !mountedRef.current) return;
-        if (isPermissionRefusal(t)) { setRefusal(t); setCapState("refused"); return; }
-        if (t && t.success && t.thread) {
-          setMessages(Array.isArray(t.thread.messages) ? t.thread.messages : []);
-          const stored = Number(t.thread.turns) || 0;
-          setTurns(stored);
-          /* Once the thread has a turn, the RECORD owns the flag. Showing the toggle in
-             any other position would be the panel asserting something about writes that
-             the engine has already decided otherwise. */
-          if (stored > 0 && typeof t.thread.simulation === "boolean") setSimulation(t.thread.simulation);
-          /* A ticket that outlived the page. The thread record keeps only the ID, so the
-             action and its preview are genuinely unknown here - the chip says so rather
-             than inventing a name for a write the user is being asked to authorise. */
-          if (t.thread.pendingTicketId) setTicket({ id: t.thread.pendingTicketId, action: null, argsPreview: null });
-        }
-      } catch (e) { /* a thread we could not read is an empty thread, not a broken panel */ }
-    })();
+    loadThread(() => cancelled);
     return () => { cancelled = true; };
-  }, [issueKey, threadId, capEnabled]);
+  }, [capEnabled, loadThread]);
 
   /* Connections drive the picker, and ONLY the picker. Read once the capability is on and
      never per conversation: the list does not depend on which thread is open.
@@ -477,7 +515,8 @@ export default function CoderPanel({ issueKey, accountId }) {
          so the panel is not left claiming a mode the conversation does not have. */
       setTicket(null);
       setOutcome(null);
-      if (typeof r.simulation === "boolean") setSimulation(r.simulation);
+      // F-970: the engine just NAMED the mode, so the unknown state is answered too.
+      if (typeof r.simulation === "boolean") { setSimulation(r.simulation); setSimUnknown(false); }
       setTurns((n) => (n > 0 ? n : 1));
       setError(simulationLockText(typeof r.simulation === "boolean" ? r.simulation : simulation));
     } else {
@@ -648,7 +687,8 @@ export default function CoderPanel({ issueKey, accountId }) {
         return;
       }
       if (res && res.reason === "simulation-locked") {
-        if (typeof res.simulation === "boolean") setSimulation(res.simulation);
+        // F-970: the engine just NAMED the mode, so the unknown state is answered too.
+        if (typeof res.simulation === "boolean") { setSimulation(res.simulation); setSimUnknown(false); }
         setTurns((n) => (n > 0 ? n : 1));
         setError(simulationLockText(typeof res.simulation === "boolean" ? res.simulation : simulation));
         setRunning(false);
@@ -1110,14 +1150,20 @@ export default function CoderPanel({ issueKey, accountId }) {
             )}
           </div>
         )}
+        {/* F-970 - a VISIBLE caption. The control had only an aria-label, and the skills
+            summary directly above it ends in a chip reading "none", which a sighted reader
+            takes for this dropdown's label. `htmlFor` is not available (CustomSelect is not
+            a native control and owns no id), so the two are tied by proximity and by the
+            aria-label carrying the same words. */}
         {showPicker && (
           <div className="coder-picker">
+            <p className="coder-field-label">{CONNECTION_LABEL}</p>
             <CustomSelect
               value={connectionId}
               onChange={setConnectionId}
               options={connOptions}
               placeholder="Choose a connection"
-              ariaLabel="Git connection"
+              ariaLabel={CONNECTION_LABEL}
               disabled={busy}
             />
           </div>
@@ -1129,25 +1175,47 @@ export default function CoderPanel({ issueKey, accountId }) {
         {connectionOwed && <p className="coder-conn-owed" role="alert">{CHOOSE_CONNECTION_TEXT}</p>}
         {noConnections && <p className="coder-conn-note">{NO_CONNECTION_TEXT}</p>}
         <div className="coder-composer-row">
-          {/* "Dry run" is the word the owner uses for simulation everywhere else in the app. */}
-          <button
-            type="button"
-            className={`coder-toggle${simulation ? " coder-toggle-on" : ""}`}
-            role="switch"
-            aria-checked={simulation}
-            onClick={() => setSimulation((v) => !v)}
-            disabled={busy || simulationLocked}
-            title={simulationLocked ? simulationLockText(simulation) : undefined}
-          >
-            <span className="coder-toggle-box" aria-hidden="true" />
-            Dry run
-          </button>
+          {/* F-970 - LOCKED RENDERS NO SWITCH. A disabled control is an affordance that
+              lies: it invites the click it will refuse, and its only remaining job was to
+              carry the run mode in a track colour the disabled styling then erased. When
+              the thread owns the flag the panel states it in words; when the record never
+              said, it says THAT and offers the read again rather than defaulting to one of
+              the two answers. "Dry run" is the word the owner uses for simulation
+              everywhere else in the app, so the unlocked control keeps it. */}
+          {simulationLocked ? (
+            simUnknown ? (
+              <div className="coder-runmode-row">
+                <span className="coder-runmode coder-runmode-unknown" role="status">{RUN_MODE_UNKNOWN_TEXT}</span>
+                <button type="button" className="coder-btn" onClick={() => loadThread()} disabled={busy}>{RUN_MODE_RETRY_LABEL}</button>
+              </div>
+            ) : (
+              <span className={`coder-runmode ${simulation ? "coder-runmode-dry" : "coder-runmode-live"}`} role="status">
+                {simulation ? RUN_MODE_DRY_TEXT : RUN_MODE_LIVE_TEXT}
+              </span>
+            )
+          ) : (
+            <button
+              type="button"
+              className={`coder-toggle${simulation ? " coder-toggle-on" : ""}`}
+              role="switch"
+              aria-checked={simulation}
+              onClick={() => setSimulation((v) => !v)}
+              disabled={busy}
+            >
+              <span className="coder-toggle-box" aria-hidden="true" />
+              Dry run
+            </button>
+          )}
           <button type="button" className={`coder-btn coder-btn-go${running ? " is-busy busy-solid" : ""}`} onClick={send} disabled={busy || !draft.trim() || connectionOwed}>Send</button>
         </div>
 
         {/* F-371: the locked state says WHY in the same words the refusal would, and names
-            the way out, which is the button F-368 added right above the transcript. */}
-        {simulationLocked && <p className="coder-lock-note">{simulationLockText(simulation)}</p>}
+            the way out, which is the button F-368 added right above the transcript.
+            F-970: except when the mode is UNKNOWN - this sentence names one of the two
+            modes, and printing it off the `false` default is precisely the false claim the
+            unknown chip exists to stop. That arm gets its own sentence. */}
+        {simulationLocked && !simUnknown && <p className="coder-lock-note">{simulationLockText(simulation)}</p>}
+        {simulationLocked && simUnknown && <p className="coder-lock-note">{RUN_MODE_UNKNOWN_NOTE}</p>}
 
         {running && (
           <div className="veil">

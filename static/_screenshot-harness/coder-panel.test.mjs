@@ -70,6 +70,12 @@ const HUE = {
   slate: { light: "rgb(71, 85, 105)", dark: "rgb(100, 116, 139)" },
   // F-463 - the SKILLS hue, the one the knowledge panel and the rule form already use.
   skills: { light: "rgb(124, 58, 237)", dark: "rgb(124, 58, 237)" },
+  /* F-970 - the LOCKED RUN MODE pair. Blue says nothing is written, red says the writes
+     are real, and the two must never compute to the same value in either theme: that they
+     DID (both grey, because the disabled styling out-specified the ON colour) is the whole
+     finding. F-966: a fill under white ink is ONE shade in both themes. */
+  blue: { light: "rgb(37, 99, 235)", dark: "rgb(37, 99, 235)" },
+  red: { light: "rgb(220, 38, 38)", dark: "rgb(220, 38, 38)" },
 };
 
 const browser = await chromium.launch();
@@ -91,6 +97,35 @@ async function withPanel(flags, body) {
        to prove the try/catch is real: a browser that never throws would let a missing one
        pass. DEMO-42 is the issue key the glance context seeds. */
     if (f.__CODER_BAD_STORAGE__) { try { window.localStorage.setItem("cognirunner.coder.threads.DEMO-42", "{not json"); } catch (e) { /* nothing to do */ } }
+    window.__NATIVE__ = [];
+    for (const fn of ["alert", "confirm", "prompt"]) {
+      window[fn] = (msg) => { window.__NATIVE__.push(fn + ":" + String(msg)); return fn === "confirm" ? true : ""; };
+    }
+  }, flags);
+  const page = await ctx.newPage();
+  const errors = []; page.on("pageerror", (e) => errors.push(String(e && e.message)));
+  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+  await page.locator(".glance").waitFor({ timeout: 15000 });
+  try {
+    await body(page, errors);
+  } finally {
+    await ctx.close(); await new Promise((r) => s.close(r));
+  }
+}
+
+/* F-972 - THE OTHER MODULE THIS BUNDLE BACKS. Same resource, same build, but mounted as
+   `jira:issueContext cognirunner-issue-glance` (no __MODULE_KEY__) on an issue with no
+   recorded activity, which is the only screen the Coder pointer appears on. Kept as a
+   sibling of withPanel rather than a flag on it: the two mount DIFFERENT components and
+   assert different things, and collapsing them would hide which one a failure came from. */
+async function withGlance(flags, body) {
+  const root = ensureFreshBuildShot("issue-glance");
+  const { s, port } = await serve(root);
+  const ctx = await browser.newContext({ viewport: { width: 380, height: 700 } });
+  await ctx.addInitScript((f) => {
+    // "issue-glance-empty" is the getIssueActivity fixture that answers ZERO items.
+    window.__SHOT__ = "issue-glance-empty";
+    Object.assign(window, f);
     window.__NATIVE__ = [];
     for (const fn of ["alert", "confirm", "prompt"]) {
       window[fn] = (msg) => { window.__NATIVE__.push(fn + ":" + String(msg)); return fn === "confirm" ? true : ""; };
@@ -317,11 +352,17 @@ try {
       // (never a native checkbox), and NO connection picker while the fixture has two
       // connections... which it does, so the picker IS expected here.
       ok(await page.locator("textarea.coder-input").count() === 1, `${id} one composer input`);
-      const sw = page.locator(".coder-toggle");
-      ok(await sw.getAttribute("role") === "switch", `${id} Dry run is a switch, not a checkbox`);
-      ok((await sw.innerText()).trim() === "Dry run", `${id} the toggle is labelled "Dry run"`);
+      /* F-970 - the seeded thread has a turn, so the run mode is LOCKED and this arm shows
+         the CHIP, not the switch. The switch itself is asserted in the new-conversation arm
+         below, where it is still a real choice. */
+      ok(await page.locator(".coder-toggle").count() === 0, `${id} a locked conversation renders NO switch`);
+      ok(await page.locator(".coder-runmode-live").count() === 1, `${id} it renders the LIVE RUN chip instead`);
       ok(await page.locator("input[type=checkbox]").count() === 0, `${id} no native checkbox`);
       ok(await page.locator(".coder-picker .dropdown").count() === 1, `${id} the connection picker is a CustomSelect (2 connections)`);
+      /* F-970 - the picker had no visible caption, and the skills summary directly above it
+         ends in a chip reading "none", which read as this control's label. */
+      const connLabel = (await page.locator(".coder-picker .coder-field-label").innerText()).trim();
+      ok(/^Git connection$/.test(connLabel), `${id} the connection control has a visible label (got "${connLabel}")`);
       await designRules(page, id);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-on-${theme}.png`) });
@@ -664,7 +705,16 @@ try {
       /* F-371: the thread has turns, so the Dry run switch is NOT a choice any more -
          the engine refuses a mid-thread flip, and a control that still looks live would be
          the panel promising something the engine has already decided. */
-      ok(await page.locator(".coder-toggle").isDisabled(), `${id} Dry run is locked once the conversation has a turn`);
+      /* F-970: no switch at all once it is locked, and the chip SAYS which way it runs -
+         the disabled switch used to carry that in a track colour the disabled styling
+         then repainted grey, so locked-dry and locked-live were identical. */
+      ok(await page.locator(".coder-toggle").count() === 0, `${id} the switch is gone once the conversation has a turn`);
+      const liveChip = (await page.locator(".coder-runmode").innerText()).trim();
+      ok(liveChip === "LIVE RUN, WRITES ARE REAL", `${id} the locked chip names a LIVE run in words (got "${liveChip}")`);
+      const liveBg = await page.locator(".coder-runmode").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(liveBg === HUE.red[theme], `${id} the live chip is the solid red (got ${liveBg})`);
+      const liveInk = await page.locator(".coder-runmode").evaluate((el) => getComputedStyle(el).color);
+      ok(liveInk === "rgb(255, 255, 255)", `${id} white text on the live chip (got ${liveInk})`);
       const lockNote = await page.locator(".coder-lock-note").innerText();
       ok(/start a new conversation to change it/i.test(lockNote), `${id} the locked state says how to change it (got "${lockNote}")`);
       ok(/live run/.test(lockNote), `${id} the locked state names what this conversation runs as`);
@@ -673,7 +723,12 @@ try {
          travel as `simulation: true` on its FIRST turn. */
       await page.locator(".coder-newconv").click();
       await page.waitForFunction(() => document.querySelectorAll(".coder-msg").length === 0, { timeout: 8000 });
-      ok(!(await page.locator(".coder-toggle").isDisabled()), `${id} a new conversation makes Dry run a choice again`);
+      const sw = page.locator(".coder-toggle");
+      ok(await sw.count() === 1, `${id} a new conversation makes Dry run a choice again`);
+      ok(await sw.getAttribute("role") === "switch", `${id} Dry run is a switch, not a checkbox`);
+      ok((await sw.innerText()).trim() === "Dry run", `${id} the toggle is labelled "Dry run"`);
+      ok(!(await sw.isDisabled()), `${id} and it is operable`);
+      ok(await page.locator(".coder-runmode").count() === 0, `${id} and no run-mode chip while it is still a choice`);
       ok(await page.locator(".coder-lock-note").count() === 0, `${id} and drops the locked sentence`);
       await page.locator(".coder-toggle").click();
       await page.locator("textarea.coder-input").fill("Again, but do not write anything.");
@@ -682,7 +737,14 @@ try {
       await page.locator(".coder-outcome").waitFor({ timeout: 20000 });
       const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
       ok(start.simulation === true, `${id} Dry run sends simulation: true (got ${start.simulation})`);
-      ok(await page.locator(".coder-toggle").isDisabled(), `${id} and the first turn locks it again`);
+      /* F-970 - and the first turn locks it again, into the OTHER chip: this is the pair
+         that used to be one grey switch. */
+      ok(await page.locator(".coder-toggle").count() === 0, `${id} and the first turn locks it again`);
+      const dryChip = (await page.locator(".coder-runmode").innerText()).trim();
+      ok(dryChip === "DRY RUN, NOTHING IS WRITTEN", `${id} the locked chip names a DRY run in words (got "${dryChip}")`);
+      const dryBg = await page.locator(".coder-runmode").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(dryBg === HUE.blue[theme], `${id} the dry chip is the solid blue (got ${dryBg})`);
+      ok(dryBg !== liveBg, `${id} a locked DRY run and a locked LIVE run are not the same colour`);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-plain-${theme}.png`) });
     });
@@ -780,9 +842,12 @@ try {
       ok(/start a new conversation to change it/i.test(msg), `${id} the refusal is told in the app's own sentence (got "${msg}")`);
       ok(/dry run/i.test(msg), `${id} it names what the conversation actually runs as`);
       ok(!/simulation-locked/.test(msg), `${id} the raw reason CODE never reaches the screen`);
-      // The toggle is put back to the thread's truth, and locked.
-      ok(await page.locator(".coder-toggle").getAttribute("aria-checked") === "true", `${id} the switch is put back to the thread's real mode`);
-      ok(await page.locator(".coder-toggle").isDisabled(), `${id} and is locked, so the same refusal cannot be provoked twice`);
+      /* F-970 - the run mode is put back to the thread's truth. It is a CHIP now, not a
+         switch position, so the correction is readable in words instead of in a track
+         colour the disabled styling was erasing. */
+      ok(await page.locator(".coder-toggle").count() === 0, `${id} no switch to provoke the same refusal twice`);
+      const backTo = (await page.locator(".coder-runmode").innerText()).trim();
+      ok(backTo === "DRY RUN, NOTHING IS WRITTEN", `${id} the chip is put back to the thread's real mode (got "${backTo}")`);
       ok(await page.locator(".coder-lock-note").count() === 1, `${id} the locked sentence is on the control as well as in the banner`);
       ok(await page.locator(".veil").count() === 0, `${id} the panel is not left spinning`);
       ok(await page.locator(".coder-newconv").count() === 1, `${id} the way out named by the sentence is on screen`);
@@ -1079,6 +1144,113 @@ try {
       ok(await page.locator(".coder-error").count() === 0, `${id} an empty thread is NOT an error`);
       ok(await page.locator(".coder-cap-on").count() === 1, `${id} the capability card is still there`);
     });
+
+    /* ------------------------- 7c. F-970: a LOCKED thread whose record never said which way.
+       The engine writes `simulation` onto the thread row with its first turn, but a row
+       written before that flag existed - or a read that came back short - carries no
+       boolean. The panel used to inherit the `false` default and ASSERT "live run" over a
+       conversation nobody had asked, in a sentence and in a grey switch. It says it does
+       not know, and the Retry re-asks the SAME resolver the mount read uses. */
+    await withPanel({ __THEME__: theme, __CODER_THREAD_SIM__: "unknown" }, async (page, errors) => {
+      const id = `runmode-unknown/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      await page.locator(".coder-runmode-unknown").waitFor({ timeout: 8000 });
+      ok(await page.locator(".coder-toggle").count() === 0, `${id} a locked thread renders no switch here either`);
+      const chip = (await page.locator(".coder-runmode").innerText()).trim();
+      ok(chip === "STATUS UNKNOWN", `${id} the chip says only what it knows (got "${chip}")`);
+      const chipBg = await page.locator(".coder-runmode").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(chipBg === HUE.slate[theme], `${id} the unknown chip is the neutral slate, not a verdict hue (got ${chipBg})`);
+      ok(chipBg !== HUE.red[theme] && chipBg !== HUE.blue[theme], `${id} and is neither of the two real answers`);
+      /* The CLAIM that used to be made from the `false` default must not be on screen.
+         Asserted on the two verdict chips and on the locked sentence, NOT on the whole
+         composer: the unknown note names both modes on purpose, to say it is neither. */
+      ok(await page.locator(".coder-runmode-live").count() === 0, `${id} nothing claims this conversation runs live`);
+      ok(await page.locator(".coder-runmode-dry").count() === 0, `${id} and nothing claims it is a dry run either`);
+      const note = (await page.locator(".coder-lock-note").innerText()).trim();
+      ok(/did not say/i.test(note), `${id} the sentence says the record was silent (got "${note}")`);
+      ok(!/^This conversation runs as a/.test(note), `${id} and it is NOT the sentence that picks one of the two (got "${note}")`);
+      /* The Retry is a REAL button that re-asks the resolver - the finding was a state that
+         said "reload" with nothing to click. Counting the invokes is what proves it. */
+      const before = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "getCoderThread").length);
+      const retry = page.locator(".coder-runmode-row .coder-btn");
+      ok(await retry.count() === 1, `${id} there is a Retry button next to the chip`);
+      ok((await retry.innerText()).trim() === "Retry", `${id} and it is labelled Retry`);
+      ok(!(await retry.isDisabled()), `${id} and it is clickable`);
+      await retry.click();
+      await page.waitForFunction((n) => (window.__CALLS__ || []).filter((c) => c.name === "getCoderThread").length > n, before, { timeout: 8000 });
+      const after = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "getCoderThread").length);
+      ok(after > before, `${id} Retry re-asks the resolver (${before} -> ${after})`);
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-runmode-unknown-${theme}.png`) });
+    });
+
+    /* ---- 7d. F-970: the two LOCKED arms, photographed on their own for the shots. -------
+       Section 7 proves the pair inside one journey; these two mount straight into each
+       state so the light/dark PNGs exist side by side and the dark override is asserted on
+       a card nobody had to drive a turn to reach. */
+    for (const [mode, cls, text, hue] of [
+      ["dry", "coder-runmode-dry", "DRY RUN, NOTHING IS WRITTEN", "blue"],
+      ["live", "coder-runmode-live", "LIVE RUN, WRITES ARE REAL", "red"],
+    ]) {
+      await withPanel({ __THEME__: theme, __CODER_THREAD_SIM__: mode }, async (page, errors) => {
+        const id = `runmode-${mode}/${theme}`;
+        await page.locator(`.${cls}`).waitFor({ timeout: 10000 });
+        ok(await page.locator(".coder-toggle").count() === 0, `${id} no switch on a locked conversation`);
+        ok((await page.locator(".coder-runmode").innerText()).trim() === text, `${id} the chip reads "${text}"`);
+        const bg = await page.locator(".coder-runmode").evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(bg === HUE[hue][theme], `${id} solid ${hue} with a dark override (got ${bg})`);
+        const ink = await page.locator(".coder-runmode").evaluate((el) => getComputedStyle(el).color);
+        ok(ink === "rgb(255, 255, 255)", `${id} white text (got ${ink})`);
+        const weight = await page.locator(".coder-runmode").evaluate((el) => getComputedStyle(el).fontWeight);
+        ok(Number(weight) >= 700, `${id} 700+ weight for emphasis (got ${weight})`);
+        await designRules(page, id);
+        ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+        if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-runmode-${mode}-${theme}.png`) });
+      });
+    }
+
+    /* ------------------- 7e. F-972: the GLANCE's pointer to the Coder, and WHO gets it. ----
+       This mounts the OTHER module the issue-glance bundle backs (`jira:issueContext`,
+       no __MODULE_KEY__), on an issue with no activity, which is the only place the
+       pointer renders.
+
+       The defect was TWO things. The gate read `edition === ADVANCED`, described in the
+       source as the restrictive side because `coderGate` refuses Standard - but `coderGate`
+       (F-909) asks `agentCapability` ONLY, so a Standard tenant on its own BYOK key can run
+       the Coder and was never told it existed. And the copy named an "Apps button" that has
+       no such name on the issue: the control is icon-only, accessible name "View app
+       actions". Both fixtures below are STANDARD; the only thing that differs is the
+       capability answer, which is exactly the axis the gate should be reading. */
+    for (const [who, flags, expected] of [
+      // The default __CODE_CAP__ IS the Standard+BYOK answer: enabled, provider anthropic.
+      ["standard-byok", {}, true],
+      // ...and this one is Standard on Forge LLM, which `coderGate` genuinely refuses.
+      ["standard-forge-llm", { __CODE_CAP__: "needs-coder-edition" }, false],
+    ]) {
+      await withGlance({ __THEME__: theme, __STANDARD__: true, ...flags }, async (page, errors) => {
+        const id = `glance-pointer/${who}/${theme}`;
+        await page.locator(".glance-empty").waitFor({ timeout: 10000 });
+        // Both tenants are Standard: the EDITION is not what separates them.
+        ok(await page.locator(".edition-chip.edition-standard").count() === 1, `${id} the tenant is Standard (the old gate would have hidden the pointer)`);
+        const txt = await page.locator(".glance-empty").innerText();
+        ok(/No CogniRunner activity recorded/.test(txt), `${id} the empty state itself is unchanged`);
+        const pointed = /CogniRunner Coder/.test(txt);
+        ok(pointed === expected, `${id} pointer ${expected ? "shown" : "hidden"} (got ${pointed ? "shown" : "hidden"})`);
+        if (expected) {
+          ok(/View app actions/.test(txt), `${id} it names the control's REAL accessible name`);
+          ok(!/Apps<\/strong>|the Apps button/.test(txt), `${id} and never the button that does not exist`);
+          ok(/describe what you want done/.test(txt), `${id} and says what to do once it is open`);
+        }
+        const calls = await page.evaluate(() => (window.__CALLS__ || []).map((c) => c.name));
+        ok(calls.includes("getAgentCapability"), `${id} the gate asked the capability resolver (positive control)`);
+        ok(await page.locator("select").count() === 0, `${id} no native <select>`);
+        ok((await page.evaluate(() => window.__NATIVE__ || [])).length === 0, `${id} no native dialog`);
+        ok((txt.match(/—/g) || []).length === 0, `${id} no em-dashes in the pointer copy`);
+        ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+        if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `glance-pointer-${who}-${theme}.png`) });
+      });
+    }
   }
 } finally {
   await browser.close();

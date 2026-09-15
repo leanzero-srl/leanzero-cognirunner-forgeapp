@@ -38,9 +38,20 @@ export const PROVIDER_IDS = ["openai", "azure", "openrouter", "anthropic", "lmst
 
 export const providerKeySlot = (provider) => `COGNIRUNNER_KEY_${provider}`;
 export const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
-// The model an AGENT surface uses (Coder chat, PR review, the Virtual Administrator),
-// kept apart from the rule/validator model.
+// The model an AGENT surface uses (the Virtual Administrator, a listener or job agent
+// run), kept apart from the rule/validator model.
 export const providerAgentModelSlot = (provider) => `COGNIRUNNER_AGENT_MODEL_${provider}`;
+// F-991 - THE CODER SLOT. The owner's ladder is three rungs, not two: cheap models for
+// rules, a mid model for the agent, the strongest model for CODE. Coder work (the Coder
+// chat turn and the pull-request review) is the most demanding thing the app does and the
+// least frequent, so it is the one surface worth paying top rate for - and until this slot
+// existed there was no way to say so without dragging every listener and job up with it.
+//
+// It is a slot, not a second table: which SURFACE reads which slot, and in what order, is
+// decided once in MODEL_SLOT_FOR_SURFACE (src/shared/agent-actions.js). An UNSET coder
+// slot falls through to the agent slot, so an instance that never touches this setting
+// keeps the exact behaviour it had.
+export const providerCoderModelSlot = (provider) => `COGNIRUNNER_CODER_MODEL_${provider}`;
 // Per-provider base URL — so switching to a provider restores its saved URL
 // instead of re-prompting (LM Studio / Azure carry a custom endpoint).
 export const providerBaseUrlSlot = (provider) => `COGNIRUNNER_BASEURL_${provider}`;
@@ -48,5 +59,5 @@ export const providerBaseUrlSlot = (provider) => `COGNIRUNNER_BASEURL_${provider
 // Every slot a harness may plant a fault in for one provider.
 export const providerSlotsFor = (provider) => [
   providerKeySlot(provider), providerModelSlot(provider),
-  providerAgentModelSlot(provider), providerBaseUrlSlot(provider),
+  providerAgentModelSlot(provider), providerCoderModelSlot(provider), providerBaseUrlSlot(provider),
 ];

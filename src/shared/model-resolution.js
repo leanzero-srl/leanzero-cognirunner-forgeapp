@@ -22,7 +22,7 @@
  * uncached fresh read. Nothing else may differ.
  */
 
-import { providerKeySlot, providerModelSlot, providerAgentModelSlot } from "./provider-slots.js";
+import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerCoderModelSlot } from "./provider-slots.js";
 import { FORGE_LLM_DEFAULT, FORGE_LLM_MODELS, MANAGED_PROVIDER_ID, MANAGED_DEFAULT_MODEL, clampManagedModel } from "./edition.js";
 
 /**
@@ -81,15 +81,39 @@ export const defaultModelForProvider = (provider, providers = PROVIDER_DEFAULT_M
   return fromTable || FALLBACK_DEFAULT_MODEL;
 };
 
+/**
+ * F-991 — the NAMED slots a surface chain may consult, and the only place a name becomes
+ * a KVS key. The ordinary model slot is deliberately NOT in here: it is the chain's
+ * unconditional next step for every reader, not something a surface opts into.
+ */
+const SLOT_READERS = {
+  agent: providerAgentModelSlot,
+  coder: providerCoderModelSlot,
+};
+
 /** The providers for which the `OPENAI_MODEL` env var names a model that exists. */
 const OPENAI_SHAPED = ["openai", "azure"];
 
 /**
  * Resolve the model a NAMED provider would actually run.
  *
- * agent slot (agent readers only) → ordinary model slot → legacy slot (migrating
- * readers only) → `OPENAI_MODEL` env var (OpenAI-shaped providers only) →
+ * slot chain, IN ORDER (surface readers only) → ordinary model slot → legacy slot
+ * (migrating readers only) → `OPENAI_MODEL` env var (OpenAI-shaped providers only) →
  * the provider's default → FALLBACK_DEFAULT_MODEL.
+ *
+ * F-991 — THE HEAD OF THE CHAIN IS A LIST, NOT A BOOLEAN. There are now three model
+ * tiers an instance can pay for (rules / agent / CODER), and a surface picks one by
+ * naming the slots it consults, in preference order: the Coder reads
+ * `["coder","agent"]`, so an UNSET coder slot silently means "same as the agent" —
+ * which is every instance that existed before this slot did. A boolean could only ever
+ * express two tiers, and the fallback tier would have had to be spelled out again at
+ * each call site: the "N copies of one rule" defect this module exists to prevent.
+ * THE ORDER IS NOT DECIDED HERE — `MODEL_SLOT_FOR_SURFACE` (src/shared/agent-actions.js)
+ * is the one home of which surface reads which chain, and a call site that types a
+ * literal chain has already forked it.
+ *
+ * The TAIL below the head is UNCHANGED and applies identically however many slots were
+ * consulted — including the faulted-read behaviour, which gains no fourth arm.
  *
  * @param {object} o
  * @param {string|null} o.provider        The provider id. NEVER read from anywhere in
@@ -98,8 +122,14 @@ const OPENAI_SHAPED = ["openai", "azure"];
  * @param {object} [o.env]                `process.env`-shaped.
  * @param {object} [o.providers]          Default models: either `{id: "model"}` or
  *   `{id: {defaultModel}}`. Defaults to PROVIDER_DEFAULT_MODELS.
- * @param {boolean} [o.agentSlot]         Consult the AGENT model slot first. Agent surfaces only — the ordinary path must never serve the agent's pick
- *   to a validator.
+ * @param {string[]} [o.slotChain]        The named slots consulted BEFORE the ordinary
+ *   model slot, in preference order. Known names: "coder", "agent". Surface readers only
+ *   — the ordinary path must never serve an agent's or a coder's pick to a validator.
+ *   An unknown name is SKIPPED rather than thrown on: a model resolver is not the place
+ *   a vocabulary typo should take an instance offline, and the tail still answers.
+ * @param {boolean} [o.agentSlot]         DEPRECATED alias for `slotChain: ["agent"]`,
+ *   kept so a caller that has not been moved yet resolves exactly what it did before.
+ *   `slotChain` wins when both are supplied.
  * @param {boolean} [o.migrate]           Perform the one-time legacy-slot WRITE.
  *   ACTIVE-provider path only: it must not plant a model in a slot nobody asked about.
  * @param {(key:string, value:any)=>Promise<any>} [o.onMigrate]  The writer. Without it
@@ -150,6 +180,7 @@ export const resolveModelForProvider = async ({
   readSlot,
   env = {},
   providers = PROVIDER_DEFAULT_MODELS,
+  slotChain = null,
   agentSlot = false,
   migrate = false,
   onMigrate = null,
@@ -158,11 +189,17 @@ export const resolveModelForProvider = async ({
   // F-112 — refuse BEFORE any slot read, and before any memo write upstream.
   if (!provider || typeof provider !== "string") return null;
 
+  // The explicit chain wins; `agentSlot: true` is its one-element legacy spelling, and
+  // resolves identically to what it did before F-991.
+  const chain = Array.isArray(slotChain) ? slotChain : (agentSlot ? ["agent"] : []);
+
   let model = null;
   try {
-    if (agentSlot) {
-      const savedAgent = await readSlot(providerAgentModelSlot(provider));
-      if (savedAgent) model = String(savedAgent);
+    for (const name of chain) {
+      const slotFor = SLOT_READERS[String(name)];
+      if (!slotFor) continue;
+      const savedForSlot = await readSlot(slotFor(provider));
+      if (savedForSlot) { model = String(savedForSlot); break; }
     }
     if (!model) {
       // Read the saved per-provider model UNCONDITIONALLY. Gating this on a BYOK key

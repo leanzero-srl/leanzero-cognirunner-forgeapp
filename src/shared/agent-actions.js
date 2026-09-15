@@ -198,6 +198,42 @@ export const AGENT_SURFACES = Object.freeze({
 /** Every surface id, for the gate's own vocabulary checks and for the harness census. */
 export const AGENT_SURFACE_IDS = Object.freeze(Object.values(AGENT_SURFACES));
 
+/*
+ * F-991 — WHICH MODEL SLOT EACH SURFACE RUNS ON. ONE HOME, and it is this one.
+ *
+ * The owner's ladder is three rungs: "we may choose to use haiku for the easiest shit and
+ * then go to sonnet for agent and opus for coder". Expressing that needs a per-surface
+ * answer, and the reason it needs to be a TABLE rather than an argument at each dispatch
+ * is the defect that made this cut necessary: the choice of slot was being made at seven
+ * scattered call sites, and four of them were making it WRONGLY — the Coder turn, the
+ * pull-request review and the listener/job agent run all dispatched on the ORDINARY
+ * (rules) model while the capability gate in front of them checked the AGENT model. An
+ * instance could therefore be told "your agent runs on Opus" and be billed for Haiku.
+ *
+ * The values are SLOT CHAINS in preference order, consumed by `resolveModelForProvider`
+ * (src/shared/model-resolution.js). `coder → ["coder","agent"]` is the compatibility
+ * rule and it is deliberate: an instance that never sets a coder model keeps the agent
+ * model everywhere, so this table adds a tier without moving anybody's bill by itself.
+ *
+ * Frozen, and frozen per-row, so a consumer cannot push a slot name onto a shared array
+ * and change what another surface resolves.
+ */
+export const MODEL_SLOT_FOR_SURFACE = Object.freeze({
+  [AGENT_SURFACES.CODER]: Object.freeze(["coder", "agent"]),
+  [AGENT_SURFACES.VA]: Object.freeze(["agent"]),
+  [AGENT_SURFACES.LISTENER]: Object.freeze(["agent"]),
+  [AGENT_SURFACES.JOB]: Object.freeze(["agent"]),
+});
+
+/**
+ * The slot chain for one surface. An UNKNOWN surface answers the AGENT chain, not an
+ * empty one: every caller of this is an agent-bearing dispatch site, so "I do not know
+ * this surface" must not silently demote a frontier turn to the rules model — the exact
+ * failure this table was cut to end.
+ */
+export const modelSlotChainForSurface = (surface) =>
+  MODEL_SLOT_FOR_SURFACE[String(surface || "")] || MODEL_SLOT_FOR_SURFACE[AGENT_SURFACES.VA];
+
 
 const REPO = { type: "string", description: "Repository as owner/name (GitHub) or workspace/slug (Bitbucket). Must be one of the repositories the connection allows." };
 const PRNUM = { type: "integer", description: "Pull request number" };
@@ -911,7 +947,16 @@ const gateActions = (ids, opts) => {
 // backend can read the managed engine's env var (agentGateFacts, src/index.js). Left
 // undefined it means "not asked", and agentCapability falls through to the edition and
 // allowance arms exactly as before - so every existing caller keeps its answer.
-export const buildAgentGateContext = ({ edition = null, provider = null, agentModel = null, allowanceLevel = null, managedKeyPresent = undefined, products = ["jira"], triggerSource = null, savedByRole = null, surface = null } = {}) => ({
+// F-991 — `coderModel` is the model the CODER SURFACE will run, and it is here for one
+// reason: the gate must judge the model that is actually going to be dispatched. Before
+// the coder slot existed there was only one agent model and the question could not be
+// asked wrongly; now an admin can set the coder slot to Haiku and leave the agent slot on
+// Opus, and a gate that kept checking `agentModel` would ALLOW a Coder run that then
+// dispatches a model which cannot drive an agent at all. It is a PASS-THROUGH like
+// `managedKeyPresent`: left undefined it means "not asked", and the Coder then falls back
+// to `agentModel` — which is precisely what an instance with no coder slot resolves
+// anyway (MODEL_SLOT_FOR_SURFACE: coder → ["coder","agent"]), so no existing verdict moves.
+export const buildAgentGateContext = ({ edition = null, provider = null, agentModel = null, coderModel = undefined, allowanceLevel = null, managedKeyPresent = undefined, products = ["jira"], triggerSource = null, savedByRole = null, surface = null } = {}) => ({
   // A MAP, not a bare verdict: an absent key is refused rather than assumed (F-281),
   // so adding the `web` namespace later cannot inherit git's answer.
   //
@@ -920,7 +965,12 @@ export const buildAgentGateContext = ({ edition = null, provider = null, agentMo
   // context without reading the provider would silently ENABLE git. The builder
   // refuses instead: an unknown provider is an unanswered question, and unanswered
   // is refused, exactly like an absent map key.
-  capability: { git: provider ? agentCapability({ provider, edition, agentModel, allowanceLevel, managedKeyPresent }) : { enabled: false, reason: "capability-off:git" } },
+  // THE MODEL THIS SURFACE WILL RUN — not "the agent model" (F-991). For the CODER
+  // surface that is the coder slot when one is set and the agent slot otherwise, which is
+  // the same fallthrough the dispatch chain performs; for every other surface it is the
+  // agent model, unchanged. `agentCapability` keeps ONE frontier rule and is simply told
+  // which model to apply it to.
+  capability: { git: provider ? agentCapability({ provider, edition, agentModel: surface === AGENT_SURFACES.CODER ? (coderModel ?? agentModel) : agentModel, allowanceLevel, managedKeyPresent }) : { enabled: false, reason: "capability-off:git" } },
   // `surface` is a PASS-THROUGH too (F-865), and it is normally left null here: the RUN
   // sites that build a context are the listener and job runners, and null is the answer
   // they want. The Virtual Administrator never reaches this builder — its tool list is

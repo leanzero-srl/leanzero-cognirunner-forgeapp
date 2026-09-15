@@ -555,7 +555,14 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     ok(/if \(!provider \|\| typeof provider !== "string"\) return null;/.test(chainSrc),
       "the shared chain refuses a null/blank provider outright");
     const iRes = chainSrc.indexOf('if (!provider || typeof provider !== "string") return null;');
-    ok(iRes > 0 && iRes < chainSrc.indexOf("readSlot(providerModelSlot(provider))") && iRes < chainSrc.indexOf("readSlot(providerAgentModelSlot(provider))"),
+    // F-991 — the named slots (agent, coder) are now read through a SLOT_READERS table,
+    // so there is no longer a literal `readSlot(providerAgentModelSlot(provider))` to
+    // point at. The property never depended on the spelling: it is that EVERY readSlot
+    // call in the chain comes after the refusal. Asserted that way, a slot added later is
+    // covered without anyone remembering to add it here.
+    const slotReads = [...chainSrc.matchAll(/readSlot\(/g)].map((m) => m.index);
+    ok(slotReads.length >= 2, `the chain reads slots in ${slotReads.length} place(s)`);
+    ok(iRes > 0 && slotReads.every((i) => i > iRes),
       "…and that refusal precedes every slot read, so the null-provider model slot is never asked for");
     ok(!/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL)_\$\{/.test(chainSrc),
       "…and the chain derives its slot NAMES from src/shared/provider-slots.js rather than retyping them");

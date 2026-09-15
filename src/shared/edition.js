@@ -435,6 +435,18 @@ export const allowanceApproachingCopy = (activeProvider, resetsOn) => {
   return fn ? fn(resetsOn ? String(resetsOn) : "next month") : null;
 };
 
+/**
+ * Is the `git` (Coder) capability available on this instance, and if not, why.
+ *
+ * `agentModel` MEANS "THE MODEL THIS SURFACE WILL ACTUALLY RUN" (F-991) — not "the value
+ * of the agent model slot". Since the Coder gained a model slot of its own, the caller
+ * that builds the gate context (`buildAgentGateContext`, src/shared/agent-actions.js)
+ * resolves the surface's own model and passes THAT in. The name is kept because there is
+ * exactly ONE frontier rule here and there must stay exactly one: adding a `coderModel`
+ * parameter beside it would be a second copy of "is this a model an agent may drive",
+ * and the two copies would disagree the first time the frontier list moves. What varies
+ * per surface is WHICH model is handed in; what is asked of it never varies.
+ */
 export const agentCapability = ({ provider, edition, agentModel, allowanceLevel, managedKeyPresent } = {}) => {
   /*
    * THE MANAGED ENGINE IS NOT BYOK - it spends LeanZero's money, so it is gated like

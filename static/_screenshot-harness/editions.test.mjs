@@ -307,7 +307,6 @@ try {
       ok(bg === "rgb(194, 65, 12)", `E1 chip solid hue per theme (got ${bg})`);
       ok(/^rgba?\(255,\s*255,\s*255/.test(fg), `E1 chip ink is white (got ${fg})`);
       ok(/^rgba?\(/.test(fg) && !/, 0\.\d+\)$/.test(bg), "E1 chip fill is opaque (no faded tint)");
-      ok(/^rgba?\(/.test(fg) && !/, 0\.\d+\)$/.test(bg), "E1 chip fill is opaque (no faded tint)");
 
       await tab(page, "Settings");
       await page.locator(".usage-card").waitFor({ timeout: 10000 });
@@ -1155,6 +1154,21 @@ try {
         await close(env);
       }
     }
+  }
+  {
+    /* E9 (F-957) - the tab eyebrow lost its "§" glyph. */
+    console.log("E9 (F-957) tab eyebrow carries no section glyph");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".tab-intro-eyebrow").first().waitFor({ timeout: 10000 });
+      const t = (await page.locator(".tab-intro-eyebrow").first().innerText()).trim();
+      ok(!t.includes("§"), `E9 no section sign in the eyebrow, got: ${t}`);
+      ok(t.length > 0, "E9 the eyebrow still says something");
+      ok(env.errors.length === 0, "E9 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x E9 threw: " + e.message.split("\n")[0]); }
+    await close(env);
   }
 } finally {
   await browser.close();

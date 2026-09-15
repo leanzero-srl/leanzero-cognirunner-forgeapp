@@ -7929,7 +7929,7 @@ function App() {
 
       {SURFACES[activeTab] && (
         <div className="tab-intro">
-          <span className="tab-intro-eyebrow">§ {SURFACES[activeTab].eyebrow}</span>
+          <span className="tab-intro-eyebrow">{SURFACES[activeTab].eyebrow}</span>
           <span className="tab-intro-what">{SURFACES[activeTab].what}</span>
           {SURFACES[activeTab].terms && (
             <span className="tab-intro-terms">

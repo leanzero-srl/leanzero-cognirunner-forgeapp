@@ -1205,9 +1205,15 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
         <div className="section-header">
           <span className="section-title">Git connections</span>
           <div className="section-actions">
-            <button className="btn-secondary btn-small" onClick={() => { setShowAdd((v) => !v); setFormError(null); }}>
-              {showAdd ? "Cancel" : "+ Add connection"}
-            </button>
+            {/* F-957 - this button OPENS the form and nothing else. It used to turn into a
+                second "Cancel" while the form was open, so the reader saw two Cancels at
+                once and neither said which one it belonged to. The form keeps its own
+                Cancel, beside the Save it undoes; this one simply steps aside. */}
+            {!showAdd && (
+              <button className="btn-secondary btn-small" onClick={() => { setShowAdd(true); setFormError(null); }}>
+                + Add connection
+              </button>
+            )}
           </div>
         </div>
 

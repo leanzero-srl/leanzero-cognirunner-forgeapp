@@ -1328,6 +1328,39 @@ try {
     } catch (e) { fail++; console.log("  x C18b threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
+  /* ---------------- C19 (F-957) — ONE Cancel on the connection form ------------------ */
+  {
+    /* The header's "+ Add connection" used to turn into a second "Cancel" while the form
+       was open, so the open form showed two Cancels at once and neither said what it
+       cancelled. The header button now steps aside and the form keeps the Cancel that
+       sits beside the Save it undoes. */
+    console.log("C19 (F-957) the open connection form has exactly one Cancel");
+    for (const theme of ["light", "dark"]) {
+      const env = await openAdmin(browser, theme);
+      const { page } = env;
+      try {
+        await tab(page, "Code");
+        await page.locator(".code-tab").waitFor({ timeout: 10000 });
+        const cancels = page.locator(".code-card .section-actions button, .code-form button").filter({ hasText: /^\s*Cancel\s*$/ });
+        ok(await cancels.count() === 0, "C19 no Cancel before the form is open");
+        await page.locator("button", { hasText: "+ Add connection" }).first().click();
+        await page.locator(".code-form").first().waitFor({ timeout: 5000 });
+        const n = await cancels.count();
+        ok(n === 1, `C19 exactly one Cancel while the form is open, got ${n}`);
+        ok(await page.locator(".code-form-actions button").filter({ hasText: /^\s*Cancel\s*$/ }).count() === 1,
+          "C19 and it is the one beside Save connection");
+        ok(await page.locator(".section-actions button").filter({ hasText: "+ Add connection" }).count() === 0,
+          "C19 the header button steps aside instead of becoming a second Cancel");
+        await shot(page, `C19-one-cancel-${theme}`);
+        await cancels.first().click();
+        ok(await page.locator(".code-form").count() === 0, "C19 Cancel closes the form");
+        ok(await page.locator("button").filter({ hasText: "+ Add connection" }).count() === 1, "C19 the opener comes back");
+        ok(env.errors.length === 0, `C19 ${theme} no page errors: ` + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  x C19 threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+  }
+
 } finally {
   await browser.close();
 }

@@ -341,16 +341,48 @@ const projectOptions = (catalog) => asArray(catalog && catalog.projects)
   .filter((o) => VA_PROJECT_KEY_RE.test(o.value))
   .slice(0, VA_WIZARD_OPTIONS_MAX);
 
+/*
+ * F-964 - THE ONE SENTENCE FOR A DESK WHOSE QUEUES COULD NOT BE LISTED.
+ *
+ * A desk with NO queue listed sweeps the WHOLE desk (F-953), so "we could not read the
+ * queues" and "this desk has no queues" are two very different offers that looked
+ * identical. The sentence lives here, once, because the intake picker says it while the
+ * admin can still change the answer AND the review card says it on the last screen before
+ * the agent is created - and two wordings for one condition is two conditions as far as
+ * the reader is concerned.
+ */
+export const VA_DESK_QUEUES_UNREADABLE = "Its queues could not be listed just now; if you keep it the agent reads the whole desk. Try again or pick another desk";
+
+/**
+ * The desk options, WITH the unreadable flag when the catalogue row carries it. The error
+ * CLASS rides along for a reader of the turn (a log, a test); nothing renders it, and the
+ * catalogue never carries a message to render.
+ */
 const deskOptions = (catalog) => asArray(catalog && catalog.serviceDesks)
   .slice(0, VA_WIZARD_OPTIONS_MAX)
-  .map((d) => ({
-    value: String(isObj(d) ? (d.id != null ? d.id : d.serviceDeskId) : d),
-    label: String((isObj(d) && (d.name || d.projectName)) || (isObj(d) ? d.id : d)),
-    queues: asArray(isObj(d) ? d.queues : null).slice(0, VA_QUEUES_PER_DESK_MAX).map((q) => ({
-      value: String(isObj(q) ? q.id : q),
-      label: String((isObj(q) && q.name) || (isObj(q) ? q.id : q)),
-    })),
-  }));
+  .map((d) => {
+    const opt = {
+      value: String(isObj(d) ? (d.id != null ? d.id : d.serviceDeskId) : d),
+      label: String((isObj(d) && (d.name || d.projectName)) || (isObj(d) ? d.id : d)),
+      queues: asArray(isObj(d) ? d.queues : null).slice(0, VA_QUEUES_PER_DESK_MAX).map((q) => ({
+        value: String(isObj(q) ? q.id : q),
+        label: String((isObj(q) && q.name) || (isObj(q) ? q.id : q)),
+      })),
+    };
+    if (isObj(d) && d.queuesUnreadable === true) {
+      opt.queuesUnreadable = true;
+      opt.queuesErrorClass = d.queuesErrorClass ? String(d.queuesErrorClass).slice(0, 60) : null;
+    }
+    return opt;
+  });
+
+/**
+ * The same desk options, built from a catalogue the BROWSER re-read (the intake step's
+ * Retry). Exported so the picker can refresh a desk row from a fresh catalogue without a
+ * second mapping of its own - a second mapping is how the turn's options and the retried
+ * ones would come to disagree about what a desk carries.
+ */
+export const deskOptionsFromCatalog = (catalog) => deskOptions(catalog);
 
 const skillOptions = (catalog) => asArray(catalog && catalog.skillIndex)
   .slice(0, VA_WIZARD_OPTIONS_MAX)
@@ -985,6 +1017,26 @@ export const renderReviewSummary = (va, opts = {}) => {
   if (mentions.length) sources.push(`mentions of ${mentions.length} ${mentions.length === 1 ? "person" : "people"}`);
   out.push(sources.length ? `It picks up work from ${sources.join(", ")}.` : "It has no intake source yet, so it will find nothing to work on.");
 
+  /*
+   * F-964 - A DESK WHOSE QUEUES COULD NOT BE LISTED, NAMED ON THE LAST SCREEN. The count
+   * above says "1 service desk" for a desk with no queues, which after F-953 is the whole
+   * desk - and when the list was merely UNREADABLE that sentence describes a scope nobody
+   * chose. `opts.serviceDesks` is the same catalogue the picker was built from, so a desk
+   * the catalogue never flagged says nothing extra here.
+   */
+  const unreadableDesks = asArray(o.serviceDesks)
+    .filter((d) => isObj(d) && d.queuesUnreadable === true)
+    // Only a desk the record actually names, and only while it names no queue of it: a
+    // record that already carries queue ids is narrowed by them, and the whole-desk
+    // sentence would then be false.
+    .filter((d) => desks.some((r) => isObj(r)
+      && String(r.serviceDeskId) === String(d.id != null ? d.id : d.serviceDeskId)
+      && asArray(r.queueIds).length === 0));
+  for (const d of unreadableDesks) {
+    const name = String((d.name || d.label || d.id || d.serviceDeskId));
+    out.push(`${name}: ${VA_DESK_QUEUES_UNREADABLE}.`);
+  }
+
   out.push(scope.read.site
     ? "It reads every project this app can see."
     : `It reads ${projectPhrase(scope.read.projects) || "no project"}.`);
@@ -1048,7 +1100,9 @@ const renderTurn = (state, prompt, extra = {}) => {
     const record = buildVaRecord(state);
     try {
       const { va, refused } = normalizeVa(record, catalogToCtx(state.catalog));
-      turn.summary = renderReviewSummary(va);
+      // F-964 - the machine's own card reads the same catalogue the picker did, so a desk
+      // whose queues could not be listed is named here too and not only in the browser.
+      turn.summary = renderReviewSummary(va, { serviceDesks: asArray(state.catalog && state.catalog.serviceDesks) });
       turn.guardrailSentences = renderGuardrailSentences(va);
       turn.preview = va;
       if (refused.length) turn.notes = [...turn.notes, ...refused];

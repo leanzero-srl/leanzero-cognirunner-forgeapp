@@ -1244,6 +1244,50 @@ let agentId = null;
   ok(cat.catalog.serviceDesks[0].queues.every((q) => "id" in q && "name" in q), "…whose queues are {id, name}");
   ok(cat.catalog.timeZones.includes("Europe/Bucharest"), "timeZones is the real IANA list (or the bundled floor), and carries the agent's own zone");
   ok(cat.catalog.skillIndex.every((s) => "id" in s && "name" in s), "skillIndex is {id, name}");
+  ok(cat.catalog.serviceDesks.every((d) => !("queuesUnreadable" in d)),
+    "a desk whose queues WERE read carries no unreadable flag, so the flag means exactly one thing");
+
+  /* ── F-964: AN UNREADABLE QUEUE LIST IS NOT AN EMPTY ONE ──────────────────────
+   *
+   * Both halves of the failure used to end as `queues: []`, which after F-953 is the
+   * catalogue OFFERING a whole-desk sweep - in the same shape it uses for a desk that
+   * genuinely has no queue. `buildCatalogue` is driven directly here with injected deps
+   * so both shapes (a non-ok response and a throw) are exercised deterministically,
+   * rather than by bending the site-wide responder every other assertion reads.
+   */
+  {
+    const { buildCatalogue } = await import("../../src/va-admin.js");
+    const twoDesks = { ok: true, values: [{ id: "1", projectName: "Support desk" }, { id: "2", projectName: "Facilities" }] };
+    const goodQueues = { ok: true, values: [{ id: "10", name: "Waiting for support", jql: "resolution = Unresolved" }] };
+
+    const nonOk = await buildCatalogue({
+      listServiceDesks: async () => twoDesks,
+      listQueues: async (id) => (id === "2" ? { ok: false, status: 503, values: [] } : goodQueues),
+    });
+    const byId = (built, id) => built.catalog.serviceDesks.find((d) => d.id === id);
+    ok(byId(nonOk, "2").queuesUnreadable === true,
+      `a desk whose queue read answered 503 is flagged unreadable (got ${JSON.stringify(byId(nonOk, "2"))})`);
+    ok(byId(nonOk, "2").queuesErrorClass === "http_503",
+      `…carrying the status as a CLASS (got ${JSON.stringify(byId(nonOk, "2").queuesErrorClass)})`);
+    ok(Array.isArray(byId(nonOk, "2").queues) && byId(nonOk, "2").queues.length === 0,
+      "…and still no queues, because there are none to offer");
+    ok(!("queuesUnreadable" in byId(nonOk, "1")) && byId(nonOk, "1").queues.length === 1,
+      "…while the desk that answered is untouched");
+    ok(nonOk.sources.serviceDesks.ok === true,
+      "one unreadable desk does not turn the whole service-desk source into a failure");
+
+    const boom = Object.assign(new Error("queues of desk 2 are secret"), { name: "TypeError" });
+    const threw = await buildCatalogue({
+      listServiceDesks: async () => twoDesks,
+      listQueues: async (id) => { if (id === "2") throw boom; return goodQueues; },
+    });
+    ok(byId(threw, "2").queuesUnreadable === true,
+      `a THROWN queue read is flagged the same way, never swallowed as an empty list (got ${JSON.stringify(byId(threw, "2"))})`);
+    ok(byId(threw, "2").queuesErrorClass === "TypeError",
+      `…as the error CLASS (got ${JSON.stringify(byId(threw, "2").queuesErrorClass)})`);
+    ok(!JSON.stringify(threw.catalog).includes("secret"),
+      "…and the exception MESSAGE never reaches the catalogue the browser is handed");
+  }
 
   const tick = await call("runVaPostNow", { jobId: `${agentId}-nope` });
   ok(tick.success === false && tick.reason === "not_found" && typeof tick.error === "string" && tick.error.length > 0,

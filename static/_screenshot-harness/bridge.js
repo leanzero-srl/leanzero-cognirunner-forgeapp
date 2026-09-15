@@ -1627,6 +1627,22 @@ const VA_CATALOG = {
   timeZones: ["UTC", "Europe/London", "Europe/Berlin", "Europe/Bucharest", "America/New_York"],
   skillIndex: [{ id: "skill_tone", name: "Support tone" }, { id: "skill_sla", name: "SLA phrasing" }],
 };
+/* F-964 - A DESK WHOSE QUEUE LIST COULD NOT BE READ. `window.__VA_QUEUES_UNREADABLE__`
+   makes the SECOND desk come back flagged, exactly as `buildCatalogue` flags it (the flag
+   and the error CLASS, never a message), until the catalogue has been read a second time -
+   which is what the intake step's Retry chip does. So the fixture models both halves: the
+   unreadable offer, and the retry that clears it. */
+let VA_CATALOG_READS = 0;
+const vaCatalogue = () => {
+  const flagged = typeof window !== "undefined" && window.__VA_QUEUES_UNREADABLE__ && VA_CATALOG_READS < 2;
+  if (!flagged) return VA_CATALOG;
+  return {
+    ...VA_CATALOG,
+    serviceDesks: VA_CATALOG.serviceDesks.map((d) => (d.id === "11"
+      ? { id: d.id, name: d.name, queues: [], queuesUnreadable: true, queuesErrorClass: "http_503" }
+      : d)),
+  };
+};
 /* The stored interview, exactly as the resolver keeps it at `va_wizard:{accountId}`:
    SERIALIZED (no catalogue), and re-hydrated with this turn's live catalogue. */
 const VA_WIZ = { state: null, seeded: false };
@@ -1657,7 +1673,7 @@ const vaWizardTurn = (input) => {
     VA_WIZ.state = vaSeedResumeDraft();
     VA_WIZ.seeded = true;
   }
-  const state = VA_WIZ.state ? resumeWizard(VA_WIZ.state, VA_CATALOG) : createWizard({ catalog: VA_CATALOG }).state;
+  const state = VA_WIZ.state ? resumeWizard(VA_WIZ.state, vaCatalogue()) : createWizard({ catalog: vaCatalogue() }).state;
   const turn = stepWizard(state, input || {});
   VA_WIZ.state = serializeWizardState(turn.state).state;
   return turn;
@@ -2711,7 +2727,7 @@ function invoke(name, payload) {
       return Promise.resolve({ success: true, turn });
     }
     case "vaWizardReset": { VA_WIZ.state = null; return Promise.resolve({ success: true }); }
-    case "vaCatalog": return Promise.resolve({ success: true, catalog: VA_CATALOG });
+    case "vaCatalog": { VA_CATALOG_READS += 1; return Promise.resolve({ success: true, catalog: vaCatalogue() }); }
     /* window.__VA_NONE__ = true models a site with no agent at all - the EMPTY TAB, which
        is the one state the fixture list could never produce and the one F-916 is about
        (two create call-to-actions on it). */

@@ -23,7 +23,7 @@ import {
   catalogToCtx, checkJqlShape, clampSay, renderVoiceSamples, renderReviewSummary,
   writeSiteRefusalReason, optionsForStep, wizardResumeInfo, WIZARD_QUESTION_COUNT,
   WIZARD_STEPS, VOICE_SAMPLE_CHIPS, VA_WIZARD_SAY_MAX, VA_WIZARD_STATE_MAX_BYTES,
-  VA_WIZARD_VERSION,
+  VA_WIZARD_VERSION, VA_DESK_QUEUES_UNREADABLE,
 } from "../../src/shared/va-wizard.js";
 import {
   normalizeVa, VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_DEFAULT_FOOTNOTE, VA_COPY,
@@ -250,6 +250,42 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
   ok(wholeDesk.state.answers.intake.serviceDesks[0].queueIds.length === 0, "and the record carries the empty queue list, which is what the engine reads as the whole desk");
   const card = renderReviewSummary(normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }] } }, catalogToCtx(CATALOG)).va).join(" ");
   ok(/1 service desk/.test(card) && !/0 queue/.test(card), `the card claims the desk, never "0 queues" (got ${card})`);
+
+  /*
+   * F-964 - AND THE THIRD HALF: a desk whose queues could NOT be listed. It reaches the
+   * wizard looking exactly like the whole-desk case above, so both the intake step's
+   * options and the review card have to name the difference - in ONE wording, taken from
+   * its home, never retyped here.
+   */
+  const UNREADABLE_CATALOG = {
+    ...CATALOG,
+    serviceDesks: [CATALOG.serviceDesks[0], { id: "2", name: "Facilities", queues: [], queuesUnreadable: true, queuesErrorClass: "http_503" }],
+  };
+  const deskOpts = optionsForStep("intake", { catalog: UNREADABLE_CATALOG });
+  const flagged = deskOpts.find((o) => o.value === "2");
+  ok(flagged && flagged.queuesUnreadable === true, `the intake step's option carries the unreadable flag (got ${JSON.stringify(flagged)})`);
+  ok(flagged && flagged.queuesErrorClass === "http_503", "…and the error class the catalogue measured");
+  ok(deskOpts.find((o) => o.value === "1").queuesUnreadable === undefined,
+    "…while a readable desk carries no flag at all");
+
+  const unreadableCard = renderReviewSummary(
+    normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "2", queueIds: [] }] } }, catalogToCtx(UNREADABLE_CATALOG)).va,
+    { serviceDesks: UNREADABLE_CATALOG.serviceDesks },
+  ).join(" ");
+  ok(unreadableCard.includes(`Facilities: ${VA_DESK_QUEUES_UNREADABLE}.`),
+    `the review card names the desk and says what keeping it means, in the picker's own words (got ${unreadableCard})`);
+  const readableCard = renderReviewSummary(
+    normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }] } }, catalogToCtx(UNREADABLE_CATALOG)).va,
+    { serviceDesks: UNREADABLE_CATALOG.serviceDesks },
+  ).join(" ");
+  ok(!readableCard.includes(VA_DESK_QUEUES_UNREADABLE),
+    `a desk the record did NOT name never borrows the sentence (got ${readableCard})`);
+  const narrowedCard = renderReviewSummary(
+    normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "1", queueIds: ["10"] }] } }, catalogToCtx(UNREADABLE_CATALOG)).va,
+    { serviceDesks: [{ ...CATALOG.serviceDesks[0], queuesUnreadable: true }] },
+  ).join(" ");
+  ok(!narrowedCard.includes(VA_DESK_QUEUES_UNREADABLE),
+    "a record that already names queue ids is narrowed by them, so the whole-desk sentence would be false and is not said");
 }
 
 /* ── 3. every refusal ──────────────────────────────────────────────────────── */

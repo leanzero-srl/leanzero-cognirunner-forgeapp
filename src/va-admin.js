@@ -128,6 +128,7 @@ import { VA_LIMITS, VA_QUEUES_PER_DESK_MAX, VA_CEILINGS, VA_SAVE_WATCH_FIELD } f
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { clampChars } from "./shared/text-clamp.js";
+import { errorClassOf } from "./shared/error-class.js";
 import { defangFence } from "./shared/prompt-fencing.js";
 
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
@@ -1410,7 +1411,23 @@ export const buildCatalogue = async (injected = {}) => {
       for (const d of asArray(desks.values).slice(0, VA_ADMIN_DESKS_MAX)) {
         const id = String(d && (d.id != null ? d.id : d.serviceDeskId));
         if (!id || id === "undefined") continue;
+        /*
+         * F-964 - AN UNREADABLE QUEUE LIST IS NOT AN EMPTY ONE.
+         *
+         * Both failure shapes (a non-ok response and a throw) used to end as `queues: []`,
+         * and after F-953 a desk with no queue listed means "sweep the WHOLE desk" - so the
+         * catalogue offered a desk whose scope nobody could see, in the same words it uses
+         * for a desk that genuinely has no queue, and the admin was never told the read had
+         * failed. The row now says which of the two happened; the intake picker and the
+         * review card read the flag and say it out loud.
+         *
+         * THE CLASS, NEVER THE MESSAGE. `errorClassOf` is the short loggable name of what
+         * threw; a non-ok response becomes `http_<status>`. A message carries ids and user
+         * text and has no business on a catalogue that is handed to a browser.
+         */
         let queues = [];
+        let queuesUnreadable = false;
+        let queuesErrorClass = null;
         try {
           const q = await deps.listQueues(id);
           if (q && q.ok !== false) {
@@ -1422,9 +1439,18 @@ export const buildCatalogue = async (injected = {}) => {
               // record carries ids, and the engine re-reads the queue at sweep time.
               jql: clampChars(String((x && x.jql) || ""), 2000),
             })).filter((x) => x.id && x.id !== "undefined");
+          } else {
+            queuesUnreadable = true;
+            queuesErrorClass = `http_${(q && q.status) || "no_response"}`;
           }
-        } catch (e) { queues = []; }
-        out.push({ id, name: clampChars(String((d && (d.projectName || d.name)) || id), 120), queues });
+        } catch (e) {
+          queues = [];
+          queuesUnreadable = true;
+          queuesErrorClass = errorClassOf(e);
+        }
+        const row = { id, name: clampChars(String((d && (d.projectName || d.name)) || id), 120), queues };
+        if (queuesUnreadable) { row.queuesUnreadable = true; row.queuesErrorClass = queuesErrorClass; }
+        out.push(row);
       }
       catalog.serviceDesks = out;
       sources.serviceDesks = { ok: true, count: out.length };

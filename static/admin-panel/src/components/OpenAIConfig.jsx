@@ -1551,7 +1551,10 @@ export default function OpenAIConfig({ invoke }) {
      one home, not retyped, and a backend change to the period follows automatically.
      If a future resolver starts sending a reset date, prefer it here and delete this. */
   const allowanceResetsOn = allowance ? allowanceResetLabel(usage && usage.month && usage.month.key) : null;
-  const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  /* F-967 - BOTH decimals, always. `maximumFractionDigits` alone let the allowance meter
+     read "$92.4 of $200" - a money figure with one decimal and another with none, side by
+     side in one sentence, which reads as a rounding error rather than a bill. */
+  const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const resetUsage = async () => {
     setUsageResetting(true);
@@ -2326,7 +2329,7 @@ export default function OpenAIConfig({ invoke }) {
                     onClick={handleSaveModel}
                     disabled={savingModel || !selectedModel || selectedModel === currentModel}
                   >
-                    Save Model
+                    Save
                   </button>
                 </div>
                 </>

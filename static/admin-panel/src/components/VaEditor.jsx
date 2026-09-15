@@ -28,7 +28,7 @@
 import React, { useMemo, useState } from "react";
 import SchedulePicker from "./SchedulePicker";
 import { showToast } from "./toast";
-import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, NoteList, TextListInput } from "./VaPickers";
+import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, NoteList, PeoplePicker } from "./VaPickers";
 import SaveNotes, { collectSaveNotes } from "./VaSaveNotes";
 import { buildVaRecord, catalogToCtx, optionsForStep, renderVoiceSamples, renderReviewSummary } from "../../../../src/shared/va-wizard.js";
 import { normalizeVa, renderGuardrailSentences, VA_DEFAULTS, VA_CEILINGS, VA_COPY,
@@ -195,18 +195,21 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
         </div>
         <div className="form-group">
           <span className="label">Pick up mentions of</span>
-          <TextListInput values={arr(a.intake.mentionsOf)} max={VA_MENTIONS_MAX} placeholder="Atlassian account id" ariaLabel="Mention account id" onChange={(mentionsOf) => set({ intake: { ...a.intake, mentionsOf } })} />
+          {/* F-969 - the SAME picker the wizard asks with, so the two doors onto one record
+              still ask one question. The record keeps account ids either way. */}
+          <PeoplePicker values={arr(a.intake.mentionsOf)} max={VA_MENTIONS_MAX} ariaLabel="People to watch for mentions of" onChange={(mentionsOf) => set({ intake: { ...a.intake, mentionsOf } })} />
+          <span className="hint">It picks up an issue when one of these people is mentioned on it.</span>
         </div>
         <label className="lst-check"><input type="checkbox" checked={a.intake.owedFirst !== false} onChange={(e) => set({ intake: { ...a.intake, owedFirst: e.target.checked } })} /><span><strong>Answer people who are waiting first</strong></span></label>
 
         <div className="form-group">
           <span className="label">Projects it may read</span>
           <label className="lst-check"><input type="checkbox" checked={!!a.readScope.site} onChange={(e) => set({ readScope: { ...a.readScope, site: e.target.checked } })} /><span><strong>Every project this app can see</strong></span></label>
-          {!a.readScope.site && <ChipPicker options={projectOpts} values={a.readScope.projects} max={VA_PROJECTS_MAX} ariaLabel="Readable projects" onChange={(projects) => set({ readScope: { ...a.readScope, projects } })} />}
+          {!a.readScope.site && <ChipPicker options={projectOpts} values={a.readScope.projects} max={VA_PROJECTS_MAX} capNoun="projects" ariaLabel="Readable projects" onChange={(projects) => set({ readScope: { ...a.readScope, projects } })} />}
         </div>
         <div className="form-group">
           <span className="label">Projects it may change</span>
-          <ChipPicker options={projectOpts} values={a.writeScope.projects} max={VA_PROJECTS_MAX} ariaLabel="Writable projects" onChange={(projects) => set({ writeScope: { projects } })} />
+          <ChipPicker options={projectOpts} values={a.writeScope.projects} max={VA_PROJECTS_MAX} capNoun="projects" ariaLabel="Writable projects" onChange={(projects) => set({ writeScope: { projects } })} />
           <span className="hint">Empty means it changes nothing. There is no site-wide write: an agent writes inside a named list of projects or nowhere.</span>
         </div>
 
@@ -226,7 +229,7 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
         {skillOpts.length > 0 && (
           <div className="form-group">
             <span className="label">Skills it may use</span>
-            <ChipPicker options={skillOpts} values={arr(a.powers.skillIds)} max={VA_LIMITS.skillIds} ariaLabel="Skills" onChange={(skillIds) => set({ powers: { ...a.powers, skillIds } })} />
+            <ChipPicker options={skillOpts} values={arr(a.powers.skillIds)} max={VA_LIMITS.skillIds} capNoun="skills" ariaLabel="Skills" onChange={(skillIds) => set({ powers: { ...a.powers, skillIds } })} />
           </div>
         )}
 
@@ -241,6 +244,9 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
               <span className="label">What this agent is</span>
               {renderReviewSummary(preview.va, {
                 projects: arr(catalog.projects),
+                /* F-969 - the desks BY NAME, and with them F-964's unreadable-queue
+                   sentence, which this door never passed and so never said. */
+                serviceDesks: arr(catalog.serviceDesks),
                 defaultTimeZone: startingCadence().timeZone,
                 defaultPostWindow: startingCadence().postWindow,
               }).map((s, i) => <p className="va-sentence" key={i}>{s}</p>)}

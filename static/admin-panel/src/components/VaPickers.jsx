@@ -26,15 +26,16 @@
  * silently trimmed an answer here would hide the refusal the admin needs to read.
  */
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import { VA_POWER_COPY, VA_SUGGESTED_POST_WINDOW, vaFieldLabel } from "../../../../src/shared/va-config.js";
-import { VA_DESK_QUEUES_UNREADABLE } from "../../../../src/shared/va-wizard.js";
+import { VA_DESK_QUEUES_UNREADABLE, vaWholeDeskSentence } from "../../../../src/shared/va-wizard.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 
 /** A multi-pick chip row. Solid fill when on, per the design rules - never a tint. */
-export function ChipPicker({ options = [], values = [], onChange, max = null, ariaLabel, disabled = false, empty = "Nothing to pick." }) {
+export function ChipPicker({ options = [], values = [], onChange, max = null, capNoun = "", ariaLabel, disabled = false, empty = "Nothing to pick." }) {
   const on = new Set(arr(values).map(String));
   const toggle = (v) => {
     const next = new Set(on);
@@ -58,7 +59,10 @@ export function ChipPicker({ options = [], values = [], onChange, max = null, ar
           onClick={() => toggle(String(o.value))}
         >{o.label}</button>
       ))}
-      {max != null && <span className="va-chip-cap">{on.size}/{max}</span>}
+      {/* F-969 - A COUNTER WITH NO NOUN COUNTS NOTHING. "0/50" beside a row of project
+          chips was the only number on the step and it never said what it was a number of;
+          `capNoun` is the SAME word the label above the row uses. */}
+      {max != null && <span className="va-chip-cap">{on.size} of {max}{capNoun ? ` ${capNoun}` : ""}</span>}
     </div>
   );
 }
@@ -122,11 +126,24 @@ export function DeskQueuePicker({ desks = [], value = [], onChange, maxDesks = 1
                 )}
               </p>
             )}
+            {/*
+              F-969 - THE WIDEST SCOPE THE WIZARD CAN PRODUCE, SAID OUT LOUD. A ticked desk
+              with no queue sweeps the WHOLE desk - every queue it has now and every queue
+              somebody adds next month - and that decision lived only in a comment in
+              va-wizard.js. It is rendered the moment the desk is ticked and disappears the
+              moment a queue narrows it, in the sentence the review card repeats. Not
+              rendered when the queue list could not be READ: the red sentence above already
+              says the same thing about a scope nobody chose, and two sentences for one
+              condition read as two conditions.
+            */}
+            {row && arr(row.queueIds).length === 0 && d.queuesUnreadable !== true && (
+              <p className="va-desk-whole">{vaWholeDeskSentence(d.label)}</p>
+            )}
             {row && (
               <div className="va-desk-queues">
                 <span className="label">Queues</span>
                 <ChipPicker
-                  options={arr(d.queues)} values={row.queueIds} max={maxQueuesPerDesk} disabled={disabled}
+                  options={arr(d.queues)} values={row.queueIds} max={maxQueuesPerDesk} capNoun="queues" disabled={disabled}
                   ariaLabel={`Queues of ${d.label}`} onChange={(queueIds) => setQueues(d.value, queueIds)}
                   /* The empty list must not claim there are no queues when nobody could
                      read the list - that is the F-964 confusion in its second home. */
@@ -304,30 +321,119 @@ export function NoteList({ items = [], kind = "note" }) {
   );
 }
 
-/** A free-text list (mention account ids). Typed, because there is no catalogue for it. */
-export function TextListInput({ values = [], onChange, placeholder, max = 10, disabled = false, ariaLabel }) {
-  const [draft, setDraft] = useState("");
-  const add = () => {
-    const v = draft.trim();
-    if (!v || arr(values).includes(v) || arr(values).length >= max) return;
-    onChange([...arr(values), v]); setDraft("");
+/*
+ * F-969 - THE PEOPLE PICKER. "Pick up mentions of" used to be a text box asking for a raw
+ * Atlassian account id: a 128-bit opaque string nobody has, nobody can check, and nobody
+ * can tell apart from the next one. An admin who typed one wrong got no error - the id is
+ * well-formed to everything downstream and the agent simply never picked up a mention.
+ *
+ * So it searches the DIRECTORY, the same `searchUsers` resolver the Permissions tab's add
+ * box calls, and stores exactly what the record wants: account ids. The chips show NAMES.
+ *
+ * WHAT IT RENDERS, AND WHAT IT NEVER RENDERS. Names are fine - this is a picker, not an
+ * audit trail, and the admin is choosing a colleague. E-MAIL ADDRESSES ARE NEVER RENDERED
+ * here, even though `searchUsers` returns them for some rows: an intake list is not a
+ * permission grant and nothing on this screen needs an address to be decided. Namesakes
+ * (the wolfaenpak shape: three identical display names) are told apart by the LAST SEGMENT
+ * of the account id, which is what the roster already does for a row with no address.
+ *
+ * A stored record carries ids only, so an id whose name this session never learned renders
+ * as its own id rather than as a blank chip - the record is the truth, and a picker that
+ * hid what it could not resolve would hide a mention that is still armed.
+ */
+const MENTION_SEARCH_MIN = 2;
+const idTail = (accountId) => {
+  const id = String(accountId || "");
+  const seg = id.split("-").pop();
+  return seg && seg !== id ? seg.slice(-6) : id.slice(-6);
+};
+
+export function PeoplePicker({ values = [], onChange, max = 10, disabled = false, ariaLabel = "People to watch for", names = {}, onSearch = null }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [message, setMessage] = useState(null);
+  // Names learned this session, so a chip added a moment ago keeps reading as a person.
+  const [known, setKnown] = useState(() => ({ ...names }));
+  const timer = useRef(null);
+  // Every search carries a token: a slow answer must never overwrite a newer one, and a
+  // stale row left clickable is a person the admin did not search for.
+  const token = useRef(0);
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const search = async (q) => {
+    const mine = ++token.current;
+    setResults([]); setMessage(null);
+    if (q.trim().length < MENTION_SEARCH_MIN) { setSearching(false); return; }
+    setSearching(true);
+    const run = onSearch || ((text) => invoke("searchUsers", { query: text }));
+    let r;
+    try { r = await run(q.trim()); } catch (e) { r = { success: false, error: "User search failed." }; }
+    if (mine !== token.current) return;
+    setSearching(false);
+    if (!r || r.success !== true) { setMessage((r && r.error) || "User search failed."); return; }
+    const found = arr(r.users);
+    setResults(found);
+    if (!found.length) setMessage("Nobody in this directory matches that.");
   };
+
+  const onQuery = (v) => {
+    setQuery(v);
+    if (timer.current) clearTimeout(timer.current);
+    if (!v.trim()) { token.current += 1; setResults([]); setMessage(null); setSearching(false); return; }
+    timer.current = setTimeout(() => search(v), 250);
+  };
+
+  const add = (user) => {
+    const id = String(user.accountId || "");
+    if (!id || arr(values).includes(id) || arr(values).length >= max) return;
+    setKnown((k) => ({ ...k, [id]: String(user.displayName || id) }));
+    onChange([...arr(values), id]);
+    token.current += 1;
+    setQuery(""); setResults([]); setMessage(null);
+  };
+
+  const full = arr(values).length >= max;
   return (
-    <div className="va-textlist">
-      <div className="va-textlist-row">
+    <div className="va-people">
+      <div className="va-people-search">
         <input
-          type="text" className="lst-input" value={draft} placeholder={placeholder} disabled={disabled} aria-label={ariaLabel}
-          onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+          type="text" className="lst-input" value={query} disabled={disabled || full}
+          placeholder={full ? `That is the ${max} this agent may watch.` : "Search people by name"}
+          aria-label={ariaLabel} onChange={(e) => onQuery(e.target.value)}
         />
-        <button type="button" className="btn-small" onClick={add} disabled={disabled || !draft.trim()}>Add</button>
+        {searching && <span className="spin-ring spin-ring-sm" />}
       </div>
+      {!!results.length && (
+        <div className="va-people-results">
+          {results.map((u) => {
+            const already = arr(values).includes(String(u.accountId));
+            return (
+              <button
+                type="button" key={u.accountId} className="va-people-row" disabled={disabled || already}
+                onClick={() => add(u)}
+              >
+                <span className="va-people-name">{u.displayName || u.accountId}</span>
+                {/* The namesake discriminator. NEVER the address. */}
+                <span className="va-people-tail">…{idTail(u.accountId)}</span>
+                {already && <span className="va-people-already">Already on the list</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {message && !results.length && <p className="hint va-people-note">{message}</p>}
       {!!arr(values).length && (
         <div className="va-chips">
-          {arr(values).map((v) => (
-            <button type="button" key={v} className="va-chip on" disabled={disabled} onClick={() => onChange(values.filter((x) => x !== v))} title="Remove">{v} ×</button>
+          {arr(values).map((id) => (
+            <button type="button" key={id} className="va-chip on" disabled={disabled} onClick={() => onChange(values.filter((x) => x !== id))} title="Remove">
+              {known[id] || id} ×
+            </button>
           ))}
         </div>
       )}
+      <span className="va-chip-cap">{arr(values).length} of {max} people</span>
     </div>
   );
 }

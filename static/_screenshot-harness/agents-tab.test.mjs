@@ -49,6 +49,14 @@
  *       `refused` and the job row's `vaRefused` both render, the id becomes a sentence, the
  *       door stays open until the notes are dismissed - both themes, computed colours.
  *
+ *   A22 the third cold walk (F-969): the whole-desk scope a ticked desk with no queue
+ *       actually means, said on the picker and repeated on the review card; the review
+ *       card NAMING the intake (desks and queues by name) where it used to count it; the
+ *       mentions question as a people picker over the directory that stores account ids,
+ *       renders names, and never renders an e-mail address; the scope counters with their
+ *       noun; and ONE primary hue across the agents surface - both themes, computed
+ *       colours, no rail, no tint.
+ *
  *   A21 a desk whose QUEUE LIST could not be read (F-964): the intake picker says so in
  *       solid red in both themes, the Retry chip re-reads the catalogue and the queues
  *       actually arrive with it, and the review card repeats the same sentence.
@@ -69,7 +77,7 @@ import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 /* The refusal sentence and the banner threshold come from their ONE home, so this suite
    cannot assert words or a number the app does not actually use. */
-import { writeSiteRefusalReason, stepWizard, VA_DESK_QUEUES_UNREADABLE } from "../../src/shared/va-wizard.js";
+import { writeSiteRefusalReason, stepWizard, VA_DESK_QUEUES_UNREADABLE, vaWholeDeskSentence, VA_WHOLE_DESK_PHRASE } from "../../src/shared/va-wizard.js";
 import { VA_LIMITS, VA_COPY, VA_DEFAULT_MARK, VA_DEFAULT_FOOTNOTE, VA_SUGGESTED_POST_WINDOW, vaFieldLabel, vaPowerPhrase, resolveDefaultTimeZone } from "../../src/shared/va-config.js";
 /* F-501 - the capability sentence is asserted from its ONE home, so this suite cannot pass
    on words the app does not actually render. */
@@ -1539,17 +1547,35 @@ try {
       /* The date is rendered in the reader's own locale, so it is asserted by its parts. */
       ok(/September/.test(said) && /\b10\b/.test(said) && /2026/.test(said), `A20 it dates the draft (got ${said})`);
       ok(/8 of 9 steps answered/.test(said), `A20 it counts the answers, not the step index (got ${said})`);
-      /* Both buttons are SOLID with white text, and neither carries a left rail. */
-      for (const sel of [".va-resume-continue", ".va-resume-fresh"]) {
-        const css = await page.locator(sel).evaluate((el) => {
-          const c = getComputedStyle(el);
-          return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth, weight: c.fontWeight };
-        });
-        ok(!/rgba\(.*0?\.\d+\)/.test(css.bg) && css.bg !== "rgba(0, 0, 0, 0)", `A20 ${sel} is a solid fill (got ${css.bg})`);
-        ok(/^rgba?\(255, 255, 255/.test(css.fg), `A20 ${sel} carries white text (got ${css.fg})`);
-        ok(css.bl === css.bt, `A20 ${sel} has no left accent rail (left ${css.bl}, top ${css.bt})`);
-        ok(Number(css.weight) >= 600, `A20 ${sel} carries the emphasis weight (got ${css.weight})`);
-      }
+      /*
+       * F-969 - ONE PRIMARY PER CARD. Both buttons used to be solid fills and the
+       * DESTRUCTIVE one wore the loudest colour on the screen. Continue is now the only
+       * filled button, in the flow's own amber (the same hue .va-new wears, so the whole
+       * agents surface has one primary); Start fresh is the outline secondary. Neither
+       * carries a left rail, and the outline is a BORDER rather than a faded fill.
+       */
+      const amber = theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)";
+      /* The cross-check against the Agents tab's own create CTA is A22e's: this card has
+         replaced the list, so `.va-new` is not on screen to compare with. */
+      const cont = await page.locator(".va-resume-continue").evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth, weight: c.fontWeight };
+      });
+      ok(cont.bg === amber, `A20 ${theme} Continue is the flow's primary amber (got ${cont.bg})`);
+      ok(!/rgba\(.*0?\.\d+\)/.test(cont.bg), `A20 ${theme} Continue is a solid fill, never a tint (got ${cont.bg})`);
+      ok(cont.bl === cont.bt, `A20 ${theme} Continue has no left accent rail (left ${cont.bl}, top ${cont.bt})`);
+      ok(Number(cont.weight) >= 600, `A20 ${theme} Continue carries the emphasis weight (got ${cont.weight})`);
+
+      const fresh = await page.locator(".va-resume-fresh").evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth, bw: c.borderTopWidth, weight: c.fontWeight };
+      });
+      ok(fresh.bg === "rgba(0, 0, 0, 0)", `A20 ${theme} Start fresh is the OUTLINE secondary, not a second fill (got ${fresh.bg})`);
+      ok(fresh.bg !== cont.bg, `A20 ${theme} the two ways out do not compete`);
+      ok(fresh.bw !== "0px", `A20 ${theme} the secondary is a full border, not a bare word (got ${fresh.bw})`);
+      ok(fresh.bl === fresh.bt, `A20 ${theme} Start fresh has no left accent rail (left ${fresh.bl}, top ${fresh.bt})`);
+      ok(Number(fresh.weight) >= 600, `A20 ${theme} Start fresh carries the emphasis weight (got ${fresh.weight})`);
+      ok(/^Start fresh$/.test((await page.locator(".va-resume-fresh").innerText()).trim()), "A20 the secondary still says exactly what it does");
       await page.waitForTimeout(600);   // let anim-rise settle, or the PNG reads as faded copy
       await shot(page, `agents-wizard-resume-${theme}`);
       /* CONTINUE lands on the step the draft stood on, with the answers intact. */
@@ -1710,6 +1736,212 @@ try {
         `A21 review: the last screen names the desk and what keeping it means, got ${JSON.stringify(card.slice(0, 400))}`);
       await shot(page, "agents-review-queues-unreadable");
       ok(env.errors.length === 0, `A21 review: no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  /* ---------- A22 the third cold walk (F-969) ----------
+   *
+   * Four things the wizard knew and never said:
+   *   a) a desk ticked with NO queue sweeps the WHOLE desk, a decision that lived only in
+   *      a comment in va-wizard.js, and the picker said nothing at all;
+   *   b) the review card COUNTED the intake ("1 service desk and 1 queue") on a card that
+   *      names every other scope it carries;
+   *   c) "Pick up mentions of" asked for a raw Atlassian account id in a text box;
+   *   d) the scope counter read "0/50" with no noun, and the resume card wore its
+   *      destructive button as the loudest thing on the screen while the wizard's
+   *      primaries were a hue the agents surface uses nowhere else.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A22 F-969 the whole-desk scope, said out loud (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "intake" });
+      const deskRow = page.locator(".va-desk", { hasText: "IT Service Desk" });
+      ok(await deskRow.locator(".va-desk-whole").count() === 0, `A22 ${theme} an UNTICKED desk claims no scope`);
+      await deskRow.locator(".va-desk-head input").check();
+      const whole = deskRow.locator(".va-desk-whole").first();
+      await whole.waitFor({ timeout: 8000 });
+      const said = (await whole.innerText()).trim();
+      ok(said === vaWholeDeskSentence("IT Service Desk"),
+        `A22 ${theme} the sentence is the one home's words and names the desk (got ${JSON.stringify(said)})`);
+      ok(/every queue, now and later/.test(said), `A22 ${theme} it says the scope grows`);
+      ok(/Tick queues to narrow it/.test(said), `A22 ${theme} it says how to narrow it`);
+      ok(!/[\u2014\u2013\u2192]/.test(said), `A22 ${theme} no em-dash, en-dash or arrow`);
+      const css = await whole.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { fg: c.color, bg: c.backgroundColor, bl: c.borderLeftWidth, bt: c.borderTopWidth, w: c.fontWeight };
+      });
+      ok(!/rgba\(.*0?\.\d+\)/.test(css.fg), `A22 ${theme} solid ink, never a faded tint (got ${css.fg})`);
+      ok(css.bg === "rgba(0, 0, 0, 0)", `A22 ${theme} it is a sentence, not an alarm block (got ${css.bg})`);
+      ok(css.bl === css.bt, `A22 ${theme} no left accent rail (left ${css.bl}, top ${css.bt})`);
+      ok(Number(css.w) >= 600, `A22 ${theme} it carries the emphasis weight (got ${css.w})`);
+      await page.waitForTimeout(300);
+      await shot(page, `agents-f969-whole-desk-${theme}`);
+
+      /* NARROWED - one queue ticked and the whole-desk claim is gone, because it is now
+         false. This is the half that makes the sentence trustworthy. */
+      await chip(page, "Waiting for support").click();
+      await whole.waitFor({ state: "detached", timeout: 8000 });
+      ok(true, `A22 ${theme} a ticked queue retires the whole-desk sentence`);
+
+      /* The counter beside the queue chips names what it counts. */
+      const cap = (await deskRow.locator(".va-chip-cap").first().innerText()).trim();
+      ok(/^1 of \d+ queues$/.test(cap), `A22 ${theme} the queue counter has its noun (got ${JSON.stringify(cap)})`);
+      await page.waitForTimeout(300);
+      await shot(page, `agents-f969-narrowed-${theme}`);
+      ok(env.errors.length === 0, `A22 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  for (const theme of ["light", "dark"]) {
+    console.log(`A22b F-969 the review card NAMES the intake (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      /* Two desks: one narrowed to a queue, one left whole. The card has to tell them
+         apart, which a count never could. */
+      await runInterview(page, { stopAt: "intake" });
+      await page.locator(".va-desk-head", { hasText: "IT Service Desk" }).locator("input").check();
+      await chip(page, "Waiting for support").click();
+      await page.locator(".va-desk-head", { hasText: "Facilities" }).locator("input").check();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "read_scope");
+      const projCap = (await page.locator('.va-step[data-step="read_scope"] .va-chip-cap').first().innerText()).trim();
+      ok(/^0 of \d+ projects$/.test(projCap), `A22b ${theme} the project counter has its noun (got ${JSON.stringify(projCap)})`);
+      await chip(page, "Payments").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "write_scope");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "cadence");
+      await chip(page, "Every 30 minutes").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "powers");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "guardrails");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "review");
+      const card = (await page.locator('.va-step[data-step="review"] .va-review').first().innerText()).trim();
+      const line = card.split("\n").find((x) => /picks up work from/.test(x)) || "";
+      ok(line.includes("IT Service Desk (Waiting for support)"),
+        `A22b ${theme} the narrowed desk is named with its queue (got ${JSON.stringify(line)})`);
+      ok(line.includes(`Facilities (${VA_WHOLE_DESK_PHRASE})`),
+        `A22b ${theme} the whole desk is named as one (got ${JSON.stringify(line)})`);
+      ok(line.includes("and from"), `A22b ${theme} the two intakes read as two (got ${JSON.stringify(line)})`);
+      ok(!/service desks?\b.*\bqueues?\b/.test(line.replace("IT Service Desk", "")) || !/\d+ queue/.test(line),
+        `A22b ${theme} the card no longer counts the intake (got ${JSON.stringify(line)})`);
+      ok(!/\b1 service desk\b/.test(line), `A22b ${theme} no bare desk count (got ${JSON.stringify(line)})`);
+      /* The ids never reach the admin. */
+      for (const id of ["serviceDeskId", '"10"', '"21"', "queueIds"]) {
+        ok(!line.includes(id), `A22b ${theme} the admin never reads the engine word ${id}`);
+      }
+      await page.waitForTimeout(300);
+      await shot(page, `agents-f969-review-intake-${theme}`);
+      ok(env.errors.length === 0, `A22b ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  for (const theme of ["light", "dark"]) {
+    console.log(`A22c F-969 the people picker (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "intake" });
+      ok(await page.locator(".va-people").count() === 1, `A22c ${theme} the mentions question is a picker`);
+      const ph = await page.locator(".va-people input").getAttribute("placeholder");
+      ok(!/account id/i.test(String(ph)), `A22c ${theme} nobody is asked for an account id (got ${JSON.stringify(ph)})`);
+      await page.locator(".va-people input").fill("mihai");
+      await page.locator(".va-people-row").first().waitFor({ timeout: 8000 });
+      const rows = await page.locator(".va-people-row").allInnerTexts();
+      ok(rows.length === 3, `A22c ${theme} the directory's namesakes all arrive (got ${rows.length})`);
+      ok(rows.every((r) => /Mihai Perdum/.test(r)), `A22c ${theme} the rows carry NAMES`);
+      /* NEVER an e-mail address, not even for the row the directory has one for. */
+      const panel = await page.locator(".va-people").innerText();
+      ok(!/@/.test(panel), `A22c ${theme} no e-mail address is ever rendered (got ${JSON.stringify(panel)})`);
+      /* Namesakes are still tellable apart. */
+      const tails = await page.locator(".va-people-tail").allInnerTexts();
+      ok(new Set(tails.map((t) => t.trim())).size === 3, `A22c ${theme} three identical names are still three different people (got ${JSON.stringify(tails)})`);
+      const rowCss = await page.locator(".va-people-row").first().evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      ok(rowCss.bl === rowCss.bt, `A22c ${theme} the rows carry no left accent rail (left ${rowCss.bl}, top ${rowCss.bt})`);
+      await page.waitForTimeout(250);
+      await shot(page, `agents-f969-people-results-${theme}`);
+
+      await page.locator(".va-people-row").first().click();
+      const chipText = (await page.locator(".va-people .va-chip.on").first().innerText()).trim();
+      ok(/^Mihai Perdum/.test(chipText), `A22c ${theme} the chip reads as a person (got ${JSON.stringify(chipText)})`);
+      ok(!/557058/.test(chipText), `A22c ${theme} the chip is not a raw account id`);
+      const chipCss = await page.locator(".va-people .va-chip.on").first().evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, w: c.fontWeight };
+      });
+      ok(!/rgba\(.*0?\.\d+\)/.test(chipCss.bg) && chipCss.bg !== "rgba(0, 0, 0, 0)", `A22c ${theme} the chip is a solid fill (got ${chipCss.bg})`);
+      ok(Number(chipCss.w) >= 600, `A22c ${theme} the chip carries the emphasis weight (got ${chipCss.w})`);
+      const peopleCap = (await page.locator(".va-people .va-chip-cap").innerText()).trim();
+      ok(/^1 of \d+ people$/.test(peopleCap), `A22c ${theme} the people counter has its noun (got ${JSON.stringify(peopleCap)})`);
+      await page.waitForTimeout(300);
+      await shot(page, `agents-f969-people-${theme}`);
+
+      /* THE RECORD STILL CARRIES IDS. The picker changed the question, never the answer. */
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "read_scope");
+      await chip(page, "Payments").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "write_scope");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "cadence");
+      await chip(page, "Every 30 minutes").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "powers");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "guardrails");
+      await page.locator(".va-actions .btn-solid").click();
+      await stepIs(page, "review");
+      await createOnReview(page).click();
+      await page.waitForFunction(() => !!window.__VA_SAVE__, { timeout: 8000 });
+      const saved = await page.evaluate(() => window.__VA_SAVE__);
+      const mentions = (saved && saved.va && saved.va.intake && saved.va.intake.mentionsOf) || [];
+      ok(mentions.length === 1 && /^557058:/.test(String(mentions[0])),
+        `A22c ${theme} the saved record still carries the ACCOUNT ID (got ${JSON.stringify(mentions)})`);
+      ok(env.errors.length === 0, `A22c ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  {
+    console.log("A22d F-969 a directory that cannot answer says so");
+    const env = await openAgents(browser, "light", { __USER_SEARCH_429__: true });
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "intake" });
+      await page.locator(".va-people input").fill("mihai");
+      await page.locator(".va-people-note").waitFor({ timeout: 8000 });
+      const note = (await page.locator(".va-people-note").innerText()).trim();
+      /* The REFUSAL, never "nobody matches". An empty list under a 429 is the negative
+         that would have an admin believe a colleague is not in their own directory. */
+      ok(!/Nobody in this directory/.test(note), `A22d a refused search never claims the person does not exist (got ${JSON.stringify(note)})`);
+      ok(/try again/i.test(note), `A22d it says what to do (got ${JSON.stringify(note)})`);
+      ok(await page.locator(".va-people-row").count() === 0, "A22d no row is left clickable under a refusal");
+      ok(env.errors.length === 0, `A22d no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  for (const theme of ["light", "dark"]) {
+    console.log(`A22e F-969 one primary hue for the flow (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      const tabCta = await page.locator(".va-new").evaluate((el) => getComputedStyle(el).backgroundColor);
+      await runInterview(page, { stopAt: "persona_name" });
+      const next = await page.locator(".va-actions .btn-solid").first().evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      ok(next.bg === tabCta, `A22e ${theme} the wizard's primary is the Agents tab's create hue (wizard ${next.bg}, tab ${tabCta})`);
+      ok(!/rgba\(.*0?\.\d+\)/.test(next.bg), `A22e ${theme} solid, never a tint (got ${next.bg})`);
+      ok(next.bl === next.bt, `A22e ${theme} no left accent rail (left ${next.bl}, top ${next.bt})`);
+      ok(env.errors.length === 0, `A22e ${theme} no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
   }
 

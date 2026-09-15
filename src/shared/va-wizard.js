@@ -353,6 +353,19 @@ const projectOptions = (catalog) => asArray(catalog && catalog.projects)
  */
 export const VA_DESK_QUEUES_UNREADABLE = "Its queues could not be listed just now; if you keep it the agent reads the whole desk. Try again or pick another desk";
 
+/*
+ * F-969 - THE DECISION THAT ONLY EXISTED IN A COMMENT.
+ *
+ * A desk ticked with NO queue is a deliberate scope: the agent sweeps the WHOLE desk, every
+ * queue it has now and every queue somebody adds next month (F-953). That is the widest
+ * intake the wizard can produce, and the only place it was written down was a code comment
+ * - the admin ticked a box and the screen said nothing at all. Both sentences live here so
+ * the picker and the review card describe one scope in one vocabulary: the picker names the
+ * desk while the answer can still be changed, the card names it on the last screen.
+ */
+export const vaWholeDeskSentence = (deskName) => `The whole ${String(deskName)}: every queue, now and later. Tick queues to narrow it.`;
+export const VA_WHOLE_DESK_PHRASE = "the whole desk";
+
 /**
  * The desk options, WITH the unreadable flag when the catalogue row carries it. The error
  * CLASS rides along for a reader of the turn (a log, a test); nothing renders it, and the
@@ -998,21 +1011,41 @@ export const renderReviewSummary = (va, opts = {}) => {
   const desks = asArray(intake.serviceDesks);
   const mentions = asArray(intake.mentionsOf);
   /*
-   * F-928 - COUNT THE QUEUES, NOT THE SOURCES. This line counted DESKS and called them
-   * "sources", so an agent watching three queues of one desk reviewed as "1 service desk
-   * source" - the number the admin had just picked (three) appeared nowhere, and the
-   * review card is the last screen before the agent starts working. The queues are what
-   * the sweep actually reads, so they are what the card says.
+   * F-928 counted the QUEUES rather than the desks, because "1 service desk source" hid the
+   * three queues the admin had just picked. F-969 below supersedes that fix: the card names
+   * every queue instead of counting any of them, so the number it used to get wrong is no
+   * longer on the card at all.
    *
-   * A desk with NO queue listed is the whole desk, so it contributes no queue number; a
-   * record where no desk names a queue reads "2 service desks" and nothing more, rather
-   * than an honest-looking "0 queues".
+   * F-969 - NAME THE INTAKE, DO NOT COUNT IT. "1 service desk and 1 queue" is a number over
+   * the one decision on this card that cannot be undone from the outside: WHICH work this
+   * agent picks up. Every other line of the card already names its scope (projects by name,
+   * powers by phrase), and the intake was the last one still reporting arithmetic. The desk
+   * and queue NAMES come from `opts.serviceDesks`, the same catalogue the picker was built
+   * from and the same way `opts.projects` is threaded - so an id with no catalogue row
+   * still renders as the id rather than vanishing, and a record read back on a site that
+   * lost the desk degrades to what it can prove.
    */
-  const queueCount = desks.reduce((n, d) => n + asArray(isObj(d) ? d.queueIds : null).length, 0);
-  if (desks.length) {
-    const deskPhrase = `${desks.length} service desk${desks.length === 1 ? "" : "s"}`;
-    sources.push(queueCount ? `${deskPhrase} and ${queueCount} queue${queueCount === 1 ? "" : "s"}` : deskPhrase);
-  }
+  const deskCatalog = new Map(asArray(o.serviceDesks)
+    .filter(isObj)
+    .map((d) => [String(d.id != null ? d.id : (d.serviceDeskId != null ? d.serviceDeskId : d.value)), d]));
+  const deskName = (id) => {
+    const row = deskCatalog.get(String(id));
+    const name = row && (row.name || row.label || row.projectName);
+    return name ? String(name) : String(id);
+  };
+  const queueName = (deskId, queueId) => {
+    const row = deskCatalog.get(String(deskId));
+    const q = asArray(row && row.queues).filter(isObj)
+      .find((x) => String(x.id != null ? x.id : x.value) === String(queueId));
+    const name = q && (q.name || q.label);
+    return name ? String(name) : String(queueId);
+  };
+  const deskPhrases = desks.filter(isObj).map((d) => {
+    const queues = asArray(d.queueIds).map((q) => queueName(d.serviceDeskId, q));
+    // NO queue named is the whole-desk scope (F-953/F-969), in the picker's own words.
+    return `${deskName(d.serviceDeskId)} (${queues.length ? queues.join(", ") : VA_WHOLE_DESK_PHRASE})`;
+  });
+  if (deskPhrases.length) sources.push(deskPhrases.join(" and from "));
   if (intake.jql) sources.push("a JQL filter");
   if (mentions.length) sources.push(`mentions of ${mentions.length} ${mentions.length === 1 ? "person" : "people"}`);
   out.push(sources.length ? `It picks up work from ${sources.join(", ")}.` : "It has no intake source yet, so it will find nothing to work on.");
@@ -1102,7 +1135,14 @@ const renderTurn = (state, prompt, extra = {}) => {
       const { va, refused } = normalizeVa(record, catalogToCtx(state.catalog));
       // F-964 - the machine's own card reads the same catalogue the picker did, so a desk
       // whose queues could not be listed is named here too and not only in the browser.
-      turn.summary = renderReviewSummary(va, { serviceDesks: asArray(state.catalog && state.catalog.serviceDesks) });
+      /* F-969 - the machine's card names the desks and the queues, which means it needs the
+         same catalogue slice the browser passes. `projects` rides along for the same reason
+         it always should have: the machine-rendered card printed project KEYS while the
+         browser-rendered one printed names, for one record. */
+      turn.summary = renderReviewSummary(va, {
+        serviceDesks: asArray(state.catalog && state.catalog.serviceDesks),
+        projects: asArray(state.catalog && state.catalog.projects),
+      });
       turn.guardrailSentences = renderGuardrailSentences(va);
       turn.preview = va;
       if (refused.length) turn.notes = [...turn.notes, ...refused];

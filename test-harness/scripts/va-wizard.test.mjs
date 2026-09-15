@@ -21,6 +21,7 @@
 import {
   createWizard, stepWizard, resumeWizard, serializeWizardState, buildVaRecord,
   catalogToCtx, checkJqlShape, clampSay, renderVoiceSamples, renderReviewSummary,
+  vaWholeDeskSentence, VA_WHOLE_DESK_PHRASE,
   writeSiteRefusalReason, optionsForStep, wizardResumeInfo, WIZARD_QUESTION_COUNT,
   WIZARD_STEPS, VOICE_SAMPLE_CHIPS, VA_WIZARD_SAY_MAX, VA_WIZARD_STATE_MAX_BYTES,
   VA_WIZARD_VERSION, VA_DESK_QUEUES_UNREADABLE,
@@ -248,8 +249,26 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
   const wholeDesk = stepWizard(at("intake").state, { answer: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }], jql: "", mentionsOf: [] } });
   ok(wholeDesk.refused.length === 0 && wholeDesk.stepId === "read_scope", `a desk with no queue is a source (got ${JSON.stringify(wholeDesk.refused)})`);
   ok(wholeDesk.state.answers.intake.serviceDesks[0].queueIds.length === 0, "and the record carries the empty queue list, which is what the engine reads as the whole desk");
-  const card = renderReviewSummary(normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }] } }, catalogToCtx(CATALOG)).va).join(" ");
-  ok(/1 service desk/.test(card) && !/0 queue/.test(card), `the card claims the desk, never "0 queues" (got ${card})`);
+  /* F-969 - the card NAMES the desk and says the scope out loud, in the picker's own
+     phrase. The count it used to give ("1 service desk") is gone: a number was never what
+     the admin needed to read on the last screen. */
+  const card = renderReviewSummary(
+    normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }] } }, catalogToCtx(CATALOG)).va,
+    { serviceDesks: CATALOG.serviceDesks },
+  ).join(" ");
+  ok(card.includes(`IT help (${VA_WHOLE_DESK_PHRASE})`), `the card names the desk and the whole-desk scope (got ${card})`);
+  ok(!/0 queue/.test(card) && !/1 service desk/.test(card), `and it counts nothing (got ${card})`);
+  /* The picker's sentence and the card's phrase are ONE decision in one vocabulary. */
+  ok(vaWholeDeskSentence("IT help").includes("The whole IT help"), "the picker names the desk it is describing");
+  ok(/every queue, now and later/.test(vaWholeDeskSentence("IT help")), "…and says the scope grows with the desk");
+  ok(/Tick queues to narrow it/.test(vaWholeDeskSentence("IT help")), "…and how to narrow it");
+  /* An id with NO catalogue row still renders, as the id: a record read back on a site
+     that lost the desk degrades to what it can prove rather than losing the source. */
+  const orphan = renderReviewSummary(
+    normalizeVa({ persona: { name: "Ada" }, intake: { serviceDesks: [{ serviceDeskId: "1", queueIds: [] }] } }, catalogToCtx(CATALOG)).va,
+    { serviceDesks: [] },
+  ).join(" ");
+  ok(orphan.includes(`1 (${VA_WHOLE_DESK_PHRASE})`), `a desk the catalogue lost keeps its id rather than vanishing (got ${orphan})`);
 
   /*
    * F-964 - AND THE THIRD HALF: a desk whose queues could NOT be listed. It reaches the
@@ -698,22 +717,45 @@ const at = (stepId) => {
   const bare = normalizeVa({ persona: { name: "Mute" }, powers: { replyInternal: false } }, catalogToCtx(CATALOG)).va;
   ok(renderReviewSummary(bare).some((x) => x.includes("no powers")), "an agent with no powers is told so");
 
-  /* F-928 - THE CARD COUNTED DESKS AND CALLED THEM SOURCES. Three queues of one desk
-     reviewed as "1 service desk source", so the number the admin had just picked was
-     nowhere on the last screen before the agent starts working. The queues are what the
-     sweep reads, so the card counts them. */
-  const intakeOf = (serviceDesks) => renderReviewSummary(normalizeVa(
-    { persona: { name: "Nadia" }, intake: { serviceDesks } }, catalogToCtx(CATALOG)).va).join(" ");
+  /*
+   * F-928 made the card COUNT the queues instead of the desks, because "1 service desk
+   * source" hid the three queues the admin had just picked. F-969 supersedes it: the card
+   * NAMES them. A count was never the answer to "which work does this pick up" - it is the
+   * one decision on the last screen that nobody outside the wizard can check, and every
+   * other line of the card already names its scope (projects by name, powers by phrase).
+   *
+   * The names come from the catalogue the PICKER was built from, threaded the same way
+   * `projects` is, so what the admin ticked and what the card says cannot drift.
+   */
+  const intakeOf = (serviceDesks, opts = { serviceDesks: CATALOG.serviceDesks }) => renderReviewSummary(normalizeVa(
+    { persona: { name: "Nadia" }, intake: { serviceDesks } }, catalogToCtx(CATALOG)).va, opts).join(" ");
   const many = intakeOf([{ serviceDeskId: "1", queueIds: ["10", "11"] }, { serviceDeskId: "2", queueIds: ["20"] }]);
-  ok(/2 service desks and 3 queues/.test(many), `two desks and three queues are counted as both (got ${many})`);
+  ok(many.includes("It picks up work from IT help (Unassigned, Waiting) and from Facilities (New)."),
+    `every desk and every queue is named, in the catalogue's own words (got ${many})`);
   const one = intakeOf([{ serviceDeskId: "2", queueIds: ["20"] }]);
-  ok(/1 service desk and 1 queue\b/.test(one), `the singular forms are used for one of each (got ${one})`);
-  const threeOfOne = intakeOf([{ serviceDeskId: "1", queueIds: ["10", "11"] }]);
-  ok(/1 service desk and 2 queues/.test(threeOfOne), `one desk with two queues names the queues (got ${threeOfOne})`);
-  ok(!/service desk source/.test(`${many} ${one} ${threeOfOne}`), "the word source is gone from the desk phrase");
-  // A desk with no queue named is the WHOLE desk, so there is no queue number to give.
+  ok(one.includes("It picks up work from Facilities (New)."), `one desk and one queue read as themselves (got ${one})`);
+  const twoOfOne = intakeOf([{ serviceDeskId: "1", queueIds: ["10", "11"] }]);
+  ok(twoOfOne.includes("IT help (Unassigned, Waiting)"), `one desk with two queues names both queues (got ${twoOfOne})`);
+  /* NOTHING is counted any more, and the word that started this never came back. */
+  const all = `${many} ${one} ${twoOfOne}`;
+  ok(!/service desk source/.test(all), "the word source is gone from the desk phrase");
+  ok(!/\d+ service desks?\b/.test(all), `no desk count survives (got ${all})`);
+  ok(!/\d+ queues?\b/.test(all), `no queue count survives (got ${all})`);
+  /* No id ever reaches the admin when the catalogue can name the thing. */
+  ok(!/serviceDeskId|queueIds/.test(all), "no record path leaks into the card");
+  // A desk with no queue named is the WHOLE desk, said in the picker's phrase.
   const whole = intakeOf([{ serviceDeskId: "1", queueIds: [] }, { serviceDeskId: "2", queueIds: [] }]);
-  ok(/2 service desks\./.test(whole) && !/queue/.test(whole), `desks with no queues read as desks alone (got ${whole})`);
+  ok(whole.includes(`IT help (${VA_WHOLE_DESK_PHRASE}) and from Facilities (${VA_WHOLE_DESK_PHRASE})`),
+    `desks with no queues read as the whole desk, twice over (got ${whole})`);
+  /* A queue the RECORD carries but the rendering catalogue cannot name degrades to the id,
+     never to silence: the sweep will read that queue whether or not this card can spell
+     it. (A queue id the SAVE path never heard of does not get this far at all -
+     `normalizeVa` drops it against the catalogue, which the refusal section asserts.) */
+  const namelessQueue = intakeOf(
+    [{ serviceDeskId: "1", queueIds: ["10"] }],
+    { serviceDesks: [{ id: "1", name: "IT help", queues: [] }] },
+  );
+  ok(namelessQueue.includes("IT help (10)"), `a queue this catalogue cannot name keeps its id rather than disappearing (got ${namelessQueue})`);
 }
 
 console.log(`\nva-wizard: ${pass} passed, ${fail} failed`);

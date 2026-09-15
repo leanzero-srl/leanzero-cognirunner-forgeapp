@@ -34,7 +34,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { showToast } from "./toast";
-import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, ZonePicker, NoteList, TextListInput } from "./VaPickers";
+import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, ZonePicker, NoteList, PeoplePicker } from "./VaPickers";
 import SaveNotes, { collectSaveNotes } from "./VaSaveNotes";
 import {
   VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_COPY,
@@ -188,13 +188,12 @@ export default function VaWizard({ client, catalog = {}, onCreated, onFallback, 
           <p className="hint">Carry on where you stopped, or throw the draft away and answer the {resume.total} questions from the start. Nothing has been created either way.</p>
           <div className="va-actions">
             <button type="button" className="btn-small btn-solid va-resume-continue" disabled={busy} onClick={() => setResume(null)}>Continue where you left off</button>
-            {/* Solid, white text, and the app's own error token so the dark theme is
-                already covered. Inline rather than a class because the component CSS home
-                is App.js and this card has to stay self-contained. */}
-            <button
-              type="button" className="btn-small btn-solid va-resume-fresh" disabled={busy} onClick={restart}
-              style={{ background: "var(--error-color)", borderColor: "var(--error-color)", color: "#fff" }}
-            >Start fresh</button>
+            {/* F-969 - ONE PRIMARY PER CARD, AND IT IS THE ONE THAT KEEPS THE WORK. Both
+                buttons used to be solid fills, the destructive one wearing the loudest
+                colour on the screen, so the card pulled hardest towards throwing the draft
+                away. Start fresh is now the OUTLINE secondary: it is still one click and
+                still says exactly what it does, it simply stops competing with Continue. */}
+            <button type="button" className="btn-small va-resume-fresh" disabled={busy} onClick={restart}>Start fresh</button>
           </div>
         </div>
       </div>
@@ -358,7 +357,10 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog, re
           </div>
           <div className="form-group">
             <span className="label">Pick up mentions of</span>
-            <TextListInput values={mentions} onChange={(v) => set("mentionsOf", v)} max={ex.maxMentions} placeholder="Atlassian account id" ariaLabel="Mention account id" disabled={busy} />
+            {/* F-969 - the DIRECTORY, not a raw account id. The record still carries ids;
+                the admin still reads names. */}
+            <PeoplePicker values={mentions} onChange={(v) => set("mentionsOf", v)} max={ex.maxMentions} ariaLabel="People to watch for mentions of" disabled={busy} />
+            <span className="hint">It picks up an issue when one of these people is mentioned on it.</span>
           </div>
           <label className="lst-check"><input type="checkbox" checked={owedFirst} disabled={busy} onChange={(e) => set("owedFirst", e.target.checked)} /><span><strong>Answer people who are waiting first</strong></span></label>
           <div className="va-actions"><Next value={{ serviceDesks: desks, jql, mentionsOf: mentions, owedFirst }} /></div>
@@ -372,7 +374,7 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog, re
       return (
         <>
           <label className="lst-check"><input type="checkbox" checked={site} disabled={busy} onChange={(e) => set("site", e.target.checked)} /><span><strong>Every project this app can see</strong></span></label>
-          {!site && <ChipPicker options={opts} values={projects} max={ex.maxProjects} onChange={(v) => set("projects", v)} ariaLabel="Readable projects" disabled={busy} empty="This app can see no project, so there is nothing to read." />}
+          {!site && <ChipPicker options={opts} values={projects} max={ex.maxProjects} capNoun="projects" onChange={(v) => set("projects", v)} ariaLabel="Readable projects" disabled={busy} empty="This app can see no project, so there is nothing to read." />}
           <div className="va-actions"><Next value={{ site, projects }} disabled={!site && !projects.length} /></div>
         </>
       );
@@ -382,7 +384,7 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog, re
       const projects = d("projects", (ans.writeScope && ans.writeScope.projects) || []);
       return (
         <>
-          <ChipPicker options={opts} values={projects} max={ex.maxProjects} onChange={(v) => set("projects", v)} ariaLabel="Writable projects" disabled={busy} />
+          <ChipPicker options={opts} values={projects} max={ex.maxProjects} capNoun="projects" onChange={(v) => set("projects", v)} ariaLabel="Writable projects" disabled={busy} />
           <p className="hint">Leave this empty and the agent reads, stages replies and proposes changes without touching anything. There is no site-wide option: an agent writes inside a named list of projects or nowhere.</p>
           <div className="va-actions">
             <Next value={{ projects }} label={projects.length ? "Continue" : "Continue with no write access"} />
@@ -446,7 +448,7 @@ function renderStep({ turn, ex, opts, draft, setDraft, answer, busy, catalog, re
           {arr(ex.skills).length > 0 && (
             <div className="form-group">
               <span className="label">Skills it may use</span>
-              <ChipPicker options={ex.skills} values={skillIds} max={ex.maxSkills} onChange={(v) => set("skillIds", v)} ariaLabel="Skills" disabled={busy} />
+              <ChipPicker options={ex.skills} values={skillIds} max={ex.maxSkills} capNoun="skills" onChange={(v) => set("skillIds", v)} ariaLabel="Skills" disabled={busy} />
             </div>
           )}
           <div className="va-actions"><Next value={{ ...powers, skillIds }} /></div>

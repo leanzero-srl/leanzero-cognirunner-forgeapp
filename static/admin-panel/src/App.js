@@ -3971,6 +3971,54 @@ const injectStyles = () => {
        alive (whoami passed) and only the repository read was not permitted. */
     .code-proof-none { background: #475569; color: #ffffff; }
     html[data-color-mode="dark"] .code-proof-none { background: #64748b; color: #ffffff; }
+
+    /* ======================================================================
+       F-969 BLOCK START - the agents wizard's third cold walk. Appended LAST,
+       delimited, and touching nothing above it: another surgeon is editing this
+       same string. Everything here is a solid fill or solid ink with a dark
+       override; no rails, no low-alpha tints.
+       ====================================================================== */
+
+    /* ONE PRIMARY HUE FOR THE WHOLE FLOW. The Agents tab's create CTA (.va-new) is
+       amber #b45309 / #f59e0b and so is every chip in the wizard, but the wizard's
+       own Next / Create / Continue buttons were the app's default blue - the admin
+       walked eight steps clicking a button in a colour the surface never used again.
+       Scoped to the wizard and the classic form, so no other tab's primary moves. */
+    .va-wizard .btn-solid, .va-editor .btn-solid { background: #b45309; border-color: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .va-wizard .btn-solid,
+    html[data-color-mode="dark"] .va-editor .btn-solid { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+
+    /* The resume card's destructive way out is the SECONDARY: an outline button, full
+       border, no fill. It is not a tint - there is no fill at all - and it stops the
+       card from pulling hardest towards throwing the draft away. */
+    .va-resume-fresh { background: transparent; border: 1px solid var(--border-color); color: var(--text-color); font-weight: 600; }
+    .va-resume-fresh:hover:not(:disabled) { border-color: #b45309; color: #b45309; }
+    html[data-color-mode="dark"] .va-resume-fresh:hover:not(:disabled) { border-color: #f59e0b; color: #f59e0b; }
+
+    /* A ticked desk with no queue: the widest intake the wizard can produce, stated.
+       Solid ink at 600, no fill and no rail - it is a sentence about the answer above
+       it, not an alarm about it. */
+    .va-desk-whole { margin: 8px 0 0; font-size: 11.5px; font-weight: 600; line-height: 1.45; color: var(--text-color); }
+
+    /* The people picker (mentions). The rows are a plain list of buttons; the picked
+       people are the same solid amber chips every other pick on this surface wears. */
+    .va-people { display: flex; flex-direction: column; gap: 8px; }
+    .va-people-search { display: flex; align-items: center; gap: 8px; }
+    .va-people-search .lst-input { flex: 1; }
+    .va-people-results { display: flex; flex-direction: column; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); overflow: hidden; }
+    .va-people-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--input-bg); border: 0; border-bottom: 1px solid var(--border-color); color: var(--text-color); font-size: 12.5px; text-align: left; cursor: pointer; }
+    .va-people-row:last-child { border-bottom: 0; }
+    .va-people-row:hover:not(:disabled) { background: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .va-people-row:hover:not(:disabled) { background: #f59e0b; color: #2a1602; }
+    .va-people-row:disabled { cursor: not-allowed; opacity: 0.65; }
+    .va-people-name { font-weight: 700; }
+    /* The namesake discriminator. Slate ink, monospaced so two ids compare by eye. */
+    .va-people-tail { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+    .va-people-row:hover:not(:disabled) .va-people-tail { color: inherit; }
+    .va-people-already { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--text-secondary); }
+    .va-people-row:hover:not(:disabled) .va-people-already { color: inherit; }
+    .va-people-note { margin: 0; }
+    /* ====================== F-969 BLOCK END ============================== */
 `;
   document.head.appendChild(style);
 };

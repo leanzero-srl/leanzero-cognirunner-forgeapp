@@ -1361,6 +1361,182 @@ try {
     }
   }
 
+
+
+  /* ==================================================================
+     C20 (F-955) - THE TEST MUST PROVE SOMETHING.
+     Pressing Test rendered an account name and three grey "not checked" chips under
+     "Capability is proven only by the call that needs it" - true, and useless: the
+     admin still could not tell whether the credential could READ anything. The check
+     now takes one cheap repository read beside whoami and says what it saw.
+     Three arms, because the screen says a different sentence for each: a partial
+     page, a FULL page (the adapters page, so "at least"), and a REFUSED read.
+     ================================================================== */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C19 the Test proves a repository read (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-conn").first().locator("button", { hasText: "Test" }).click();
+      await page.locator(".code-proof").first().waitFor({ timeout: 8000 });
+      const proof = (await page.locator(".code-proof").first().innerText()).trim();
+      ok(/^Signed in as acme-bot/.test(proof), `C19 it names the account that answered (got "${proof}")`);
+      ok(/can read 7 repositories/.test(proof), `C19 ...and what that account could read (got "${proof}")`);
+      ok(!/at least/.test(proof), "C19 a partial page is a flat count, never hedged");
+      ok(!proof.includes("—"), "C19 no em-dash in the proof line");
+      /* NEVER A TOKEN, on a line whose whole job is to talk about a credential. */
+      ok(!/gh[pousr]_|ATATT|Bearer|sk-/.test(proof), "C19 the proof line never carries a secret");
+
+      /* It is the VERDICT over the chips, not a fourth fact beside them: `.code-who` is
+         a wrapping flex row, and an inline chip landed next to "Scopes". */
+      const order = await page.locator(".code-who").first().evaluate((n) => {
+        const pr = n.querySelector(".code-proof");
+        const caps = n.querySelector(".code-who-caps");
+        if (!pr || !caps) return null;
+        const a = pr.getBoundingClientRect(), b = caps.getBoundingClientRect();
+        return { above: a.bottom <= b.top + 1, sameLine: Math.abs(a.top - b.top) < 4 };
+      });
+      ok(order && order.above && !order.sameLine,
+        `C19 the proof sits ABOVE the capability chips, on its own line (got ${JSON.stringify(order)})`);
+
+      /* Solid saturated teal with white text, one shade lighter in dark - it is a
+         measurement that SUCCEEDED, beside grey chips that were never taken. */
+      const style = await page.locator(".code-proof").first().evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, weight: Number(c.fontWeight), opacity: c.opacity };
+      });
+      ok(style.bg === (theme === "dark" ? "rgb(20, 184, 166)" : "rgb(13, 148, 136)"),
+        `C19 solid teal for this theme (${theme}, got ${style.bg})`);
+      ok(style.weight >= 600, `C19 ...at 600+ weight (got ${style.weight})`);
+      ok(style.opacity === "1", "C19 ...and never a faded tint");
+      /* The chips it sits over are still honest about what was NOT measured. */
+      const who = await page.locator(".code-who").first().innerText();
+      ok(/not checked/.test(who), "C19 the unmeasured capabilities still say 'not checked'");
+      await shot(page, `C19-test-proof-${theme}`);
+      ok(env.errors.length === 0, "C19 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x C19 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* C19b - a FULL first page means "at least this many". The adapters page, so a flat
+       count would tell a 500-repo tenant it has 25. */
+    console.log("C19b a full page of repositories is reported as 'at least'");
+    const env = await openAdmin(browser, "light", { __CODE_REPOREAD_CAPPED__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-conn").first().locator("button", { hasText: "Test" }).click();
+      await page.locator(".code-proof").first().waitFor({ timeout: 8000 });
+      const proof = (await page.locator(".code-proof").first().innerText()).trim();
+      ok(/can read at least 25 repositories/.test(proof),
+        `C19b a capped page is hedged, never stated flat (got "${proof}")`);
+      ok(env.errors.length === 0, "C19b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x C19b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  for (const theme of ["light", "dark"]) {
+    /* C19c - a REFUSED repository read. whoami already passed, so the credential is
+       ALIVE and narrowly scoped: slate, not red, and it must never raise the dead
+       banner or contradict the chips. */
+    console.log(`C19c a refused repository read is stated, not alarmed (${theme})`);
+    const env = await openAdmin(browser, theme, { __CODE_REPOREAD_DENIED__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-conn").first().locator("button", { hasText: "Test" }).click();
+      await page.locator(".code-proof").first().waitFor({ timeout: 8000 });
+      const proof = (await page.locator(".code-proof").first().innerText()).trim();
+      ok(/could not list repositories/.test(proof), `C19c it says what failed (got "${proof}")`);
+      ok(/granted directly/.test(proof), "C19c ...and what still works");
+      ok(!proof.includes("—"), "C19c no em-dash in the refused proof line");
+      const bgc = await page.locator(".code-proof").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(bgc === (theme === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)"),
+        `C19c slate, not red - the credential is alive (${theme}, got ${bgc})`);
+      /* THE NEGATIVE CONTROL THAT MATTERS: a narrowly scoped token is a configuration,
+         so the dead-credential banner must stay away. */
+      ok(await page.locator(".code-conn").first().locator(".code-dead").count() === 0,
+        "C19c a refused repo read never raises the dead-credential banner");
+      await shot(page, `C19c-test-proof-denied-${theme}`);
+      ok(env.errors.length === 0, "C19c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  x C19c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ==================================================================
+     C20 (F-955) - THE HAIKU CAVEAT ON THE CODE CARD.
+     A green "CODER IS ON" chip over "AGENT MODEL claude-haiku-4-5" reads as a
+     contradiction to anyone who has met the Forge LLM rule elsewhere in this app,
+     and sends the admin hunting for a frontier model that would change nothing.
+     The sentence is F-914's, imported from its one home (productNames.js), which
+     verified it against agentCapability(): on a BYOK provider the model is not
+     judged at all, so Haiku genuinely drives an agent there.
+     ================================================================== */
+  {
+    const { HAIKU_ON_BYOK_SENTENCE } =
+      await import("../admin-panel/src/components/productNames.js");
+    for (const theme of ["light", "dark"]) {
+      console.log(`C20 the Haiku-on-BYOK caveat on the Code card (${theme})`);
+      const env = await openAdmin(browser, theme, { __AGENT_MODEL__: "claude-haiku-4-5" });
+      const { page } = env;
+      try {
+        await tab(page, "Code");
+        await page.locator(".code-status").first().waitFor({ timeout: 10000 });
+        const facts = (await page.locator(".code-facts").first().innerText());
+        ok(/claude-haiku-4-5/.test(facts), `C20 the card really is showing Haiku (got "${facts}")`);
+        ok(/CODER IS ON/.test(await page.locator(".code-status-badge").first().innerText()),
+          "C20 ...with the agent ON, which is the pair that reads as a contradiction");
+        const note = page.locator(".code-status-haiku").first();
+        ok(await note.count() === 1, "C20 the caveat is shown");
+        const txt = (await note.innerText()).trim();
+        /* THE ONE HOME: compared against the exported sentence, never retyped here.
+           A copy pasted into this file would pass while the screen drifted. */
+        ok(txt === HAIKU_ON_BYOK_SENTENCE,
+          `C20 ...and it is the exact sentence from productNames.js (got "${txt}")`);
+        ok(!txt.includes("—"), "C20 no em-dash in the caveat");
+        ok(await note.evaluate((el) => getComputedStyle(el).opacity) === "1",
+          `C20 solid, not faded (${theme})`);
+        ok(Number(await note.evaluate((el) => getComputedStyle(el).fontWeight)) >= 600,
+          "C20 ...at 600+ weight");
+        await shot(page, `C20-haiku-caveat-${theme}`);
+        ok(env.errors.length === 0, "C20 no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  x C20 threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+    {
+      /* C20b - NEGATIVE CONTROL. The caveat answers a Forge-LLM-shaped worry on a BYOK
+         key; a frontier agent model raises no such worry and must draw nothing. */
+      console.log("C20b negative control: a frontier agent model gets no caveat");
+      const env = await openAdmin(browser, "light", { __AGENT_MODEL__: "claude-sonnet-5" });
+      const { page } = env;
+      try {
+        await tab(page, "Code");
+        await page.locator(".code-status").first().waitFor({ timeout: 10000 });
+        ok(await page.locator(".code-status-haiku").count() === 0,
+          "C20b a frontier BYOK agent model draws no Haiku caveat");
+        ok(env.errors.length === 0, "C20b no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  x C20b threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+    {
+      /* C20c - the OTHER negative control, and the one that would be a real defect:
+         on Atlassian Forge LLM, Haiku genuinely CANNOT drive an agent, so telling an
+         admin there that "Haiku is only refused on Forge LLM" would be a lie on the
+         one screen it is being refused. The card's own refusal is what must show. */
+      console.log("C20c negative control: Forge LLM + Haiku never gets the BYOK sentence");
+      const env = await openAdmin(browser, "light",
+        { __CODE_CAP__: "needs-frontier-model" });
+      const { page } = env;
+      try {
+        await tab(page, "Code");
+        await page.locator(".code-status").first().waitFor({ timeout: 10000 });
+        ok(await page.locator(".code-status-haiku").count() === 0,
+          "C20c the BYOK caveat never appears on Forge LLM, where Haiku really is refused");
+        ok(env.errors.length === 0, "C20c no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  x C20c threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+  }
 } finally {
   await browser.close();
 }

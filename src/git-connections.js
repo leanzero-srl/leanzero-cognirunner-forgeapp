@@ -135,6 +135,13 @@ const ROTATE_LOCK_TTL = { ttl: { value: 10, unit: "MINUTES" } };
 
 export const GIT_CONN_MAX = 25;
 export const REPO_ALLOWLIST_MAX = 200;
+/*
+ * F-955 - how many repositories a Test reads to PROVE the credential can read at all.
+ * Small on purpose: the number is evidence, not an inventory, and the adapters page
+ * anyway (LIST_PAGE_SIZE is their own ceiling and clamps anything larger). A full page
+ * back means "at least this many" and the answer says so - see testConnection.
+ */
+export const REPO_PROOF_LIMIT = 25;
 export const LABEL_MAX_CHARS = 80;
 export const TOKEN_MAX_CHARS = 4096;
 
@@ -737,6 +744,35 @@ export async function testConnection(id, { fetchImpl } = {}) {
     });
     const who = await provider.whoami();
     const capabilities = capabilityFlags(row.kind, who);
+    /*
+     * F-955 - THE TEST MUST PROVE SOMETHING. Before this, a successful Test rendered an
+     * account name and three grey "not checked" chips under the sentence "Capability is
+     * proven only by the call that needs it" - technically true and operationally
+     * useless: the admin still could not tell whether the credential could READ anything.
+     *
+     * So the check now takes ONE cheap read the adapter already exposes on both
+     * providers (`listRepos`, first page only) and reports what it saw. It is the
+     * cheapest call that proves the token can reach repository data at all, which is the
+     * single thing every agent action depends on.
+     *
+     * IT NEVER CHANGES THE VERDICT. whoami has already answered "this credential is
+     * alive"; a repository read that 403s means the token is scoped narrowly, which is a
+     * legitimate configuration and must not raise the dead-credential banner or be
+     * recorded on the row. Hence the bare catch and `ok:false` - a FACT for the screen,
+     * never a status.
+     *
+     * `capped` is not decoration: the adapters page at LIST_PAGE_SIZE, so a full first
+     * page means "at least this many", and reporting a flat count would tell a 500-repo
+     * tenant it has 100. The UI says "at least" on that flag.
+     */
+    let repoAccess;
+    try {
+      const seen = await provider.listRepos({ limit: REPO_PROOF_LIMIT });
+      const count = Array.isArray(seen) ? seen.length : 0;
+      repoAccess = { ok: true, count, capped: count >= REPO_PROOF_LIMIT };
+    } catch (e) {
+      repoAccess = { ok: false, code: e instanceof GitProviderError ? e.code : "network" };
+    }
     await storage.set(gitConnKey(id), {
       ...row,
       status: "ok",
@@ -749,7 +785,10 @@ export async function testConnection(id, { fetchImpl } = {}) {
       ...identityFields(who),
       capabilities,
     });
-    return { ok: true, whoami: publicWhoami(who), capabilities };
+    // `repoAccess` is a fact about THIS call and is deliberately NOT stored on the row:
+    // it would go stale the moment the token's scopes changed, and a stale proof is
+    // worse than no proof. It travels with the answer that measured it.
+    return { ok: true, whoami: publicWhoami(who), capabilities, repoAccess };
   } catch (e) {
     const code = e instanceof GitProviderError ? e.code : "network";
     if (code === "auth_dead") {

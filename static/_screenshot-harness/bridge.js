@@ -1131,7 +1131,12 @@ const CODE_CAP_ADMIN = () => !(typeof window !== "undefined" && (window.__NOT_AD
 const CODE_CAP = () => ({ ...CODE_CAP_VERDICT(), admin: CODE_CAP_ADMIN() });
 const CODE_CAP_VERDICT = () => {
   const raw = (typeof window !== "undefined" && window.__CODE_CAP__) || null;
-  if (!raw) return { success: true, enabled: true, reason: CAP_REASON("byok"), provider: "anthropic", edition: EDITION_IDS.STANDARD, agentModel: FORGE_FRONTIER[0], allowanceLevel: null };
+  /* F-955 - the BYOK arm honours __AGENT_MODEL__, the SAME knob getAgentModel reads.
+     getAgentCapability and getAgentModel describe one slot; a fixture that let them
+     disagree could photograph "AGENT MODEL claude-haiku-4-5" on the Code tab while
+     Settings showed something else, which the backend cannot produce. This is what
+     makes the Haiku-on-BYOK caveat reachable on the Code card at all. */
+  if (!raw) return { success: true, enabled: true, reason: CAP_REASON("byok"), provider: "anthropic", edition: EDITION_IDS.STANDARD, agentModel: (typeof window !== "undefined" && window.__AGENT_MODEL__) ? String(window.__AGENT_MODEL__) : FORGE_FRONTIER[0], allowanceLevel: null };
   if (raw === CAP_REASON("needs-coder-edition")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.STANDARD, agentModel: FORGE_FRONTIER[0], allowanceLevel: null };
   if (raw === CAP_REASON("needs-frontier-model")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.ADVANCED, agentModel: FORGE_HAIKU, allowanceLevel: null };
   if (raw === CAP_REASON("allowance-exhausted")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.ADVANCED, agentModel: FORGE_FRONTIER[0], allowanceLevel: "hard" };
@@ -2061,7 +2066,12 @@ function invoke(name, payload) {
     // Do not nest them again.
     case "getAiUsage": return Promise.resolve({
       success: true,
-      usage: { month: { key: "2026-07", calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }] },
+      /* F-955 - the month key is now LOAD-BEARING: the panel derives "resets <date>"
+         from it through the shared helper, exactly as it must when the resolver sends no
+         reset date. It is computed from `now` for the same reason mockAllowance() is -
+         the two travel on ONE object in the real backend, and a fixture whose allowance
+         figures and whose period disagree would photograph a state that cannot exist. */
+      usage: { month: { key: monthKey(Date.now()), calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }] },
       // 1.3: the monthly Forge LLM allowance meter. F-091: Standard (and any BYOK
       // tenant) gets an explicit `null`, which is what the backend sends — NOT
       // `undefined`, so "no allowance row" is tested against the real absent value.
@@ -2148,6 +2158,19 @@ function invoke(name, payload) {
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, provider: "lmstudio", baseUrl: LM_URL, hasKey: false, hasToken: true, isByok: true });
       return Promise.resolve(isAdmin ? { success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", hasKey: true, isByok: true } : { success: true, isByok: false });
     case "getOpenAIModels":
+      /* F-955 - THE SLOW CALL, MODELLED. `getOpenAIModels` is the only mount read that
+         leaves Forge and asks the VENDOR for a catalogue, so it is the one whose latency
+         the admin actually waits on (4.3 s measured on staging). Every other mount read
+         is a KVS get. The knob exists so a journey can photograph the panel WHILE that
+         call is outstanding; with it unset the fixture answers instantly and every
+         pre-existing shot and assertion is byte-for-byte what it was. */
+      if (typeof window !== "undefined" && Number(window.__MODELS_DELAY_MS__) > 0) {
+        const ms = Number(window.__MODELS_DELAY_MS__);
+        const inner = invoke("__getOpenAIModelsNow", payload);
+        return new Promise((r) => setTimeout(() => r(inner), ms));
+      }
+      // eslint-disable-next-line no-fallthrough
+    case "__getOpenAIModelsNow":
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, isByok: true, models: LM_MODELS.map((m) => m.id), modelDetails: LM_MODELS, locked: [], edition: edName() });
       /* The managed engine: a FIXED list (MANAGED_MODELS), never OpenRouter's catalogue,
          and an EMPTY list when the deployment has no engine. `locked` stays empty — a
@@ -2418,7 +2441,21 @@ function invoke(name, payload) {
       /* F-914 - see CODE_CONNS: a reported-scopes token yields BOOLEANS, never a null, so
          the tri-state "not checked" arm is modelled by the token type that really produces
          it. The scope list goes with it: a fine-grained PAT reports none. */
-      return Promise.resolve({ success: true, whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: [] }, capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "This token does not report its scopes (fine-grained PATs never do). Capability is proven only by the call that needs it." } });
+      /* F-955 - the PROOF the Test now takes: one cheap listRepos beside whoami. Three
+         states are reachable and all three are fixture knobs, because the screen says a
+         different sentence for each: a partial page (a plain count), a FULL page (the
+         adapters page, so "at least"), and a REFUSED read (a narrowly scoped token,
+         which is a configuration and not a fault). */
+      return Promise.resolve({
+        success: true,
+        whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: [] },
+        capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "This token does not report its scopes (fine-grained PATs never do). Capability is proven only by the call that needs it." },
+        repoAccess: (typeof window !== "undefined" && window.__CODE_REPOREAD_DENIED__)
+          ? { ok: false, code: "forbidden" }
+          : (typeof window !== "undefined" && window.__CODE_REPOREAD_CAPPED__)
+            ? { ok: true, count: 25, capped: true }
+            : { ok: true, count: 7, capped: false },
+      });
     case "setGitRepoAllowlist": return Promise.resolve({ success: true, connection: CODE_CONNS()[0] });
     case "deleteGitConnection": return Promise.resolve({ success: true });
     /* F-460 - the webhook half. The response NEVER carries the secret, and neither does

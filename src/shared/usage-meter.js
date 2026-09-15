@@ -84,6 +84,41 @@ export const monthKey = (ms) => { const d = new Date(ms); return d.getUTCFullYea
 export const dayKey = (ms) => monthKey(ms) + "-" + two(d2(ms));
 function d2(ms) { return new Date(ms).getUTCDate(); }
 
+/*
+ * WHEN THE ALLOWANCE COMES BACK (F-955).
+ *
+ * The meter said "$141 of $200, 71%" and never said when the ceiling lifts, so an admin
+ * at 80% could not tell whether to wait a day or buy their way out, and the 100% note's
+ * "until next month" named no date at all.
+ *
+ * THE BOUNDARY LIVES HERE AND NOWHERE ELSE. `rolled()` starts a new month the instant
+ * `monthKey(now)` changes, and monthKey is UTC (getUTCFullYear/getUTCMonth) - so the
+ * reset is the first instant of the next UTC month, NOT local midnight and NOT a
+ * rolling 30 days. A panel that computed this itself would be a second copy of the
+ * rollover rule and would drift the first time the period changed; it imports these.
+ *
+ * `en-GB` is deliberate, not an oversight: every sentence this date is spliced into
+ * (edition.js's allowance copy, the admin panel's notes) is authored English, so a
+ * date that flips to "October 1" or "1 octobre" beside them would be the only
+ * localised token on the screen. One language, one order, one home.
+ */
+
+/** The ms timestamp at which `monthKeyStr` ("2026-09") rolls over. */
+export const allowanceResetMs = (monthKeyStr, nowMs = Date.now()) => {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(monthKeyStr || ""));
+  // A state that has never counted anything carries `key: null`; the period that is
+  // about to be opened is the one `now` falls in, which is the honest answer.
+  const y = m ? Number(m[1]) : new Date(nowMs).getUTCFullYear();
+  const mo = m ? Number(m[2]) - 1 : new Date(nowMs).getUTCMonth();
+  return Date.UTC(y, mo + 1, 1, 0, 0, 0, 0);
+};
+
+/** That same instant as the words a sentence uses: "1 October". */
+export const allowanceResetLabel = (monthKeyStr, nowMs = Date.now()) => {
+  const d = new Date(allowanceResetMs(monthKeyStr, nowMs));
+  return d.getUTCDate() + " " + new Intl.DateTimeFormat("en-GB", { month: "long", timeZone: "UTC" }).format(d);
+};
+
 const emptyForgeLlm = () => ({
   byTier: {
     haiku: { calls: 0, prompt: 0, completion: 0 },

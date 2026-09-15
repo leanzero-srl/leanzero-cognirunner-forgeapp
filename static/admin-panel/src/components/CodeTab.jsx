@@ -48,14 +48,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import CustomSelect from "./CustomSelect";
 import AgentOffState from "./AgentOffState";
-import { providerLabel, editionLabel } from "./productNames";
+import { providerLabel, editionLabel, HAIKU_ON_BYOK_SENTENCE, looksLikeHaiku } from "./productNames";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
 import {
   isPermissionRefusal, permissionRefusalText,
   isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE,
 } from "./refusal";
-import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
+import { agentCapabilityCopy, MANAGED_PROVIDER_ID } from "../../../../src/shared/edition.js";
 import {
   GIT_PROVIDER_KINDS, gitProviderKindMeta, parseRepoList, formatRepoList,
   APP_ID_ARI_PREFIX, normalizeDeveloperSpaceId, normalizeForgeAppId,
@@ -1179,6 +1179,22 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
             <span className="code-fact"><span className="code-fact-k">Agent model</span><span className="code-fact-v">{capability.agentModel || "not set"}</span></span>
           </div>
         )}
+        {/* F-955 - THE SENTENCE F-914 WROTE FOR SETTINGS, ON THE CARD THAT RAISES THE
+            SAME QUESTION. A green "CODER IS ON" chip over "AGENT MODEL claude-haiku-4-5"
+            reads as a contradiction to anyone who has met the Forge LLM rule elsewhere in
+            this app, and the admin goes hunting for a frontier model that would change
+            nothing - on their own key Haiku genuinely drives an agent.
+            ONE HOME: the wording is imported from productNames.js, which verified it
+            against agentCapability() in edition.js (`provider !== "atlassian"` returns
+            enabled without looking at the model at all). It is NOT retyped here.
+            The gate is the same three conditions as the Settings one: a BYOK provider
+            (the refusal is Forge LLM's alone, and the managed engine's list is all
+            frontier), a Haiku-class id, and the agent actually ON - with Coder off the
+            card's own remedy is the sentence that matters. */}
+        {capOn && capability && capability.provider && capability.provider !== "atlassian"
+          && capability.provider !== MANAGED_PROVIDER_ID && looksLikeHaiku(capability.agentModel) && (
+          <p className="code-status-haiku">{HAIKU_ON_BYOK_SENTENCE}</p>
+        )}
         {capCopy.link === "settings" && (
           /* F-914 - the remedy is now PRESSABLE. It used to be a bold word that looked
              like a link and was not. `forgeLlm` names the SECOND requirement before the
@@ -1343,6 +1359,27 @@ export default function CodeTab({ invoke, onGoToSettings = null }) {
                           <span className="code-who-row"><span className="code-fact-k">Account</span><span className="code-fact-v">{(who.whoami && who.whoami.login) || "unknown"}</span></span>
                           {who.whoami && who.whoami.name && <span className="code-who-row"><span className="code-fact-k">Name</span><span className="code-fact-v">{who.whoami.name}</span></span>}
                           <span className="code-who-row"><span className="code-fact-k">Scopes</span><span className="code-fact-v">{who.whoami && who.whoami.scopes && who.whoami.scopes.length ? who.whoami.scopes.join(", ") : "not reported"}</span></span>
+                          {/* F-955 - WHAT THE TEST ACTUALLY PROVED, ABOVE THE THINGS IT
+                              DID NOT. Three grey "not checked" chips were the whole
+                              answer, so an admin pressed Test and learned nothing about
+                              whether the token works. `repoAccess` is a real read the
+                              backend took beside whoami: it says the credential reached
+                              repository data, which is what every agent action needs.
+                              "at least" when the page came back full - the adapters page,
+                              and a flat count would tell a large tenant a wrong number.
+                              A refused read is stated plainly and in slate, not red: the
+                              credential is alive, it is just scoped narrowly, and that is
+                              a configuration rather than a fault. NO TOKEN, EVER - this
+                              line names an account and a count and nothing else. */}
+                          {who.repoAccess && (
+                            <span className="code-proof-line">
+                              <span className={`code-proof${who.repoAccess.ok ? "" : " code-proof-none"}`}>
+                                {who.repoAccess.ok
+                                  ? `Signed in as ${(who.whoami && who.whoami.login) || "this account"}, can read ${who.repoAccess.capped ? "at least " : ""}${who.repoAccess.count} ${who.repoAccess.count === 1 ? "repository" : "repositories"}`
+                                  : `Signed in as ${(who.whoami && who.whoami.login) || "this account"}. This credential could not list repositories, so an agent can only act on repositories it is granted directly.`}
+                              </span>
+                            </span>
+                          )}
                           {who.capabilities && (
                             <span className="code-who-caps">
                               {[["canCreateRepos", "create repos"], ["canWebhooks", "webhooks"], ["canPipelines", "pipelines"]].map(([k, lbl]) => {

@@ -3903,6 +3903,56 @@ const injectStyles = () => {
       border-radius: 6px;
     }
     html[data-color-mode="dark"] .kn-pack-pin-warn { background: #ef4444; color: #fff; }
+
+       F-955 - THE SECOND COLD WALK. Appended at the foot for the same reason
+       the F-914 block above is: it only ever grows downward, so parallel
+       surgeons cannot collide in it. Solid saturated colour, 600-700 weight,
+       a dark override for every hue, no rails and no tints.
+       ====================================================================== */
+
+    /* An id the provider's own list does not carry. AMBER, the map's "caution"
+       hue (#d97706 light / #f59e0b dark, the same pair the memory "test" source
+       uses) - not red, because the save is ALLOWED and usually correct; the
+       sentence is a warning, not a refusal. 600 weight so it reads as a
+       statement rather than as another muted hint. */
+    .model-unlisted-note { color: #b45309; font-weight: 600; line-height: 1.5; max-width: 60ch; }
+    html[data-color-mode="dark"] .model-unlisted-note { color: #fbbf24; }
+
+    /* Back to the picker from the typed-id box. A quiet neutral next to the solid
+       Save beside it: two loud buttons in one row and neither reads as the action. */
+    .agent-model-pick-back { white-space: nowrap; flex: 0 0 auto; }
+
+    /* WHEN THE MONEY COMES BACK. The reset date is the half of the allowance
+       sentence that was missing, and it is the same fact in the meter row, the
+       80% note and the 100% note - so it gets one class and one colour in each,
+       never a third styling of the same date. */
+    .usage-allow-reset { font-weight: 700; color: var(--text-color); }
+
+    /* The Haiku caveat on the Code status card. It sits INSIDE a card that is already
+       green-or-red, so it must not add a third colour competing with that verdict:
+       secondary text at 600, the same weight the rest of this card's prose uses. */
+    .code-status-haiku { margin: 8px 0 0; max-width: 78ch; font-size: 12px; font-weight: 600; line-height: 1.5; color: var(--text-secondary); }
+
+    /* The Code tab's proof line: what the token actually did, one line above the
+       capability chips. TEAL solid (#0d9488 / #14b8a6), white text - it is a
+       measurement that SUCCEEDED, and the grey chips under it are the ones that
+       were never taken. */
+    /* The .code-who row is a WRAPPING FLEX ROW, so a plain inline chip lands beside "Scopes"
+       and reads as a fourth fact rather than as the verdict over them. A flex-basis of 100%
+       is what puts it on its own line; the inner span is what keeps it chip-width
+       instead of a full-bleed bar. */
+    .code-proof-line { flex: 0 0 100%; margin: 2px 0 0; }
+    .code-proof {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 5px 12px; border-radius: var(--r-md, 8px);
+      background: #0d9488; color: #ffffff;
+      font-size: 12px; font-weight: 700; line-height: 1.4;
+    }
+    html[data-color-mode="dark"] .code-proof { background: #14b8a6; color: #04211e; }
+    /* The same line when the read was REFUSED. Slate, not red: the credential is
+       alive (whoami passed) and only the repository read was not permitted. */
+    .code-proof-none { background: #475569; color: #ffffff; }
+    html[data-color-mode="dark"] .code-proof-none { background: #64748b; color: #ffffff; }
 `;
   document.head.appendChild(style);
 };

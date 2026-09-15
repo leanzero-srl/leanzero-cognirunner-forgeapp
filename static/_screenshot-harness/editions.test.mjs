@@ -1194,7 +1194,9 @@ try {
       const t = (await page.locator(".tab-intro-eyebrow").first().innerText()).trim();
       ok(!t.includes("§"), `E9 no section sign in the eyebrow, got: ${t}`);
       ok(t.length > 0, "E9 the eyebrow still says something");
-
+    } catch (e) { fail++; console.log("  x E9 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
 
   /* ==================================================================
      E8 (F-955) - THE AGENT MODEL IS A PICKER, NOT A FREE-TEXT BOX.

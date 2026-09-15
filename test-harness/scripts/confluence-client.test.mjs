@@ -584,8 +584,15 @@ await expectErr(() => createClient({ request: mock(() => ({ status: 200, body: {
   await c.createPage({ spaceKey: "DOCS", title: "New", storage: "<p>x</p>" });
   await c.updatePage({ id: "5", version: 1, title: "New", storage: "<p>x</p>" });
   await c.addComment({ pageId: "5", body: "hi" });
+  await c.listSpaces({ limit: 5 });   // F-988: was the one read still passing a string
 
-  ok(t.calls.length >= 7, `every method issued a request (${t.calls.length})`);
+  ok(t.calls.length >= 8, `every method issued a request (${t.calls.length})`);
+  /* F-988 - the walk above must cover EVERY public read/write: a method missing from it
+     is exactly how listSpaces shipped with a string path while this gate stayed green. */
+  const PUBLIC = Object.keys(c).filter((k) => typeof c[k] === "function" && !k.startsWith("_") && !k.startsWith("__"));
+  const walked = new Set(["probeInstalled", "searchCql", "getPage", "getPageByTitle", "createPage", "updatePage", "addComment", "listSpaces"]);
+  const missing = PUBLIC.filter((k) => !walked.has(k));
+  ok(missing.length === 0, `every public client method is walked by the route gate (missing: ${missing.join(", ") || "none"})`);
   for (const call of t.calls) {
     ok(isRoute(call.raw), `the transport is handed a route, not a string (${call.path})`);
     checks++;

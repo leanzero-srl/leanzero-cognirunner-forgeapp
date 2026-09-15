@@ -509,8 +509,12 @@ export function createConfluenceClient(deps = {}) {
   async function listSpaces({ limit = SPACE_LIST_MAX } = {}) {
     const op = "listSpaces";
     const n = Math.max(1, Math.min(SPACE_LIST_MAX, Number(limit) || SPACE_LIST_MAX));
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const data = await json(op, "GET", `/wiki/api/v2/spaces?limit=${n}&status=current`);
+    /* F-988 - a `route` object like every other read (F-441): the plain template string
+       threw "You must create your route using the 'route' export" at runtime on dev, and
+       the space picker reported "list unavailable" for every admin. */
+    const r = await getRoute();
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const data = await json(op, "GET", r`/wiki/api/v2/spaces?limit=${n}&status=current`, undefined, undefined, budget);
       const results = Array.isArray(data && data.results) ? data.results : [];
       return results.slice(0, n)
         .filter((s) => s && s.key)

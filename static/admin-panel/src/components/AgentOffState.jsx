@@ -42,9 +42,13 @@
 
 import React, { useEffect, useState } from "react";
 import { router, view } from "@forge/bridge";
+/* F-961 - the path is NOT retyped here. `src/shared/manage-apps.js` (F-958) is the one
+   home for "where does a Jira admin manage apps", and this component had its own copy of
+   the same string sitting next to it. Re-exported so the existing importers and the
+   harness keep resolving it from this module. */
+import { MANAGE_APPS_PATH, manageAppsUrl } from "../../../../src/shared/manage-apps";
 
-/** Jira's own app-management page, relative to the SITE origin. */
-export const MANAGE_APPS_PATH = "/jira/settings/apps/manage";
+export { MANAGE_APPS_PATH };
 
 /**
  * The one wording for "the edition is not the only requirement". Exported so the harness
@@ -63,7 +67,7 @@ export default function AgentOffState({ sentence, forgeLlm = false, onGoToSettin
     return () => { live = false; };
   }, []);
 
-  const manageUrl = siteUrl ? siteUrl + MANAGE_APPS_PATH : null;
+  const manageUrl = manageAppsUrl(siteUrl);
 
   return (
     <div className={`agent-off${className ? " " + className : ""}`}>

@@ -44,6 +44,8 @@ import { invoke, router, view } from "@forge/bridge";
 import CustomSelect from "./CustomSelect.jsx";
 import FieldGuideChip from "./FieldGuideChip.jsx";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
+/* F-961/F-962 - the Manage apps path is NOT retyped here either; it has one home. */
+import { manageAppsUrl } from "../../../../src/shared/manage-apps.js";
 /* F-915 - THE WORDS FOR AN ACTION, from the one home that owns the ids. This panel used to
    print `open_pull_request`, `sourceBranch`, `draft false` and "ended by final" to a
    developer who is being asked to authorise a write on their own repository. Every one of
@@ -209,11 +211,10 @@ const CONFIRM_NEEDS_PREVIEW = "Confirm needs the full preview";
    instruction named a page they cannot open and no one they could ask. */
 const ASK_ADMIN_TEXT = "Ask your Jira admin to change the provider or the edition under Apps, CogniRunner.";
 
-/* Jira's own app-management page, relative to the SITE origin - the same path
-   AgentOffState.jsx (admin-panel) builds its upgrade link from. A relative href inside a
-   Custom UI iframe points at the iframe's sandbox origin, so it is only ever rendered once
-   `view.getContext()` has reported a real origin. */
-const MANAGE_APPS_PATH = "/jira/settings/apps/manage";
+/* The Manage apps link is built by `manageAppsUrl` (src/shared/manage-apps.js) - the same
+   one home AgentOffState.jsx uses. A relative href inside a Custom UI iframe points at the
+   iframe's sandbox origin, so it is only ever rendered once `view.getContext()` has
+   reported a real origin, which is exactly what that helper answers null for. */
 
 /* F-954 - THE COMPOSER'S CONNECTION SENTENCES.
    `connectionId` started empty, rode the turn as `undefined` and Send was enabled on the
@@ -720,7 +721,7 @@ export default function CoderPanel({ issueKey, accountId }) {
      read that answered without it, is treated as NOT an admin, and the reader gets the
      sentence rather than a button that lands them on a page Jira will refuse. */
   const isAdmin = !!(cap && cap.admin === true);
-  const manageUrl = siteUrl ? siteUrl + MANAGE_APPS_PATH : null;
+  const manageUrl = manageAppsUrl(siteUrl);
   /* The Settings TAB is not addressable by URL (AGENT_CAPABILITY_REASONS.link says the
      same thing where it refuses to put one there), so the destination is the app's own
      page plus a one-shot intent saying which tab to land on - the handoff config-view's
@@ -737,6 +738,41 @@ export default function CoderPanel({ issueKey, accountId }) {
   };
 
   /* ------------------------------------------------------------------ rendering */
+  /* F-954/F-962 - THE REMEDY, RENDERED THE SAME WAY BY EVERY ARM THAT HAS ONE.
+     F-954 gave the off card two real doors for an admin and a sentence naming who to ask
+     for everybody else. The `upgrade` and `refused` arms were written before it and still
+     named "Apps, Manage apps" in prose with nothing to press - the dead end this component
+     exists to remove, and the worse half of it, because those two arms are where a reader
+     lands when something is actually blocked.
+       admin      -> the app's own Settings page, and a REAL href to Jira's Manage apps
+                     opened through router.open (a sandboxed iframe cannot be trusted to
+                     follow target="_blank" on its own; the href stays readable and
+                     copyable either way).
+       not admin  -> the sentence that names what to ask for and who to ask. This panel's
+                     audience is a DEVELOPER on an issue: a breadcrumb to a page they
+                     cannot open is an instruction they can only fail.
+     `refused` answers with no capability row at all, so isAdmin is false there and the
+     reader gets the sentence - which is the truth: a permission refusal IS the answer
+     "you are not the one who can change this". */
+  const remedyDoors = () => (isAdmin ? (
+    <div className="agent-off-actions coder-cap-links">
+      <button type="button" className="agent-off-btn" onClick={openSettings}>Open CogniRunner Settings</button>
+      {manageUrl && (
+        <a
+          className="agent-off-link"
+          href={manageUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => { e.preventDefault(); try { router.open(manageUrl); } catch (err) { /* the href is still the destination */ } }}
+        >
+          Upgrade in Manage apps
+        </a>
+      )}
+    </div>
+  ) : (
+    <p className="coder-cap-remedy coder-cap-ask">{ASK_ADMIN_TEXT}</p>
+  ));
+
   if (capState === "loading") return <div className="coder-cap coder-cap-loading"><span className="spin-ring" /> <span className="coder-cap-title">{CAPABILITY_CHECKING_TITLE}</span></div>;
 
   /* F-436 - the read never came back. Slate, not the OFF amber, and it says what it knows:
@@ -761,6 +797,7 @@ export default function CoderPanel({ issueKey, accountId }) {
         <span className="coder-chip coder-chip-off">Coder off</span>
         <p className="coder-cap-title">{UPGRADE_REQUIRED_HEADLINE}</p>
         <p className="coder-cap-remedy">{upgradeRequiredText(refusal)}</p>
+        {remedyDoors()}
       </div>
     );
   }
@@ -770,6 +807,7 @@ export default function CoderPanel({ issueKey, accountId }) {
       <div className="coder-cap coder-cap-off">
         <span className="coder-chip coder-chip-off">No access</span>
         <p className="coder-cap-remedy">{permissionRefusalText(refusal, "the Coder")}</p>
+        {remedyDoors()}
       </div>
     );
   }
@@ -783,34 +821,7 @@ export default function CoderPanel({ issueKey, accountId }) {
         <span className="coder-chip coder-chip-off">Coder off</span>
         <p className="coder-cap-title">{copy.title}</p>
         <p className="coder-cap-remedy">{copy.remedy}</p>
-        {copy.link === "settings" && (isAdmin ? (
-          /* F-954 - THE TWO REAL DOORS, for the reader who can actually walk through them.
-             Same pair, same words and the same classes AgentOffState.jsx renders in the
-             admin panel: a button that hands the reader to the app's own page with the
-             Settings tab as the intent, and a real href to Jira's Manage apps opened
-             through router.open, because a sandboxed iframe cannot be trusted to follow
-             target="_blank" on its own. */
-          <div className="agent-off-actions coder-cap-links">
-            <button type="button" className="agent-off-btn" onClick={openSettings}>Open CogniRunner Settings</button>
-            {manageUrl && (
-              <a
-                className="agent-off-link"
-                href={manageUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => { e.preventDefault(); try { router.open(manageUrl); } catch (err) { /* the href is still the destination */ } }}
-              >
-                Upgrade in Manage apps
-              </a>
-            )}
-          </div>
-        ) : (
-          /* ...and for the reader who cannot. This panel's audience is a DEVELOPER on an
-             issue, who is usually not a Jira admin: a breadcrumb to a page they cannot
-             open is a dead end dressed as an instruction, so they get the sentence that
-             names what to ask for and who to ask. */
-          <p className="coder-cap-remedy coder-cap-ask">{ASK_ADMIN_TEXT}</p>
-        ))}
+        {copy.link === "settings" && remedyDoors()}
       </div>
     );
   }

@@ -309,7 +309,12 @@ export const AGENT_CAPABILITY_REASONS = {
    */
   unknown: {
     title: "Coder status could not be checked",
-    remedy: "The capability check did not answer. Controls stay disabled until it does - reload, and if it persists check the app's provider settings.",
+    /* F-962 - ROLE-AWARE, because this row is read on the ISSUE PANEL as often as in the
+       admin panel, and "check the app's provider settings" is an instruction most of that
+       audience cannot carry out. A remedy addressed to the wrong reader is a dead end with
+       a confident voice. The sentence now names both readers and what each of them can
+       actually do next. */
+    remedy: "The capability check did not answer. Controls stay disabled until it does - reload the page first. If it persists, a Jira admin can check the provider settings under Apps, CogniRunner; if you are not one, ask them to.",
     link: "settings",
   },
 };

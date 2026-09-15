@@ -26,7 +26,7 @@ import {
   VA_WIZARD_VERSION,
 } from "../../src/shared/va-wizard.js";
 import {
-  normalizeVa, VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_COPY,
+  normalizeVa, VA_DEFAULTS, VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_DEFAULT_FOOTNOTE, VA_COPY,
   vaSuggestedCadence, resolveDefaultTimeZone, vaPowerPhrase,
 } from "../../src/shared/va-config.js";
 
@@ -131,12 +131,17 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
 /* ── 2b. F-916 — what the card SAYS, and what a new agent STARTS with ────── */
 
 {
-  /* THE STARTING POINT IS ONE HOME, and it is not the record's normalisation fallback.
-     `VA_DEFAULTS.cadence.postWindow` still means "no restriction" for normalizeVa; what a
-     NEW agent is OFFERED is the working week. Two questions, two answers. */
+  /* THE STARTING POINT IS ONE HOME, and since F-953 the record's own fallback is the SAME
+     window: a path that skips the cadence step used to ship Sun-Sat 00:00-23:59 silently.
+     "No restriction" is still expressible, but only by SAYING so (an explicitly empty day
+     list) - that half is asserted in va-config.test.mjs, against normalizeVa itself. */
   ok(VA_SUGGESTED_POST_WINDOW.days.join(",") === "1,2,3,4,5" && VA_SUGGESTED_POST_WINDOW.from === "08:00" && VA_SUGGESTED_POST_WINDOW.to === "18:00",
     "the suggested posting window is the working week, working hours");
-  ok(VA_DEFAULTS.cadence.postWindow.days.length === 7, "the record's own fallback still means no restriction");
+  ok(VA_DEFAULTS.cadence.postWindow.days.join(",") === "1,2,3,4,5" && VA_DEFAULTS.cadence.postWindow.from === "08:00",
+    `the record's own fallback is the working week too (got ${JSON.stringify(VA_DEFAULTS.cadence.postWindow)})`);
+  const skipped = normalizeVa({ persona: { name: "Ada" } }, catalogToCtx(CATALOG)).va;
+  ok(skipped.cadence.postWindow.days.join(",") === "1,2,3,4,5" && skipped.cadence.postWindow.from === "08:00" && skipped.cadence.postWindow.to === "18:00",
+    `an agent whose cadence step was never answered does not post at 3am on a Sunday (got ${JSON.stringify(skipped.cadence.postWindow)})`);
 
   /* the zone: the viewer's when the site offers it, UTC when it does not, and never the
      first entry of an alphabetical zone list (which is how "Africa/Abidjan" happened). */
@@ -163,9 +168,27 @@ ok(happy.turns[0].stepId === "persona_name" && happy.turns[0].prompt === WIZARD_
   ok(marked[0].includes(VA_DEFAULT_MARK.trim()), `an untouched cadence line is marked as a default (got ${marked[0]})`);
   ok(marked[0].includes("weekdays"), "the posting days are words, not a seven-name list");
   const chosen = normalizeVa({ persona: { name: "Ada" }, cadence: { preset: "hourly", timeZone: "Europe/Berlin", postWindow: { days: [0, 6], from: "09:00", to: "17:00" } } }, catalogToCtx(CATALOG)).va;
-  const chosenLine = renderReviewSummary(chosen, { defaultTimeZone: "UTC" })[0];
+  const chosenCard = renderReviewSummary(chosen, { defaultTimeZone: "UTC" });
+  const chosenLine = chosenCard[0];
   ok(!chosenLine.includes(VA_DEFAULT_MARK.trim()), `a chosen cadence line is not marked (got ${chosenLine})`);
   ok(chosenLine.includes("weekends"), "a weekend window says weekends");
+
+  /*
+   * F-953 - THE MARKER IS EXPLAINED ONCE, AT THE BOTTOM. Five inline "(default)" tags read
+   * as five warnings on a card whose job is to describe one agent.
+   */
+  ok(!/\(default\)/.test(marked.join(" ")), "the word (default) is not repeated inline any more");
+  ok(marked[marked.length - 1] === VA_DEFAULT_FOOTNOTE, `a card with defaults carries the footnote, once, at the end (got ${marked[marked.length - 1]})`);
+  ok(marked.filter((s) => s === VA_DEFAULT_FOOTNOTE).length === 1, "the footnote is said once");
+  ok(/\*/.test(VA_DEFAULT_FOOTNOTE) && /defaults/.test(VA_DEFAULT_FOOTNOTE), "the footnote explains the star it is footnoting");
+  const everything = normalizeVa({
+    persona: { name: "Ada" },
+    cadence: { preset: "hourly", timeZone: "Europe/Berlin", postWindow: { days: [0, 6], from: "09:00", to: "17:00" } },
+    powers: { replyInternal: false, assign: true },
+  }, catalogToCtx(CATALOG)).va;
+  const noDefaults = renderReviewSummary(everything, { defaultTimeZone: "UTC" });
+  ok(!noDefaults.includes(VA_DEFAULT_FOOTNOTE), `a card with nothing marked carries no footnote (got ${noDefaults.join(" | ")})`);
+  ok(!noDefaults.some((s) => s.includes(VA_DEFAULT_MARK)), "…and nothing on it carries the star");
 
   /* PROJECTS BY NAME, when the catalogue has one. */
   const scoped = normalizeVa({ persona: { name: "Ada" }, scope: { read: { projects: ["SUP", "OPS"] }, write: { projects: ["SUP"] } } }, catalogToCtx(CATALOG)).va;

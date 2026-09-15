@@ -66,7 +66,7 @@ import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 /* The refusal sentence and the banner threshold come from their ONE home, so this suite
    cannot assert words or a number the app does not actually use. */
 import { writeSiteRefusalReason, stepWizard } from "../../src/shared/va-wizard.js";
-import { VA_LIMITS, VA_COPY, VA_DEFAULT_MARK, VA_SUGGESTED_POST_WINDOW, vaFieldLabel, vaPowerPhrase, resolveDefaultTimeZone } from "../../src/shared/va-config.js";
+import { VA_LIMITS, VA_COPY, VA_DEFAULT_MARK, VA_DEFAULT_FOOTNOTE, VA_SUGGESTED_POST_WINDOW, vaFieldLabel, vaPowerPhrase, resolveDefaultTimeZone } from "../../src/shared/va-config.js";
 /* F-501 - the capability sentence is asserted from its ONE home, so this suite cannot pass
    on words the app does not actually render. */
 import { agentCapabilityCopy } from "../../src/shared/edition.js";
@@ -1360,6 +1360,14 @@ try {
       ok(!/replyInternal/.test(review), "A19 no power id reaches the card");
       ok(review.includes(VA_DEFAULT_MARK.trim()), "A19 a value the admin did not choose is marked as a default");
       ok(/weekdays/.test(review), "A19 the posting days are words");
+      /* F-953 - the marker is a star and it is explained ONCE, under the card, instead of
+         five inline "(default)" tags that read as five warnings. */
+      ok(!/\(default\)/.test(review), `A19 the word (default) is not tagged inline any more (got ${review})`);
+      ok(review.includes(VA_DEFAULT_FOOTNOTE), `A19 the card footnotes what the star means (got ${review})`);
+      ok(review.split(VA_DEFAULT_FOOTNOTE).length - 1 === 1, "A19 the footnote is said once");
+      /* Last line of the SUMMARY block; the guardrail sentences are their own block below. */
+      const summaryBlock = await page.locator(".va-review .va-review-block").first().innerText();
+      ok(summaryBlock.trim().endsWith(VA_DEFAULT_FOOTNOTE), `A19 and it is the last line of the summary, where a footnote belongs (got ${summaryBlock})`);
       ok(await page.locator('.va-step[data-step="create"]').count() === 0, "A19 the review card is the last screen");
       await shot(page, `agents-f916-review-${theme}`);
       ok(env.errors.length === 0, `A19 no page errors (${env.errors[0] || ""})`);

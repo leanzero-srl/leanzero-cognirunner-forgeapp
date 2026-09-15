@@ -84,7 +84,7 @@ import {
   VA_MAX_SENTENCES_MIN, VA_MAX_SENTENCES_MAX,
   VA_JQL_MAX, VA_MENTIONS_MAX, VA_PROJECTS_MAX, VA_SERVICE_DESKS_MAX,
   VA_QUEUES_PER_DESK_MAX, VA_PROJECT_KEY_RE, VA_PERSONA_NAME_MAX,
-  VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_COPY, vaPowerPhrase, vaPowerLabel,
+  VA_SUGGESTED_POST_WINDOW, VA_DEFAULT_MARK, VA_DEFAULT_FOOTNOTE, VA_COPY, vaPowerPhrase, vaPowerLabel,
 } from "./va-config.js";
 import { lintVoice } from "./voice-lint.js";
 import { SCHEDULE_PRESETS } from "./cron.js";
@@ -909,7 +909,18 @@ export const renderReviewSummary = (va, opts = {}) => {
    * VALUE, not a touched flag: "this is the default" is the claim, and it is true whether
    * the admin left it alone or typed it back.
    */
-  const mark = (value, fallback) => (JSON.stringify(value) === JSON.stringify(fallback) ? VA_DEFAULT_MARK : "");
+  /*
+   * F-953 - THE MARKER IS A STAR, AND IT IS EXPLAINED ONCE. Five inline "(default)" tags
+   * read as five warnings on a card whose job is to describe one agent. `marked` records
+   * whether anything carried the star at all, so the footnote is rendered only when there
+   * is something to footnote.
+   */
+  let marked = false;
+  const mark = (value, fallback) => {
+    if (JSON.stringify(value) !== JSON.stringify(fallback)) return "";
+    marked = true;
+    return VA_DEFAULT_MARK;
+  };
   const defaultZone = String(o.defaultTimeZone || VA_DEFAULTS.cadence.timeZone);
   const window = isObj(cadence.postWindow) ? cadence.postWindow : VA_DEFAULTS.cadence.postWindow;
   const suggestedWindow = isObj(o.defaultPostWindow) ? o.defaultPostWindow : VA_SUGGESTED_POST_WINDOW;
@@ -972,6 +983,7 @@ export const renderReviewSummary = (va, opts = {}) => {
   const skills = asArray(powers.skillIds);
   if (skills.length) out.push(`It is bound to ${skills.length} skill${skills.length === 1 ? "" : "s"}.`);
   if (intake.jql) out.push("The JQL filter is run against Jira once before the agent is created. If it cannot run, the agent is not created.");
+  if (marked) out.push(VA_DEFAULT_FOOTNOTE);
   return out;
 };
 
